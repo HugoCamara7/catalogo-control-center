@@ -1,4 +1,5 @@
 import io
+import base64
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -419,7 +420,7 @@ def inject_styles():
             font-size: 15px;
         }
         .matrix-card {
-            height: 150px;
+            min-height: 150px;
             border: 1px solid #d7e6fb;
             border-radius: 8px;
             background: linear-gradient(135deg, #f7fbff 0%, #eef6ff 100%);
@@ -427,7 +428,20 @@ def inject_styles():
             align-items: center;
             justify-content: center;
             margin-top: 20px;
+            padding: 18px;
             box-shadow: 0 18px 45px rgba(20, 80, 160, 0.12);
+        }
+        .matrix-card img {
+            max-height: 108px;
+            max-width: 190px;
+            object-fit: contain;
+        }
+        .brand-img {
+            max-width: 190px;
+            max-height: 72px;
+            object-fit: contain;
+            object-position: left center;
+            display: block;
         }
         .matrix-icon {
             position: relative;
@@ -519,7 +533,7 @@ def inject_styles():
             font-weight: 700;
         }
         @media (max-width: 760px) {
-            .hero, .benefits {
+            .benefits {
                 grid-template-columns: 1fr;
             }
         }
@@ -530,8 +544,19 @@ def inject_styles():
 
 
 def render_header():
+    def image_data_uri(path):
+        if not path.exists():
+            return ""
+        suffix = path.suffix.lower().replace(".", "")
+        mime = "jpeg" if suffix in ("jpg", "jpeg") else "png"
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        return f"data:image/{mime};base64,{encoded}"
+
+    forus_src = image_data_uri(FORUS_LOGO_PATH)
+    shopify_src = image_data_uri(SHOPIFY_LOGO_PATH)
+
     if FORUS_LOGO_PATH.exists():
-        st.image(str(FORUS_LOGO_PATH), width=210)
+        st.markdown(f'<img class="brand-img" src="{forus_src}" alt="Forus">', unsafe_allow_html=True)
     else:
         st.markdown(
             """
@@ -541,24 +566,23 @@ def render_header():
             unsafe_allow_html=True,
         )
 
-    left, right = st.columns([2.2, 1])
-    with left:
-        st.markdown(
-            """
+    shopify_html = (
+        f'<div class="matrix-card"><img src="{shopify_src}" alt="Shopify"></div>'
+        if shopify_src
+        else '<div class="matrix-card"><div class="matrix-icon"></div></div>'
+    )
+    st.markdown(
+        f"""
+        <div class="hero">
             <div class="hero-copy">
                 <h1>Matrixify Columbia - Shopify</h1>
                 <p>Sube el input comercial y descarga el Excel listo para crear o actualizar productos en Shopify.</p>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with right:
-        if SHOPIFY_LOGO_PATH.exists():
-            st.markdown('<div class="matrix-card">', unsafe_allow_html=True)
-            st.image(str(SHOPIFY_LOGO_PATH), width=145)
-            st.markdown("</div>", unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="matrix-card"><div class="matrix-icon"></div></div>', unsafe_allow_html=True)
+            {shopify_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.markdown(
         """

@@ -397,12 +397,14 @@ def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
     return buffer
 
 
-def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_df=None, skipped_df=None):
+def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_df=None, skipped_df=None, sial_df=None):
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         matrixify_df.to_excel(writer, index=False, sheet_name="Products")
         summary_df.to_excel(writer, index=False, sheet_name="Resumen")
         issues_df.to_excel(writer, index=False, sheet_name="Revision")
+        if sial_df is not None:
+            sial_df.to_excel(writer, index=False, sheet_name="Carga Sial")
         if type_warnings_df is not None:
             type_warnings_df.to_excel(writer, index=False, sheet_name="Tipos nuevos")
         if skipped_df is not None:
@@ -670,18 +672,12 @@ def main():
     st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Configuracion avanzada", expanded=False):
-        st.write("Solo usa esto si quieres probar con otra plantilla o con un ARTI manual.")
+        st.write("Opcional: sube una descarga Matrixify reciente para conservar IDs y detectar productos sin cambios.")
         template_file = st.file_uploader(
             "Matrixify modelo opcional",
             type=["xlsx", "xls"],
             key="template",
             help=f"Si no subes nada, se usa {DEFAULT_MATRIXIFY_PATH}.",
-        )
-        arti_file = st.file_uploader(
-            "ARTI opcional",
-            type=["xlsx", "xls"],
-            key="arti",
-            help="Si no subes nada, se usa BigQuery cuando esta configurado; si no, se usa el respaldo local.",
         )
 
     setup_rows = [
@@ -723,22 +719,18 @@ def main():
                 template_source = DEFAULT_MATRIXIFY_PATH
 
             input_df = read_excel(input_file)
-            if arti_file:
-                arti_df = read_excel(arti_file)
-                arti_source = "archivo cargado en pantalla"
-            else:
-                try:
-                    arti_df, arti_source = read_arti_for_app()
-                except FileNotFoundError:
-                    st.error(
-                        "Falta configurar BigQuery o dejar un respaldo local de ARTI: "
-                        f"{DEFAULT_ARTI_ZIP_PATH}, {DEFAULT_ARTI_CSV_PATH} o {DEFAULT_ARTI_PATH}"
-                    )
-                    st.stop()
-                except Exception as exc:
-                    st.error("No se pudo leer el ARTI desde BigQuery.")
-                    st.exception(exc)
-                    st.stop()
+            try:
+                arti_df, arti_source = read_arti_for_app()
+            except FileNotFoundError:
+                st.error(
+                    "Falta configurar BigQuery o dejar un respaldo local de ARTI: "
+                    f"{DEFAULT_ARTI_ZIP_PATH}, {DEFAULT_ARTI_CSV_PATH} o {DEFAULT_ARTI_PATH}"
+                )
+                st.stop()
+            except Exception as exc:
+                st.error("No se pudo leer el ARTI desde BigQuery.")
+                st.exception(exc)
+                st.stop()
 
             st.markdown('<div class="section-card"><h2>Archivos cargados</h2>', unsafe_allow_html=True)
             st.caption(f"Matrixify modelo usado: {template_source}")
@@ -753,9 +745,9 @@ def main():
             st.markdown("</div>", unsafe_allow_html=True)
 
             st.markdown('<div class="section-card"><h2>Procesar y generar Excel</h2>', unsafe_allow_html=True)
-            st.write("Convierte el input en una salida Matrixify con Products, Resumen, Revision, Tipos nuevos y Omitidos sin cambios.")
+            st.write("Convierte el input en una salida Matrixify y agrega una hoja Carga Sial.")
             if st.button("Generar Matrixify Columbia", type="primary"):
-                matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df = build_columbia_matrixify(
+                matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
                     input_df, arti_df, template_df
                 )
 
@@ -778,8 +770,12 @@ def main():
                         st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
                         st.dataframe(skipped_df, use_container_width=True)
 
+                    if sial_df is not None and not sial_df.empty:
+                        st.write("Vista previa Carga Sial")
+                        st.dataframe(sial_df.head(100), use_container_width=True)
+
                     excel_bytes = columbia_to_excel_bytes(
-                        matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df
+                        matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df
                     )
                     st.download_button(
                         "Descargar Excel Matrixify",

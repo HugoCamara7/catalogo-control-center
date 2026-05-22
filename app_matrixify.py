@@ -736,7 +736,8 @@ def main():
                     )
                     st.stop()
                 except Exception as exc:
-                    st.error(f"No se pudo leer el ARTI desde BigQuery: {exc}")
+                    st.error("No se pudo leer el ARTI desde BigQuery.")
+                    st.exception(exc)
                     st.stop()
 
             st.markdown('<div class="section-card"><h2>Archivos cargados</h2>', unsafe_allow_html=True)

@@ -10,15 +10,25 @@ Aplicacion Streamlit para convertir un Excel input de productos a una salida Mat
 pip install -r requirements.txt
 ```
 
-2. Opcional: dejar fijo el maestro `arti`.
+2. Configurar el maestro `arti`.
 
-Si quieres que la app lea siempre el mismo maestro, pega tu archivo en:
+La app primero intenta leer el ARTI desde BigQuery. Para desarrollo local, crea:
 
 ```text
-data/arti.xlsx
+.streamlit/secrets.toml
 ```
 
-Si prefieres probar con distintos maestros, no pegues nada y sube el `arti` desde la pantalla de la app.
+Puedes copiar la estructura desde:
+
+```text
+.streamlit/secrets.example.toml
+```
+
+Si BigQuery no esta configurado, la app usa el respaldo local:
+
+```text
+data/arti.zip
+```
 
 Tambien puedes agregar una lista de tipos/familias actuales de Shopify para que el archivo final avise si aparece un tipo nuevo:
 
@@ -37,19 +47,30 @@ streamlit run app_matrixify.py
 4. Cargar archivos:
 
 - Excel input de productos.
-- Excel maestro `arti`, solo si no dejaste fijo `data/arti.xlsx`.
+- Opcional: descarga Matrixify reciente para conservar IDs y detectar productos sin cambios.
 
 5. Presionar **Generar Matrixify** y descargar el Excel final.
 
 ## Logica actual
 
-- Detecta columnas frecuentes como `estilo`, `modelo`, `codigo`, `sku`, `marca`, `descripcion`, `precio`, `color`, `talla`, `ean`.
-- Hace match entre input y `arti` por estilo/modelo/codigo.
-- Si encuentra el producto en `arti`, usa sus tallas, SKUs y codigos de barra.
-- Si no encuentra match, usa las tallas de respaldo configuradas en pantalla.
+- Lee el ARTI desde BigQuery cuando existen secretos configurados.
+- Si BigQuery no esta configurado, usa `data/arti.zip`, `data/arti.csv` o `data/arti.xlsx`.
+- Hace match entre input y ARTI por `Mod-Col` o `COD MOD COL`.
+- Usa tallas, SKUs, precios y codigos de barra desde ARTI.
+- Omite variantes con talla `0`.
 - Ordena tallas tipo `XS, S, M, L, XL, XXL`, tallas numericas y tallas reales.
-- Genera una hoja `Matrixify`, una hoja `Revision` y una hoja `Mapeo detectado`.
+- Genera hojas de salida Matrixify, Carga Sial, resumen, revision, tipos nuevos y omitidos sin cambios.
 
-## Siguiente mejora recomendada
+## Columnas requeridas en BigQuery
 
-Cuando tengas un input real y el archivo `arti`, conviene ajustar el mapeo exacto de columnas Matrixify segun tu plantilla final de Shopify/Matrixify.
+La tabla o query debe entregar estas columnas:
+
+```text
+CODINT_MA
+COD MOD COL
+Mod-Col
+TALNUM_MA
+MARCA_MA
+Precio
+CodBarras
+```

@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -422,11 +423,120 @@ ARTI_REQUIRED_COLUMNS = [
 ]
 
 
+def _truthy(value):
+    if isinstance(value, bool):
+        return value
+    return clean(value).lower() in ("1", "true", "yes", "si", "sí", "y")
+
+
+def _bigquery_configured(config):
+    if not config:
+        return False
+    if "enabled" in config and not _truthy(config.get("enabled")):
+        return False
+    table = clean(config.get("table"))
+    has_full_table = table.count(".") == 2
+    has_split_table = clean(config.get("project_id")) and clean(config.get("dataset")) and table
+    return bool(clean(config.get("query")) or has_full_table or has_split_table)
+
+
+def _bigquery_config_from_env():
+    config = {
+        "enabled": os.getenv("BIGQUERY_ENABLED", ""),
+        "project_id": os.getenv("BIGQUERY_PROJECT_ID", ""),
+        "dataset": os.getenv("BIGQUERY_DATASET", ""),
+        "table": os.getenv("BIGQUERY_TABLE", ""),
+        "query": os.getenv("BIGQUERY_QUERY", ""),
+        "location": os.getenv("BIGQUERY_LOCATION", ""),
+    }
+    service_account_json = os.getenv("BIGQUERY_SERVICE_ACCOUNT_JSON", "")
+    if service_account_json:
+        config["service_account_info"] = json.loads(service_account_json)
+    return {key: value for key, value in config.items() if value}
+
+
+def _bigquery_config_from_streamlit():
+    try:
+        import streamlit as st
+    except Exception:
+        return {}
+
+    try:
+        secrets = st.secrets
+        config = dict(secrets.get("bigquery", {}))
+        service_account = secrets.get("gcp_service_account", None)
+        if service_account:
+            config["service_account_info"] = dict(service_account)
+        return {key: value for key, value in config.items() if value}
+    except Exception:
+        return {}
+
+
+def _read_arti_from_bigquery(config):
+    try:
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+    except ImportError as exc:
+        raise RuntimeError(
+            "BigQuery esta configurado, pero faltan dependencias. "
+            "Instala google-cloud-bigquery y db-dtypes."
+        ) from exc
+
+    project_id = clean(config.get("project_id"))
+    credentials_info = config.get("service_account_info")
+    credentials = None
+    if credentials_info:
+        credentials = service_account.Credentials.from_service_account_info(dict(credentials_info))
+        project_id = project_id or credentials.project_id
+
+    client = bigquery.Client(project=project_id or None, credentials=credentials)
+    project_id = project_id or client.project
+    query = clean(config.get("query"))
+    if not query:
+        dataset = clean(config.get("dataset"))
+        table = clean(config.get("table"))
+        table_id = table if table.count(".") == 2 else f"{project_id}.{dataset}.{table}"
+        query = f"""
+        SELECT
+          CAST(id_producto AS STRING) AS CODINT_MA,
+          CAST(codmod_codcol AS STRING) AS `COD MOD COL`,
+          CAST(codmod_codcol AS STRING) AS `Mod-Col`,
+          CAST(talla_numero AS STRING) AS TALNUM_MA,
+          CAST(marca AS STRING) AS MARCA_MA,
+          CAST(NULL AS STRING) AS Precio,
+          CAST(NULL AS STRING) AS CodBarras
+        FROM `{table_id}`
+        WHERE UPPER(CAST(marca AS STRING)) = 'COLUMBIA'
+          AND codmod_codcol IS NOT NULL
+          AND id_producto IS NOT NULL
+        """
+
+    job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
+    query_job = client.query(query, job_config=job_config, location=clean(config.get("location")) or None)
+    df = query_job.to_dataframe()
+    for column in ARTI_REQUIRED_COLUMNS:
+        if column not in df.columns:
+            df[column] = ""
+    source = clean(config.get("table")) or "query configurada"
+    return df[ARTI_REQUIRED_COLUMNS].astype(object), f"BigQuery: {source}"
+
+
 def read_arti_source(
     zip_path=DEFAULT_ARTI_ZIP_PATH,
     csv_path=DEFAULT_ARTI_CSV_PATH,
     xlsx_path=DEFAULT_ARTI_XLSX_PATH,
+    bigquery_config=None,
+    allow_local_fallback=True,
 ):
+    if bigquery_config is None:
+        bigquery_config = _bigquery_config_from_streamlit() or _bigquery_config_from_env()
+    if _bigquery_configured(bigquery_config):
+        try:
+            return _read_arti_from_bigquery(bigquery_config)
+        except Exception as exc:
+            if not allow_local_fallback:
+                raise RuntimeError(f"No se pudo leer ARTI desde BigQuery. Detalle: {exc}") from exc
+            print(f"No se pudo leer BigQuery; usando respaldo local. Detalle: {exc}")
     if zip_path.exists():
         return pd.read_csv(zip_path, dtype=object, usecols=lambda col: col in ARTI_REQUIRED_COLUMNS), str(zip_path)
     if csv_path.exists():
@@ -595,8 +705,11 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
         arti["Mod-Col"].map(clean) != "",
         arti["COD MOD COL"],
     ).map(lambda value: clean(value).upper())
+    for optional_column in ("Precio", "CodBarras"):
+        if optional_column not in arti.columns:
+            arti[optional_column] = ""
     arti = arti[arti["__KEY"].isin(wanted_keys)].copy()
-    arti = arti[arti["Precio"].notna() & arti["CodBarras"].notna()].copy()
+    arti = arti[arti["CODINT_MA"].map(clean) != ""].copy()
     arti["__SIZE"] = arti["TALNUM_MA"].map(normalize_size)
     arti = arti[arti["__SIZE"] != ""].copy()
     arti = arti.sort_values(by=["__KEY", "__SIZE"], key=lambda series: series.map(size_sort_key))
@@ -613,7 +726,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
             issues.append(
                 {
                     "Mod-Col": key,
-                    "Problema": "Sin variantes validas en ARTI con Precio y CodBarras",
+                    "Problema": "Sin variantes validas en ARTI/BigQuery",
                     "Fila input": input_index + 2,
                 }
             )
@@ -666,7 +779,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
                     "Tags": tags,
                     "Tags Command": "REPLACE",
                     "Status": "Active",
-                    "Published": "TRUE",
+                    "Published": "TRUE" if clean(variant.get("Precio")) else "FALSE",
                     "Created At": existing_product.get("Created At", ""),
                     "Updated At": existing_product.get("Updated At", ""),
                     "Published At": existing_product.get("Published At", ""),

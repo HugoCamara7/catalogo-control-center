@@ -260,6 +260,132 @@ def format_technology_logos(value):
     return ", ".join(logos)
 
 
+def strip_html(value):
+    text = re.sub(r"<[^>]+>", " ", clean(value))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def first_non_empty(*values):
+    for value in values:
+        text = clean(value)
+        if text:
+            return text
+    return ""
+
+
+def product_category(product):
+    return first_non_empty(
+        product.get("Metafield: custom.categoria [single_line_text_field]"),
+        product.get("Categoria "),
+        product.get("Categoria"),
+        product.get("Category"),
+    )
+
+
+def product_gender(product):
+    return first_non_empty(
+        product.get("Metafield: custom.genero [single_line_text_field]"),
+        product.get("Genero"),
+        product.get("Género"),
+        product.get("Gender"),
+    )
+
+
+def product_technology(product, tech_col):
+    return clean(product.get(tech_col)) if tech_col else ""
+
+
+def category_blocks_zero_size(product):
+    values = [
+        product_category(product),
+        product.get("Categoria "),
+        product.get("Categoria"),
+        product.get("Type"),
+        product.get("Metafield: custom.categoria [single_line_text_field]"),
+    ]
+    text = normalize_text(" ".join(clean(value) for value in values if clean(value)))
+    return any(category in text for category in ("vestuario", "calzado"))
+
+
+def sial_product_bullets(product, product_type, color_web, tech_col):
+    pieces = [
+        ("Tipo De Producto", product_type),
+        ("Género", product_gender(product)),
+        ("Color", color_web),
+        ("Marca", "Columbia"),
+    ]
+    technology = product_technology(product, tech_col)
+    if technology:
+        pieces.append(("Tecnologías", technology))
+    return ", ".join(f"{label} | {value}" for label, value in pieces if clean(value))
+
+
+def build_sial_row(product, variant, key, product_images, existing_product, tech_col):
+    model, color = split_model_color(key)
+    product_type = clean(product.get("Type"))
+    color_web = clean(product.get("Color Web"))
+    title = clean(product.get("Title"))
+    body_html = build_body_html(product)
+    image_url = product_images[0] if product_images else ""
+    existing_id = clean(existing_product.get("ID"))
+    return {
+        "Cod. Modelo": model,
+        "Cod. Color": color,
+        "Talla": variant["__SIZE"],
+        "Product Name ": title,
+        "Product Bullets": first_non_empty(product.get("Product Bullets"), sial_product_bullets(product, product_type, color_web, tech_col)),
+        "Product Description": first_non_empty(product.get("Product Description"), strip_html(body_html)),
+        "Image URL": image_url,
+        "Product Weight": first_non_empty(product.get("Product Weight"), 300),
+        "Product Length": first_non_empty(product.get("Product Length"), 35),
+        "Product Width": first_non_empty(product.get("Product Width"), 27),
+        "Product Height": first_non_empty(product.get("Product Height"), 2),
+        "Package Weight": first_non_empty(product.get("Package Weight"), 300),
+        "Package Length": first_non_empty(product.get("Package Length"), 35),
+        "Package Width": first_non_empty(product.get("Package Width"), 27),
+        "Package Height": first_non_empty(product.get("Package Height"), 2),
+        "Boost ": clean(product.get("Boost ")),
+        "Talla Web ": variant["__SIZE"],
+        "Color Web": color_web,
+        "Categoria ": product_category(product),
+        "Sub Categoria": product_type,
+        "Genero": product_gender(product),
+        "Estilo ": clean(product.get("Estilo ")) or clean(product.get("Metafield: custom.tipo [single_line_text_field]")),
+        "Colecciones ": clean(product.get("Colecciones ")),
+        "Temporada ": clean(product.get("Temporada ")) or clean(product.get("Temporada")),
+        "Modelo": clean(product.get("Modelo")),
+        "Marca": "Columbia",
+        "Tecnologias ": product_technology(product, tech_col),
+        "Caracteristicas": clean(product.get("Caracteristicas")),
+        "Tipo de Boardshort": clean(product.get("Tipo de Boardshort")),
+        "Tipo de Bikini": clean(product.get("Tipo de Bikini")),
+        "Iniciativas": clean(product.get("Iniciativas")),
+        "Tipo de Material": clean(product.get("Tipo de Material")),
+        "1": clean(product.get("1")),
+        "Tipo de Prenda": clean(product.get("Tipo de Prenda")),
+        "Adicional 2 ": clean(product.get("Adicional 2 ")),
+        "Adicional 3 ": clean(product.get("Adicional 3 ")),
+        "Adicional 4 ": clean(product.get("Adicional 4 ")),
+        "Adicional 5 ": clean(product.get("Adicional 5 ")),
+        "Adicional 6 ": clean(product.get("Adicional 6 ")),
+        "Adicional 7 ": clean(product.get("Adicional 7 ")),
+        "Adicional 8 ": clean(product.get("Adicional 8 ")),
+        "Adicional 9 ": clean(product.get("Adicional 9 ")),
+        "Adicional 10": clean(product.get("Adicional 10")),
+        "Mod-Col": key,
+        "Sku - Sial": clean(variant.get("CODINT_MA")),
+        "Nuevo o Actualizar (Columbia.pe)": "Actualizar" if existing_id else "Crear",
+        "Porduct Id - Columbia.pe": existing_id,
+        "Nuevo o Actualizar (Supermall.pe)": "Crear",
+        "Porduct Id - Supermall.pe": "",
+        "Nuevo o Actualizar (Supermall.pe).1": "Crear",
+        "Porduct Id - Rockford.pe": "",
+        "4": 1,
+        "13": 1,
+        "6": 1,
+    }
+
+
 def html_list(value):
     text = clean(value)
     if not text:
@@ -422,6 +548,63 @@ ARTI_REQUIRED_COLUMNS = [
     "CodBarras",
 ]
 
+SIAL_COLUMNS = [
+    "Cod. Modelo",
+    "Cod. Color",
+    "Talla",
+    "Product Name ",
+    "Product Bullets",
+    "Product Description",
+    "Image URL",
+    "Product Weight",
+    "Product Length",
+    "Product Width",
+    "Product Height",
+    "Package Weight",
+    "Package Length",
+    "Package Width",
+    "Package Height",
+    "Boost ",
+    "Talla Web ",
+    "Color Web",
+    "Categoria ",
+    "Sub Categoria",
+    "Genero",
+    "Estilo ",
+    "Colecciones ",
+    "Temporada ",
+    "Modelo",
+    "Marca",
+    "Tecnologias ",
+    "Caracteristicas",
+    "Tipo de Boardshort",
+    "Tipo de Bikini",
+    "Iniciativas",
+    "Tipo de Material",
+    "1",
+    "Tipo de Prenda",
+    "Adicional 2 ",
+    "Adicional 3 ",
+    "Adicional 4 ",
+    "Adicional 5 ",
+    "Adicional 6 ",
+    "Adicional 7 ",
+    "Adicional 8 ",
+    "Adicional 9 ",
+    "Adicional 10",
+    "Mod-Col",
+    "Sku - Sial",
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "Nuevo o Actualizar (Supermall.pe).1",
+    "Porduct Id - Rockford.pe",
+    "4",
+    "13",
+    "6",
+]
+
 
 BIGQUERY_ARTI_COLUMN_CANDIDATES = {
     "CODINT_MA": [
@@ -520,6 +703,7 @@ def _bigquery_configured(config):
 def _bigquery_config_from_env():
     config = {
         "enabled": os.getenv("BIGQUERY_ENABLED", ""),
+        "job_project_id": os.getenv("BIGQUERY_JOB_PROJECT_ID", ""),
         "project_id": os.getenv("BIGQUERY_PROJECT_ID", ""),
         "dataset": os.getenv("BIGQUERY_DATASET", ""),
         "table": os.getenv("BIGQUERY_TABLE", ""),
@@ -595,8 +779,10 @@ def _read_arti_from_bigquery(config):
         credentials = service_account.Credentials.from_service_account_info(dict(credentials_info))
         project_id = project_id or credentials.project_id
 
-    client = bigquery.Client(project=project_id or None, credentials=credentials)
-    project_id = project_id or client.project
+    job_project_id = clean(config.get("job_project_id")) or project_id
+    client = bigquery.Client(project=job_project_id or None, credentials=credentials)
+    job_project_id = job_project_id or client.project
+    project_id = project_id or job_project_id
     query = clean(config.get("query"))
     if not query:
         dataset = clean(config.get("dataset"))
@@ -858,12 +1044,28 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
 
     tech_col = first_existing(input_df, ["METAFIELD TECNOLOGÍAS"])
     rows = []
+    sial_rows = []
     issues = []
     skipped_rows = []
 
     for input_index, product in input_df.iterrows():
         key = product["__KEY"]
         variants = arti[arti["__KEY"] == key].copy()
+        zero_size_count = (
+            int((variants["__SIZE"].map(clean) == "0").sum())
+            if "__SIZE" in variants.columns and category_blocks_zero_size(product)
+            else 0
+        )
+        if zero_size_count:
+            variants = variants[variants["__SIZE"].map(clean) != "0"].copy()
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Se omitieron variantes con talla 0 en vestuario/calzado",
+                    "Fila input": input_index + 2,
+                    "Cantidad": zero_size_count,
+                }
+            )
         if variants.empty:
             issues.append(
                 {
@@ -1007,6 +1209,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
                 )
 
             product_rows.append(output)
+            sial_rows.append(build_sial_row(product, variant, key, product_images, existing_product, tech_col))
 
         if existing_product.get("ID") and product_is_unchanged(product_rows, existing_rows, matrixify_columns):
             skipped_rows.append(
@@ -1022,6 +1225,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
         rows.extend(product_rows)
 
     output_df = pd.DataFrame(rows, columns=matrixify_columns)
+    sial_df = pd.DataFrame(sial_rows, columns=SIAL_COLUMNS)
     issues_df = pd.DataFrame(issues)
     skipped_df = pd.DataFrame(
         skipped_rows,
@@ -1033,6 +1237,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
             {"Metrica": "Productos input", "Valor": len(input_df)},
             {"Metrica": "Productos con match ARTI", "Valor": output_df["Handle"].nunique() if len(output_df) else 0},
             {"Metrica": "Filas variantes Matrixify", "Valor": len(output_df)},
+            {"Metrica": "Filas Carga Sial", "Valor": len(sial_df)},
             {"Metrica": "Productos omitidos sin cambios", "Valor": len(skipped_df)},
             {
                 "Metrica": "Filas omitidas sin cambios",
@@ -1059,7 +1264,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
             },
         ]
     )
-    return output_df, summary_df, issues_df, type_warnings_df, skipped_df
+    return output_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df
 
 
 def main():
@@ -1071,7 +1276,7 @@ def main():
 
     arti, arti_source = read_arti_source()
 
-    output_df, summary_df, issues_df, type_warnings_df, skipped_df = build_columbia_matrixify(
+    output_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
         input_df, arti, template
     )
 
@@ -1080,6 +1285,7 @@ def main():
         output_df.to_excel(writer, sheet_name="Products", index=False)
         summary_df.to_excel(writer, sheet_name="Resumen", index=False)
         issues_df.to_excel(writer, sheet_name="Revision", index=False)
+        sial_df.to_excel(writer, sheet_name="Carga Sial", index=False)
         type_warnings_df.to_excel(writer, sheet_name="Tipos nuevos", index=False)
         skipped_df.to_excel(writer, sheet_name="Omitidos sin cambios", index=False)
 

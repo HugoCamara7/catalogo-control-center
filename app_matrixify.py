@@ -1,5 +1,6 @@
 import io
 import base64
+import json
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -165,8 +166,42 @@ def read_excel_path(path):
     return pd.read_excel(path, dtype=object).dropna(how="all")
 
 
+def get_bigquery_config():
+    config = {}
+    try:
+        if "bigquery" in st.secrets:
+            config.update(dict(st.secrets["bigquery"]))
+        if "gcp_service_account" in st.secrets:
+            config["service_account_info"] = dict(st.secrets["gcp_service_account"])
+    except Exception:
+        return {}
+
+    service_account_json = config.pop("service_account_json", None)
+    if service_account_json and "service_account_info" not in config:
+        config["service_account_info"] = json.loads(service_account_json)
+    return config
+
+
+def is_bigquery_configured(config):
+    if not config:
+        return False
+    enabled = str(config.get("enabled", "true")).strip().lower()
+    if enabled in ("0", "false", "no", "off"):
+        return False
+    has_query = bool(str(config.get("query", "")).strip())
+    service_project = ""
+    if isinstance(config.get("service_account_info"), dict):
+        service_project = str(config["service_account_info"].get("project_id", "")).strip()
+    has_project = bool(str(config.get("project_id", "")).strip() or service_project)
+    table = str(config.get("table", "")).strip()
+    has_full_table = table.count(".") == 2
+    has_split_table = has_project and bool(str(config.get("dataset", "")).strip() and table)
+    has_table = has_full_table or has_split_table
+    return has_query or has_table
+
+
 def read_arti_for_app():
-    arti_df, source = read_arti_source()
+    arti_df, source = read_arti_source(bigquery_config=get_bigquery_config(), allow_local_fallback=False)
     return arti_df.dropna(how="all"), source
 
 
@@ -627,13 +662,15 @@ def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
     inject_styles()
     render_header()
+    bigquery_config = get_bigquery_config()
+    bigquery_ready = is_bigquery_configured(bigquery_config)
 
     st.markdown('<div class="section-card"><h2>Cargar input</h2>', unsafe_allow_html=True)
     input_file = st.file_uploader("Subir Excel de Comercial", type=["xlsx", "xls"], key="input")
     st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Configuracion avanzada", expanded=False):
-        st.write("Solo usa esto si quieres probar con otra plantilla o con otro ARTI.")
+        st.write("Solo usa esto si quieres probar con otra plantilla o con un ARTI manual.")
         template_file = st.file_uploader(
             "Matrixify modelo opcional",
             type=["xlsx", "xls"],
@@ -644,7 +681,7 @@ def main():
             "ARTI opcional",
             type=["xlsx", "xls"],
             key="arti",
-            help=f"Si no subes nada, se usa {DEFAULT_ARTI_PATH}.",
+            help="Si no subes nada, se usa BigQuery cuando esta configurado; si no, se usa el respaldo local.",
         )
 
     setup_rows = [
@@ -655,10 +692,14 @@ def main():
         },
         {
             "Base": "ARTI",
-            "Ruta": f"{DEFAULT_ARTI_ZIP_PATH} / {DEFAULT_ARTI_CSV_PATH} / {DEFAULT_ARTI_PATH}",
-            "Estado": "OK ZIP"
-            if Path(DEFAULT_ARTI_ZIP_PATH).exists()
-            else ("OK CSV" if Path(DEFAULT_ARTI_CSV_PATH).exists() else ("OK XLSX" if Path(DEFAULT_ARTI_PATH).exists() else "Falta")),
+            "Ruta": "BigQuery" if bigquery_ready else f"{DEFAULT_ARTI_ZIP_PATH} / {DEFAULT_ARTI_CSV_PATH} / {DEFAULT_ARTI_PATH}",
+            "Estado": "OK BigQuery"
+            if bigquery_ready
+            else (
+                "OK ZIP"
+                if Path(DEFAULT_ARTI_ZIP_PATH).exists()
+                else ("OK CSV" if Path(DEFAULT_ARTI_CSV_PATH).exists() else ("OK XLSX" if Path(DEFAULT_ARTI_PATH).exists() else "Falta"))
+            ),
         },
         {
             "Base": "Tipos Shopify",
@@ -689,7 +730,13 @@ def main():
                 try:
                     arti_df, arti_source = read_arti_for_app()
                 except FileNotFoundError:
-                    st.error(f"Falta el ARTI fijo: {DEFAULT_ARTI_ZIP_PATH}, {DEFAULT_ARTI_CSV_PATH} o {DEFAULT_ARTI_PATH}")
+                    st.error(
+                        "Falta configurar BigQuery o dejar un respaldo local de ARTI: "
+                        f"{DEFAULT_ARTI_ZIP_PATH}, {DEFAULT_ARTI_CSV_PATH} o {DEFAULT_ARTI_PATH}"
+                    )
+                    st.stop()
+                except Exception as exc:
+                    st.error(f"No se pudo leer el ARTI desde BigQuery: {exc}")
                     st.stop()
 
             st.markdown('<div class="section-card"><h2>Archivos cargados</h2>', unsafe_allow_html=True)

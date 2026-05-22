@@ -388,8 +388,29 @@ def inject_styles():
         <style>
         .block-container {
             max-width: 1120px;
-            padding-top: 26px;
+            padding-top: 42px;
             padding-bottom: 36px;
+        }
+        .brand-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 24px;
+            margin-bottom: 42px;
+        }
+        .brand-row .brand-img {
+            max-width: 205px;
+            max-height: 82px;
+            object-fit: contain;
+            object-position: left center;
+            display: block;
+        }
+        .brand-row .shopify-img {
+            max-width: 96px;
+            max-height: 96px;
+            object-fit: contain;
+            object-position: right center;
+            display: block;
         }
         .forus-logo {
             font-size: 46px;
@@ -406,7 +427,7 @@ def inject_styles():
             margin-top: 4px;
         }
         .hero-copy {
-            margin: 26px 0 22px;
+            margin: 0 0 22px;
         }
         .hero-copy h1 {
             color: #001f4f;
@@ -420,16 +441,16 @@ def inject_styles():
             font-size: 15px;
         }
         .matrix-card {
-            min-height: 150px;
-            border: 1px solid #d7e6fb;
-            border-radius: 8px;
-            background: linear-gradient(135deg, #f7fbff 0%, #eef6ff 100%);
+            min-height: 0;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
             display: flex;
             align-items: center;
-            justify-content: center;
-            margin-top: 20px;
-            padding: 18px;
-            box-shadow: 0 18px 45px rgba(20, 80, 160, 0.12);
+            justify-content: flex-end;
+            margin-top: 0;
+            padding: 0;
+            box-shadow: none;
         }
         .matrix-card img {
             max-height: 108px;
@@ -437,8 +458,8 @@ def inject_styles():
             object-fit: contain;
         }
         .brand-img {
-            max-width: 190px;
-            max-height: 72px;
+            max-width: 205px;
+            max-height: 82px;
             object-fit: contain;
             object-position: left center;
             display: block;
@@ -533,6 +554,16 @@ def inject_styles():
             font-weight: 700;
         }
         @media (max-width: 760px) {
+            .brand-row {
+                align-items: flex-start;
+                margin-bottom: 28px;
+            }
+            .brand-row .brand-img {
+                max-width: 165px;
+            }
+            .brand-row .shopify-img {
+                max-width: 72px;
+            }
             .benefits {
                 grid-template-columns: 1fr;
             }
@@ -555,30 +586,27 @@ def render_header():
     forus_src = image_data_uri(FORUS_LOGO_PATH)
     shopify_src = image_data_uri(SHOPIFY_LOGO_PATH)
 
-    if FORUS_LOGO_PATH.exists():
-        st.markdown(f'<img class="brand-img" src="{forus_src}" alt="Forus">', unsafe_allow_html=True)
-    else:
-        st.markdown(
-            """
-            <div class="forus-logo">FORUS</div>
-            <div class="forus-tagline">CONSUMER FANATIC</div>
-            """,
-            unsafe_allow_html=True,
-        )
-
+    forus_html = (
+        f'<img class="brand-img" src="{forus_src}" alt="Forus">'
+        if forus_src
+        else '<div><div class="forus-logo">FORUS</div><div class="forus-tagline">CONSUMER FANATIC</div></div>'
+    )
     shopify_html = (
-        f'<div class="matrix-card"><img src="{shopify_src}" alt="Shopify"></div>'
+        f'<img class="shopify-img" src="{shopify_src}" alt="Shopify">'
         if shopify_src
-        else '<div class="matrix-card"><div class="matrix-icon"></div></div>'
+        else '<div class="matrix-icon"></div>'
     )
     st.markdown(
         f"""
+        <div class="brand-row">
+            {forus_html}
+            {shopify_html}
+        </div>
         <div class="hero">
             <div class="hero-copy">
                 <h1>Matrixify Columbia - Shopify</h1>
                 <p>Sube el input comercial y descarga el Excel listo para crear o actualizar productos en Shopify.</p>
             </div>
-            {shopify_html}
         </div>
         """,
         unsafe_allow_html=True,

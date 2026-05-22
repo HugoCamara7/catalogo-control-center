@@ -1,3 +1,7 @@
+streamlit
 pandas
 openpyxl
-streamlit
+xlsxwriter
+google-cloud-bigquery
+db-dtypes
+google-auth

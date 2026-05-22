@@ -4,13 +4,14 @@
 
 La app vive en un repositorio privado de GitHub y se despliega en Streamlit Community Cloud.
 
-El usuario final solo carga el input de Comercial. Las bases quedan fijas dentro del repositorio:
+El usuario final solo carga el input de Comercial. El ARTI se lee desde BigQuery y las otras bases quedan fijas dentro del repositorio:
 
 ```text
-data/arti.zip
 data/matrixify_modelo.xlsx
 data/tipos_shopify.xlsx
 ```
+
+`data/arti.zip` puede quedar como respaldo local, pero ya no es obligatorio si BigQuery esta configurado.
 
 ## Archivos que deben subirse al repositorio
 
@@ -22,7 +23,7 @@ README.md
 DEPLOY_STREAMLIT.md
 .gitignore
 .streamlit/config.toml
-data/arti.zip
+.streamlit/secrets.example.toml
 data/matrixify_modelo.xlsx
 data/tipos_shopify.xlsx
 ```
@@ -34,6 +35,12 @@ outputs/
 data/arti.xlsx
 data/arti.csv
 __pycache__/
+```
+
+No subir nunca:
+
+```text
+.streamlit/secrets.toml
 ```
 
 ## Desplegar en Streamlit Community Cloud
@@ -58,19 +65,48 @@ Main file path: app_matrixify.py
 
 5. Presionar **Deploy**.
 
-6. Compartir el link generado con el equipo.
+6. Antes de compartir, abrir **App settings -> Secrets** y pegar las credenciales:
+
+```toml
+[bigquery]
+enabled = true
+project_id = "forus-analitica-prod-datalake"
+table = "forus-analitica-prod-datalake.bronze.stg_pe_central_arti"
+# location = "US"
+
+[gcp_service_account]
+type = "service_account"
+project_id = "TU_PROJECT_ID"
+private_key_id = "..."
+private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+client_email = "tu-service-account@tu-project.iam.gserviceaccount.com"
+client_id = "..."
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "..."
+```
+
+7. Compartir el link generado con el equipo.
 
 ## Actualizar bases
 
 Cuando cambie el ARTI:
 
-1. Reemplazar:
+1. Actualizar la tabla en BigQuery.
+2. Reiniciar la app desde Streamlit si quieres forzar lectura inmediata.
+
+La app debe mostrar `OK BigQuery` en **Estado de bases** y `Arti usado: BigQuery: forus-analitica-prod-datalake.bronze.stg_pe_central_arti` al procesar.
+
+Como el ARTI de BigQuery no trae precio, el archivo final queda asi:
 
 ```text
-data/arti.zip
+Status = Active
+Published = FALSE
+Variant Price = vacio
 ```
 
-2. Hacer commit y push a GitHub.
+Esto es esperado.
 
 Cuando cambie la descarga Matrixify base:
 
@@ -83,3 +119,36 @@ data/matrixify_modelo.xlsx
 2. Hacer commit y push a GitHub.
 
 Streamlit redeploya automaticamente despues del push.
+
+## Como actualizar el repositorio en GitHub
+
+Si editas desde la web de GitHub:
+
+1. Entra al repositorio `app-matrixify-columbia`.
+2. Presiona **Add file -> Upload files**.
+3. Arrastra y reemplaza estos archivos actualizados:
+
+```text
+app_matrixify.py
+generate_columbia_matrixify.py
+requirements.txt
+README.md
+DEPLOY_STREAMLIT.md
+.streamlit/secrets.example.toml
+```
+
+4. Escribe un mensaje como:
+
+```text
+Conecta ARTI BigQuery
+```
+
+5. Presiona **Commit changes**.
+
+No subas ni edites en GitHub:
+
+```text
+.streamlit/secrets.toml
+```
+
+Los Secrets reales se mantienen solo en Streamlit Cloud.

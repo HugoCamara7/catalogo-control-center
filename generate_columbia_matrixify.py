@@ -423,6 +423,66 @@ ARTI_REQUIRED_COLUMNS = [
 ]
 
 
+BIGQUERY_ARTI_COLUMN_CANDIDATES = {
+    "CODINT_MA": [
+        "CODINT_MA",
+        "codint_ma",
+        "codint",
+        "id_producto",
+        "idproducto",
+        "sku",
+        "sku_producto",
+    ],
+    "COD MOD COL": [
+        "COD MOD COL",
+        "COD_MOD_COL",
+        "cod_mod_col",
+        "codmod_codcol",
+        "mod_col",
+        "modelo_color",
+        "codigo_modelo_color",
+    ],
+    "Mod-Col": [
+        "Mod-Col",
+        "MOD_COL",
+        "mod_col",
+        "codmod_codcol",
+        "modelo_color",
+        "codigo_modelo_color",
+    ],
+    "TALNUM_MA": [
+        "TALNUM_MA",
+        "talnum_ma",
+        "talla_numero",
+        "talla",
+        "size",
+    ],
+    "MARCA_MA": [
+        "MARCA_MA",
+        "marca_ma",
+        "marca",
+        "brand",
+    ],
+    "Precio": [
+        "Precio",
+        "precio",
+        "price",
+        "precio_venta",
+        "pvp",
+    ],
+    "CodBarras": [
+        "CodBarras",
+        "codbarras",
+        "cod_barras",
+        "codigo_barras",
+        "codigo_barra",
+        "barcode",
+        "ean",
+        "upc",
+    ],
+}
+
+
 def _truthy(value):
     if isinstance(value, bool):
         return value
@@ -472,6 +532,25 @@ def _bigquery_config_from_streamlit():
         return {}
 
 
+def _normalize_bigquery_name(value):
+    return re.sub(r"[^a-z0-9]+", "", clean(value).lower())
+
+
+def _find_bigquery_column(available_columns, candidates):
+    by_normalized = {_normalize_bigquery_name(column): column for column in available_columns}
+    for candidate in candidates:
+        found = by_normalized.get(_normalize_bigquery_name(candidate))
+        if found:
+            return found
+    return ""
+
+
+def _bigquery_select_expression(output_column, source_column):
+    if source_column:
+        return f"CAST(`{source_column}` AS STRING) AS `{output_column}`"
+    return f"CAST(NULL AS STRING) AS `{output_column}`"
+
+
 def _read_arti_from_bigquery(config):
     try:
         from google.cloud import bigquery
@@ -496,19 +575,43 @@ def _read_arti_from_bigquery(config):
         dataset = clean(config.get("dataset"))
         table = clean(config.get("table"))
         table_id = table if table.count(".") == 2 else f"{project_id}.{dataset}.{table}"
+        table_schema = client.get_table(table_id).schema
+        available_columns = [field.name for field in table_schema]
+        column_map = {
+            output_column: _find_bigquery_column(available_columns, candidates)
+            for output_column, candidates in BIGQUERY_ARTI_COLUMN_CANDIDATES.items()
+        }
+        missing_required = [
+            output_column
+            for output_column in ("CODINT_MA", "COD MOD COL", "TALNUM_MA")
+            if not column_map.get(output_column)
+        ]
+        if missing_required:
+            raise RuntimeError(
+                "No pude encontrar columnas necesarias en BigQuery: "
+                f"{', '.join(missing_required)}. "
+                f"Columnas disponibles: {', '.join(available_columns[:80])}"
+            )
+
+        if not column_map.get("Mod-Col"):
+            column_map["Mod-Col"] = column_map["COD MOD COL"]
+
+        select_lines = [
+            _bigquery_select_expression(output_column, column_map.get(output_column))
+            for output_column in ARTI_REQUIRED_COLUMNS
+        ]
+        where_lines = [
+            f"`{column_map['COD MOD COL']}` IS NOT NULL",
+            f"`{column_map['CODINT_MA']}` IS NOT NULL",
+        ]
+        if column_map.get("MARCA_MA"):
+            where_lines.append(f"UPPER(CAST(`{column_map['MARCA_MA']}` AS STRING)) = 'COLUMBIA'")
+
         query = f"""
         SELECT
-          CAST(id_producto AS STRING) AS CODINT_MA,
-          CAST(codmod_codcol AS STRING) AS `COD MOD COL`,
-          CAST(codmod_codcol AS STRING) AS `Mod-Col`,
-          CAST(talla_numero AS STRING) AS TALNUM_MA,
-          CAST(marca AS STRING) AS MARCA_MA,
-          CAST(NULL AS STRING) AS Precio,
-          CAST(NULL AS STRING) AS CodBarras
+          {", ".join(select_lines)}
         FROM `{table_id}`
-        WHERE UPPER(CAST(marca AS STRING)) = 'COLUMBIA'
-          AND codmod_codcol IS NOT NULL
-          AND id_producto IS NOT NULL
+        WHERE {" AND ".join(where_lines)}
         """
 
     job_config = bigquery.QueryJobConfig(use_legacy_sql=False)

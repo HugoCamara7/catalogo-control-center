@@ -14,6 +14,8 @@ DEFAULT_ARTI_PATH = "data/arti.xlsx"
 DEFAULT_ARTI_CSV_PATH = "data/arti.csv"
 DEFAULT_ARTI_ZIP_PATH = "data/arti.zip"
 DEFAULT_MATRIXIFY_PATH = "data/matrixify_modelo.xlsx"
+FORUS_LOGO_PATH = Path("assets/forus_logo.png")
+SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
 
 MATRIXIFY_COLUMNS = [
     "Command",
@@ -402,20 +404,16 @@ def inject_styles():
             font-weight: 800;
             margin-top: 4px;
         }
-        .hero {
-            display: grid;
-            grid-template-columns: 1fr 280px;
-            gap: 32px;
-            align-items: center;
+        .hero-copy {
             margin: 26px 0 22px;
         }
-        .hero h1 {
+        .hero-copy h1 {
             color: #001f4f;
             font-size: 32px;
             margin: 0 0 18px;
             letter-spacing: 0;
         }
-        .hero p {
+        .hero-copy p {
             color: #4d6383;
             margin: 0;
             font-size: 15px;
@@ -428,6 +426,7 @@ def inject_styles():
             display: flex;
             align-items: center;
             justify-content: center;
+            margin-top: 20px;
             box-shadow: 0 18px 45px rgba(20, 80, 160, 0.12);
         }
         .matrix-icon {
@@ -531,19 +530,38 @@ def inject_styles():
 
 
 def render_header():
-    st.markdown(
-        """
-        <div class="forus-logo">FORUS</div>
-        <div class="forus-tagline">CONSUMER FANATIC</div>
-        <div class="hero">
-            <div>
+    if FORUS_LOGO_PATH.exists():
+        st.image(str(FORUS_LOGO_PATH), width=210)
+    else:
+        st.markdown(
+            """
+            <div class="forus-logo">FORUS</div>
+            <div class="forus-tagline">CONSUMER FANATIC</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    left, right = st.columns([2.2, 1])
+    with left:
+        st.markdown(
+            """
+            <div class="hero-copy">
                 <h1>Matrixify Columbia - Shopify</h1>
                 <p>Sube el input comercial y descarga el Excel listo para crear o actualizar productos en Shopify.</p>
             </div>
-            <div class="matrix-card">
-                <div class="matrix-icon"></div>
-            </div>
-        </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with right:
+        if SHOPIFY_LOGO_PATH.exists():
+            st.markdown('<div class="matrix-card">', unsafe_allow_html=True)
+            st.image(str(SHOPIFY_LOGO_PATH), width=145)
+            st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="matrix-card"><div class="matrix-icon"></div></div>', unsafe_allow_html=True)
+
+    st.markdown(
+        """
         <div class="info-box">
             <b>Input esperado:</b><br>
             Archivo Excel con hoja Input, una fila por producto-color y columnas oficiales de Comercial.

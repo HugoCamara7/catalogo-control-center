@@ -379,14 +379,188 @@ def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_d
     return buffer
 
 
+def inject_styles():
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            max-width: 1120px;
+            padding-top: 26px;
+            padding-bottom: 36px;
+        }
+        .forus-logo {
+            font-size: 46px;
+            line-height: 0.92;
+            font-weight: 900;
+            color: #123a8c;
+            letter-spacing: 0;
+        }
+        .forus-tagline {
+            color: #123a8c;
+            font-size: 13px;
+            letter-spacing: 5px;
+            font-weight: 800;
+            margin-top: 4px;
+        }
+        .hero {
+            display: grid;
+            grid-template-columns: 1fr 280px;
+            gap: 32px;
+            align-items: center;
+            margin: 26px 0 22px;
+        }
+        .hero h1 {
+            color: #001f4f;
+            font-size: 32px;
+            margin: 0 0 18px;
+            letter-spacing: 0;
+        }
+        .hero p {
+            color: #4d6383;
+            margin: 0;
+            font-size: 15px;
+        }
+        .matrix-card {
+            height: 150px;
+            border: 1px solid #d7e6fb;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #f7fbff 0%, #eef6ff 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 18px 45px rgba(20, 80, 160, 0.12);
+        }
+        .matrix-icon {
+            position: relative;
+            width: 120px;
+            height: 84px;
+            border-radius: 8px;
+            background: white;
+            box-shadow: 0 12px 26px rgba(0, 60, 140, 0.14);
+        }
+        .matrix-icon:before {
+            content: "SHOPIFY";
+            position: absolute;
+            left: -24px;
+            top: 34px;
+            background: #00a047;
+            color: white;
+            font-weight: 800;
+            border-radius: 5px;
+            padding: 7px 10px;
+            font-size: 13px;
+            box-shadow: 0 8px 16px rgba(0, 100, 50, 0.25);
+        }
+        .matrix-icon:after {
+            content: "M";
+            position: absolute;
+            right: -20px;
+            top: 18px;
+            width: 70px;
+            height: 54px;
+            border-radius: 18px;
+            background: #1465f4;
+            color: white;
+            font-weight: 900;
+            font-size: 34px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .info-box {
+            border: 1px solid #cfe2ff;
+            background: #f2f8ff;
+            border-radius: 8px;
+            padding: 18px 22px;
+            color: #002b66;
+            margin: 14px 0 22px;
+        }
+        .section-card {
+            border: 1px solid #d9e6f7;
+            border-radius: 8px;
+            padding: 22px;
+            margin: 18px 0;
+            background: white;
+            box-shadow: 0 14px 34px rgba(20, 60, 120, 0.06);
+        }
+        .section-card h2 {
+            color: #001f4f;
+            font-size: 23px;
+            margin: 0 0 14px;
+            letter-spacing: 0;
+        }
+        .benefits {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 18px;
+            margin-top: 26px;
+        }
+        .benefit {
+            border: 1px solid #d9e6f7;
+            border-radius: 8px;
+            padding: 18px;
+            background: white;
+        }
+        .benefit b {
+            color: #001f4f;
+        }
+        .benefit p {
+            color: #4d6383;
+            margin: 10px 0 0;
+            font-size: 14px;
+        }
+        div[data-testid="stFileUploader"] {
+            border: 1px dashed #9cc3ff;
+            border-radius: 8px;
+            padding: 18px;
+            background: #fbfdff;
+        }
+        .stButton button, .stDownloadButton button {
+            border-radius: 8px;
+            font-weight: 700;
+        }
+        @media (max-width: 760px) {
+            .hero, .benefits {
+                grid-template-columns: 1fr;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_header():
+    st.markdown(
+        """
+        <div class="forus-logo">FORUS</div>
+        <div class="forus-tagline">CONSUMER FANATIC</div>
+        <div class="hero">
+            <div>
+                <h1>Matrixify Columbia - Shopify</h1>
+                <p>Sube el input comercial y descarga el Excel listo para crear o actualizar productos en Shopify.</p>
+            </div>
+            <div class="matrix-card">
+                <div class="matrix-icon"></div>
+            </div>
+        </div>
+        <div class="info-box">
+            <b>Input esperado:</b><br>
+            Archivo Excel con hoja Input, una fila por producto-color y columnas oficiales de Comercial.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
+    inject_styles()
+    render_header()
 
-    st.title(APP_TITLE)
-    st.caption("Sube el input de Comercial y descarga el Matrixify listo para Columbia.")
-
-    st.subheader("Generar archivo")
-    input_file = st.file_uploader("Input de Comercial", type=["xlsx", "xls"], key="input")
+    st.markdown('<div class="section-card"><h2>Cargar input</h2>', unsafe_allow_html=True)
+    input_file = st.file_uploader("Subir Excel de Comercial", type=["xlsx", "xls"], key="input")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Configuracion avanzada", expanded=False):
         st.write("Solo usa esto si quieres probar con otra plantilla o con otro ARTI.")
@@ -422,7 +596,8 @@ def main():
             "Estado": "OK" if Path("data/tipos_shopify.xlsx").exists() else "Opcional",
         },
     ]
-    st.dataframe(pd.DataFrame(setup_rows), use_container_width=True, hide_index=True)
+    with st.expander("Estado de bases", expanded=False):
+        st.dataframe(pd.DataFrame(setup_rows), use_container_width=True, hide_index=True)
 
     if input_file:
         try:
@@ -447,7 +622,7 @@ def main():
                     st.error(f"Falta el ARTI fijo: {DEFAULT_ARTI_ZIP_PATH}, {DEFAULT_ARTI_CSV_PATH} o {DEFAULT_ARTI_PATH}")
                     st.stop()
 
-            st.subheader("Vista previa")
+            st.markdown('<div class="section-card"><h2>Archivos cargados</h2>', unsafe_allow_html=True)
             st.caption(f"Matrixify modelo usado: {template_source}")
             st.caption(f"Arti usado: {arti_source}")
             col1, col2 = st.columns([2, 1])
@@ -457,7 +632,10 @@ def main():
             col2.metric("Columnas Matrixify", len(template_df.columns))
             col2.metric("Filas ARTI", len(arti_df))
             col2.metric("Productos input", len(input_df))
+            st.markdown("</div>", unsafe_allow_html=True)
 
+            st.markdown('<div class="section-card"><h2>Procesar y generar Excel</h2>', unsafe_allow_html=True)
+            st.write("Convierte el input en una salida Matrixify con Products, Resumen, Revision, Tipos nuevos y Omitidos sin cambios.")
             if st.button("Generar Matrixify Columbia", type="primary"):
                 matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df = build_columbia_matrixify(
                     input_df, arti_df, template_df
@@ -491,11 +669,23 @@ def main():
                         file_name="matrixify_columbia_generado.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
+            st.markdown("</div>", unsafe_allow_html=True)
         except Exception as exc:
             st.error("No pude procesar los archivos.")
             st.exception(exc)
     else:
-        st.info("Carga el input de Comercial. La app usara automaticamente las bases guardadas en data.")
+        st.info("Carga el input de Comercial para comenzar el proceso.")
+
+    st.markdown(
+        """
+        <div class="benefits">
+            <div class="benefit"><b>Actualiza con IDs</b><p>Usa la ultima descarga Matrixify para conservar IDs de producto y variante.</p></div>
+            <div class="benefit"><b>Variantes por talla</b><p>Lee ARTI y genera SKUs, barcodes, precios y tallas ordenadas.</p></div>
+            <div class="benefit"><b>Estructura controlada</b><p>Entrega siempre las hojas y columnas necesarias para carga Matrixify.</p></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":

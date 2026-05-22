@@ -438,6 +438,7 @@ BIGQUERY_ARTI_COLUMN_CANDIDATES = {
         "COD_MOD_COL",
         "cod_mod_col",
         "codmod_codcol",
+        "codmod_ma_codcol_ma",
         "mod_col",
         "modelo_color",
         "codigo_modelo_color",
@@ -447,6 +448,7 @@ BIGQUERY_ARTI_COLUMN_CANDIDATES = {
         "MOD_COL",
         "mod_col",
         "codmod_codcol",
+        "codmod_ma_codcol_ma",
         "modelo_color",
         "codigo_modelo_color",
     ],
@@ -465,6 +467,7 @@ BIGQUERY_ARTI_COLUMN_CANDIDATES = {
     ],
     "Precio": [
         "Precio",
+        "precio_ma",
         "precio",
         "price",
         "precio_venta",
@@ -481,6 +484,20 @@ BIGQUERY_ARTI_COLUMN_CANDIDATES = {
         "upc",
     ],
 }
+
+BIGQUERY_MODEL_COLUMN_CANDIDATES = [
+    "codmod_ma",
+    "cod_modelo",
+    "codmodelo",
+    "modelo_codigo",
+]
+
+BIGQUERY_COLOR_COLUMN_CANDIDATES = [
+    "codcol_ma",
+    "cod_color",
+    "codcolor",
+    "color_codigo",
+]
 
 
 def _truthy(value):
@@ -545,10 +562,20 @@ def _find_bigquery_column(available_columns, candidates):
     return ""
 
 
-def _bigquery_select_expression(output_column, source_column):
+def _bigquery_select_expression(output_column, source_column, composite_expression=""):
+    if composite_expression:
+        return f"{composite_expression} AS `{output_column}`"
     if source_column:
         return f"CAST(`{source_column}` AS STRING) AS `{output_column}`"
     return f"CAST(NULL AS STRING) AS `{output_column}`"
+
+
+def _bigquery_model_color_expression(column_map, model_column, color_column):
+    if column_map.get("COD MOD COL"):
+        return ""
+    if not model_column or not color_column:
+        return ""
+    return f"CONCAT(CAST(`{model_column}` AS STRING), '-', CAST(`{color_column}` AS STRING))"
 
 
 def _read_arti_from_bigquery(config):
@@ -581,6 +608,13 @@ def _read_arti_from_bigquery(config):
             output_column: _find_bigquery_column(available_columns, candidates)
             for output_column, candidates in BIGQUERY_ARTI_COLUMN_CANDIDATES.items()
         }
+        model_column = _find_bigquery_column(available_columns, BIGQUERY_MODEL_COLUMN_CANDIDATES)
+        color_column = _find_bigquery_column(available_columns, BIGQUERY_COLOR_COLUMN_CANDIDATES)
+        model_color_expression = _bigquery_model_color_expression(column_map, model_column, color_column)
+        if model_color_expression:
+            column_map["COD MOD COL"] = "__MODEL_COLOR__"
+            column_map["Mod-Col"] = "__MODEL_COLOR__"
+
         missing_required = [
             output_column
             for output_column in ("CODINT_MA", "COD MOD COL", "TALNUM_MA")
@@ -597,13 +631,18 @@ def _read_arti_from_bigquery(config):
             column_map["Mod-Col"] = column_map["COD MOD COL"]
 
         select_lines = [
-            _bigquery_select_expression(output_column, column_map.get(output_column))
+            _bigquery_select_expression(
+                output_column,
+                "" if column_map.get(output_column) == "__MODEL_COLOR__" else column_map.get(output_column),
+                model_color_expression if column_map.get(output_column) == "__MODEL_COLOR__" else "",
+            )
             for output_column in ARTI_REQUIRED_COLUMNS
         ]
-        where_lines = [
-            f"`{column_map['COD MOD COL']}` IS NOT NULL",
-            f"`{column_map['CODINT_MA']}` IS NOT NULL",
-        ]
+        where_lines = [f"`{column_map['CODINT_MA']}` IS NOT NULL"]
+        if model_color_expression:
+            where_lines.extend([f"`{model_column}` IS NOT NULL", f"`{color_column}` IS NOT NULL"])
+        else:
+            where_lines.append(f"`{column_map['COD MOD COL']}` IS NOT NULL")
         if column_map.get("MARCA_MA"):
             where_lines.append(f"UPPER(CAST(`{column_map['MARCA_MA']}` AS STRING)) = 'COLUMBIA'")
 

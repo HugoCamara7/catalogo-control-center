@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from generate_columbia_matrixify import BRAND_CONFIGS, build_columbia_matrixify, get_brand_config, read_arti_source
+from generate_columbia_matrixify import SITE_CONFIGS, build_columbia_matrixify, get_brand_config, input_brand_report, read_arti_source
 
 
 APP_TITLE = "Conversor Matrixify por Tallas"
@@ -646,8 +646,8 @@ def render_header(brand_config=None):
         </div>
         <div class="hero">
             <div class="hero-copy">
-                <h1>Matrixify {brand_config['label']} - Shopify</h1>
-                <p>Sube el input comercial y descarga el Excel listo para crear o actualizar productos en Shopify.</p>
+                <h1>Matrixify {brand_config['site_label']} - Shopify</h1>
+                <p>Sube el input comercial y el ultimo catalogo Matrixify del sitio para conservar IDs y evitar duplicados.</p>
             </div>
         </div>
         """,
@@ -657,8 +657,8 @@ def render_header(brand_config=None):
     st.markdown(
         """
         <div class="info-box">
-            <b>Input esperado:</b><br>
-            Archivo Excel con hoja Input, una fila por producto-color y columnas oficiales de Comercial.
+            <b>Flujo obligatorio:</b><br>
+            Elige el sitio destino, sube el input comercial y sube el ultimo catalogo Matrixify del mismo sitio.
         </div>
         """,
         unsafe_allow_html=True,
@@ -671,46 +671,30 @@ def main():
     bigquery_config = get_bigquery_config()
     bigquery_ready = is_bigquery_configured(bigquery_config)
 
-    brand_options = {config["label"]: key for key, config in BRAND_CONFIGS.items()}
-    selected_brand_label = st.sidebar.selectbox("Marca", list(brand_options), index=0)
-    selected_brand_key = brand_options[selected_brand_label]
-
-    with st.sidebar.expander("Ajustes de marca", expanded=False):
-        st.caption("Usa estos campos si el vendor, dominio o carpeta de fotos cambia para una marca.")
-        override_vendor = st.text_input("Vendor Shopify", value=BRAND_CONFIGS[selected_brand_key]["vendor"])
-        override_store_domain = st.text_input("Dominio Sial", value=BRAND_CONFIGS[selected_brand_key]["store_domain"])
-        override_image_folder = st.text_input("Carpeta fotos S3", value=BRAND_CONFIGS[selected_brand_key]["image_folder"])
-        override_arti_brand = st.text_input("Marca en ARTI", value=BRAND_CONFIGS[selected_brand_key]["arti_brand"])
-
-    brand_config = get_brand_config(
-        selected_brand_key,
-        {
-            "vendor": override_vendor,
-            "store_domain": override_store_domain,
-            "image_folder": override_image_folder,
-            "arti_brand": override_arti_brand,
-        },
-    )
+    site_options = {config["site_label"]: key for key, config in SITE_CONFIGS.items()}
+    selected_site_label = st.sidebar.selectbox("Sitio destino", list(site_options), index=0)
+    selected_site_key = site_options[selected_site_label]
+    brand_config = get_brand_config(selected_site_key)
+    st.sidebar.markdown("**Marcas permitidas**")
+    st.sidebar.write(", ".join(brand_config["allowed_arti_brands"]))
+    st.sidebar.caption(f"Vendor: {brand_config['vendor']} | Salida: {brand_config['output_filename']}")
     render_header(brand_config)
 
-    st.markdown('<div class="section-card"><h2>Cargar input</h2>', unsafe_allow_html=True)
-    input_file = st.file_uploader("Subir Excel de Comercial", type=["xlsx", "xls"], key="input")
+    st.markdown('<div class="section-card"><h2>Cargar archivos obligatorios</h2>', unsafe_allow_html=True)
+    input_file = st.file_uploader("1. Subir input comercial", type=["xlsx", "xls"], key="input")
+    template_file = st.file_uploader(
+        f"2. Subir ultimo catalogo Matrixify de {brand_config['site_label']}",
+        type=["xlsx", "xls"],
+        key="template",
+        help="Este archivo es obligatorio para conservar Product ID y Variant ID, y evitar duplicados.",
+    )
     st.markdown("</div>", unsafe_allow_html=True)
-
-    with st.expander("Configuracion avanzada", expanded=False):
-        st.write("Opcional: sube una descarga Matrixify reciente para conservar IDs y detectar productos sin cambios.")
-        template_file = st.file_uploader(
-            "Matrixify modelo opcional",
-            type=["xlsx", "xls"],
-            key="template",
-            help=f"Si no subes nada, se usa {DEFAULT_MATRIXIFY_PATH}.",
-        )
 
     setup_rows = [
         {
-            "Base": "Matrixify modelo",
-            "Ruta": DEFAULT_MATRIXIFY_PATH,
-            "Estado": "OK" if Path(DEFAULT_MATRIXIFY_PATH).exists() else "Falta",
+            "Base": "Catalogo Matrixify del sitio",
+            "Ruta": f"Subir ultimo catalogo de {brand_config['site_label']}",
+            "Estado": "Obligatorio",
         },
         {
             "Base": "ARTI",
@@ -732,19 +716,32 @@ def main():
     with st.expander("Estado de bases", expanded=False):
         st.dataframe(pd.DataFrame(setup_rows), use_container_width=True, hide_index=True)
 
-    if input_file:
+    if input_file and template_file:
         try:
-            if template_file:
-                template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
-                template_source = "archivo cargado en pantalla"
-            else:
-                if not Path(DEFAULT_MATRIXIFY_PATH).exists():
-                    st.error(f"Falta la plantilla fija: {DEFAULT_MATRIXIFY_PATH}")
+            template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
+            template_source = f"catalogo Matrixify cargado para {brand_config['site_label']}"
+            if "Vendor" in template_df.columns:
+                catalog_vendors = {
+                    clean_value(value).lower()
+                    for value in template_df["Vendor"].dropna()
+                    if clean_value(value)
+                }
+                if catalog_vendors and brand_config["vendor"].lower() not in catalog_vendors:
+                    st.error(
+                        f"El catalogo Matrixify cargado no parece ser de {brand_config['site_label']}. "
+                        f"Vendor esperado: {brand_config['vendor']}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
+                    )
                     st.stop()
-                template_df = pd.read_excel(DEFAULT_MATRIXIFY_PATH, sheet_name="Products", dtype=object)
-                template_source = DEFAULT_MATRIXIFY_PATH
 
             input_df = read_excel(input_file)
+            brand_column, detected_brands, blocked_brands = input_brand_report(input_df, brand_config)
+            if blocked_brands:
+                st.error(
+                    f"El input tiene marcas no permitidas para {brand_config['site_label']}: "
+                    f"{', '.join(blocked_brands)}. Marcas permitidas: {', '.join(brand_config['allowed_arti_brands'])}."
+                )
+                st.stop()
+
             try:
                 arti_df, arti_source = read_arti_for_app(brand_config)
             except FileNotFoundError:
@@ -761,6 +758,9 @@ def main():
             st.markdown('<div class="section-card"><h2>Archivos cargados</h2>', unsafe_allow_html=True)
             st.caption(f"Matrixify modelo usado: {template_source}")
             st.caption(f"Arti usado: {arti_source}")
+            st.caption(
+                f"Marcas detectadas: {', '.join(detected_brands) if detected_brands else 'No se encontro columna de marca en el input'}"
+            )
             col1, col2 = st.columns([2, 1])
             col1.write("Input productos")
             col1.dataframe(input_df.head(20), use_container_width=True)
@@ -768,11 +768,12 @@ def main():
             col2.metric("Columnas Matrixify", len(template_df.columns))
             col2.metric("Filas ARTI", len(arti_df))
             col2.metric("Productos input", len(input_df))
+            col2.metric("Marcas detectadas", len(detected_brands))
             st.markdown("</div>", unsafe_allow_html=True)
 
             st.markdown('<div class="section-card"><h2>Procesar y generar Excel</h2>', unsafe_allow_html=True)
-            st.write("Convierte el input en una salida Matrixify y agrega una hoja Carga Sial.")
-            if st.button(f"Generar Matrixify {brand_config['label']}", type="primary"):
+            st.write(f"Convierte el input en una salida Matrixify para {brand_config['site_label']} y agrega una hoja Carga Sial.")
+            if st.button(f"Generar Matrixify {brand_config['site_label']}", type="primary"):
                 matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
                     input_df, arti_df, template_df, brand_config=brand_config
                 )
@@ -814,7 +815,7 @@ def main():
             st.error("No pude procesar los archivos.")
             st.exception(exc)
     else:
-        st.info("Carga el input de Comercial para comenzar el proceso.")
+        st.info("Carga el input comercial y el ultimo catalogo Matrixify del sitio seleccionado para comenzar.")
 
     st.markdown(
         """

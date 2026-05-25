@@ -1,6 +1,6 @@
 # App Matrixify Multimarca
 
-Aplicacion Streamlit para convertir un Excel input de productos a una salida Matrixify expandida por talla. Columbia queda configurada como primera marca y la app esta preparada para trabajar tambien con Hush Puppies, Rockford, Bsoul, Patagonia y Vans usando la misma logica base.
+Aplicacion Streamlit para convertir un Excel input de productos a una salida Matrixify expandida por talla. El flujo esta organizado por sitio destino para conservar IDs desde el ultimo catalogo Matrixify de cada tienda.
 
 ## Como usar
 
@@ -44,23 +44,21 @@ Puede ser una sola columna con encabezado `Tipo`, `Familia`, `Prenda` o similar.
 streamlit run app_matrixify.py
 ```
 
-4. Elegir marca en el sidebar.
+4. Elegir sitio destino en el sidebar.
 
-La app trae configuraciones por defecto para:
+La app trae perfiles cerrados para:
 
-- Columbia
-- Hush Puppies
-- Rockford
-- Bsoul
-- Patagonia
-- Vans
+- Columbia.pe: permite Columbia.
+- Rockford.pe: permite Columbia, Rockford, Patagonia, Sorel y Mountain Hardwear.
+- HushPuppies.pe: permite Hush Puppies, Hush Puppies Kids, Accesorios HP, Keds y Rockford.
+- Vans.pe: permite Vans.
 
-En **Ajustes de marca** puedes cambiar `Vendor Shopify`, `Dominio Sial`, `Carpeta fotos S3` y `Marca en ARTI` sin editar codigo.
+El vendor, dominio Sial, carpeta de fotos y marcas permitidas se definen por sitio en el codigo para evitar cargas cruzadas.
 
 5. Cargar archivos:
 
 - Excel input de productos.
-- Opcional: descarga Matrixify reciente para conservar IDs y detectar productos sin cambios.
+- Ultimo catalogo Matrixify del sitio elegido. Es obligatorio para conservar Product ID y Variant ID, y evitar duplicados.
 
 6. Presionar **Generar Matrixify** y descargar el Excel final.
 
@@ -72,9 +70,11 @@ En **Ajustes de marca** puedes cambiar `Vendor Shopify`, `Dominio Sial`, `Carpet
 - Usa tallas, SKUs, precios y codigos de barra desde ARTI.
 - Omite variantes con talla `0`.
 - Ordena tallas tipo `XS, S, M, L, XL, XXL`, tallas numericas y tallas reales.
-- Filtra ARTI por la marca seleccionada cuando existe la columna `MARCA_MA`.
+- Filtra ARTI por las marcas permitidas del sitio cuando existe la columna `MARCA_MA`.
+- Valida marcas del input si existe columna `Marca`, `Brand`, `Vendor` o similar.
+- Valida que el catalogo Matrixify cargado tenga el vendor esperado del sitio cuando existe columna `Vendor`.
 - Genera hojas de salida Matrixify, Carga Sial, resumen, revision, tipos nuevos y omitidos sin cambios.
-- Usa vendor, dominio Sial y carpeta de fotos segun la marca elegida.
+- Usa vendor, dominio Sial y carpeta de fotos segun el sitio elegido.
 
 ## Columnas requeridas en BigQuery
 

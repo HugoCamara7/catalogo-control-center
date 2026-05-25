@@ -1,6 +1,6 @@
-# Conversor Matrixify por Tallas
+# App Matrixify Multimarca
 
-Aplicacion Streamlit para convertir un Excel input de productos a una salida Matrixify expandida por talla.
+Aplicacion Streamlit para convertir un Excel input de productos a una salida Matrixify expandida por talla. Columbia queda configurada como primera marca y la app esta preparada para trabajar tambien con Hush Puppies, Rockford, Bsoul, Patagonia y Vans usando la misma logica base.
 
 ## Como usar
 
@@ -44,12 +44,25 @@ Puede ser una sola columna con encabezado `Tipo`, `Familia`, `Prenda` o similar.
 streamlit run app_matrixify.py
 ```
 
-4. Cargar archivos:
+4. Elegir marca en el sidebar.
+
+La app trae configuraciones por defecto para:
+
+- Columbia
+- Hush Puppies
+- Rockford
+- Bsoul
+- Patagonia
+- Vans
+
+En **Ajustes de marca** puedes cambiar `Vendor Shopify`, `Dominio Sial`, `Carpeta fotos S3` y `Marca en ARTI` sin editar codigo.
+
+5. Cargar archivos:
 
 - Excel input de productos.
 - Opcional: descarga Matrixify reciente para conservar IDs y detectar productos sin cambios.
 
-5. Presionar **Generar Matrixify** y descargar el Excel final.
+6. Presionar **Generar Matrixify** y descargar el Excel final.
 
 ## Logica actual
 
@@ -59,7 +72,9 @@ streamlit run app_matrixify.py
 - Usa tallas, SKUs, precios y codigos de barra desde ARTI.
 - Omite variantes con talla `0`.
 - Ordena tallas tipo `XS, S, M, L, XL, XXL`, tallas numericas y tallas reales.
+- Filtra ARTI por la marca seleccionada cuando existe la columna `MARCA_MA`.
 - Genera hojas de salida Matrixify, Carga Sial, resumen, revision, tipos nuevos y omitidos sin cambios.
+- Usa vendor, dominio Sial y carpeta de fotos segun la marca elegida.
 
 ## Columnas requeridas en BigQuery
 

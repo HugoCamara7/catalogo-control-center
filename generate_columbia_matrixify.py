@@ -21,10 +21,84 @@ OUTPUT_PATH = OUTPUT_DIR / "matrixify_columbia_generado.xlsx"
 KNOWN_TYPES_PATH = Path("data/tipos_shopify.xlsx")
 
 INVENTORY_PREFIX = "Inventory Available:"
-IMAGE_BASE_URL = "https://ecom-imagenes.forus-digital.xyz.peru.s3.amazonaws.com/COLUMBIA%20SHOPIFY"
-IMAGE_VALIDATION_BASE_URL = "https://s3.amazonaws.com/ecom-imagenes.forus-digital.xyz.peru/COLUMBIA%20SHOPIFY"
+DEFAULT_IMAGE_HOST = "https://ecom-imagenes.forus-digital.xyz.peru.s3.amazonaws.com"
+DEFAULT_IMAGE_VALIDATION_HOST = "https://s3.amazonaws.com/ecom-imagenes.forus-digital.xyz.peru"
+IMAGE_BASE_URL = f"{DEFAULT_IMAGE_HOST}/COLUMBIA%20SHOPIFY"
+IMAGE_VALIDATION_BASE_URL = f"{DEFAULT_IMAGE_VALIDATION_HOST}/COLUMBIA%20SHOPIFY"
 MAX_IMAGES_PER_PRODUCT = 10
 VALIDATE_IMAGES = False
+
+
+def _config_clean(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+BRAND_CONFIGS = {
+    "columbia": {
+        "label": "Columbia",
+        "arti_brand": "COLUMBIA",
+        "vendor": "columbiape",
+        "store_domain": "Columbia.pe",
+        "image_folder": "COLUMBIA SHOPIFY",
+        "output_filename": "matrixify_columbia_generado.xlsx",
+    },
+    "hush_puppies": {
+        "label": "Hush Puppies",
+        "arti_brand": "HUSH PUPPIES",
+        "vendor": "hushpuppiespe",
+        "store_domain": "HushPuppies.pe",
+        "image_folder": "HUSH PUPPIES SHOPIFY",
+        "output_filename": "matrixify_hush_puppies_generado.xlsx",
+    },
+    "rockford": {
+        "label": "Rockford",
+        "arti_brand": "ROCKFORD",
+        "vendor": "rockfordpe",
+        "store_domain": "Rockford.pe",
+        "image_folder": "ROCKFORD SHOPIFY",
+        "output_filename": "matrixify_rockford_generado.xlsx",
+    },
+    "bsoul": {
+        "label": "Bsoul",
+        "arti_brand": "BSOUL",
+        "vendor": "bsoulpe",
+        "store_domain": "Bsoul.pe",
+        "image_folder": "BSOUL SHOPIFY",
+        "output_filename": "matrixify_bsoul_generado.xlsx",
+    },
+    "patagonia": {
+        "label": "Patagonia",
+        "arti_brand": "PATAGONIA",
+        "vendor": "patagoniape",
+        "store_domain": "Patagonia.pe",
+        "image_folder": "PATAGONIA SHOPIFY",
+        "output_filename": "matrixify_patagonia_generado.xlsx",
+    },
+    "vans": {
+        "label": "Vans",
+        "arti_brand": "VANS",
+        "vendor": "vanspe",
+        "store_domain": "Vans.pe",
+        "image_folder": "VANS SHOPIFY",
+        "output_filename": "matrixify_vans_generado.xlsx",
+    },
+}
+
+
+def get_brand_config(brand="columbia", overrides=None):
+    key = _config_clean(brand).lower().replace(" ", "_") or "columbia"
+    base = BRAND_CONFIGS.get(key, BRAND_CONFIGS["columbia"]).copy()
+    if overrides:
+        for field, value in overrides.items():
+            if _config_clean(value):
+                base[field] = _config_clean(value)
+    folder = _config_clean(base.get("image_folder")) or f"{base['label'].upper()} SHOPIFY"
+    encoded_folder = folder.replace(" ", "%20")
+    base["image_base_url"] = f"{DEFAULT_IMAGE_HOST}/{encoded_folder}"
+    base["image_validation_base_url"] = f"{DEFAULT_IMAGE_VALIDATION_HOST}/{encoded_folder}"
+    return base
 
 
 def clean(value):
@@ -88,20 +162,22 @@ def split_model_color(mod_col):
     return tuple(text.rsplit("-", 1))
 
 
-def image_candidates(mod_col):
+def image_candidates(mod_col, brand_config=None):
+    brand_config = brand_config or get_brand_config()
     model, color = split_model_color(mod_col)
     if not model or not color:
         return []
     image_key = f"{model}_{color}"
-    return [f"{IMAGE_BASE_URL}/{image_key}_{position}.jpg" for position in range(1, MAX_IMAGES_PER_PRODUCT + 1)]
+    return [f"{brand_config['image_base_url']}/{image_key}_{position}.jpg" for position in range(1, MAX_IMAGES_PER_PRODUCT + 1)]
 
 
-def validation_url(url):
-    return url.replace(IMAGE_BASE_URL, IMAGE_VALIDATION_BASE_URL)
+def validation_url(url, brand_config=None):
+    brand_config = brand_config or get_brand_config()
+    return url.replace(brand_config["image_base_url"], brand_config["image_validation_base_url"])
 
 
-def url_is_image(url, timeout=4):
-    request = Request(validation_url(url), method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
+def url_is_image(url, timeout=4, brand_config=None):
+    request = Request(validation_url(url, brand_config), method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urlopen(request, timeout=timeout) as response:
             content_type = response.headers.get("Content-Type", "")
@@ -110,7 +186,7 @@ def url_is_image(url, timeout=4):
         if exc.code in (403, 405):
             try:
                 request = Request(
-                    validation_url(url),
+                    validation_url(url, brand_config),
                     method="GET",
                     headers={"User-Agent": "Mozilla/5.0", "Range": "bytes=0-32"},
                 )
@@ -124,10 +200,11 @@ def url_is_image(url, timeout=4):
         return False
 
 
-def build_image_lookup(mod_cols, validate=VALIDATE_IMAGES):
+def build_image_lookup(mod_cols, validate=VALIDATE_IMAGES, brand_config=None):
+    brand_config = brand_config or get_brand_config()
     lookup = {}
     for mod_col in sorted({clean(value).upper() for value in mod_cols if clean(value)}):
-        urls = image_candidates(mod_col)
+        urls = image_candidates(mod_col, brand_config)
         if not validate:
             lookup[mod_col] = list(dict.fromkeys(urls))
             continue
@@ -135,7 +212,7 @@ def build_image_lookup(mod_cols, validate=VALIDATE_IMAGES):
         valid_urls = []
         misses_after_found = 0
         for url in urls:
-            if url_is_image(url, timeout=2):
+            if url_is_image(url, timeout=2, brand_config=brand_config):
                 valid_urls.append(url)
                 misses_after_found = 0
             elif valid_urls:
@@ -156,6 +233,9 @@ def normalize_size(value):
     text = clean(value).upper()
     if not text:
         return ""
+
+    text = re.sub(r"\b(TALLA|SIZE|TAL)\b", "", text).strip()
+    text = re.sub(r"\s+", " ", text)
 
     if re.fullmatch(r"\d+\.0", text):
         text = text[:-2]
@@ -301,18 +381,59 @@ def category_blocks_zero_size(product):
         product.get("Categoria "),
         product.get("Categoria"),
         product.get("Type"),
+        product.get("Metafield: custom.tipo [single_line_text_field]"),
         product.get("Metafield: custom.categoria [single_line_text_field]"),
+        product.get("Tags"),
     ]
     text = normalize_text(" ".join(clean(value) for value in values if clean(value)))
-    return any(category in text for category in ("vestuario", "calzado"))
+    blocked_terms = (
+        "vestuario",
+        "calzado",
+        "ropa",
+        "zapatilla",
+        "zapato",
+        "bota",
+        "botin",
+        "sandalia",
+        "camisa",
+        "camiseta",
+        "polera",
+        "pantalon",
+        "short",
+        "casaca",
+        "chaqueta",
+        "parka",
+        "polar",
+        "poleron",
+        "vestido",
+        "falda",
+    )
+    return any(term in text for term in blocked_terms)
 
 
-def sial_product_bullets(product, product_type, color_web, tech_col):
+def is_zero_size(value):
+    raw_text = clean(value).upper()
+    normalized_text = clean(normalize_size(value)).upper()
+    candidates = {raw_text, normalized_text}
+    for text in candidates:
+        text = re.sub(r"\b(TALLA|SIZE|TAL)\b", "", text)
+        text = re.sub(r"\s+", "", text).replace(",", ".")
+        if re.fullmatch(r"0+(\.0+)?", text):
+            return True
+        if re.fullmatch(r"0+\.?0*[A-Z]*", text) and re.sub(r"[^A-Z]", "", text) in ("",):
+            return True
+    if re.search(r"(^|[^A-Z0-9])0+([,.]0+)?([^A-Z0-9]|$)", raw_text):
+        return True
+    return False
+
+
+def sial_product_bullets(product, product_type, color_web, tech_col, brand_config=None):
+    brand_config = brand_config or get_brand_config()
     pieces = [
         ("Tipo De Producto", product_type),
         ("Género", product_gender(product)),
         ("Color", color_web),
-        ("Marca", "Columbia"),
+        ("Marca", brand_config["label"]),
     ]
     technology = product_technology(product, tech_col)
     if technology:
@@ -320,7 +441,8 @@ def sial_product_bullets(product, product_type, color_web, tech_col):
     return ", ".join(f"{label} | {value}" for label, value in pieces if clean(value))
 
 
-def build_sial_row(product, variant, key, product_images, existing_product, tech_col):
+def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None):
+    brand_config = brand_config or get_brand_config()
     model, color = split_model_color(key)
     product_type = clean(product.get("Type"))
     color_web = clean(product.get("Color Web"))
@@ -333,7 +455,10 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Cod. Color": color,
         "Talla": variant["__SIZE"],
         "Product Name ": title,
-        "Product Bullets": first_non_empty(product.get("Product Bullets"), sial_product_bullets(product, product_type, color_web, tech_col)),
+        "Product Bullets": first_non_empty(
+            product.get("Product Bullets"),
+            sial_product_bullets(product, product_type, color_web, tech_col, brand_config),
+        ),
         "Product Description": first_non_empty(product.get("Product Description"), strip_html(body_html)),
         "Image URL": image_url,
         "Product Weight": first_non_empty(product.get("Product Weight"), 300),
@@ -354,7 +479,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Colecciones ": clean(product.get("Colecciones ")),
         "Temporada ": clean(product.get("Temporada ")) or clean(product.get("Temporada")),
         "Modelo": clean(product.get("Modelo")),
-        "Marca": "Columbia",
+        "Marca": brand_config["label"],
         "Tecnologias ": product_technology(product, tech_col),
         "Caracteristicas": clean(product.get("Caracteristicas")),
         "Tipo de Boardshort": clean(product.get("Tipo de Boardshort")),
@@ -374,8 +499,8 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Adicional 10": clean(product.get("Adicional 10")),
         "Mod-Col": key,
         "Sku - Sial": clean(variant.get("CODINT_MA")),
-        "Nuevo o Actualizar (Columbia.pe)": "Actualizar" if existing_id else "Crear",
-        "Porduct Id - Columbia.pe": existing_id,
+        f"Nuevo o Actualizar ({brand_config['store_domain']})": "Actualizar" if existing_id else "Crear",
+        f"Porduct Id - {brand_config['store_domain']}": existing_id,
         "Nuevo o Actualizar (Supermall.pe)": "Crear",
         "Porduct Id - Supermall.pe": "",
         "Nuevo o Actualizar (Supermall.pe).1": "Crear",
@@ -606,6 +731,18 @@ SIAL_COLUMNS = [
 ]
 
 
+def get_sial_columns(brand_config=None):
+    brand_config = brand_config or get_brand_config()
+    return [
+        f"Nuevo o Actualizar ({brand_config['store_domain']})"
+        if column == "Nuevo o Actualizar (Columbia.pe)"
+        else f"Porduct Id - {brand_config['store_domain']}"
+        if column == "Porduct Id - Columbia.pe"
+        else column
+        for column in SIAL_COLUMNS
+    ]
+
+
 BIGQUERY_ARTI_COLUMN_CANDIDATES = {
     "CODINT_MA": [
         "CODINT_MA",
@@ -762,7 +899,8 @@ def _bigquery_model_color_expression(column_map, model_column, color_column):
     return f"CONCAT(CAST(`{model_column}` AS STRING), '-', CAST(`{color_column}` AS STRING))"
 
 
-def _read_arti_from_bigquery(config):
+def _read_arti_from_bigquery(config, brand_config=None):
+    brand_config = brand_config or get_brand_config()
     try:
         from google.cloud import bigquery
         from google.oauth2 import service_account
@@ -829,8 +967,10 @@ def _read_arti_from_bigquery(config):
             where_lines.extend([f"`{model_column}` IS NOT NULL", f"`{color_column}` IS NOT NULL"])
         else:
             where_lines.append(f"`{column_map['COD MOD COL']}` IS NOT NULL")
-        if column_map.get("MARCA_MA"):
-            where_lines.append(f"UPPER(CAST(`{column_map['MARCA_MA']}` AS STRING)) = 'COLUMBIA'")
+        if column_map.get("MARCA_MA") and clean(brand_config.get("arti_brand")):
+            where_lines.append(
+                f"UPPER(CAST(`{column_map['MARCA_MA']}` AS STRING)) = '{clean(brand_config['arti_brand']).upper()}'"
+            )
 
         query = f"""
         SELECT
@@ -855,12 +995,14 @@ def read_arti_source(
     xlsx_path=DEFAULT_ARTI_XLSX_PATH,
     bigquery_config=None,
     allow_local_fallback=True,
+    brand_config=None,
 ):
+    brand_config = brand_config or get_brand_config()
     if bigquery_config is None:
         bigquery_config = _bigquery_config_from_streamlit() or _bigquery_config_from_env()
     if _bigquery_configured(bigquery_config):
         try:
-            return _read_arti_from_bigquery(bigquery_config)
+            return _read_arti_from_bigquery(bigquery_config, brand_config=brand_config)
         except Exception as exc:
             if not allow_local_fallback:
                 raise RuntimeError(f"No se pudo leer ARTI desde BigQuery. Detalle: {exc}") from exc
@@ -1006,7 +1148,8 @@ def product_is_unchanged(product_rows, existing_rows, columns):
     return True
 
 
-def build_columbia_matrixify(input_df, arti, matrixify_source):
+def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None):
+    brand_config = brand_config or get_brand_config()
     matrixify_columns, matrixify_df = prepare_matrixify_context(matrixify_source)
     product_by_key, product_by_handle, variant_by_sku = build_existing_lookup(matrixify_df)
 
@@ -1022,9 +1165,14 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
         .apply(lambda values: ", ".join(dict.fromkeys(clean(value) for value in values if clean(value))))
         .to_dict()
     )
-    image_lookup = build_image_lookup(input_df["Mod-Col"])
+    image_lookup = build_image_lookup(input_df["Mod-Col"], brand_config=brand_config)
     wanted_keys = set(input_df["__KEY"])
     arti = arti.copy()
+    if "MARCA_MA" in arti.columns and clean(brand_config.get("arti_brand")):
+        brand_name = clean(brand_config["arti_brand"]).upper()
+        brand_mask = arti["MARCA_MA"].map(lambda value: clean(value).upper()) == brand_name
+        if brand_mask.any():
+            arti = arti[brand_mask].copy()
     if "Mod-Col" not in arti.columns:
         arti["Mod-Col"] = ""
     if "COD MOD COL" not in arti.columns:
@@ -1052,12 +1200,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
         key = product["__KEY"]
         variants = arti[arti["__KEY"] == key].copy()
         zero_size_count = (
-            int((variants["__SIZE"].map(clean) == "0").sum())
+            int(variants["__SIZE"].map(is_zero_size).sum())
             if "__SIZE" in variants.columns and category_blocks_zero_size(product)
             else 0
         )
         if zero_size_count:
-            variants = variants[variants["__SIZE"].map(clean) != "0"].copy()
+            variants = variants[~variants["__SIZE"].map(is_zero_size)].copy()
             issues.append(
                 {
                     "Mod-Col": key,
@@ -1085,7 +1233,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
             issues.append(
                 {
                     "Mod-Col": key,
-                    "Problema": "Sin fotos validas en la ruta COLUMBIA SHOPIFY",
+                    "Problema": f"Sin fotos validas en la ruta {brand_config['image_folder']}",
                     "Fila input": input_index + 2,
                 }
             )
@@ -1118,7 +1266,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
                     "Command": "MERGE",
                     "Title": title,
                     "Body HTML": body_html if is_first else "",
-                    "Vendor": "columbiape",
+                    "Vendor": brand_config["vendor"],
                     "Type": product_type,
                     "Tags": tags,
                     "Tags Command": "REPLACE",
@@ -1209,7 +1357,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
                 )
 
             product_rows.append(output)
-            sial_rows.append(build_sial_row(product, variant, key, product_images, existing_product, tech_col))
+            sial_rows.append(
+                build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config)
+            )
 
         if existing_product.get("ID") and product_is_unchanged(product_rows, existing_rows, matrixify_columns):
             skipped_rows.append(
@@ -1225,7 +1375,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
         rows.extend(product_rows)
 
     output_df = pd.DataFrame(rows, columns=matrixify_columns)
-    sial_df = pd.DataFrame(sial_rows, columns=SIAL_COLUMNS)
+    sial_df = pd.DataFrame(sial_rows, columns=get_sial_columns(brand_config))
     issues_df = pd.DataFrame(issues)
     skipped_df = pd.DataFrame(
         skipped_rows,
@@ -1235,6 +1385,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source):
     summary_df = pd.DataFrame(
         [
             {"Metrica": "Productos input", "Valor": len(input_df)},
+            {"Metrica": "Marca", "Valor": brand_config["label"]},
             {"Metrica": "Productos con match ARTI", "Valor": output_df["Handle"].nunique() if len(output_df) else 0},
             {"Metrica": "Filas variantes Matrixify", "Valor": len(output_df)},
             {"Metrica": "Filas Carga Sial", "Valor": len(sial_df)},

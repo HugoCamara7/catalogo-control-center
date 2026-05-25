@@ -35,50 +35,38 @@ def _config_clean(value):
     return str(value).strip()
 
 
-BRAND_CONFIGS = {
+SITE_CONFIGS = {
     "columbia": {
         "label": "Columbia",
-        "arti_brand": "COLUMBIA",
+        "site_label": "Columbia.pe",
+        "allowed_arti_brands": ["COLUMBIA"],
         "vendor": "columbiape",
         "store_domain": "Columbia.pe",
         "image_folder": "COLUMBIA SHOPIFY",
         "output_filename": "matrixify_columbia_generado.xlsx",
     },
-    "hush_puppies": {
-        "label": "Hush Puppies",
-        "arti_brand": "HUSH PUPPIES",
-        "vendor": "hushpuppiespe",
-        "store_domain": "HushPuppies.pe",
-        "image_folder": "HUSH PUPPIES SHOPIFY",
-        "output_filename": "matrixify_hush_puppies_generado.xlsx",
-    },
     "rockford": {
         "label": "Rockford",
-        "arti_brand": "ROCKFORD",
+        "site_label": "Rockford.pe",
+        "allowed_arti_brands": ["COLUMBIA", "ROCKFORD", "PATAGONIA", "SOREL", "MOUNTAIN HARDWEAR"],
         "vendor": "rockfordpe",
         "store_domain": "Rockford.pe",
         "image_folder": "ROCKFORD SHOPIFY",
         "output_filename": "matrixify_rockford_generado.xlsx",
     },
-    "bsoul": {
-        "label": "Bsoul",
-        "arti_brand": "BSOUL",
-        "vendor": "bsoulpe",
-        "store_domain": "Bsoul.pe",
-        "image_folder": "BSOUL SHOPIFY",
-        "output_filename": "matrixify_bsoul_generado.xlsx",
-    },
-    "patagonia": {
-        "label": "Patagonia",
-        "arti_brand": "PATAGONIA",
-        "vendor": "patagoniape",
-        "store_domain": "Patagonia.pe",
-        "image_folder": "PATAGONIA SHOPIFY",
-        "output_filename": "matrixify_patagonia_generado.xlsx",
+    "hush_puppies": {
+        "label": "Hush Puppies",
+        "site_label": "HushPuppies.pe",
+        "allowed_arti_brands": ["HUSH PUPPIES", "HUSH PUPPIES KIDS", "ACCESORIOS HP", "KEDS", "ROCKFORD"],
+        "vendor": "hushpuppiespe",
+        "store_domain": "HushPuppies.pe",
+        "image_folder": "HUSH PUPPIES SHOPIFY",
+        "output_filename": "matrixify_hush_puppies_generado.xlsx",
     },
     "vans": {
         "label": "Vans",
-        "arti_brand": "VANS",
+        "site_label": "Vans.pe",
+        "allowed_arti_brands": ["VANS"],
         "vendor": "vanspe",
         "store_domain": "Vans.pe",
         "image_folder": "VANS SHOPIFY",
@@ -86,10 +74,37 @@ BRAND_CONFIGS = {
     },
 }
 
+BRAND_CONFIGS = SITE_CONFIGS
 
-def get_brand_config(brand="columbia", overrides=None):
-    key = _config_clean(brand).lower().replace(" ", "_") or "columbia"
-    base = BRAND_CONFIGS.get(key, BRAND_CONFIGS["columbia"]).copy()
+
+def normalize_brand_name(value):
+    text = _config_clean(value).upper()
+    replacements = {
+        "Ã": "A",
+        "Ã‰": "E",
+        "Ã": "I",
+        "Ã“": "O",
+        "Ãš": "U",
+        "Ã‘": "N",
+        "Á": "A",
+        "É": "E",
+        "Í": "I",
+        "Ó": "O",
+        "Ú": "U",
+        "Ñ": "N",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def get_brand_config(site="columbia", overrides=None):
+    key = _config_clean(site).lower().replace(" ", "_") or "columbia"
+    base = SITE_CONFIGS.get(key, SITE_CONFIGS["columbia"]).copy()
+    base["site_key"] = key
+    base["allowed_arti_brands"] = [normalize_brand_name(value) for value in base.get("allowed_arti_brands", [])]
+    base["arti_brand"] = ", ".join(base["allowed_arti_brands"])
     if overrides:
         for field, value in overrides.items():
             if _config_clean(value):
@@ -407,6 +422,10 @@ def category_blocks_zero_size(product):
         "poleron",
         "vestido",
         "falda",
+        "media",
+        "medias",
+        "calcetin",
+        "calcetines",
     )
     return any(term in text for term in blocked_terms)
 
@@ -567,6 +586,37 @@ def first_existing(df, candidates):
         if found is not None:
             return found
     return None
+
+
+def detect_brand_column(df):
+    return first_existing(
+        df,
+        [
+            "Marca",
+            "MARCA",
+            "Brand",
+            "Vendor",
+            "Proveedor",
+            "Metafield: custom.marca [single_line_text_field]",
+        ],
+    )
+
+
+def input_brand_report(input_df, brand_config):
+    brand_column = detect_brand_column(input_df)
+    allowed = set(brand_config.get("allowed_arti_brands", []))
+    if not brand_column:
+        return brand_column, [], []
+
+    detected = sorted(
+        {
+            normalize_brand_name(value)
+            for value in input_df[brand_column].dropna()
+            if normalize_brand_name(value)
+        }
+    )
+    blocked = [brand for brand in detected if brand not in allowed]
+    return brand_column, detected, blocked
 
 
 def normalize_compare(value):
@@ -967,10 +1017,9 @@ def _read_arti_from_bigquery(config, brand_config=None):
             where_lines.extend([f"`{model_column}` IS NOT NULL", f"`{color_column}` IS NOT NULL"])
         else:
             where_lines.append(f"`{column_map['COD MOD COL']}` IS NOT NULL")
-        if column_map.get("MARCA_MA") and clean(brand_config.get("arti_brand")):
-            where_lines.append(
-                f"UPPER(CAST(`{column_map['MARCA_MA']}` AS STRING)) = '{clean(brand_config['arti_brand']).upper()}'"
-            )
+        if column_map.get("MARCA_MA") and brand_config.get("allowed_arti_brands"):
+            allowed_brands = ", ".join(f"'{brand}'" for brand in brand_config["allowed_arti_brands"])
+            where_lines.append(f"UPPER(CAST(`{column_map['MARCA_MA']}` AS STRING)) IN ({allowed_brands})")
 
         query = f"""
         SELECT
@@ -1168,9 +1217,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     image_lookup = build_image_lookup(input_df["Mod-Col"], brand_config=brand_config)
     wanted_keys = set(input_df["__KEY"])
     arti = arti.copy()
-    if "MARCA_MA" in arti.columns and clean(brand_config.get("arti_brand")):
-        brand_name = clean(brand_config["arti_brand"]).upper()
-        brand_mask = arti["MARCA_MA"].map(lambda value: clean(value).upper()) == brand_name
+    if "MARCA_MA" in arti.columns and brand_config.get("allowed_arti_brands"):
+        allowed_brands = set(brand_config["allowed_arti_brands"])
+        brand_mask = arti["MARCA_MA"].map(normalize_brand_name).isin(allowed_brands)
         if brand_mask.any():
             arti = arti[brand_mask].copy()
     if "Mod-Col" not in arti.columns:
@@ -1199,9 +1248,10 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     for input_index, product in input_df.iterrows():
         key = product["__KEY"]
         variants = arti[arti["__KEY"] == key].copy()
+        should_block_zero_size = category_blocks_zero_size(product)
         zero_size_count = (
             int(variants["__SIZE"].map(is_zero_size).sum())
-            if "__SIZE" in variants.columns and category_blocks_zero_size(product)
+            if "__SIZE" in variants.columns and should_block_zero_size
             else 0
         )
         if zero_size_count:
@@ -1254,6 +1304,11 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         product_rows = []
 
         for position, (_, variant) in enumerate(variants.iterrows(), start=1):
+            if should_block_zero_size and (
+                is_zero_size(variant.get("__SIZE")) or is_zero_size(variant.get("TALNUM_MA"))
+            ):
+                continue
+
             is_first = position == 1
             output = {column: "" for column in matrixify_columns}
             variant_sku = clean(variant.get("CODINT_MA"))
@@ -1385,7 +1440,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     summary_df = pd.DataFrame(
         [
             {"Metrica": "Productos input", "Valor": len(input_df)},
-            {"Metrica": "Marca", "Valor": brand_config["label"]},
+            {"Metrica": "Sitio destino", "Valor": brand_config["site_label"]},
             {"Metrica": "Productos con match ARTI", "Valor": output_df["Handle"].nunique() if len(output_df) else 0},
             {"Metrica": "Filas variantes Matrixify", "Valor": len(output_df)},
             {"Metrica": "Filas Carga Sial", "Valor": len(sial_df)},

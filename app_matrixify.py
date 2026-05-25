@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from generate_columbia_matrixify import build_columbia_matrixify, read_arti_source
+from generate_columbia_matrixify import BRAND_CONFIGS, build_columbia_matrixify, get_brand_config, read_arti_source
 
 
 APP_TITLE = "Conversor Matrixify por Tallas"
@@ -200,8 +200,12 @@ def is_bigquery_configured(config):
     return has_query or has_table
 
 
-def read_arti_for_app():
-    arti_df, source = read_arti_source(bigquery_config=get_bigquery_config(), allow_local_fallback=False)
+def read_arti_for_app(brand_config):
+    arti_df, source = read_arti_source(
+        bigquery_config=get_bigquery_config(),
+        allow_local_fallback=False,
+        brand_config=brand_config,
+    )
     return arti_df.dropna(how="all"), source
 
 
@@ -611,7 +615,8 @@ def inject_styles():
     )
 
 
-def render_header():
+def render_header(brand_config=None):
+    brand_config = brand_config or get_brand_config()
     def image_data_uri(path):
         if not path.exists():
             return ""
@@ -641,7 +646,7 @@ def render_header():
         </div>
         <div class="hero">
             <div class="hero-copy">
-                <h1>Matrixify Columbia - Shopify</h1>
+                <h1>Matrixify {brand_config['label']} - Shopify</h1>
                 <p>Sube el input comercial y descarga el Excel listo para crear o actualizar productos en Shopify.</p>
             </div>
         </div>
@@ -663,9 +668,30 @@ def render_header():
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
     inject_styles()
-    render_header()
     bigquery_config = get_bigquery_config()
     bigquery_ready = is_bigquery_configured(bigquery_config)
+
+    brand_options = {config["label"]: key for key, config in BRAND_CONFIGS.items()}
+    selected_brand_label = st.sidebar.selectbox("Marca", list(brand_options), index=0)
+    selected_brand_key = brand_options[selected_brand_label]
+
+    with st.sidebar.expander("Ajustes de marca", expanded=False):
+        st.caption("Usa estos campos si el vendor, dominio o carpeta de fotos cambia para una marca.")
+        override_vendor = st.text_input("Vendor Shopify", value=BRAND_CONFIGS[selected_brand_key]["vendor"])
+        override_store_domain = st.text_input("Dominio Sial", value=BRAND_CONFIGS[selected_brand_key]["store_domain"])
+        override_image_folder = st.text_input("Carpeta fotos S3", value=BRAND_CONFIGS[selected_brand_key]["image_folder"])
+        override_arti_brand = st.text_input("Marca en ARTI", value=BRAND_CONFIGS[selected_brand_key]["arti_brand"])
+
+    brand_config = get_brand_config(
+        selected_brand_key,
+        {
+            "vendor": override_vendor,
+            "store_domain": override_store_domain,
+            "image_folder": override_image_folder,
+            "arti_brand": override_arti_brand,
+        },
+    )
+    render_header(brand_config)
 
     st.markdown('<div class="section-card"><h2>Cargar input</h2>', unsafe_allow_html=True)
     input_file = st.file_uploader("Subir Excel de Comercial", type=["xlsx", "xls"], key="input")
@@ -720,7 +746,7 @@ def main():
 
             input_df = read_excel(input_file)
             try:
-                arti_df, arti_source = read_arti_for_app()
+                arti_df, arti_source = read_arti_for_app(brand_config)
             except FileNotFoundError:
                 st.error(
                     "Falta configurar BigQuery o dejar un respaldo local de ARTI: "
@@ -746,9 +772,9 @@ def main():
 
             st.markdown('<div class="section-card"><h2>Procesar y generar Excel</h2>', unsafe_allow_html=True)
             st.write("Convierte el input en una salida Matrixify y agrega una hoja Carga Sial.")
-            if st.button("Generar Matrixify Columbia", type="primary"):
+            if st.button(f"Generar Matrixify {brand_config['label']}", type="primary"):
                 matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
-                    input_df, arti_df, template_df
+                    input_df, arti_df, template_df, brand_config=brand_config
                 )
 
                 if matrixify_df.empty:
@@ -780,7 +806,7 @@ def main():
                     st.download_button(
                         "Descargar Excel Matrixify",
                         data=excel_bytes,
-                        file_name="matrixify_columbia_generado.xlsx",
+                        file_name=brand_config["output_filename"],
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
             st.markdown("</div>", unsafe_allow_html=True)

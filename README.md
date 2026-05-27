@@ -30,6 +30,20 @@ Si BigQuery no esta configurado, la app usa el respaldo local:
 data/arti.zip
 ```
 
+Para probar conexion Shopify por sitio, agrega las credenciales en Secrets:
+
+```toml
+[shopify_sites.columbia]
+shop_domain = "columbiape.myshopify.com"
+client_id = "..."
+client_secret = "..."
+admin_access_token = "..."
+api_version = "2026-04"
+```
+
+Repite la estructura para `rockford` y `hush_puppies`. Si `admin_access_token`
+esta vacio, la app intentara obtener token con `client_id` y `client_secret`.
+
 Tambien puedes agregar una lista de tipos/familias actuales de Shopify para que el archivo final avise si aparece un tipo nuevo:
 
 ```text

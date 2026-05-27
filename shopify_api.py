@@ -149,6 +149,21 @@ def _product_node_to_record(node):
         image = media.get("image") or {}
         if image.get("url"):
             image_urls.append(clean(image.get("url")))
+    variant_records = []
+    for variant in ((node.get("variants") or {}).get("nodes")) or []:
+        inventory_item = variant.get("inventoryItem") or {}
+        variant_image = variant.get("image") or {}
+        variant_records.append(
+            {
+                "Variant ID": clean(variant.get("legacyResourceId")),
+                "Variant GID": clean(variant.get("id")),
+                "Variant SKU": clean(variant.get("sku")),
+                "Variant Barcode": clean(variant.get("barcode")),
+                "Variant Inventory Item ID": clean(inventory_item.get("legacyResourceId")),
+                "Variant Inventory Item GID": clean(inventory_item.get("id")),
+                "Variant Image": clean(variant_image.get("url")),
+            }
+        )
     return {
         "Product ID": clean(node.get("id")),
         "Legacy ID": clean(node.get("legacyResourceId")),
@@ -164,6 +179,7 @@ def _product_node_to_record(node):
         "Siblings Color": clean(siblings_color.get("value")),
         "Image Src": "; ".join(image_urls),
         "Media IDs": "; ".join(media_ids),
+        "Variants": variant_records,
     }
 
 
@@ -202,6 +218,21 @@ def fetch_products(config, max_products=5000):
                 image {
                   url
                 }
+              }
+            }
+          }
+          variants(first: 100) {
+            nodes {
+              id
+              legacyResourceId
+              sku
+              barcode
+              image {
+                url
+              }
+              inventoryItem {
+                id
+                legacyResourceId
               }
             }
           }

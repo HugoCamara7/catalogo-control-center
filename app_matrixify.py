@@ -795,6 +795,123 @@ def shopify_products_to_matrixify_df(shopify_products):
     return pd.DataFrame(rows, columns=default_columns)
 
 
+def _product_gid(value):
+    text = clean_value(value)
+    if not text:
+        return ""
+    if text.startswith("gid://"):
+        return text
+    return f"gid://shopify/Product/{text}"
+
+
+def _metafield_type_from_column(column):
+    match = re.search(r"\[(.+?)\]$", clean_value(column))
+    if not match:
+        return "single_line_text_field"
+    return match.group(1)
+
+
+def _metafield_namespace_key(column):
+    text = clean_value(column)
+    if not text.startswith("Metafield: "):
+        return "", ""
+    name = re.sub(r"\s*\[.+?\]\s*$", "", text.replace("Metafield: ", "", 1)).strip()
+    if "." not in name:
+        return "", ""
+    namespace, key = name.split(".", 1)
+    return namespace.strip(), key.strip()
+
+
+def _top_product_rows(matrixify_df):
+    if matrixify_df.empty or "Handle" not in matrixify_df.columns:
+        return pd.DataFrame()
+    df = matrixify_df.copy()
+    df["__HANDLE"] = df["Handle"].map(clean_value)
+    df = df[df["__HANDLE"] != ""].copy()
+    return df.drop_duplicates(subset=["__HANDLE"], keep="first").copy()
+
+
+def apply_full_product_updates(shopify_config, matrixify_df):
+    rows = []
+    product_rows = _top_product_rows(matrixify_df)
+    metafield_columns = [
+        column
+        for column in matrixify_df.columns
+        if clean_value(column).startswith("Metafield: ")
+        and column not in (
+            "Metafield: custom.guia_de_tallas [page_reference]",
+        )
+    ]
+
+    for _, row in product_rows.iterrows():
+        handle = clean_value(row.get("Handle"))
+        product_id = clean_value(row.get("ID"))
+        product_gid = _product_gid(product_id)
+        if not product_gid:
+            rows.append(
+                {
+                    "Handle": handle,
+                    "ID": product_id,
+                    "Resultado": "OMITIDO",
+                    "Mensaje": "Producto nuevo o sin ID. Creacion directa queda pendiente; usar Matrixify por ahora.",
+                }
+            )
+            continue
+
+        try:
+            status = clean_value(row.get("Status")).upper()
+            if status == "ACTIVE":
+                shopify_status = "ACTIVE"
+            elif status == "DRAFT":
+                shopify_status = "DRAFT"
+            else:
+                shopify_status = None
+
+            product_update(
+                shopify_config,
+                product_gid,
+                title=clean_value(row.get("Title")) or None,
+                body_html=clean_value(row.get("Body HTML")) or None,
+                tags=_split_tags(row.get("Tags")) if clean_value(row.get("Tags")) else None,
+                vendor=clean_value(row.get("Vendor")) or None,
+                product_type=clean_value(row.get("Type")) or None,
+                status=shopify_status,
+            )
+
+            metafields = []
+            for column in metafield_columns:
+                value = clean_value(row.get(column))
+                if value == "":
+                    continue
+                namespace, key = _metafield_namespace_key(column)
+                if not namespace or not key:
+                    continue
+                metafields.append(
+                    {
+                        "ownerId": product_gid,
+                        "namespace": namespace,
+                        "key": key,
+                        "type": _metafield_type_from_column(column),
+                        "value": value,
+                    }
+                )
+            if metafields:
+                for start in range(0, len(metafields), 25):
+                    metafields_set(shopify_config, metafields[start : start + 25])
+
+            rows.append(
+                {
+                    "Handle": handle,
+                    "ID": product_id,
+                    "Resultado": "OK",
+                    "Mensaje": "Producto/metafields actualizados. Variantes, precios, inventario y media quedan para etapa controlada.",
+                }
+            )
+        except Exception as exc:
+            rows.append({"Handle": handle, "ID": product_id, "Resultado": "ERROR", "Mensaje": str(exc)})
+    return pd.DataFrame(rows)
+
+
 def inject_styles():
     st.markdown(
         """
@@ -1411,39 +1528,73 @@ api_version = "{DEFAULT_API_VERSION}"
                 matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
                     input_df, arti_df, template_df, brand_config=brand_config
                 )
+                st.session_state["complete_matrixify_df"] = matrixify_df
+                st.session_state["complete_summary_df"] = summary_df
+                st.session_state["complete_issues_df"] = issues_df
+                st.session_state["complete_type_warnings_df"] = type_warnings_df
+                st.session_state["complete_skipped_df"] = skipped_df
+                st.session_state["complete_sial_df"] = sial_df
+
+            matrixify_df = st.session_state.get("complete_matrixify_df")
+            if matrixify_df is not None:
+                summary_df = st.session_state.get("complete_summary_df", pd.DataFrame())
+                issues_df = st.session_state.get("complete_issues_df", pd.DataFrame())
+                type_warnings_df = st.session_state.get("complete_type_warnings_df", pd.DataFrame())
+                skipped_df = st.session_state.get("complete_skipped_df", pd.DataFrame())
+                sial_df = st.session_state.get("complete_sial_df", pd.DataFrame())
 
                 if matrixify_df.empty:
                     st.error("No se pudo generar ninguna fila Matrixify. Revisa la hoja Revision.")
                 else:
-                    st.success(f"Archivo generado con {len(matrixify_df):,} variantes.")
+                    st.success(f"Vista previa generada con {len(matrixify_df):,} variantes.")
                     st.dataframe(summary_df, use_container_width=True)
                     st.dataframe(matrixify_df.head(100), use_container_width=True)
 
-                    if not issues_df.empty:
-                        st.warning(f"Hay {len(issues_df):,} observaciones para revisar.")
-                        st.dataframe(issues_df, use_container_width=True)
+                if issues_df is not None and not issues_df.empty:
+                    st.warning(f"Hay {len(issues_df):,} observaciones para revisar.")
+                    st.dataframe(issues_df, use_container_width=True)
 
-                    if type_warnings_df is not None and not type_warnings_df.empty:
-                        st.warning("Revisa la hoja Tipos nuevos antes de cargar en Shopify.")
-                        st.dataframe(type_warnings_df, use_container_width=True)
+                if type_warnings_df is not None and not type_warnings_df.empty:
+                    st.warning("Revisa la hoja Tipos nuevos antes de cargar en Shopify.")
+                    st.dataframe(type_warnings_df, use_container_width=True)
 
-                    if skipped_df is not None and not skipped_df.empty:
-                        st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
-                        st.dataframe(skipped_df, use_container_width=True)
+                if skipped_df is not None and not skipped_df.empty:
+                    st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
+                    st.dataframe(skipped_df, use_container_width=True)
 
-                    if sial_df is not None and not sial_df.empty:
-                        st.write("Vista previa Carga Sial")
-                        st.dataframe(sial_df.head(100), use_container_width=True)
+                if sial_df is not None and not sial_df.empty:
+                    st.write("Vista previa Carga Sial")
+                    st.dataframe(sial_df.head(100), use_container_width=True)
 
-                    excel_bytes = columbia_to_excel_bytes(
-                        matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df
+                excel_bytes = columbia_to_excel_bytes(
+                    matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df
+                )
+                st.download_button(
+                    "Descargar Excel de vista previa",
+                    data=excel_bytes,
+                    file_name=brand_config["output_filename"],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+
+                if complete_source == "Shopify API" and is_shopify_configured(shopify_config) and not matrixify_df.empty:
+                    st.info(
+                        "Carga directa habilitada para productos existentes: titulo, descripcion, vendor, tipo, tags y metafields. "
+                        "Productos nuevos, variantes, precios, inventario y fotos directas quedan como pendiente controlado."
                     )
-                    st.download_button(
-                        "Descargar Excel Matrixify",
-                        data=excel_bytes,
-                        file_name=brand_config["output_filename"],
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
+                    confirm_complete = st.checkbox("Confirmo que revise la vista previa y quiero aplicar productos existentes en Shopify")
+                    if confirm_complete and st.button("Aplicar carga completa en Shopify", type="primary"):
+                        with st.spinner("Aplicando productos existentes en Shopify..."):
+                            result_df = apply_full_product_updates(shopify_config, matrixify_df)
+                        st.session_state["complete_apply_result_df"] = result_df
+                        st.dataframe(result_df, use_container_width=True)
+                    result_df = st.session_state.get("complete_apply_result_df")
+                    if result_df is not None:
+                        st.download_button(
+                            "Descargar resultado de aplicacion",
+                            data=dataframe_to_excel_bytes({"Resultado": result_df}),
+                            file_name=f"resultado_carga_completa_{brand_config['site_key']}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
             st.markdown("</div>", unsafe_allow_html=True)
         except Exception as exc:
             st.error("No pude procesar los archivos.")

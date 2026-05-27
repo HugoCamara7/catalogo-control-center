@@ -739,6 +739,62 @@ def apply_shopify_preview(shopify_config, preview_df):
     return pd.DataFrame(results)
 
 
+def shopify_products_to_matrixify_df(shopify_products):
+    default_columns = [
+        "ID",
+        "Handle",
+        "Command",
+        "Title",
+        "Body HTML",
+        "Vendor",
+        "Type",
+        "Tags",
+        "Image Src",
+        "Variant SKU",
+        "Variant Barcode",
+        "Variant Inventory Item ID",
+        "Variant ID",
+        "Variant Image",
+        "Metafield: custom.codigo_modelo_color [id]",
+        "Metafield: theme.siblings [single_line_text_field]",
+        "Metafield: theme.siblings_color [single_line_text_field]",
+    ]
+    try:
+        if Path(DEFAULT_MATRIXIFY_PATH).exists():
+            default_columns = list(pd.read_excel(DEFAULT_MATRIXIFY_PATH, sheet_name="Products", nrows=0).columns)
+    except Exception:
+        pass
+
+    rows = []
+    for product in shopify_products:
+        variants = product.get("Variants") or [{}]
+        for index, variant in enumerate(variants):
+            row = {column: "" for column in default_columns}
+            row.update(
+                {
+                    "ID": product.get("Legacy ID"),
+                    "Handle": product.get("Handle"),
+                    "Command": "MERGE",
+                    "Title": product.get("Title") if index == 0 else "",
+                    "Body HTML": product.get("Body HTML") if index == 0 else "",
+                    "Vendor": product.get("Vendor") if index == 0 else "",
+                    "Type": product.get("Type") if index == 0 else "",
+                    "Tags": product.get("Tags") if index == 0 else "",
+                    "Image Src": product.get("Image Src") if index == 0 else "",
+                    "Variant SKU": variant.get("Variant SKU", ""),
+                    "Variant Barcode": variant.get("Variant Barcode", ""),
+                    "Variant Inventory Item ID": variant.get("Variant Inventory Item ID", ""),
+                    "Variant ID": variant.get("Variant ID", ""),
+                    "Variant Image": variant.get("Variant Image", ""),
+                    "Metafield: custom.codigo_modelo_color [id]": product.get("Mod-Col") if index == 0 else "",
+                    "Metafield: theme.siblings [single_line_text_field]": product.get("Siblings") if index == 0 else "",
+                    "Metafield: theme.siblings_color [single_line_text_field]": product.get("Siblings Color") if index == 0 else "",
+                }
+            )
+            rows.append(row)
+    return pd.DataFrame(rows, columns=default_columns)
+
+
 def inject_styles():
     st.markdown(
         """
@@ -1241,20 +1297,28 @@ api_version = "{DEFAULT_API_VERSION}"
         return
 
     st.markdown('<div class="section-card"><h2>Cargar archivos obligatorios</h2>', unsafe_allow_html=True)
-    input_file = st.file_uploader("1. Subir input comercial", type=["xlsx", "xls"], key="input")
-    template_file = st.file_uploader(
-        f"2. Subir ultimo catalogo Matrixify de {brand_config['site_label']}",
-        type=["xlsx", "xls"],
-        key="template",
-        help="Este archivo es obligatorio para conservar Product ID y Variant ID, y evitar duplicados.",
+    complete_source = st.radio(
+        "Fuente de datos actuales",
+        ["Shopify API", "Catalogo Matrixify"],
+        index=0 if is_shopify_configured(shopify_config) else 1,
+        help="Shopify API evita subir el ultimo catalogo Matrixify.",
     )
+    input_file = st.file_uploader("1. Subir input comercial", type=["xlsx", "xls"], key="input")
+    template_file = None
+    if complete_source == "Catalogo Matrixify":
+        template_file = st.file_uploader(
+            f"2. Subir ultimo catalogo Matrixify de {brand_config['site_label']}",
+            type=["xlsx", "xls"],
+            key="template",
+            help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
+        )
     st.markdown("</div>", unsafe_allow_html=True)
 
     setup_rows = [
         {
-            "Base": "Catalogo Matrixify del sitio",
-            "Ruta": f"Subir ultimo catalogo de {brand_config['site_label']}",
-            "Estado": "Obligatorio",
+            "Base": "Datos actuales Shopify",
+            "Ruta": "Shopify API" if complete_source == "Shopify API" else f"Subir ultimo catalogo de {brand_config['site_label']}",
+            "Estado": "OK API" if complete_source == "Shopify API" and is_shopify_configured(shopify_config) else ("Obligatorio" if complete_source == "Catalogo Matrixify" else "Falta API"),
         },
         {
             "Base": "ARTI",
@@ -1276,22 +1340,32 @@ api_version = "{DEFAULT_API_VERSION}"
     with st.expander("Estado de bases", expanded=False):
         st.dataframe(pd.DataFrame(setup_rows), use_container_width=True, hide_index=True)
 
-    if input_file and template_file:
+    can_process_complete = input_file and (complete_source == "Shopify API" or template_file)
+    if can_process_complete:
         try:
-            template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
-            template_source = f"catalogo Matrixify cargado para {brand_config['site_label']}"
-            if "Vendor" in template_df.columns:
-                catalog_vendors = {
-                    clean_value(value).lower()
-                    for value in template_df["Vendor"].dropna()
-                    if clean_value(value)
-                }
-                if catalog_vendors and brand_config["vendor"].lower() not in catalog_vendors:
-                    st.error(
-                        f"El catalogo Matrixify cargado no parece ser de {brand_config['site_label']}. "
-                        f"Vendor esperado: {brand_config['vendor']}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
-                    )
+            if complete_source == "Shopify API":
+                if not is_shopify_configured(shopify_config):
+                    st.error("Este sitio no tiene Shopify API configurada en Secrets.")
                     st.stop()
+                with st.spinner("Leyendo productos y variantes actuales desde Shopify..."):
+                    shopify_products = fetch_products(shopify_config)
+                template_df = shopify_products_to_matrixify_df(shopify_products)
+                template_source = f"Shopify API ({len(shopify_products):,} productos)"
+            else:
+                template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
+                template_source = f"catalogo Matrixify cargado para {brand_config['site_label']}"
+                if "Vendor" in template_df.columns:
+                    catalog_vendors = {
+                        clean_value(value).lower()
+                        for value in template_df["Vendor"].dropna()
+                        if clean_value(value)
+                    }
+                    if catalog_vendors and brand_config["vendor"].lower() not in catalog_vendors:
+                        st.error(
+                            f"El catalogo Matrixify cargado no parece ser de {brand_config['site_label']}. "
+                            f"Vendor esperado: {brand_config['vendor']}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
+                        )
+                        st.stop()
 
             input_df = read_excel(input_file)
             brand_column, detected_brands, blocked_brands = input_brand_report(input_df, brand_config)
@@ -1316,7 +1390,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.stop()
 
             st.markdown('<div class="section-card"><h2>Archivos cargados</h2>', unsafe_allow_html=True)
-            st.caption(f"Matrixify modelo usado: {template_source}")
+            st.caption(f"Datos actuales usados: {template_source}")
             st.caption(f"Arti usado: {arti_source}")
             st.caption(
                 f"Marcas detectadas: {', '.join(detected_brands) if detected_brands else 'No se encontro columna de marca en el input'}"
@@ -1325,7 +1399,7 @@ api_version = "{DEFAULT_API_VERSION}"
             col1.write("Input productos")
             col1.dataframe(input_df.head(20), use_container_width=True)
             col2.write("Resumen bases")
-            col2.metric("Columnas Matrixify", len(template_df.columns))
+            col2.metric("Columnas base", len(template_df.columns))
             col2.metric("Filas ARTI", len(arti_df))
             col2.metric("Productos input", len(input_df))
             col2.metric("Marcas detectadas", len(detected_brands))
@@ -1375,7 +1449,7 @@ api_version = "{DEFAULT_API_VERSION}"
             st.error("No pude procesar los archivos.")
             st.exception(exc)
     else:
-        st.info("Carga el input comercial y el ultimo catalogo Matrixify del sitio seleccionado para comenzar.")
+        st.info("Carga el input comercial para comenzar. Si usas Catalogo Matrixify, tambien sube el ultimo catalogo del sitio.")
 
     st.markdown(
         """

@@ -277,8 +277,10 @@ def product_update(config, product_id, title=None, body_html=None, tags=None, ve
         input_data["productType"] = product_type
     if status is not None:
         input_data["status"] = status
-    mutation = """
-    mutation ProductUpdate($input: ProductUpdateInput!) {
+
+    def run_product_update(input_type):
+        mutation = """
+    mutation ProductUpdate($input: __INPUT_TYPE__!) {
       productUpdate(input: $input) {
         product {
           id
@@ -290,13 +292,21 @@ def product_update(config, product_id, title=None, body_html=None, tags=None, ve
         }
       }
     }
-    """
-    data = graphql_request(shop_domain, token, mutation, {"input": input_data}, api_version=api_version)
-    payload = data.get("productUpdate") or {}
-    errors = payload.get("userErrors") or []
-    if errors:
-        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
-    return payload.get("product") or {}
+        """.replace("__INPUT_TYPE__", input_type)
+        data = graphql_request(shop_domain, token, mutation, {"input": input_data}, api_version=api_version)
+        payload = data.get("productUpdate") or {}
+        errors = payload.get("userErrors") or []
+        if errors:
+            raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+        return payload.get("product") or {}
+
+    try:
+        return run_product_update("ProductUpdateInput")
+    except ShopifyApiError as exc:
+        error_text = str(exc)
+        if "ProductInput" not in error_text and "variableMismatch" not in error_text:
+            raise
+        return run_product_update("ProductInput")
 
 
 def metafields_set(config, metafields):

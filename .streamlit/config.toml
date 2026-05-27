@@ -23,3 +23,24 @@ auth_uri = "https://accounts.google.com/o/oauth2/auth"
 token_uri = "https://oauth2.googleapis.com/token"
 auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
 client_x509_cert_url = "..."
+
+[shopify_sites.columbia]
+shop_domain = "columbiape.myshopify.com"
+client_id = "..."
+client_secret = "..."
+admin_access_token = "..."
+api_version = "2026-04"
+
+[shopify_sites.rockford]
+shop_domain = "rockfordpe.myshopify.com"
+client_id = "..."
+client_secret = "..."
+admin_access_token = "..."
+api_version = "2026-04"
+
+[shopify_sites.hush_puppies]
+shop_domain = "hushpuppiespe.myshopify.com"
+client_id = "..."
+client_secret = "..."
+admin_access_token = "..."
+api_version = "2026-04"

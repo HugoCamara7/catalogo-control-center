@@ -16,6 +16,7 @@ from generate_columbia_matrixify import (
     input_brand_report,
     read_arti_source,
 )
+from shopify_api import DEFAULT_API_VERSION, ShopifyApiError, normalize_shop_domain, test_connection
 
 
 APP_TITLE = "Conversor Matrixify por Tallas"
@@ -205,6 +206,32 @@ def is_bigquery_configured(config):
     has_split_table = has_project and bool(str(config.get("dataset", "")).strip() and table)
     has_table = has_full_table or has_split_table
     return has_query or has_table
+
+
+def get_shopify_config(site_key):
+    config = {}
+    try:
+        shopify_sites = st.secrets.get("shopify_sites", {})
+        if site_key in shopify_sites:
+            config.update(dict(shopify_sites[site_key]))
+    except Exception:
+        return {}
+
+    return {
+        "shop_domain": normalize_shop_domain(config.get("shop_domain") or config.get("domain")),
+        "client_id": clean_value(config.get("client_id")),
+        "client_secret": clean_value(config.get("client_secret")),
+        "admin_access_token": clean_value(
+            config.get("admin_access_token") or config.get("access_token") or config.get("token")
+        ),
+        "api_version": clean_value(config.get("api_version")) or DEFAULT_API_VERSION,
+    }
+
+
+def is_shopify_configured(config):
+    has_token = bool(config.get("admin_access_token"))
+    has_client_credentials = bool(config.get("client_id") and config.get("client_secret"))
+    return bool(config.get("shop_domain") and (has_token or has_client_credentials))
 
 
 def read_arti_for_app(brand_config):
@@ -695,6 +722,7 @@ def main():
     selected_site_label = st.sidebar.selectbox("Sitio destino", list(site_options), index=0)
     selected_site_key = site_options[selected_site_label]
     brand_config = get_brand_config(selected_site_key)
+    shopify_config = get_shopify_config(selected_site_key)
     st.sidebar.markdown("**Marcas permitidas**")
     st.sidebar.write(", ".join(brand_config["allowed_arti_brands"]))
     st.sidebar.caption(f"Vendor: {brand_config['vendor']} | Salida: {brand_config['output_filename']}")
@@ -703,6 +731,35 @@ def main():
         ["Carga completa", "Actualizacion puntual"],
         index=0,
     )
+
+    with st.sidebar.expander("Shopify API", expanded=False):
+        if is_shopify_configured(shopify_config):
+            st.success(f"Configurado: {shopify_config['shop_domain']}")
+            st.caption(f"Version Admin API: {shopify_config['api_version']}")
+            if shopify_config.get("admin_access_token"):
+                st.caption("Token: configurado en Secrets")
+            else:
+                st.caption("Token: se obtendra con client_id/client_secret")
+            if st.button("Probar conexion Shopify"):
+                try:
+                    shop = test_connection(shopify_config)
+                    st.success(f"Conectado a {shop.get('name', brand_config['site_label'])}")
+                    st.caption(shop.get("myshopifyDomain") or shopify_config["shop_domain"])
+                    st.caption(f"Origen token: {shop.get('token_source', '')}")
+                except ShopifyApiError as exc:
+                    st.error(str(exc))
+        else:
+            st.warning("API no configurada para este sitio.")
+            st.code(
+                f"""[shopify_sites.{selected_site_key}]
+shop_domain = "tienda.myshopify.com"
+client_id = "..."
+client_secret = "..."
+admin_access_token = "..."
+api_version = "{DEFAULT_API_VERSION}"
+""",
+                language="toml",
+            )
 
     render_header(brand_config)
 

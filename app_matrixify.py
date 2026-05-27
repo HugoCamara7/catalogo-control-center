@@ -16,7 +16,15 @@ from generate_columbia_matrixify import (
     input_brand_report,
     read_arti_source,
 )
-from shopify_api import DEFAULT_API_VERSION, ShopifyApiError, normalize_shop_domain, test_connection
+from shopify_api import (
+    DEFAULT_API_VERSION,
+    ShopifyApiError,
+    fetch_products,
+    metafields_set,
+    normalize_shop_domain,
+    product_update,
+    test_connection,
+)
 
 
 APP_TITLE = "Conversor Matrixify por Tallas"
@@ -470,6 +478,267 @@ def update_to_excel_bytes(matrixify_df, issues_df):
     return buffer
 
 
+def dataframe_to_excel_bytes(sheets):
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            safe_name = sheet_name[:31]
+            df.to_excel(writer, index=False, sheet_name=safe_name)
+        for sheet in writer.book.worksheets:
+            sheet.freeze_panes = "A2"
+            for column_cells in sheet.columns:
+                sheet.column_dimensions[column_cells[0].column_letter].width = 22
+    buffer.seek(0)
+    return buffer
+
+
+def _split_tags(value):
+    return [tag.strip() for tag in clean_value(value).split(",") if tag.strip()]
+
+
+def _join_tags(values):
+    return ", ".join(dict.fromkeys(tag for tag in values if clean_value(tag)))
+
+
+def _product_lookup_from_shopify(records):
+    by_key = {}
+    by_handle = {}
+    for record in records:
+        key = clean_value(record.get("Mod-Col")).upper()
+        handle = clean_value(record.get("Handle"))
+        if key and key not in by_key:
+            by_key[key] = record
+        if handle and handle not in by_handle:
+            by_handle[handle] = record
+    return by_key, by_handle
+
+
+def _source_key_for_update(row):
+    for column in ("Mod-Col", "COD MOD COL", "Metafield: custom.codigo_modelo_color [id]"):
+        value = clean_value(row.get(column))
+        if value:
+            return value.upper()
+    return ""
+
+
+def build_shopify_update_preview(
+    shopify_products,
+    update_input_df,
+    operation,
+    brand_config,
+    tag_mode="merge",
+    image_mode="replace",
+    only_missing_images=True,
+    body_mode="from_input",
+):
+    by_key, by_handle = _product_lookup_from_shopify(shopify_products)
+    rows = []
+    issues = []
+    operation = clean_value(operation)
+
+    if operation == "siblings":
+        products_df = pd.DataFrame(shopify_products)
+        if products_df.empty:
+            return pd.DataFrame(), pd.DataFrame([{"Problema": "Shopify no devolvio productos"}]), pd.DataFrame()
+        products_df["__MODEL"] = products_df["Mod-Col"].map(lambda value: clean_value(value).upper().rsplit("-", 1)[0])
+        siblings_by_model = (
+            products_df[products_df["__MODEL"] != ""]
+            .groupby("__MODEL")["Handle"]
+            .apply(lambda values: ", ".join(dict.fromkeys(clean_value(value) for value in values if clean_value(value))))
+            .to_dict()
+        )
+        for _, product in products_df.iterrows():
+            new_value = siblings_by_model.get(product["__MODEL"], "")
+            current = clean_value(product.get("Siblings"))
+            if not new_value or current == new_value:
+                continue
+            rows.append(
+                {
+                    "Accion": "Actualizar",
+                    "Sitio": brand_config["site_label"],
+                    "Operacion": "siblings",
+                    "Mod-Col": product.get("Mod-Col"),
+                    "Product ID": product.get("Product ID"),
+                    "Handle": product.get("Handle"),
+                    "Campo": "Metafield: theme.siblings",
+                    "Valor actual": current,
+                    "Valor nuevo": new_value,
+                    "Estado": "OK",
+                    "Observacion": f"{len(_split_tags(new_value))} handles del mismo modelo",
+                }
+            )
+        return pd.DataFrame(rows), pd.DataFrame(issues), pd.DataFrame()
+
+    source_df = update_input_df.dropna(how="all").copy() if update_input_df is not None else pd.DataFrame()
+    if operation == "photos" and source_df.empty:
+        source_df = pd.DataFrame(shopify_products)
+
+    matrixify_rows = []
+    for input_index, row in source_df.iterrows():
+        key = _source_key_for_update(row)
+        handle = clean_value(row.get("Handle"))
+        product = by_key.get(key) or by_handle.get(handle)
+        if not product:
+            issues.append({"Mod-Col": key, "Handle": handle, "Problema": "No se encontro producto en Shopify", "Fila": input_index + 2})
+            continue
+
+        product_id = product.get("Product ID")
+        product_key = key or clean_value(product.get("Mod-Col")).upper()
+        if operation == "tags":
+            tags_col = first_existing_column(source_df, ["Tags", "tags", "Etiquetas"])
+            if not tags_col:
+                issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No se encontro columna Tags"})
+                continue
+            current_tags = _split_tags(product.get("Tags"))
+            incoming_tags = _split_tags(row.get(tags_col))
+            new_tags = _join_tags(incoming_tags if tag_mode == "replace" else current_tags + incoming_tags)
+            rows.append(
+                {
+                    "Accion": "Actualizar",
+                    "Sitio": brand_config["site_label"],
+                    "Operacion": "tags",
+                    "Mod-Col": product_key,
+                    "Product ID": product_id,
+                    "Handle": product.get("Handle"),
+                    "Campo": "Tags",
+                    "Valor actual": product.get("Tags"),
+                    "Valor nuevo": new_tags,
+                    "Estado": "OK",
+                    "Observacion": "REPLACE seguro: se envia la lista final completa",
+                }
+            )
+        elif operation == "title":
+            title_col = first_existing_column(source_df, ["Title", "Titulo", "Título", "Nombre"])
+            if not title_col:
+                issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No se encontro columna Title"})
+                continue
+            new_title = clean_value(row.get(title_col))
+            rows.append(
+                {
+                    "Accion": "Actualizar",
+                    "Sitio": brand_config["site_label"],
+                    "Operacion": "title",
+                    "Mod-Col": product_key,
+                    "Product ID": product_id,
+                    "Handle": product.get("Handle"),
+                    "Campo": "Title",
+                    "Valor actual": product.get("Title"),
+                    "Valor nuevo": new_title,
+                    "Estado": "OK",
+                    "Observacion": "",
+                }
+            )
+        elif operation == "body":
+            if body_mode == "from_input":
+                from generate_columbia_matrixify import build_body_html
+
+                new_body = build_body_html(row)
+                if not new_body:
+                    issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No hay contenido para Body HTML"})
+                    continue
+            else:
+                issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "Correccion desde catalogo todavia requiere Matrixify local"})
+                continue
+            rows.append(
+                {
+                    "Accion": "Actualizar",
+                    "Sitio": brand_config["site_label"],
+                    "Operacion": "body",
+                    "Mod-Col": product_key,
+                    "Product ID": product_id,
+                    "Handle": product.get("Handle"),
+                    "Campo": "Body HTML",
+                    "Valor actual": product.get("Body HTML"),
+                    "Valor nuevo": new_body,
+                    "Estado": "OK",
+                    "Observacion": "Incluye Caracteristicas, Material y Cuidado separados",
+                }
+            )
+        elif operation == "photos":
+            current_images = clean_value(product.get("Image Src"))
+            if only_missing_images and current_images:
+                continue
+            from generate_columbia_matrixify import brand_image_config, image_candidates
+
+            row_brand_config = brand_image_config(row.get("Marca") or product.get("Vendor"), brand_config)
+            urls = image_candidates(product_key, row_brand_config)
+            urls_text = "; ".join(urls)
+            rows.append(
+                {
+                    "Accion": "Generar Matrixify",
+                    "Sitio": brand_config["site_label"],
+                    "Operacion": "photos",
+                    "Mod-Col": product_key,
+                    "Product ID": product_id,
+                    "Handle": product.get("Handle"),
+                    "Campo": "Fotos",
+                    "Valor actual": current_images,
+                    "Valor nuevo": urls_text,
+                    "Estado": "OK",
+                    "Observacion": "Vista previa API. Aplicacion directa de media queda desactivada por seguridad.",
+                }
+            )
+            matrixify_rows.append(
+                {
+                    "ID": product.get("Legacy ID"),
+                    "Handle": product.get("Handle"),
+                    "Command": "MERGE",
+                    "Image Src": urls_text,
+                    "Image Command": "REPLACE" if image_mode == "replace" else "MERGE",
+                    "Image Position": "",
+                    "Image Alt Text": product.get("Title"),
+                }
+            )
+
+    return pd.DataFrame(rows), pd.DataFrame(issues), pd.DataFrame(matrixify_rows)
+
+
+def apply_shopify_preview(shopify_config, preview_df):
+    results = []
+    for _, row in preview_df.iterrows():
+        status = "OK"
+        message = ""
+        try:
+            operation = clean_value(row.get("Operacion"))
+            product_id = clean_value(row.get("Product ID"))
+            if operation == "tags":
+                product_update(shopify_config, product_id, tags=_split_tags(row.get("Valor nuevo")))
+            elif operation == "title":
+                product_update(shopify_config, product_id, title=clean_value(row.get("Valor nuevo")))
+            elif operation == "body":
+                product_update(shopify_config, product_id, body_html=clean_value(row.get("Valor nuevo")))
+            elif operation == "siblings":
+                metafields_set(
+                    shopify_config,
+                    [
+                        {
+                            "ownerId": product_id,
+                            "namespace": "theme",
+                            "key": "siblings",
+                            "type": "single_line_text_field",
+                            "value": clean_value(row.get("Valor nuevo")),
+                        }
+                    ],
+                )
+            else:
+                status = "OMITIDO"
+                message = "Operacion no habilitada para escritura directa"
+        except Exception as exc:
+            status = "ERROR"
+            message = str(exc)
+        results.append(
+            {
+                "Mod-Col": row.get("Mod-Col"),
+                "Handle": row.get("Handle"),
+                "Operacion": row.get("Operacion"),
+                "Campo": row.get("Campo"),
+                "Resultado": status,
+                "Mensaje": message,
+            }
+        )
+    return pd.DataFrame(results)
+
+
 def inject_styles():
     st.markdown(
         """
@@ -774,16 +1043,21 @@ api_version = "{DEFAULT_API_VERSION}"
         st.markdown('<div class="section-card"><h2>Actualizacion puntual</h2>', unsafe_allow_html=True)
         update_label = st.selectbox("Que quieres actualizar", list(operation_labels), index=0)
         update_operation = operation_labels[update_label]
-        template_file = st.file_uploader(
-            f"1. Subir ultimo catalogo Matrixify de {brand_config['site_label']}",
-            type=["xlsx", "xls"],
-            key="template_update",
-            help="Se usa para encontrar ID, Handle, tags actuales, fotos actuales y codigo modelo color.",
+        update_source = st.radio(
+            "Fuente de datos actuales",
+            ["Shopify API", "Catalogo Matrixify"],
+            index=0 if is_shopify_configured(shopify_config) else 1,
+            help="Shopify API evita subir el ultimo catalogo. Catalogo Matrixify queda como respaldo.",
         )
+        template_file = None
+        if update_source == "Catalogo Matrixify":
+            template_file = st.file_uploader(
+                f"1. Subir ultimo catalogo Matrixify de {brand_config['site_label']}",
+                type=["xlsx", "xls"],
+                key="template_update",
+                help="Se usa para encontrar ID, Handle, tags actuales, fotos actuales y codigo modelo color.",
+            )
 
-        needs_input = update_operation in ("tags", "title") or (
-            update_operation == "body" and st.session_state.get("body_source", "Desde input comercial") == "Desde input comercial"
-        )
         update_file = None
         tag_mode = "merge"
         image_mode = "replace"
@@ -819,7 +1093,88 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.caption("Detecta Body HTML con Material/Cuidado mezclados y genera solo los productos afectados.")
         st.markdown("</div>", unsafe_allow_html=True)
 
-        if template_file and (update_file or update_operation in ("photos", "siblings") or body_mode == "fix_catalog"):
+        update_ready = update_file or update_operation in ("photos", "siblings") or body_mode == "fix_catalog"
+        if update_source == "Shopify API" and not is_shopify_configured(shopify_config):
+            st.error("Este sitio no tiene Shopify API configurada en Secrets.")
+            update_ready = False
+
+        if update_source == "Shopify API" and update_ready:
+            try:
+                update_df = read_excel(update_file) if update_file else None
+                if update_df is not None:
+                    _, detected_brands, blocked_brands = input_brand_report(update_df, brand_config)
+                    if blocked_brands:
+                        st.error(
+                            f"El archivo tiene marcas no permitidas para {brand_config['site_label']}: "
+                            f"{', '.join(blocked_brands)}."
+                        )
+                        st.stop()
+
+                if st.button(f"Generar vista previa {update_label}", type="primary"):
+                    with st.spinner("Leyendo productos actuales desde Shopify..."):
+                        shopify_products = fetch_products(shopify_config)
+                    preview_df, issues_df, matrixify_df = build_shopify_update_preview(
+                        shopify_products,
+                        update_df,
+                        update_operation,
+                        brand_config,
+                        tag_mode=tag_mode,
+                        image_mode=image_mode,
+                        only_missing_images=only_missing_images,
+                        body_mode=body_mode,
+                    )
+                    st.session_state["shopify_preview_df"] = preview_df
+                    st.session_state["shopify_preview_issues_df"] = issues_df
+                    st.session_state["shopify_preview_matrixify_df"] = matrixify_df
+                    st.session_state["shopify_preview_operation"] = update_operation
+
+                preview_df = st.session_state.get("shopify_preview_df")
+                issues_df = st.session_state.get("shopify_preview_issues_df", pd.DataFrame())
+                matrixify_df = st.session_state.get("shopify_preview_matrixify_df", pd.DataFrame())
+                if preview_df is not None:
+                    if preview_df.empty:
+                        st.warning("No se genero ninguna fila de vista previa.")
+                    else:
+                        st.success(f"Vista previa generada con {len(preview_df):,} cambios.")
+                        st.dataframe(preview_df.head(100), use_container_width=True)
+                    if issues_df is not None and not issues_df.empty:
+                        st.warning(f"Hay {len(issues_df):,} observaciones.")
+                        st.dataframe(issues_df, use_container_width=True)
+
+                    excel_bytes = dataframe_to_excel_bytes(
+                        {
+                            "Vista previa": preview_df if preview_df is not None else pd.DataFrame(),
+                            "Revision": issues_df if issues_df is not None else pd.DataFrame(),
+                            "Matrixify fotos": matrixify_df if matrixify_df is not None else pd.DataFrame(),
+                        }
+                    )
+                    st.download_button(
+                        "Descargar Excel de vista previa",
+                        data=excel_bytes,
+                        file_name=f"vista_previa_{update_operation}_{brand_config['site_key']}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+                    can_apply = update_operation in ("tags", "title", "body", "siblings") and preview_df is not None and not preview_df.empty
+                    if update_operation == "photos":
+                        st.info("Fotos directas por API quedan desactivadas por seguridad. Descarga la hoja Matrixify fotos para cargarla por Matrixify.")
+                    elif can_apply:
+                        confirm_apply = st.checkbox("Confirmo que revise la vista previa y quiero aplicar en Shopify")
+                        if confirm_apply and st.button("Aplicar cambios en Shopify", type="primary"):
+                            with st.spinner("Aplicando cambios en Shopify..."):
+                                result_df = apply_shopify_preview(shopify_config, preview_df)
+                            st.session_state["shopify_apply_result_df"] = result_df
+                            st.dataframe(result_df, use_container_width=True)
+                            st.download_button(
+                                "Descargar resultado de aplicacion",
+                                data=dataframe_to_excel_bytes({"Resultado": result_df}),
+                                file_name=f"resultado_shopify_{update_operation}_{brand_config['site_key']}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
+            except Exception as exc:
+                st.error("No pude generar o aplicar la actualizacion con Shopify API.")
+                st.exception(exc)
+        elif update_source == "Catalogo Matrixify" and template_file and update_ready:
             try:
                 template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
                 if "Vendor" in template_df.columns:

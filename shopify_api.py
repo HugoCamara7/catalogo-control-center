@@ -262,7 +262,7 @@ def fetch_products(config, max_products=5000):
     return records
 
 
-def product_update(config, product_id, title=None, body_html=None, tags=None):
+def product_update(config, product_id, title=None, body_html=None, tags=None, vendor=None, product_type=None, status=None):
     shop_domain, api_version, token = _client(config)
     input_data = {"id": product_id}
     if title is not None:
@@ -271,6 +271,12 @@ def product_update(config, product_id, title=None, body_html=None, tags=None):
         input_data["descriptionHtml"] = body_html
     if tags is not None:
         input_data["tags"] = tags
+    if vendor is not None:
+        input_data["vendor"] = vendor
+    if product_type is not None:
+        input_data["productType"] = product_type
+    if status is not None:
+        input_data["status"] = status
     mutation = """
     mutation ProductUpdate($input: ProductUpdateInput!) {
       productUpdate(input: $input) {

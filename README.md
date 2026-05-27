@@ -62,6 +62,17 @@ El vendor, dominio Sial, carpeta de fotos y marcas permitidas se definen por sit
 
 6. Presionar **Generar Matrixify** y descargar el Excel final.
 
+## Actualizaciones puntuales
+
+En el sidebar puedes cambiar **Tipo de operacion** a **Actualizacion puntual**.
+Este modo genera archivos Matrixify livianos, solo con los campos necesarios:
+
+- **Tags**: sube `Mod-Col` y `Tags`; permite agregar a los tags actuales o reemplazarlos.
+- **Fotos 10 vistas**: usa el catalogo Matrixify y ARTI para generar URLs correctas por marca; permite reemplazar o mezclar fotos.
+- **Siblings**: recalcula `Metafield: theme.siblings` con todos los handles que comparten el mismo codigo modelo.
+- **Titulo**: sube `Mod-Col` y `Title`.
+- **Body HTML / Material / Cuidado**: reconstruye desde input comercial o detecta Material/Cuidado mezclados en el catalogo.
+
 ## Logica actual
 
 - Lee el ARTI desde BigQuery cuando existen secretos configurados.

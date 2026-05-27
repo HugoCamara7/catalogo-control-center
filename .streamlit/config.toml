@@ -4,3 +4,22 @@ maxUploadSize = 200
 [theme]
 primaryColor = "#1F4E78"
 base = "light"
+
+[bigquery]
+enabled = true
+project_id = "PROYECTO_DONDE_SE_EJECUTA_EL_JOB"
+job_project_id = "PROYECTO_DONDE_SE_EJECUTA_EL_JOB"
+table = "PROYECTO_DONDE_ESTA_LA_TABLA.DATASET.TABLA_ARTI"
+# location = "US"
+
+[gcp_service_account]
+type = "service_account"
+project_id = "TU_PROJECT_ID"
+private_key_id = "..."
+private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+client_email = "tu-service-account@tu-project.iam.gserviceaccount.com"
+client_id = "..."
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "..."

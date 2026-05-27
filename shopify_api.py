@@ -128,3 +128,159 @@ def test_connection(config):
     shop = data.get("shop", {})
     shop["token_source"] = token_source
     return shop
+
+
+def _client(config):
+    shop_domain = normalize_shop_domain(config.get("shop_domain") or config.get("domain"))
+    api_version = clean(config.get("api_version")) or DEFAULT_API_VERSION
+    token, _ = resolve_access_token(config)
+    return shop_domain, api_version, token
+
+
+def _product_node_to_record(node):
+    metafield = node.get("codigoModeloColor") or {}
+    siblings = node.get("siblings") or {}
+    siblings_color = node.get("siblingsColor") or {}
+    media_nodes = ((node.get("media") or {}).get("nodes")) or []
+    image_urls = []
+    media_ids = []
+    for media in media_nodes:
+        media_ids.append(clean(media.get("id")))
+        image = media.get("image") or {}
+        if image.get("url"):
+            image_urls.append(clean(image.get("url")))
+    return {
+        "Product ID": clean(node.get("id")),
+        "Legacy ID": clean(node.get("legacyResourceId")),
+        "Handle": clean(node.get("handle")),
+        "Title": clean(node.get("title")),
+        "Body HTML": clean(node.get("descriptionHtml")),
+        "Tags": ", ".join(node.get("tags") or []),
+        "Vendor": clean(node.get("vendor")),
+        "Type": clean(node.get("productType")),
+        "Status": clean(node.get("status")),
+        "Mod-Col": clean(metafield.get("value")).upper(),
+        "Siblings": clean(siblings.get("value")),
+        "Siblings Color": clean(siblings_color.get("value")),
+        "Image Src": "; ".join(image_urls),
+        "Media IDs": "; ".join(media_ids),
+    }
+
+
+def fetch_products(config, max_products=5000):
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query ProductsForMatrixify($first: Int!, $after: String) {
+      products(first: $first, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          legacyResourceId
+          handle
+          title
+          descriptionHtml
+          tags
+          vendor
+          productType
+          status
+          codigoModeloColor: metafield(namespace: "custom", key: "codigo_modelo_color") {
+            value
+          }
+          siblings: metafield(namespace: "theme", key: "siblings") {
+            value
+          }
+          siblingsColor: metafield(namespace: "theme", key: "siblings_color") {
+            value
+          }
+          media(first: 20) {
+            nodes {
+              id
+              ... on MediaImage {
+                image {
+                  url
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    records = []
+    after = None
+    while len(records) < max_products:
+        data = graphql_request(
+            shop_domain,
+            token,
+            query,
+            variables={"first": min(250, max_products - len(records)), "after": after},
+            api_version=api_version,
+            timeout=45,
+        )
+        products = data.get("products") or {}
+        records.extend(_product_node_to_record(node) for node in products.get("nodes") or [])
+        page_info = products.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    return records
+
+
+def product_update(config, product_id, title=None, body_html=None, tags=None):
+    shop_domain, api_version, token = _client(config)
+    input_data = {"id": product_id}
+    if title is not None:
+        input_data["title"] = title
+    if body_html is not None:
+        input_data["descriptionHtml"] = body_html
+    if tags is not None:
+        input_data["tags"] = tags
+    mutation = """
+    mutation ProductUpdate($input: ProductUpdateInput!) {
+      productUpdate(input: $input) {
+        product {
+          id
+          handle
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(shop_domain, token, mutation, {"input": input_data}, api_version=api_version)
+    payload = data.get("productUpdate") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("product") or {}
+
+
+def metafields_set(config, metafields):
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          id
+          key
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(shop_domain, token, mutation, {"metafields": metafields}, api_version=api_version)
+    payload = data.get("metafieldsSet") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("metafields") or []

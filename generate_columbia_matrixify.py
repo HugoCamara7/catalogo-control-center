@@ -28,6 +28,19 @@ IMAGE_VALIDATION_BASE_URL = f"{DEFAULT_IMAGE_VALIDATION_HOST}/COLUMBIA%20SHOPIFY
 MAX_IMAGES_PER_PRODUCT = 10
 VALIDATE_IMAGES = False
 
+BRAND_IMAGE_FOLDERS = {
+    "ACCESORIOS HP": "HUSH PUPPIES SHOPIFY",
+    "COLUMBIA": "COLUMBIA SHOPIFY",
+    "HUSH PUPPIES": "HUSH PUPPIES SHOPIFY",
+    "HUSH PUPPIES KIDS": "HUSH PUPPIES SHOPIFY",
+    "KEDS": "KEDS SHOPIFY",
+    "MOUNTAIN HARDWEAR": "MOUNTAIN HARDWEAR SHOPIFY",
+    "PATAGONIA": "PATAGONIA SHOPIFY",
+    "ROCKFORD": "ROCKFORD SHOPIFY",
+    "SOREL": "SOREL SHOPIFY",
+    "VANS": "VANS SHOPIFY",
+}
+
 
 def _config_clean(value):
     if value is None:
@@ -114,6 +127,18 @@ def get_brand_config(site="columbia", overrides=None):
     base["image_base_url"] = f"{DEFAULT_IMAGE_HOST}/{encoded_folder}"
     base["image_validation_base_url"] = f"{DEFAULT_IMAGE_VALIDATION_HOST}/{encoded_folder}"
     return base
+
+
+def brand_image_config(brand_name, fallback_config):
+    config = fallback_config.copy()
+    folder = BRAND_IMAGE_FOLDERS.get(normalize_brand_name(brand_name), fallback_config.get("image_folder", ""))
+    if not folder:
+        return config
+    encoded_folder = folder.replace(" ", "%20")
+    config["image_folder"] = folder
+    config["image_base_url"] = f"{DEFAULT_IMAGE_HOST}/{encoded_folder}"
+    config["image_validation_base_url"] = f"{DEFAULT_IMAGE_VALIDATION_HOST}/{encoded_folder}"
+    return config
 
 
 def clean(value):
@@ -235,6 +260,19 @@ def build_image_lookup(mod_cols, validate=VALIDATE_IMAGES, brand_config=None):
                 if misses_after_found >= 2:
                     break
         lookup[mod_col] = list(dict.fromkeys(valid_urls))
+    return lookup
+
+
+def build_image_lookup_by_brand(input_df, brand_column, brand_config):
+    lookup = {}
+    for _, row in input_df.iterrows():
+        mod_col = clean(row.get("Mod-Col")).upper()
+        if not mod_col:
+            continue
+        row_brand_config = brand_image_config(row.get(brand_column) if brand_column else "", brand_config)
+        cache_key = (mod_col, row_brand_config["image_folder"])
+        if cache_key not in lookup:
+            lookup[cache_key] = build_image_lookup([mod_col], brand_config=row_brand_config).get(mod_col, [])
     return lookup
 
 
@@ -1197,6 +1235,272 @@ def product_is_unchanged(product_rows, existing_rows, columns):
     return True
 
 
+PRODUCT_KEY_COLUMN = "Metafield: custom.codigo_modelo_color [id]"
+SIBLINGS_COLUMN = "Metafield: theme.siblings [single_line_text_field]"
+SIBLINGS_COLOR_COLUMN = "Metafield: theme.siblings_color [single_line_text_field]"
+
+
+def _catalog_product_rows(matrixify_df):
+    if matrixify_df is None or matrixify_df.empty:
+        return pd.DataFrame()
+    df = matrixify_df.copy()
+    if "Handle" not in df.columns:
+        return pd.DataFrame()
+    df["__HANDLE_CLEAN"] = df["Handle"].map(clean)
+    df = df[df["__HANDLE_CLEAN"] != ""].copy()
+    return df.drop_duplicates(subset=["__HANDLE_CLEAN"], keep="first").copy()
+
+
+def _catalog_lookup(matrixify_df):
+    product_rows = _catalog_product_rows(matrixify_df)
+    by_key = {}
+    by_handle = {}
+    for _, row in product_rows.iterrows():
+        handle = clean(row.get("Handle"))
+        key = clean(row.get(PRODUCT_KEY_COLUMN)).upper()
+        payload = row.to_dict()
+        if handle:
+            by_handle[handle] = payload
+        if key:
+            by_key[key] = payload
+    return by_key, by_handle, product_rows
+
+
+def _source_key(row):
+    return first_non_empty(row.get("Mod-Col"), row.get("COD MOD COL"), row.get(PRODUCT_KEY_COLUMN)).upper()
+
+
+def _minimal_product_update(row, extra):
+    payload = {
+        "ID": clean(row.get("ID")),
+        "Handle": clean(row.get("Handle")),
+        "Command": "MERGE",
+    }
+    payload.update(extra)
+    return payload
+
+
+def _new_tags(current_tags, incoming_tags, mode):
+    current = [tag.strip() for tag in clean(current_tags).split(",") if tag.strip()]
+    incoming = [tag.strip() for tag in clean(incoming_tags).split(",") if tag.strip()]
+    if mode == "replace":
+        return ", ".join(dict.fromkeys(incoming))
+    return ", ".join(dict.fromkeys(current + incoming))
+
+
+def _split_labeled_body_text(text):
+    text = strip_html(text)
+    if not text:
+        return "", "", ""
+    pattern = re.compile(
+        r"(?:^|\s)(Caracter[iÃ]sticas|Características|Material(?:es)?|Cuidado(?:s)?):?\s*",
+        flags=re.IGNORECASE,
+    )
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return text, "", ""
+
+    sections = {"features": "", "material": "", "care": ""}
+    for index, match in enumerate(matches):
+        label = normalize_text(match.group(1))
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        value = text[start:end].strip(" :-")
+        if "material" in label:
+            sections["material"] = value
+        elif "cuidado" in label:
+            sections["care"] = value
+        else:
+            sections["features"] = value
+    if not sections["features"] and matches[0].start() > 0:
+        sections["features"] = text[: matches[0].start()].strip(" :-")
+    return sections["features"], sections["material"], sections["care"]
+
+
+def _body_needs_material_care_fix(value):
+    text = normalize_text(strip_html(value))
+    if not text:
+        return False
+    has_material = "material" in text or "materiales" in text
+    has_care = "cuidado" in text or "cuidados" in text
+    has_sections = "nweb__materiales" in clean(value).lower() and "nweb__cuidados" in clean(value).lower()
+    return (has_material or has_care) and not has_sections
+
+
+def _build_update_source(input_df, matrixify_df):
+    if input_df is not None and not input_df.empty:
+        return input_df.dropna(how="all").copy(), "input"
+    return _catalog_product_rows(matrixify_df), "catalog"
+
+
+def _arti_brand_by_key(arti):
+    if arti is None or arti.empty or "MARCA_MA" not in arti.columns:
+        return {}
+    df = arti.copy()
+    if "Mod-Col" not in df.columns:
+        df["Mod-Col"] = ""
+    if "COD MOD COL" not in df.columns:
+        df["COD MOD COL"] = ""
+    df["__KEY"] = df["Mod-Col"].where(df["Mod-Col"].map(clean) != "", df["COD MOD COL"]).map(lambda value: clean(value).upper())
+    df = df[(df["__KEY"] != "") & (df["MARCA_MA"].map(clean) != "")].copy()
+    return df.drop_duplicates(subset=["__KEY"]).set_index("__KEY")["MARCA_MA"].to_dict()
+
+
+def build_matrixify_updates(
+    matrixify_source,
+    update_input_df=None,
+    arti=None,
+    operation="tags",
+    brand_config=None,
+    tag_mode="merge",
+    image_mode="replace",
+    only_missing_images=True,
+    body_mode="from_input",
+):
+    brand_config = brand_config or get_brand_config()
+    matrixify_df = matrixify_source.copy() if isinstance(matrixify_source, pd.DataFrame) else pd.DataFrame()
+    by_key, by_handle, catalog_products = _catalog_lookup(matrixify_df)
+    source_df, source_type = _build_update_source(update_input_df, matrixify_df)
+    operation = clean(operation).lower()
+    brand_by_key = _arti_brand_by_key(arti)
+
+    rows = []
+    issues = []
+    seen_handles = set()
+
+    if operation == "siblings":
+        products = catalog_products.copy()
+        if products.empty:
+            return pd.DataFrame(), pd.DataFrame([{"Problema": "Catalogo Matrixify sin productos validos"}])
+        products["__KEY"] = products[PRODUCT_KEY_COLUMN].map(lambda value: clean(value).upper()) if PRODUCT_KEY_COLUMN in products.columns else ""
+        products["__MODEL"] = products["__KEY"].map(model_code)
+        siblings_by_model = (
+            products[products["__MODEL"] != ""]
+            .groupby("__MODEL")["Handle"]
+            .apply(lambda values: ", ".join(dict.fromkeys(clean(value) for value in values if clean(value))))
+            .to_dict()
+        )
+        for _, product in products.iterrows():
+            model = product.get("__MODEL", "")
+            if not model or model not in siblings_by_model:
+                continue
+            handle = clean(product.get("Handle"))
+            if handle in seen_handles:
+                continue
+            seen_handles.add(handle)
+            rows.append(
+                _minimal_product_update(
+                    product,
+                    {
+                        SIBLINGS_COLUMN: siblings_by_model[model],
+                        SIBLINGS_COLOR_COLUMN: clean(product.get(SIBLINGS_COLOR_COLUMN)),
+                    },
+                )
+            )
+        return pd.DataFrame(rows), pd.DataFrame(issues)
+
+    for input_index, source_row in source_df.iterrows():
+        key = _source_key(source_row)
+        handle = clean(source_row.get("Handle"))
+        catalog_row = by_key.get(key) or by_handle.get(handle)
+        if not catalog_row:
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Handle": handle,
+                    "Problema": "No se encontro el producto en el catalogo Matrixify",
+                    "Fila": input_index + 2,
+                }
+            )
+            continue
+
+        catalog_handle = clean(catalog_row.get("Handle"))
+        if catalog_handle in seen_handles:
+            continue
+        seen_handles.add(catalog_handle)
+
+        if operation == "tags":
+            tags_col = first_existing(source_df, ["Tags", "tags", "Etiquetas"])
+            if not tags_col:
+                issues.append({"Mod-Col": key, "Handle": catalog_handle, "Problema": "No se encontro columna Tags"})
+                continue
+            tags = _new_tags(catalog_row.get("Tags"), source_row.get(tags_col), tag_mode)
+            rows.append(
+                _minimal_product_update(
+                    catalog_row,
+                    {
+                        "Tags": tags,
+                        "Tags Command": "REPLACE",
+                    },
+                )
+            )
+        elif operation == "photos":
+            product_key = key or clean(catalog_row.get(PRODUCT_KEY_COLUMN)).upper()
+            source_brand = first_non_empty(
+                source_row.get("Marca"),
+                source_row.get("Brand"),
+                catalog_row.get("Metafield: custom.marca [single_line_text_field]"),
+                brand_by_key.get(product_key),
+            )
+            row_brand_config = brand_image_config(source_brand, brand_config)
+            urls = image_candidates(product_key, row_brand_config)
+            current_image = clean(catalog_row.get("Image Src"))
+            if only_missing_images and current_image:
+                continue
+            rows.append(
+                _minimal_product_update(
+                    catalog_row,
+                    {
+                        "Image Src": "; ".join(urls),
+                        "Image Command": "REPLACE" if image_mode == "replace" else "MERGE",
+                        "Image Position": "",
+                        "Image Alt Text": first_non_empty(
+                            source_row.get("Image Alt Text"),
+                            catalog_row.get("Image Alt Text"),
+                            catalog_row.get("Title"),
+                        ),
+                    },
+                )
+            )
+        elif operation == "title":
+            title_col = first_existing(source_df, ["Title", "Titulo", "Título", "Nombre"])
+            if not title_col:
+                issues.append({"Mod-Col": key, "Handle": catalog_handle, "Problema": "No se encontro columna Title"})
+                continue
+            rows.append(_minimal_product_update(catalog_row, {"Title": clean(source_row.get(title_col))}))
+        elif operation == "body":
+            if body_mode == "from_input":
+                body_html = build_body_html(source_row)
+                if not body_html:
+                    issues.append(
+                        {"Mod-Col": key, "Handle": catalog_handle, "Problema": "No hay Body HTML/Caracteristicas/Material/Cuidado para construir"}
+                    )
+                    continue
+            else:
+                current_body = clean(catalog_row.get("Body HTML"))
+                if not _body_needs_material_care_fix(current_body):
+                    continue
+                features, material, care = _split_labeled_body_text(current_body)
+                body_html = build_body_html(
+                    {
+                        "Body HTML": "",
+                        "Caracteristicas": features,
+                        "Material": material,
+                        "Cuidado": care,
+                    }
+                )
+                if not body_html:
+                    continue
+            rows.append(_minimal_product_update(catalog_row, {"Body HTML": body_html}))
+        else:
+            issues.append({"Problema": f"Operacion no soportada: {operation}"})
+            break
+
+    output_df = pd.DataFrame(rows)
+    issues_df = pd.DataFrame(issues)
+    return output_df, issues_df
+
+
 def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None):
     brand_config = brand_config or get_brand_config()
     matrixify_columns, matrixify_df = prepare_matrixify_context(matrixify_source)
@@ -1214,7 +1518,8 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         .apply(lambda values: ", ".join(dict.fromkeys(clean(value) for value in values if clean(value))))
         .to_dict()
     )
-    image_lookup = build_image_lookup(input_df["Mod-Col"], brand_config=brand_config)
+    brand_column = detect_brand_column(input_df)
+    image_lookup = build_image_lookup_by_brand(input_df, brand_column, brand_config)
     wanted_keys = set(input_df["__KEY"])
     arti = arti.copy()
     if "MARCA_MA" in arti.columns and brand_config.get("allowed_arti_brands"):
@@ -1278,12 +1583,13 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         variants = variants.sort_values("__SIZE", key=lambda series: series.map(size_sort_key))
 
         handle = product["__HANDLE"]
-        product_images = image_lookup.get(key, [])
+        product_image_config = brand_image_config(product.get(brand_column) if brand_column else "", brand_config)
+        product_images = image_lookup.get((key, product_image_config["image_folder"]), [])
         if not product_images:
             issues.append(
                 {
                     "Mod-Col": key,
-                    "Problema": f"Sin fotos validas en la ruta {brand_config['image_folder']}",
+                    "Problema": f"Sin fotos validas en la ruta {product_image_config['image_folder']}",
                     "Fila input": input_index + 2,
                 }
             )
@@ -1302,6 +1608,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             else pd.DataFrame()
         )
         product_rows = []
+        product_sial_rows = []
 
         for position, (_, variant) in enumerate(variants.iterrows(), start=1):
             if should_block_zero_size and (
@@ -1412,7 +1719,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                 )
 
             product_rows.append(output)
-            sial_rows.append(
+            product_sial_rows.append(
                 build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config)
             )
 
@@ -1428,6 +1735,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             continue
 
         rows.extend(product_rows)
+        sial_rows.extend(product_sial_rows)
 
     output_df = pd.DataFrame(rows, columns=matrixify_columns)
     sial_df = pd.DataFrame(sial_rows, columns=get_sial_columns(brand_config))

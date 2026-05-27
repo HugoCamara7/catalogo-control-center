@@ -8,7 +8,14 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from generate_columbia_matrixify import SITE_CONFIGS, build_columbia_matrixify, get_brand_config, input_brand_report, read_arti_source
+from generate_columbia_matrixify import (
+    SITE_CONFIGS,
+    build_columbia_matrixify,
+    build_matrixify_updates,
+    get_brand_config,
+    input_brand_report,
+    read_arti_source,
+)
 
 
 APP_TITLE = "Conversor Matrixify por Tallas"
@@ -423,6 +430,19 @@ def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_d
     return buffer
 
 
+def update_to_excel_bytes(matrixify_df, issues_df):
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        matrixify_df.to_excel(writer, index=False, sheet_name="Products")
+        issues_df.to_excel(writer, index=False, sheet_name="Revision")
+        for sheet in writer.book.worksheets:
+            sheet.freeze_panes = "A2"
+            for column_cells in sheet.columns:
+                sheet.column_dimensions[column_cells[0].column_letter].width = 22
+    buffer.seek(0)
+    return buffer
+
+
 def inject_styles():
     st.markdown(
         """
@@ -678,7 +698,135 @@ def main():
     st.sidebar.markdown("**Marcas permitidas**")
     st.sidebar.write(", ".join(brand_config["allowed_arti_brands"]))
     st.sidebar.caption(f"Vendor: {brand_config['vendor']} | Salida: {brand_config['output_filename']}")
+    operation_mode = st.sidebar.radio(
+        "Tipo de operacion",
+        ["Carga completa", "Actualizacion puntual"],
+        index=0,
+    )
+
     render_header(brand_config)
+
+    if operation_mode == "Actualizacion puntual":
+        operation_labels = {
+            "Tags": "tags",
+            "Fotos 10 vistas": "photos",
+            "Siblings": "siblings",
+            "Titulo": "title",
+            "Body HTML / Material / Cuidado": "body",
+        }
+        st.markdown('<div class="section-card"><h2>Actualizacion puntual</h2>', unsafe_allow_html=True)
+        update_label = st.selectbox("Que quieres actualizar", list(operation_labels), index=0)
+        update_operation = operation_labels[update_label]
+        template_file = st.file_uploader(
+            f"1. Subir ultimo catalogo Matrixify de {brand_config['site_label']}",
+            type=["xlsx", "xls"],
+            key="template_update",
+            help="Se usa para encontrar ID, Handle, tags actuales, fotos actuales y codigo modelo color.",
+        )
+
+        needs_input = update_operation in ("tags", "title") or (
+            update_operation == "body" and st.session_state.get("body_source", "Desde input comercial") == "Desde input comercial"
+        )
+        update_file = None
+        tag_mode = "merge"
+        image_mode = "replace"
+        only_missing_images = True
+        body_mode = "from_input"
+
+        if update_operation == "tags":
+            tag_mode = st.radio("Como aplicar tags", ["merge", "replace"], format_func=lambda v: "Agregar a los tags actuales" if v == "merge" else "Reemplazar todos los tags")
+            update_file = st.file_uploader("2. Subir archivo con Mod-Col y Tags", type=["xlsx", "xls"], key="update_tags")
+        elif update_operation == "photos":
+            image_mode = st.radio("Comando de fotos", ["replace", "merge"], format_func=lambda v: "Reemplazar fotos del producto" if v == "replace" else "Agregar/mezclar fotos")
+            only_missing_images = st.checkbox("Solo productos sin foto en el catalogo", value=True)
+            update_file = st.file_uploader("2. Opcional: subir lista con Mod-Col a corregir", type=["xlsx", "xls"], key="update_photos")
+            st.caption("Si no subes lista, revisa el catalogo completo. Siempre genera 10 URLs por producto.")
+        elif update_operation == "siblings":
+            st.caption("Recalcula siblings para todo el catalogo: todos los productos con el mismo codigo modelo quedan separados por comas.")
+        elif update_operation == "title":
+            update_file = st.file_uploader("2. Subir archivo con Mod-Col y Title", type=["xlsx", "xls"], key="update_title")
+        elif update_operation == "body":
+            body_source = st.radio(
+                "Origen para corregir Body HTML",
+                ["Desde input comercial", "Detectar desde catalogo Matrixify"],
+                key="body_source",
+            )
+            body_mode = "from_input" if body_source == "Desde input comercial" else "fix_catalog"
+            if body_mode == "from_input":
+                update_file = st.file_uploader(
+                    "2. Subir input con Mod-Col, Body HTML, Caracteristicas, Material y Cuidado",
+                    type=["xlsx", "xls"],
+                    key="update_body",
+                )
+            else:
+                st.caption("Detecta Body HTML con Material/Cuidado mezclados y genera solo los productos afectados.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if template_file and (update_file or update_operation in ("photos", "siblings") or body_mode == "fix_catalog"):
+            try:
+                template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
+                if "Vendor" in template_df.columns:
+                    catalog_vendors = {
+                        clean_value(value).lower()
+                        for value in template_df["Vendor"].dropna()
+                        if clean_value(value)
+                    }
+                    if catalog_vendors and brand_config["vendor"].lower() not in catalog_vendors:
+                        st.error(
+                            f"El catalogo Matrixify cargado no parece ser de {brand_config['site_label']}. "
+                            f"Vendor esperado: {brand_config['vendor']}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
+                        )
+                        st.stop()
+
+                update_df = read_excel(update_file) if update_file else None
+                if update_df is not None:
+                    _, detected_brands, blocked_brands = input_brand_report(update_df, brand_config)
+                    if blocked_brands:
+                        st.error(
+                            f"El archivo tiene marcas no permitidas para {brand_config['site_label']}: "
+                            f"{', '.join(blocked_brands)}."
+                        )
+                        st.stop()
+
+                if st.button(f"Generar actualizacion {update_label}", type="primary"):
+                    update_arti_df = None
+                    if update_operation == "photos":
+                        try:
+                            update_arti_df, _ = read_arti_for_app(brand_config)
+                        except Exception:
+                            update_arti_df = None
+                    matrixify_df, issues_df = build_matrixify_updates(
+                        template_df,
+                        update_input_df=update_df,
+                        arti=update_arti_df,
+                        operation=update_operation,
+                        brand_config=brand_config,
+                        tag_mode=tag_mode,
+                        image_mode=image_mode,
+                        only_missing_images=only_missing_images,
+                        body_mode=body_mode,
+                    )
+                    if matrixify_df.empty:
+                        st.warning("No se genero ninguna fila de actualizacion. Revisa la hoja Revision.")
+                    else:
+                        st.success(f"Actualizacion generada con {len(matrixify_df):,} productos.")
+                        st.dataframe(matrixify_df.head(100), use_container_width=True)
+                    if issues_df is not None and not issues_df.empty:
+                        st.warning(f"Hay {len(issues_df):,} observaciones.")
+                        st.dataframe(issues_df, use_container_width=True)
+                    excel_bytes = update_to_excel_bytes(matrixify_df, issues_df)
+                    st.download_button(
+                        "Descargar actualizacion Matrixify",
+                        data=excel_bytes,
+                        file_name=f"actualizacion_{update_operation}_{brand_config['site_key']}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+            except Exception as exc:
+                st.error("No pude generar la actualizacion puntual.")
+                st.exception(exc)
+        else:
+            st.info("Sube los archivos requeridos para generar la actualizacion puntual.")
+        return
 
     st.markdown('<div class="section-card"><h2>Cargar archivos obligatorios</h2>', unsafe_allow_html=True)
     input_file = st.file_uploader("1. Subir input comercial", type=["xlsx", "xls"], key="input")

@@ -26,16 +26,20 @@ from shopify_api import (
     fetch_metaobjects,
     fetch_product_options_and_variants,
     fetch_products,
+    file_create,
     metafields_set,
     normalize_shop_domain,
     product_create,
     product_create_media,
     product_delete_media,
     product_options_reorder,
+    product_set_files,
     product_update,
     product_variants_bulk_create,
     product_variants_bulk_reorder,
+    staged_upload_image,
     test_connection,
+    wait_file_statuses,
     wait_media_statuses,
 )
 
@@ -879,6 +883,10 @@ def _logo_lookup_keys(record):
         image = reference.get("image") or {}
         candidates.append(reference.get("url"))
         candidates.append(image.get("url"))
+        for referenced_node in ((field.get("references") or {}).get("nodes")) or []:
+            referenced_image = referenced_node.get("image") or {}
+            candidates.append(referenced_node.get("url"))
+            candidates.append(referenced_image.get("url"))
 
     expanded_candidates = []
     for candidate in candidates:
@@ -1060,6 +1068,43 @@ def _first_reachable_image_url(value):
         if _url_is_reachable_image(url):
             return url, ""
     return "", candidates[0] if candidates else clean_value(value)
+
+
+def _download_image_bytes(value):
+    last_error = ""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for url in _image_url_candidates(value):
+        try:
+            request = Request(url, headers=headers)
+            with urlopen(request, timeout=30) as response:
+                content_type = clean_value(response.headers.get("Content-Type")).lower()
+                if response.status >= 400 or not content_type.startswith("image/"):
+                    last_error = f"{url}: no es imagen valida"
+                    continue
+                data = response.read()
+                if not data:
+                    last_error = f"{url}: imagen vacia"
+                    continue
+                filename = Path(unquote(urlparse(url).path or "")).name or "product_image.jpg"
+                return data, content_type.split(";")[0], filename, url
+        except Exception as exc:
+            last_error = f"{url}: {exc}"
+    raise ShopifyApiError(last_error or "No se pudo descargar la imagen")
+
+
+def _file_status_summary(file_statuses):
+    ready = []
+    failed = []
+    pending = []
+    for file_node in file_statuses or []:
+        status = clean_value(file_node.get("fileStatus")).upper()
+        if status == "READY":
+            ready.append(file_node)
+        elif status == "FAILED":
+            failed.append(file_node)
+        else:
+            pending.append(file_node)
+    return ready, failed, pending
 
 
 def _media_status_summary(media_statuses):
@@ -1434,63 +1479,55 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     if clean_value(row.get("Image Command")).upper() == "REPLACE" and existing_media_ids:
                         product_delete_media(shopify_config, product_gid, existing_media_ids)
                         product_messages.append(f"{len(existing_media_ids)} fotos anteriores eliminadas")
-                    created_media = []
-                    ready_media = []
-                    failed_media = []
-                    pending_media = []
+                    created_files = []
+                    ready_files = []
+                    failed_files = []
+                    pending_files = []
                     image_errors = []
                     for image_index, raw_image_url in enumerate(raw_image_urls[:10], start=1):
-                        image_loaded = False
-                        candidate_errors = []
-                        failed_candidates = []
-                        for image_url in _image_url_candidates(raw_image_url):
-                            try:
-                                media_batch = product_create_media(shopify_config, product_gid, [image_url])
-                                created_media.extend(media_batch)
-                                media_ids = [
-                                    clean_value(media.get("id"))
-                                    for media in media_batch
-                                    if clean_value(media.get("id"))
-                                ]
-                                media_statuses = wait_media_statuses(shopify_config, media_ids) if media_ids else []
-                                ready_batch, failed_batch, pending_batch = _media_status_summary(media_statuses)
-                                ready_media.extend(ready_batch)
-                                pending_media.extend(pending_batch)
-                                if ready_batch or pending_batch:
-                                    image_loaded = True
-                                    break
-                                if failed_batch:
-                                    failed_candidates.extend(failed_batch)
-                                    candidate_errors.append(_media_error_text(failed_batch[0]))
-                                    continue
-                                candidate_errors.append("Shopify recibio la foto, pero no devolvio estado final")
-                            except Exception as exc:
-                                candidate_errors.append(str(exc))
-                        if not image_loaded:
-                            failed_media.extend(failed_candidates)
-                            image_errors.append(f"foto {image_index}: {' / '.join(candidate_errors[:2])}")
+                        try:
+                            image_bytes, mime_type, filename, source_url = _download_image_bytes(raw_image_url)
+                            resource_url = staged_upload_image(shopify_config, filename, mime_type, image_bytes)
+                            file_batch = file_create(
+                                shopify_config,
+                                resource_url,
+                                alt=clean_value(row.get("Image Alt Text")) or clean_value(row.get("Title")),
+                            )
+                            created_files.extend(file_batch)
+                            file_ids = [clean_value(file_node.get("id")) for file_node in file_batch if clean_value(file_node.get("id"))]
+                            file_statuses = wait_file_statuses(shopify_config, file_ids) if file_ids else []
+                            ready_batch, failed_batch, pending_batch = _file_status_summary(file_statuses)
+                            ready_files.extend(ready_batch)
+                            failed_files.extend(failed_batch)
+                            pending_files.extend(pending_batch)
+                            if not ready_batch and not pending_batch:
+                                image_errors.append(f"foto {image_index}: Shopify no dejo el archivo listo ({source_url})")
+                        except Exception as exc:
+                            image_errors.append(f"foto {image_index}: {exc}")
+                    ready_file_ids = [clean_value(file_node.get("id")) for file_node in ready_files if clean_value(file_node.get("id"))]
+                    if ready_file_ids:
+                        product_set_files(shopify_config, product_gid, ready_file_ids)
                     if image_errors:
                         product_status = "PARCIAL"
                         product_messages.append(
                             f"Fotos no cargadas: {len(image_errors)} de {min(len(raw_image_urls), 10)}. "
                             f"Detalle: {' | '.join(image_errors[:3])}"
                         )
-                    if failed_media:
+                    if failed_files:
                         product_status = "PARCIAL"
                         product_messages.append(
-                            f"Fotos con error Shopify: {len(failed_media)} de {len(created_media)}. "
-                            f"Detalle: {_media_error_text(failed_media[0])}"
+                            f"Archivos con error Shopify: {len(failed_files)} de {len(created_files)}"
                         )
-                    if pending_media:
+                    if pending_files:
                         product_status = "PARCIAL"
                         product_messages.append(
-                            f"Fotos aun en procesamiento: {len(pending_media)} de {len(created_media)}"
+                            f"Archivos aun en procesamiento: {len(pending_files)} de {len(created_files)}"
                         )
-                    if ready_media:
-                        product_messages.append(f"{len(ready_media)} fotos listas en Shopify")
-                    elif created_media and not failed_media and not pending_media:
+                    if ready_files:
+                        product_messages.append(f"{len(ready_files)} fotos listas en CDN Shopify y asociadas")
+                    elif created_files and not failed_files and not pending_files:
                         product_status = "PARCIAL"
-                        product_messages.append(f"{len(created_media)} fotos recibidas por Shopify, pero sin estado final confirmado")
+                        product_messages.append(f"{len(created_files)} archivos recibidos por Shopify, pero sin estado final confirmado")
                 except Exception as exc:
                     product_status = "PARCIAL"
                     product_messages.append(f"Error fotos: {exc}")

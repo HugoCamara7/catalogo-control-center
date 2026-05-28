@@ -1103,17 +1103,43 @@ def _resolve_metaobject_reference_value(shopify_config, column, value):
 
 
 def _shopify_image_url(value):
-    url = clean_value(value)
+    url = _normalize_legacy_image_url(value)
     prefix = "https://ecom-imagenes.forus-digital.xyz.peru.s3.amazonaws.com/"
     if url.startswith(prefix):
         return "https://s3.amazonaws.com/ecom-imagenes.forus-digital.xyz.peru/" + url[len(prefix):]
     return url
 
 
+def _normalize_legacy_image_url(value):
+    url = clean_value(value)
+    replacements = {
+        "COLUMBIA%20SHOPIFY": "COLUMBIA",
+        "ROCKFORD%20SHOPIFY": "ROCKFORD",
+        "HUSH%20PUPPIES%20SHOPIFY": "HUSH%20PUPPIES",
+        "VANS%20SHOPIFY": "VANS",
+        "KEDS%20SHOPIFY": "KEDS",
+        "PATAGONIA%20SHOPIFY": "PATAGONIA",
+        "SOREL%20SHOPIFY": "SOREL",
+        "MOUNTAIN%20HARDWEAR%20SHOPIFY": "MOUNTAIN%20HARDWEAR",
+        "COLUMBIA SHOPIFY": "COLUMBIA",
+        "ROCKFORD SHOPIFY": "ROCKFORD",
+        "HUSH PUPPIES SHOPIFY": "HUSH PUPPIES",
+        "VANS SHOPIFY": "VANS",
+        "KEDS SHOPIFY": "KEDS",
+        "PATAGONIA SHOPIFY": "PATAGONIA",
+        "SOREL SHOPIFY": "SOREL",
+        "MOUNTAIN HARDWEAR SHOPIFY": "MOUNTAIN HARDWEAR",
+    }
+    for old, new in replacements.items():
+        url = url.replace(f"/{old}/", f"/{new}/")
+    return url
+
+
 def _image_url_candidates(value):
     original = clean_value(value)
+    normalized = _normalize_legacy_image_url(original)
     converted = _shopify_image_url(original)
-    return list(dict.fromkeys([url for url in (converted, original) if url]))
+    return list(dict.fromkeys([url for url in (converted, normalized, original) if url]))
 
 
 def _url_is_reachable_image(url, timeout=8):
@@ -1316,22 +1342,34 @@ def _variant_rows_for_handle(matrixify_df, handle):
     return matrixify_df.loc[matching_indexes].copy() if matching_indexes else pd.DataFrame()
 
 
-def _variant_bulk_input_from_row(row):
+def _valid_price(value):
+    text = clean_value(value)
+    if not text:
+        return ""
+    try:
+        if float(text.replace(",", ".")) <= 0:
+            return ""
+    except Exception:
+        pass
+    return text
+
+
+def _variant_bulk_input_from_row(row, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
     size = clean_value(row.get("Option1 Value"))
     if not size:
         return None
 
-    option_name = clean_value(row.get("Option1 Name")) or "Talla"
+    option_name = clean_value(option_name) or clean_value(row.get("Option1 Name")) or "Talla"
+    option_value = {"name": size}
+    if clean_value(option_id):
+        option_value["optionId"] = clean_value(option_id)
+    else:
+        option_value["optionName"] = option_name
     variant = {
-        "optionValues": [
-            {
-                "optionName": option_name,
-                "name": size,
-            }
-        ]
+        "optionValues": [option_value]
     }
-    price = clean_value(row.get("Variant Price"))
-    compare_at_price = clean_value(row.get("Variant Compare At Price"))
+    price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
+    compare_at_price = _valid_price(row.get("Variant Compare At Price")) or _valid_price(fallback_compare_at_price)
     barcode = clean_value(row.get("Variant Barcode"))
     sku = clean_value(row.get("Variant SKU"))
     if price:
@@ -1345,7 +1383,7 @@ def _variant_bulk_input_from_row(row):
     return variant
 
 
-def _missing_variant_inputs(product_variant_rows):
+def _missing_variant_inputs(product_variant_rows, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
     if product_variant_rows.empty:
         return []
 
@@ -1377,14 +1415,20 @@ def _missing_variant_inputs(product_variant_rows):
         dedupe_key = (sku.upper(), size.upper())
         if dedupe_key in seen_keys:
             continue
-        payload = _variant_bulk_input_from_row(variant_row)
+        payload = _variant_bulk_input_from_row(
+            variant_row,
+            option_id=option_id,
+            option_name=option_name,
+            fallback_price=fallback_price,
+            fallback_compare_at_price=fallback_compare_at_price,
+        )
         if payload:
             variants.append(payload)
             seen_keys.add(dedupe_key)
     return variants
 
 
-def _all_variant_inputs(product_variant_rows):
+def _all_variant_inputs(product_variant_rows, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
     variants = []
     seen_keys = set()
     for _, variant_row in product_variant_rows.iterrows():
@@ -1395,10 +1439,85 @@ def _all_variant_inputs(product_variant_rows):
         dedupe_key = (sku.upper(), size.upper())
         if dedupe_key in seen_keys:
             continue
-        payload = _variant_bulk_input_from_row(variant_row)
+        payload = _variant_bulk_input_from_row(
+            variant_row,
+            option_id=option_id,
+            option_name=option_name,
+            fallback_price=fallback_price,
+            fallback_compare_at_price=fallback_compare_at_price,
+        )
         if payload:
             variants.append(payload)
             seen_keys.add(dedupe_key)
+    return variants
+
+
+def _size_option_from_product_data(product_data, fallback_name="Talla"):
+    options = product_data.get("options") or []
+    fallback = clean_value(fallback_name).lower()
+    for option in options:
+        if clean_value(option.get("name")).lower() == fallback:
+            return option
+    for option in options:
+        if clean_value(option.get("name")).lower() in ("talla", "size", "title"):
+            return option
+    return options[0] if options else {}
+
+
+def _existing_sizes_from_product_data(product_data, option_name):
+    sizes = set()
+    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
+        size = _selected_option_value(variant, option_name)
+        if size:
+            sizes.add(size.upper())
+    return sizes
+
+
+def _price_fallback_from_product_data(product_data):
+    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
+        price = _valid_price(variant.get("price"))
+        if price:
+            return price, _valid_price(variant.get("compareAtPrice"))
+    return "", ""
+
+
+def _price_fallback_from_rows(product_variant_rows):
+    for _, row in product_variant_rows.iterrows():
+        price = _valid_price(row.get("Variant Price"))
+        if price:
+            return price, _valid_price(row.get("Variant Compare At Price"))
+    return "", ""
+
+
+def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
+    if product_variant_rows.empty:
+        return []
+    requested_option_name = clean_value(product_variant_rows.iloc[0].get("Option1 Name")) or "Talla"
+    size_option = _size_option_from_product_data(product_data, requested_option_name)
+    option_id = clean_value(size_option.get("id"))
+    option_name = clean_value(size_option.get("name")) or requested_option_name
+    existing_sizes = _existing_sizes_from_product_data(product_data, option_name)
+    fallback_price, fallback_compare_at_price = _price_fallback_from_product_data(product_data)
+
+    variants = []
+    seen_sizes = set()
+    for _, variant_row in product_variant_rows.iterrows():
+        size = clean_value(variant_row.get("Option1 Value"))
+        if not size:
+            continue
+        size_key = size.upper()
+        if size_key in existing_sizes or size_key in seen_sizes:
+            continue
+        payload = _variant_bulk_input_from_row(
+            variant_row,
+            option_id=option_id,
+            option_name=option_name,
+            fallback_price=fallback_price,
+            fallback_compare_at_price=fallback_compare_at_price,
+        )
+        if payload:
+            variants.append(payload)
+            seen_sizes.add(size_key)
     return variants
 
 
@@ -1461,17 +1580,6 @@ def _reorder_product_sizes(shopify_config, product_gid, product_variant_rows):
     values_in_order = [size for size in ordered_sizes if size in existing_values]
     values_in_order.extend(value for value in existing_values if value not in values_in_order)
 
-    messages = []
-    if values_in_order:
-        option_payloads = []
-        for option in options:
-            payload = {"id": option.get("id"), "name": option.get("name")}
-            if clean_value(option.get("id")) == clean_value(size_option.get("id")):
-                payload["values"] = [{"name": value} for value in values_in_order]
-            option_payloads.append(payload)
-        product_options_reorder(shopify_config, product_gid, option_payloads)
-        messages.append("orden de tallas actualizado")
-
     variant_by_size = {}
     for variant in variants:
         size = _selected_option_value(variant, option_name)
@@ -1479,15 +1587,31 @@ def _reorder_product_sizes(shopify_config, product_gid, product_variant_rows):
             variant_by_size[size] = variant.get("id")
     variant_order = [size for size in ordered_sizes if size in variant_by_size]
     variant_order.extend(size for size in variant_by_size if size not in variant_order)
+    if len(variant_order) < len(ordered_sizes):
+        missing_sizes = [size for size in ordered_sizes if size not in variant_by_size]
+        raise ShopifyApiError(f"No se puede ordenar porque faltan variantes creadas: {', '.join(missing_sizes)}")
     positions = [
         {"id": variant_by_size[size], "position": position}
         for position, size in enumerate(variant_order, start=1)
         if clean_value(variant_by_size.get(size))
     ]
-    if positions:
-        product_variants_bulk_reorder(shopify_config, product_gid, positions)
-        messages.append("orden de variantes actualizado")
-    return ", ".join(messages)
+    if not positions:
+        raise ShopifyApiError("No se encontraron variantes para ordenar.")
+    product_variants_bulk_reorder(shopify_config, product_gid, positions)
+
+    verified_product = fetch_product_options_and_variants(shopify_config, product_gid)
+    verified_variants = ((verified_product.get("variants") or {}).get("nodes")) or []
+    verified_sizes = [
+        _selected_option_value(variant, option_name)
+        for variant in verified_variants
+        if _selected_option_value(variant, option_name)
+    ]
+    expected_prefix = [size for size in ordered_sizes if size in verified_sizes]
+    if verified_sizes[: len(expected_prefix)] != expected_prefix:
+        raise ShopifyApiError(
+            f"Shopify no confirmo el orden. Esperado: {', '.join(expected_prefix)}. Actual: {', '.join(verified_sizes[:len(expected_prefix)])}"
+        )
+    return "orden obligatorio de variantes confirmado"
 
 
 def apply_full_product_updates(shopify_config, matrixify_df):
@@ -1637,11 +1761,25 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     product_status = "PARCIAL"
                     product_messages.append(f"Error fotos: {exc}")
 
-            missing_variants = (
-                _missing_variant_inputs(product_variant_rows)
-                if clean_value(row.get("ID"))
-                else _all_variant_inputs(product_variant_rows)
-            )
+            product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
+            if clean_value(row.get("ID")):
+                missing_variants = _missing_variant_inputs_from_shopify(
+                    product_variant_rows,
+                    product_data_for_variants,
+                )
+            else:
+                size_option = _size_option_from_product_data(
+                    product_data_for_variants,
+                    clean_value(row.get("Option1 Name")) or "Talla",
+                )
+                fallback_price, fallback_compare_at_price = _price_fallback_from_rows(product_variant_rows)
+                missing_variants = _all_variant_inputs(
+                    product_variant_rows,
+                    option_id=clean_value(size_option.get("id")),
+                    option_name=clean_value(size_option.get("name")) or clean_value(row.get("Option1 Name")) or "Talla",
+                    fallback_price=fallback_price,
+                    fallback_compare_at_price=fallback_compare_at_price,
+                )
             if missing_variants:
                 try:
                     created_variants = []

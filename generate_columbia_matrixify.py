@@ -23,22 +23,22 @@ KNOWN_TYPES_PATH = Path("data/tipos_shopify.xlsx")
 INVENTORY_PREFIX = "Inventory Available:"
 DEFAULT_IMAGE_HOST = "https://ecom-imagenes.forus-digital.xyz.peru.s3.amazonaws.com"
 DEFAULT_IMAGE_VALIDATION_HOST = "https://s3.amazonaws.com/ecom-imagenes.forus-digital.xyz.peru"
-IMAGE_BASE_URL = f"{DEFAULT_IMAGE_HOST}/COLUMBIA%20SHOPIFY"
-IMAGE_VALIDATION_BASE_URL = f"{DEFAULT_IMAGE_VALIDATION_HOST}/COLUMBIA%20SHOPIFY"
+IMAGE_BASE_URL = f"{DEFAULT_IMAGE_HOST}/COLUMBIA"
+IMAGE_VALIDATION_BASE_URL = f"{DEFAULT_IMAGE_VALIDATION_HOST}/COLUMBIA"
 MAX_IMAGES_PER_PRODUCT = 10
 VALIDATE_IMAGES = False
 
 BRAND_IMAGE_FOLDERS = {
-    "ACCESORIOS HP": "HUSH PUPPIES SHOPIFY",
-    "COLUMBIA": "COLUMBIA SHOPIFY",
-    "HUSH PUPPIES": "HUSH PUPPIES SHOPIFY",
-    "HUSH PUPPIES KIDS": "HUSH PUPPIES SHOPIFY",
-    "KEDS": "KEDS SHOPIFY",
-    "MOUNTAIN HARDWEAR": "MOUNTAIN HARDWEAR SHOPIFY",
-    "PATAGONIA": "PATAGONIA SHOPIFY",
-    "ROCKFORD": "ROCKFORD SHOPIFY",
-    "SOREL": "SOREL SHOPIFY",
-    "VANS": "VANS SHOPIFY",
+    "ACCESORIOS HP": "HUSH PUPPIES",
+    "COLUMBIA": "COLUMBIA",
+    "HUSH PUPPIES": "HUSH PUPPIES",
+    "HUSH PUPPIES KIDS": "HUSH PUPPIES",
+    "KEDS": "KEDS",
+    "MOUNTAIN HARDWEAR": "MOUNTAIN HARDWEAR",
+    "PATAGONIA": "PATAGONIA",
+    "ROCKFORD": "ROCKFORD",
+    "SOREL": "SOREL",
+    "VANS": "VANS",
 }
 
 
@@ -55,7 +55,7 @@ SITE_CONFIGS = {
         "allowed_arti_brands": ["COLUMBIA"],
         "vendor": "columbiape",
         "store_domain": "Columbia.pe",
-        "image_folder": "COLUMBIA SHOPIFY",
+        "image_folder": "COLUMBIA",
         "output_filename": "matrixify_columbia_generado.xlsx",
     },
     "rockford": {
@@ -64,7 +64,7 @@ SITE_CONFIGS = {
         "allowed_arti_brands": ["COLUMBIA", "ROCKFORD", "PATAGONIA", "SOREL", "MOUNTAIN HARDWEAR"],
         "vendor": "rockfordpe",
         "store_domain": "Rockford.pe",
-        "image_folder": "ROCKFORD SHOPIFY",
+        "image_folder": "ROCKFORD",
         "output_filename": "matrixify_rockford_generado.xlsx",
     },
     "hush_puppies": {
@@ -73,7 +73,7 @@ SITE_CONFIGS = {
         "allowed_arti_brands": ["HUSH PUPPIES", "HUSH PUPPIES KIDS", "ACCESORIOS HP", "KEDS", "ROCKFORD"],
         "vendor": "hushpuppiespe",
         "store_domain": "HushPuppies.pe",
-        "image_folder": "HUSH PUPPIES SHOPIFY",
+        "image_folder": "HUSH PUPPIES",
         "output_filename": "matrixify_hush_puppies_generado.xlsx",
     },
     "vans": {
@@ -82,7 +82,7 @@ SITE_CONFIGS = {
         "allowed_arti_brands": ["VANS"],
         "vendor": "vanspe",
         "store_domain": "Vans.pe",
-        "image_folder": "VANS SHOPIFY",
+        "image_folder": "VANS",
         "output_filename": "matrixify_vans_generado.xlsx",
     },
 }
@@ -122,7 +122,7 @@ def get_brand_config(site="columbia", overrides=None):
         for field, value in overrides.items():
             if _config_clean(value):
                 base[field] = _config_clean(value)
-    folder = _config_clean(base.get("image_folder")) or f"{base['label'].upper()} SHOPIFY"
+    folder = _config_clean(base.get("image_folder")) or base["label"].upper()
     encoded_folder = folder.replace(" ", "%20")
     base["image_base_url"] = f"{DEFAULT_IMAGE_HOST}/{encoded_folder}"
     base["image_validation_base_url"] = f"{DEFAULT_IMAGE_VALIDATION_HOST}/{encoded_folder}"

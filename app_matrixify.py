@@ -3,6 +3,7 @@ import base64
 import json
 import re
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlparse
@@ -33,6 +34,7 @@ from shopify_api import (
     product_create_media,
     product_delete_media,
     product_options_reorder,
+    publishable_publish,
     product_set_files,
     product_update,
     product_variants_bulk_create,
@@ -153,6 +155,81 @@ def clean_value(value):
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value).strip()
+
+
+def expected_catalog_vendors(brand_config):
+    values = {
+        clean_value(brand_config.get("vendor")).lower(),
+        *[clean_value(value).lower() for value in brand_config.get("legacy_vendors", [])],
+        *[clean_value(value).lower() for value in brand_config.get("allowed_arti_brands", [])],
+    }
+    return {value for value in values if value}
+
+
+def first_row_value(row, columns):
+    for column in columns:
+        value = clean_value(row.get(column))
+        if value:
+            return value
+    return ""
+
+
+def parse_publication_date(value):
+    text = clean_value(value)
+    if not text:
+        return ""
+    if re.fullmatch(r"\d+(\.0)?", text):
+        # Excel serial date fallback.
+        try:
+            base = datetime(1899, 12, 30, tzinfo=timezone(timedelta(hours=-5)))
+            return (base + timedelta(days=float(text))).isoformat()
+        except Exception:
+            return text
+    normalized = text.replace("Z", "+00:00")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?", normalized):
+        normalized = normalized.replace(" ", "T")
+    formats = [
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+    ]
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        parsed = None
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=-5)))
+    return parsed.isoformat()
+
+
+def publication_date_from_row(row):
+    if "Publication Publish Date" in row.index:
+        return parse_publication_date(row.get("Publication Publish Date"))
+    return parse_publication_date(
+        first_row_value(
+            row,
+            [
+                "Fecha publicación",
+                "Fecha publicacion",
+                "Fecha de publicación",
+                "Fecha de publicacion",
+                "Publish Date",
+                "Publication Date",
+                "Published At",
+            ],
+        )
+    )
 
 
 def normalize_size(value):
@@ -731,6 +808,7 @@ def apply_shopify_preview(shopify_config, preview_df):
             elif operation == "body":
                 product_update(shopify_config, product_id, body_html=clean_value(row.get("Valor nuevo")))
             elif operation == "siblings":
+                sibling_value = clean_value(row.get("Valor nuevo"))
                 metafields_set(
                     shopify_config,
                     [
@@ -739,7 +817,14 @@ def apply_shopify_preview(shopify_config, preview_df):
                             "namespace": "theme",
                             "key": "siblings",
                             "type": "single_line_text_field",
-                            "value": clean_value(row.get("Valor nuevo")),
+                            "value": sibling_value,
+                        },
+                        {
+                            "ownerId": product_id,
+                            "namespace": "custom",
+                            "key": "siblings",
+                            "type": "single_line_text_field",
+                            "value": sibling_value,
                         }
                     ],
                 )
@@ -781,12 +866,22 @@ def shopify_products_to_matrixify_df(shopify_products):
         "Metafield: custom.codigo_modelo_color [id]",
         "Metafield: theme.siblings [single_line_text_field]",
         "Metafield: theme.siblings_color [single_line_text_field]",
+        "Metafield: custom.siblings [single_line_text_field]",
+        "Metafield: custom.siblings_color [single_line_text_field]",
     ]
     try:
         if Path(DEFAULT_MATRIXIFY_PATH).exists():
             default_columns = list(pd.read_excel(DEFAULT_MATRIXIFY_PATH, sheet_name="Products", nrows=0).columns)
     except Exception:
         pass
+    for column in (
+        "Metafield: theme.siblings [single_line_text_field]",
+        "Metafield: theme.siblings_color [single_line_text_field]",
+        "Metafield: custom.siblings [single_line_text_field]",
+        "Metafield: custom.siblings_color [single_line_text_field]",
+    ):
+        if column not in default_columns:
+            default_columns.append(column)
 
     rows = []
     for product in shopify_products:
@@ -812,6 +907,16 @@ def shopify_products_to_matrixify_df(shopify_products):
                     "Metafield: custom.codigo_modelo_color [id]": product.get("Mod-Col") if index == 0 else "",
                     "Metafield: theme.siblings [single_line_text_field]": product.get("Siblings") if index == 0 else "",
                     "Metafield: theme.siblings_color [single_line_text_field]": product.get("Siblings Color") if index == 0 else "",
+                    "Metafield: custom.siblings [single_line_text_field]": (
+                        product.get("Custom Siblings") or product.get("Siblings")
+                    )
+                    if index == 0
+                    else "",
+                    "Metafield: custom.siblings_color [single_line_text_field]": (
+                        product.get("Custom Siblings Color") or product.get("Siblings Color")
+                    )
+                    if index == 0
+                    else "",
                 }
             )
             rows.append(row)
@@ -838,18 +943,24 @@ def apply_shopify_siblings_to_matrixify(matrixify_df, shopify_products):
     df = matrixify_df.copy()
     key_column = "Metafield: custom.codigo_modelo_color [id]"
     siblings_column = "Metafield: theme.siblings [single_line_text_field]"
-    if key_column not in df.columns or siblings_column not in df.columns:
+    custom_siblings_column = "Metafield: custom.siblings [single_line_text_field]"
+    if key_column not in df.columns:
         return df
+    for column in (siblings_column, custom_siblings_column):
+        if column not in df.columns:
+            df[column] = ""
 
     def sibling_value(row):
         key = clean_value(row.get(key_column)).upper()
         if not key:
             return row.get(siblings_column)
         model = key.rsplit("-", 1)[0]
-        return siblings_map.get(model, row.get(siblings_column))
+        return siblings_map.get(model, row.get(siblings_column) or row.get(custom_siblings_column))
 
     top_rows = df["Handle"].map(clean_value) != ""
-    df.loc[top_rows, siblings_column] = df.loc[top_rows].apply(sibling_value, axis=1)
+    values = df.loc[top_rows].apply(sibling_value, axis=1)
+    df.loc[top_rows, siblings_column] = values
+    df.loc[top_rows, custom_siblings_column] = values
     return df
 
 
@@ -1672,6 +1783,18 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 product_id = clean_value(created_product.get("legacyResourceId")) or product_id
                 product_messages.append("Producto nuevo creado")
 
+            publish_date = publication_date_from_row(row)
+            if shopify_status != "DRAFT":
+                try:
+                    publishable_publish(shopify_config, product_gid, publish_date=publish_date)
+                    if publish_date:
+                        product_messages.append(f"Publicacion programada: {publish_date}")
+                    else:
+                        product_messages.append("Publicado en Online Store")
+                except Exception as exc:
+                    product_status = "PARCIAL"
+                    product_messages.append(f"Error publicacion: {exc}")
+
             metafields = []
             skipped_metafields = []
             metafield_errors = []
@@ -2088,7 +2211,7 @@ def main():
     shopify_config = get_shopify_config(selected_site_key)
     st.sidebar.markdown("**Marcas permitidas**")
     st.sidebar.write(", ".join(brand_config["allowed_arti_brands"]))
-    st.sidebar.caption(f"Vendor: {brand_config['vendor']} | Salida: {brand_config['output_filename']}")
+    st.sidebar.caption(f"Vendor: segun marca del producto | Salida: {brand_config['output_filename']}")
     operation_mode = st.sidebar.radio(
         "Tipo de operacion",
         ["Carga completa", "Actualizacion puntual"],
@@ -2277,10 +2400,11 @@ api_version = "{DEFAULT_API_VERSION}"
                         for value in template_df["Vendor"].dropna()
                         if clean_value(value)
                     }
-                    if catalog_vendors and brand_config["vendor"].lower() not in catalog_vendors:
+                    expected_vendors = expected_catalog_vendors(brand_config)
+                    if catalog_vendors and catalog_vendors.isdisjoint(expected_vendors):
                         st.error(
                             f"El catalogo Matrixify cargado no parece ser de {brand_config['site_label']}. "
-                            f"Vendor esperado: {brand_config['vendor']}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
+                            f"Vendors esperados: {', '.join(sorted(expected_vendors))}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
                         )
                         st.stop()
 
@@ -2399,10 +2523,11 @@ api_version = "{DEFAULT_API_VERSION}"
                         for value in template_df["Vendor"].dropna()
                         if clean_value(value)
                     }
-                    if catalog_vendors and brand_config["vendor"].lower() not in catalog_vendors:
+                    expected_vendors = expected_catalog_vendors(brand_config)
+                    if catalog_vendors and catalog_vendors.isdisjoint(expected_vendors):
                         st.error(
                             f"El catalogo Matrixify cargado no parece ser de {brand_config['site_label']}. "
-                            f"Vendor esperado: {brand_config['vendor']}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
+                            f"Vendors esperados: {', '.join(sorted(expected_vendors))}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
                         )
                         st.stop()
 

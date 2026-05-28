@@ -41,6 +41,60 @@ BRAND_IMAGE_FOLDERS = {
     "VANS": "VANS",
 }
 
+BRAND_DISPLAY_NAMES = {
+    "ACCESORIOS HP": "Hush Puppies",
+    "COLUMBIA": "Columbia",
+    "HUSH PUPPIES": "Hush Puppies",
+    "HUSH PUPPIES KIDS": "Hush Puppies",
+    "KEDS": "Keds",
+    "MOUNTAIN HARDWEAR": "Mountain Hardwear",
+    "PATAGONIA": "Patagonia",
+    "ROCKFORD": "Rockford",
+    "SOREL": "Sorel",
+    "VANS": "Vans",
+}
+
+SIAL_TAIL_COLUMBIA = [
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "Nuevo o Actualizar (Supermall.pe).1",
+    "Porduct Id - Rockford.pe",
+    "4",
+    "13",
+    "6",
+]
+
+SIAL_TAIL_HUSH = [
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Sku - Supermall.pe",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "2",
+    "13",
+]
+
+SIAL_TAIL_ROCKFORD = [
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Sku - Supermall.pe",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "6",
+    "13",
+]
+
+SIAL_TAIL_VANS = [
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Sku - Supermall.pe",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "103",
+]
+
 
 def _config_clean(value):
     if value is None:
@@ -54,36 +108,48 @@ SITE_CONFIGS = {
         "site_label": "Columbia.pe",
         "allowed_arti_brands": ["COLUMBIA"],
         "vendor": "columbiape",
+        "legacy_vendors": ["columbiape"],
         "store_domain": "Columbia.pe",
         "image_folder": "COLUMBIA",
         "output_filename": "matrixify_columbia_generado.xlsx",
+        "sial_tail_columns": SIAL_TAIL_COLUMBIA,
+        "sial_active_columns": ["4", "13", "6"],
     },
     "rockford": {
         "label": "Rockford",
         "site_label": "Rockford.pe",
         "allowed_arti_brands": ["COLUMBIA", "ROCKFORD", "PATAGONIA", "SOREL", "MOUNTAIN HARDWEAR"],
         "vendor": "rockfordpe",
+        "legacy_vendors": ["rockfordpe"],
         "store_domain": "Rockford.pe",
         "image_folder": "ROCKFORD",
         "output_filename": "matrixify_rockford_generado.xlsx",
+        "sial_tail_columns": SIAL_TAIL_ROCKFORD,
+        "sial_active_columns": ["6", "13"],
     },
     "hush_puppies": {
         "label": "Hush Puppies",
         "site_label": "HushPuppies.pe",
         "allowed_arti_brands": ["HUSH PUPPIES", "HUSH PUPPIES KIDS", "ACCESORIOS HP", "KEDS", "ROCKFORD"],
         "vendor": "hushpuppiespe",
+        "legacy_vendors": ["hushpuppiespe"],
         "store_domain": "HushPuppies.pe",
         "image_folder": "HUSH PUPPIES",
         "output_filename": "matrixify_hush_puppies_generado.xlsx",
+        "sial_tail_columns": SIAL_TAIL_HUSH,
+        "sial_active_columns": ["2", "13"],
     },
     "vans": {
         "label": "Vans",
         "site_label": "Vans.pe",
         "allowed_arti_brands": ["VANS"],
-        "vendor": "vanspe",
+        "vendor": "Vans",
+        "legacy_vendors": ["vanspe", "Vans"],
         "store_domain": "Vans.pe",
         "image_folder": "VANS",
         "output_filename": "matrixify_vans_generado.xlsx",
+        "sial_tail_columns": SIAL_TAIL_VANS,
+        "sial_active_columns": ["103"],
     },
 }
 
@@ -93,6 +159,14 @@ BRAND_CONFIGS = SITE_CONFIGS
 def normalize_brand_name(value):
     text = _config_clean(value).upper()
     replacements = {
+        "á": "a",
+        "é": "e",
+        "í": "i",
+        "ó": "o",
+        "ú": "u",
+        "ñ": "n",
+        "™": "",
+        "®": "",
         "Ã": "A",
         "Ã‰": "E",
         "Ã": "I",
@@ -112,12 +186,20 @@ def normalize_brand_name(value):
     return text.strip()
 
 
+def brand_display_name(value, fallback=""):
+    normalized = normalize_brand_name(value)
+    if normalized in BRAND_DISPLAY_NAMES:
+        return BRAND_DISPLAY_NAMES[normalized]
+    return _config_clean(value) or fallback
+
+
 def get_brand_config(site="columbia", overrides=None):
     key = _config_clean(site).lower().replace(" ", "_") or "columbia"
     base = SITE_CONFIGS.get(key, SITE_CONFIGS["columbia"]).copy()
     base["site_key"] = key
     base["allowed_arti_brands"] = [normalize_brand_name(value) for value in base.get("allowed_arti_brands", [])]
     base["arti_brand"] = ", ".join(base["allowed_arti_brands"])
+    base["legacy_vendors"] = [_config_clean(value).lower() for value in base.get("legacy_vendors", [])]
     if overrides:
         for field, value in overrides.items():
             if _config_clean(value):
@@ -343,6 +425,14 @@ def format_technology(value):
     text = clean(value)
     if not text:
         return ""
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                items = [clean(item) for item in parsed if clean(item)]
+                return json.dumps(items, ensure_ascii=False)
+        except Exception:
+            pass
     items = [item.strip() for item in text.split(",") if item.strip()]
     return json.dumps(items, ensure_ascii=False)
 
@@ -391,6 +481,21 @@ def format_technology_logos(value):
             logos.append(logo)
             seen.add(logo)
     return ", ".join(logos)
+
+
+def valid_price(value):
+    text = clean(value).replace(",", ".")
+    if not text:
+        return ""
+    try:
+        number = float(text)
+    except ValueError:
+        return clean(value)
+    if number <= 0:
+        return ""
+    if number.is_integer():
+        return str(int(number))
+    return text
 
 
 def strip_html(value):
@@ -547,13 +652,14 @@ def final_variant_filter(output_df, sial_df, issues_df):
     return output_df, sial_df, pd.DataFrame(issues)
 
 
-def sial_product_bullets(product, product_type, color_web, tech_col, brand_config=None):
+def sial_product_bullets(product, product_type, color_web, tech_col, brand_config=None, brand_label=""):
     brand_config = brand_config or get_brand_config()
+    brand_label = clean(brand_label) or brand_config["label"]
     pieces = [
         ("Tipo De Producto", product_type),
         ("Género", product_gender(product)),
         ("Color", color_web),
-        ("Marca", brand_config["label"]),
+        ("Marca", brand_label),
     ]
     technology = product_technology(product, tech_col)
     if technology:
@@ -561,8 +667,9 @@ def sial_product_bullets(product, product_type, color_web, tech_col, brand_confi
     return ", ".join(f"{label} | {value}" for label, value in pieces if clean(value))
 
 
-def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None):
+def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None, brand_label=""):
     brand_config = brand_config or get_brand_config()
+    brand_label = clean(brand_label) or brand_config["label"]
     model, color = split_model_color(key)
     product_type = clean(product.get("Type"))
     color_web = clean(product.get("Color Web"))
@@ -570,14 +677,14 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
     body_html = build_body_html(product)
     image_url = product_images[0] if product_images else ""
     existing_id = clean(existing_product.get("ID"))
-    return {
+    row = {
         "Cod. Modelo": model,
         "Cod. Color": color,
         "Talla": variant["__SIZE"],
         "Product Name ": title,
         "Product Bullets": first_non_empty(
             product.get("Product Bullets"),
-            sial_product_bullets(product, product_type, color_web, tech_col, brand_config),
+            sial_product_bullets(product, product_type, color_web, tech_col, brand_config, brand_label),
         ),
         "Product Description": first_non_empty(product.get("Product Description"), strip_html(body_html)),
         "Image URL": image_url,
@@ -599,7 +706,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Colecciones ": clean(product.get("Colecciones ")),
         "Temporada ": clean(product.get("Temporada ")) or clean(product.get("Temporada")),
         "Modelo": clean(product.get("Modelo")),
-        "Marca": brand_config["label"],
+        "Marca": brand_label,
         "Tecnologias ": product_technology(product, tech_col),
         "Caracteristicas": clean(product.get("Caracteristicas")),
         "Tipo de Boardshort": clean(product.get("Tipo de Boardshort")),
@@ -619,16 +726,19 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Adicional 10": clean(product.get("Adicional 10")),
         "Mod-Col": key,
         "Sku - Sial": clean(variant.get("CODINT_MA")),
-        f"Nuevo o Actualizar ({brand_config['store_domain']})": "Actualizar" if existing_id else "Crear",
-        f"Porduct Id - {brand_config['store_domain']}": existing_id,
-        "Nuevo o Actualizar (Supermall.pe)": "Crear",
-        "Porduct Id - Supermall.pe": "",
-        "Nuevo o Actualizar (Supermall.pe).1": "Crear",
-        "Porduct Id - Rockford.pe": "",
-        "4": 1,
-        "13": 1,
-        "6": 1,
     }
+    for column in brand_config.get("sial_tail_columns", []):
+        if column.startswith("Nuevo o Actualizar"):
+            row[column] = "Actualizar" if existing_id else "Crear"
+        elif column.startswith("Porduct Id"):
+            row[column] = existing_id if brand_config["store_domain"] in column else ""
+        elif column.startswith("Sku -"):
+            row[column] = clean(variant.get("CODINT_MA"))
+        elif column in brand_config.get("sial_active_columns", []):
+            row[column] = 1
+        else:
+            row[column] = ""
+    return row
 
 
 def html_list(value):
@@ -815,6 +925,8 @@ def build_new_type_warnings(input_df):
         ("Type", "Type"),
         ("Metafield custom.tipo", "Metafield: custom.tipo [single_line_text_field]"),
     ]
+    if not tech_col:
+        tech_col = first_existing(input_df, ["METAFIELD TECNOLOGÍAS", "Tecnologias ", "Tecnologías"])
     rows = []
     for label, column in checks:
         if column not in input_df.columns:
@@ -919,14 +1031,16 @@ SIAL_COLUMNS = [
 
 def get_sial_columns(brand_config=None):
     brand_config = brand_config or get_brand_config()
-    return [
-        f"Nuevo o Actualizar ({brand_config['store_domain']})"
-        if column == "Nuevo o Actualizar (Columbia.pe)"
-        else f"Porduct Id - {brand_config['store_domain']}"
-        if column == "Porduct Id - Columbia.pe"
-        else column
-        for column in SIAL_COLUMNS
-    ]
+    tail_start = SIAL_COLUMNS.index("Nuevo o Actualizar (Columbia.pe)")
+    columns = SIAL_COLUMNS[:tail_start] + list(brand_config.get("sial_tail_columns") or SIAL_COLUMNS[tail_start:])
+    deduped = []
+    seen = set()
+    for column in columns:
+        if column in seen:
+            continue
+        deduped.append(column)
+        seen.add(column)
+    return deduped
 
 
 BIGQUERY_ARTI_COLUMN_CANDIDATES = {
@@ -1228,6 +1342,16 @@ def prepare_matrixify_context(matrixify_source):
     end_column = "Metafield: custom.guia_de_tallas [page_reference]"
     if end_column in matrixify_columns:
         matrixify_columns = matrixify_columns[: matrixify_columns.index(end_column) + 1]
+    required_columns = [
+        SIBLINGS_COLUMN,
+        SIBLINGS_COLOR_COLUMN,
+        CUSTOM_SIBLINGS_COLUMN,
+        CUSTOM_SIBLINGS_COLOR_COLUMN,
+        PUBLICATION_DATE_COLUMN,
+    ]
+    for column in required_columns:
+        if column not in matrixify_columns:
+            matrixify_columns.append(column)
     return matrixify_columns, matrixify_df
 
 
@@ -1263,9 +1387,29 @@ def build_existing_lookup(matrixify_df):
                 "Variant Inventory Item ID": clean(row.get("Variant Inventory Item ID")),
                 "Variant ID": clean(row.get("Variant ID")),
                 "Variant Image": row.get("Variant Image", ""),
+                "Variant Price": valid_price(row.get("Variant Price")),
+                "Variant Compare At Price": valid_price(row.get("Variant Compare At Price")),
             }
 
     return product_by_key, product_by_handle, variant_by_sku
+
+
+def first_valid_product_price(existing_rows):
+    if existing_rows is None or existing_rows.empty or "Variant Price" not in existing_rows.columns:
+        return ""
+    for value in existing_rows["Variant Price"]:
+        price = valid_price(value)
+        if price:
+            return price
+    return ""
+
+
+def product_publication_date(product):
+    for column in PUBLICATION_DATE_CANDIDATES:
+        value = clean(product.get(column))
+        if value:
+            return value
+    return ""
 
 
 SKIP_COMPARE_EXCLUDED_COLUMNS = {
@@ -1336,6 +1480,19 @@ def product_is_unchanged(product_rows, existing_rows, columns):
 PRODUCT_KEY_COLUMN = "Metafield: custom.codigo_modelo_color [id]"
 SIBLINGS_COLUMN = "Metafield: theme.siblings [single_line_text_field]"
 SIBLINGS_COLOR_COLUMN = "Metafield: theme.siblings_color [single_line_text_field]"
+CUSTOM_SIBLINGS_COLUMN = "Metafield: custom.siblings [single_line_text_field]"
+CUSTOM_SIBLINGS_COLOR_COLUMN = "Metafield: custom.siblings_color [single_line_text_field]"
+PUBLICATION_DATE_COLUMN = "Publication Publish Date"
+PUBLICATION_DATE_CANDIDATES = [
+    "Publication Publish Date",
+    "Fecha publicación",
+    "Fecha publicacion",
+    "Fecha de publicación",
+    "Fecha de publicacion",
+    "Publish Date",
+    "Publication Date",
+    "Published At",
+]
 
 
 def _catalog_product_rows(matrixify_df):
@@ -1492,6 +1649,9 @@ def build_matrixify_updates(
                     {
                         SIBLINGS_COLUMN: siblings_by_model[model],
                         SIBLINGS_COLOR_COLUMN: clean(product.get(SIBLINGS_COLOR_COLUMN)),
+                        CUSTOM_SIBLINGS_COLUMN: siblings_by_model[model],
+                        CUSTOM_SIBLINGS_COLOR_COLUMN: clean(product.get(CUSTOM_SIBLINGS_COLOR_COLUMN))
+                        or clean(product.get(SIBLINGS_COLOR_COLUMN)),
                     },
                 )
             )
@@ -1712,6 +1872,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         product_type = clean(product.get("Type"))
         technology_value = product.get(tech_col) if tech_col else ""
         color_web = clean(product.get("Color Web"))
+        product_brand_label = brand_display_name(product.get(brand_column) if brand_column else "", brand_config["label"])
+        publication_date = product_publication_date(product)
+        siblings_value = siblings_by_model.get(product["__MODEL"], handle)
         image_alt = f"{title} {color_web}".strip()
         existing_product = product_by_key.get(key) or product_by_handle.get(handle) or {}
         existing_handle = existing_product.get("Handle") or handle
@@ -1720,6 +1883,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             if not matrixify_df.empty and "Handle" in matrixify_df.columns
             else pd.DataFrame()
         )
+        product_price_fallback = first_valid_product_price(existing_rows)
         product_rows = []
         product_sial_rows = []
 
@@ -1735,6 +1899,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             output = {column: "" for column in matrixify_columns}
             variant_sku = clean(variant.get("CODINT_MA"))
             existing_variant = variant_by_sku.get(variant_sku, {})
+            variant_price = (
+                valid_price(variant.get("Precio"))
+                or valid_price(existing_variant.get("Variant Price"))
+                or product_price_fallback
+            )
+            variant_compare_at_price = valid_price(existing_variant.get("Variant Compare At Price"))
 
             output.update(
                 {
@@ -1743,15 +1913,16 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     "Command": "MERGE",
                     "Title": title,
                     "Body HTML": body_html if is_first else "",
-                    "Vendor": brand_config["vendor"],
+                    "Vendor": product_brand_label,
                     "Type": product_type,
                     "Tags": tags,
                     "Tags Command": "REPLACE",
                     "Status": "Active",
-                    "Published": "TRUE" if clean(variant.get("Precio")) else "FALSE",
+                    "Published": "TRUE" if variant_price else "FALSE",
                     "Created At": existing_product.get("Created At", ""),
                     "Updated At": existing_product.get("Updated At", ""),
                     "Published At": existing_product.get("Published At", ""),
+                    PUBLICATION_DATE_COLUMN: publication_date,
                     "Published Scope": "web",
                     "Gift Card": "FALSE",
                     "URL": existing_product.get("URL", ""),
@@ -1774,8 +1945,8 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     "Variant SKU": variant_sku,
                     "Variant Barcode": clean(variant.get("CodBarras")),
                     "Variant Image": existing_variant.get("Variant Image", ""),
-                    "Variant Price": clean(variant.get("Precio")),
-                    "Variant Compare At Price": "",
+                    "Variant Price": variant_price,
+                    "Variant Compare At Price": variant_compare_at_price,
                 }
             )
 
@@ -1796,9 +1967,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                             product.get("Metafield: custom.color_forus [single_line_text_field]")
                         ),
                         "Metafield: theme.siblings_color [single_line_text_field]": color_web,
-                        "Metafield: theme.siblings [single_line_text_field]": siblings_by_model.get(
-                            product["__MODEL"], handle
-                        ),
+                        "Metafield: theme.siblings [single_line_text_field]": siblings_value,
+                        "Metafield: custom.siblings_color [single_line_text_field]": color_web,
+                        "Metafield: custom.siblings [single_line_text_field]": siblings_value,
                         "Metafield: custom.grupo_color [single_line_text_field]": clean(
                             product.get("Metafield: custom.grupo_color [single_line_text_field]")
                         ),
@@ -1835,7 +2006,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
 
             product_rows.append(output)
             product_sial_rows.append(
-                build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config)
+                build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config, product_brand_label)
             )
 
         if existing_product.get("ID") and product_is_unchanged(product_rows, existing_rows, matrixify_columns):

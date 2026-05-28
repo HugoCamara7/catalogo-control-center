@@ -367,6 +367,107 @@ def fetch_metaobject_definitions(config, max_items=250):
     return records
 
 
+def fetch_metafield_definition(config, owner_type, namespace, key):
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query MetafieldDefinitionForMatrixify($ownerType: MetafieldOwnerType!, $namespace: String!, $key: String!) {
+      metafieldDefinition(identifier: { ownerType: $ownerType, namespace: $namespace, key: $key }) {
+        id
+        name
+        namespace
+        key
+        type {
+          name
+        }
+        validations {
+          name
+          value
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        query,
+        {"ownerType": owner_type, "namespace": namespace, "key": key},
+        api_version=api_version,
+        timeout=45,
+    )
+    return data.get("metafieldDefinition") or {}
+
+
+def fetch_metaobjects_for_definition(config, definition_id, max_items=1000):
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query MetaobjectsByDefinitionForMatrixify($id: ID!, $first: Int!, $after: String) {
+      metaobjectDefinition(id: $id) {
+        id
+        type
+        metaobjects(first: $first, after: $after) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            id
+            handle
+            type
+            displayName
+            fields {
+              key
+              value
+              reference {
+                ... on MediaImage {
+                  image {
+                    url
+                  }
+                }
+                ... on GenericFile {
+                  url
+                }
+              }
+              references(first: 10) {
+                nodes {
+                  ... on MediaImage {
+                    image {
+                      url
+                    }
+                  }
+                  ... on GenericFile {
+                    url
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    records = []
+    after = None
+    while len(records) < max_items:
+        data = graphql_request(
+            shop_domain,
+            token,
+            query,
+            {"id": definition_id, "first": min(250, max_items - len(records)), "after": after},
+            api_version=api_version,
+            timeout=45,
+        )
+        definition = data.get("metaobjectDefinition") or {}
+        metaobjects = definition.get("metaobjects") or {}
+        records.extend(metaobjects.get("nodes") or [])
+        page_info = metaobjects.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    return records
+
+
 def product_update(config, product_id, title=None, body_html=None, tags=None, vendor=None, product_type=None, status=None):
     shop_domain, api_version, token = _client(config)
     input_data = {"id": product_id}
@@ -587,7 +688,16 @@ def staged_upload_image(config, filename, mime_type, image_bytes):
         shop_domain,
         token,
         mutation,
-        {"input": [{"filename": clean(filename) or "product_image.jpg", "mimeType": clean(mime_type) or "image/jpeg", "resource": "IMAGE"}]},
+        {
+            "input": [
+                {
+                    "filename": clean(filename) or "product_image.jpg",
+                    "httpMethod": "PUT",
+                    "mimeType": clean(mime_type) or "image/jpeg",
+                    "resource": "IMAGE",
+                }
+            ]
+        },
         api_version=api_version,
         timeout=45,
     )
@@ -601,6 +711,7 @@ def staged_upload_image(config, filename, mime_type, image_bytes):
     target = targets[0]
     headers = {item.get("name"): item.get("value") for item in target.get("parameters") or [] if item.get("name")}
     headers["Content-Type"] = headers.get("content_type") or clean(mime_type) or "image/jpeg"
+    headers["Content-Length"] = str(len(image_bytes))
     request = Request(target.get("url"), data=image_bytes, headers=headers, method="PUT")
     try:
         with urlopen(request, timeout=60) as response:
@@ -692,9 +803,9 @@ def wait_file_statuses(config, file_ids, attempts=8, delay_seconds=3):
     return statuses
 
 
-def product_set_files(config, product_id, file_ids):
-    file_ids = [clean(file_id) for file_id in file_ids if clean(file_id)]
-    if not file_ids:
+def product_set_files(config, product_id, files):
+    files = [file_input for file_input in files if file_input]
+    if not files:
         return {}
     shop_domain, api_version, token = _client(config)
     mutation = """
@@ -714,7 +825,7 @@ def product_set_files(config, product_id, file_ids):
         shop_domain,
         token,
         mutation,
-        {"input": {"id": product_id, "files": [{"originalSource": file_id, "contentType": "IMAGE"} for file_id in file_ids]}},
+        {"input": {"id": product_id, "files": files}},
         api_version=api_version,
         timeout=60,
     )

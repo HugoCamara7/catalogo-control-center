@@ -290,18 +290,6 @@ def fetch_metaobjects(config, metaobject_type, max_items=1000):
                 url
               }
             }
-            references(first: 10) {
-              nodes {
-                ... on MediaImage {
-                  image {
-                    url
-                  }
-                }
-                ... on GenericFile {
-                  url
-                }
-              }
-            }
           }
         }
       }
@@ -425,18 +413,6 @@ def fetch_metaobjects_for_definition(config, definition_id, max_items=1000):
                 }
                 ... on GenericFile {
                   url
-                }
-              }
-              references(first: 10) {
-                nodes {
-                  ... on MediaImage {
-                    image {
-                      url
-                    }
-                  }
-                  ... on GenericFile {
-                    url
-                  }
                 }
               }
             }
@@ -848,6 +824,9 @@ def product_variants_bulk_create(config, product_id, variants, strategy=None):
           id
           legacyResourceId
           sku
+          price
+          compareAtPrice
+          barcode
           selectedOptions {
             name
             value

@@ -157,6 +157,24 @@ def clean_value(value):
     return str(value).strip()
 
 
+def coalesce_duplicate_columns(df):
+    if df is None or not isinstance(df, pd.DataFrame) or not df.columns.duplicated().any():
+        return df
+    result = pd.DataFrame(index=df.index)
+    for column in dict.fromkeys(df.columns):
+        same_name = df.loc[:, df.columns == column]
+        if same_name.shape[1] == 1:
+            result[column] = same_name.iloc[:, 0]
+            continue
+        merged = same_name.iloc[:, 0].copy()
+        for index in range(1, same_name.shape[1]):
+            candidate = same_name.iloc[:, index]
+            empty_mask = merged.map(clean_value) == ""
+            merged.loc[empty_mask] = candidate.loc[empty_mask]
+        result[column] = merged
+    return result
+
+
 def expected_catalog_vendors(brand_config):
     values = {
         clean_value(brand_config.get("vendor")).lower(),
@@ -544,6 +562,12 @@ def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
 
 
 def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_df=None, skipped_df=None, sial_df=None):
+    matrixify_df = coalesce_duplicate_columns(matrixify_df)
+    summary_df = coalesce_duplicate_columns(summary_df)
+    issues_df = coalesce_duplicate_columns(issues_df)
+    type_warnings_df = coalesce_duplicate_columns(type_warnings_df)
+    skipped_df = coalesce_duplicate_columns(skipped_df)
+    sial_df = coalesce_duplicate_columns(sial_df)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         matrixify_df.to_excel(writer, index=False, sheet_name="Products")
@@ -2575,6 +2599,12 @@ api_version = "{DEFAULT_API_VERSION}"
                 matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
                     input_df, arti_df, template_df, brand_config=brand_config
                 )
+                matrixify_df = coalesce_duplicate_columns(matrixify_df)
+                summary_df = coalesce_duplicate_columns(summary_df)
+                issues_df = coalesce_duplicate_columns(issues_df)
+                type_warnings_df = coalesce_duplicate_columns(type_warnings_df)
+                skipped_df = coalesce_duplicate_columns(skipped_df)
+                sial_df = coalesce_duplicate_columns(sial_df)
                 if complete_source == "Shopify API":
                     matrixify_df = apply_shopify_siblings_to_matrixify(
                         matrixify_df,
@@ -2594,6 +2624,12 @@ api_version = "{DEFAULT_API_VERSION}"
                 type_warnings_df = st.session_state.get("complete_type_warnings_df", pd.DataFrame())
                 skipped_df = st.session_state.get("complete_skipped_df", pd.DataFrame())
                 sial_df = st.session_state.get("complete_sial_df", pd.DataFrame())
+                matrixify_df = coalesce_duplicate_columns(matrixify_df)
+                summary_df = coalesce_duplicate_columns(summary_df)
+                issues_df = coalesce_duplicate_columns(issues_df)
+                type_warnings_df = coalesce_duplicate_columns(type_warnings_df)
+                skipped_df = coalesce_duplicate_columns(skipped_df)
+                sial_df = coalesce_duplicate_columns(sial_df)
 
                 if matrixify_df.empty:
                     st.error("No se pudo generar ninguna fila Matrixify. Revisa la hoja Revision.")

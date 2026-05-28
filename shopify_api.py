@@ -262,6 +262,45 @@ def fetch_products(config, max_products=5000):
     return records
 
 
+def fetch_metaobjects(config, metaobject_type, max_items=1000):
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query MetaobjectsForMatrixify($type: String!, $first: Int!, $after: String) {
+      metaobjects(type: $type, first: $first, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          handle
+          type
+        }
+      }
+    }
+    """
+    records = []
+    after = None
+    while len(records) < max_items:
+        data = graphql_request(
+            shop_domain,
+            token,
+            query,
+            variables={"type": metaobject_type, "first": min(250, max_items - len(records)), "after": after},
+            api_version=api_version,
+            timeout=45,
+        )
+        metaobjects = data.get("metaobjects") or {}
+        records.extend(metaobjects.get("nodes") or [])
+        page_info = metaobjects.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    return records
+
+
 def product_update(config, product_id, title=None, body_html=None, tags=None, vendor=None, product_type=None, status=None):
     shop_domain, api_version, token = _client(config)
     input_data = {"id": product_id}
@@ -331,3 +370,69 @@ def metafields_set(config, metafields):
     if errors:
         raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
     return payload.get("metafields") or []
+
+
+def product_delete_media(config, product_id, media_ids):
+    media_ids = [clean(media_id) for media_id in media_ids if clean(media_id)]
+    if not media_ids:
+        return []
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation ProductDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
+      productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
+        deletedMediaIds
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"productId": product_id, "mediaIds": media_ids},
+        api_version=api_version,
+    )
+    payload = data.get("productDeleteMedia") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("deletedMediaIds") or []
+
+
+def product_create_media(config, product_id, image_urls):
+    urls = [clean(url) for url in image_urls if clean(url)]
+    if not urls:
+        return []
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+      productCreateMedia(productId: $productId, media: $media) {
+        media {
+          id
+          mediaContentType
+          status
+        }
+        mediaUserErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    media = [{"mediaContentType": "IMAGE", "originalSource": url} for url in urls]
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"productId": product_id, "media": media},
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("productCreateMedia") or {}
+    errors = payload.get("mediaUserErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("media") or []

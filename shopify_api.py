@@ -290,6 +290,18 @@ def fetch_metaobjects(config, metaobject_type, max_items=1000):
                 url
               }
             }
+            references(first: 10) {
+              nodes {
+                ... on MediaImage {
+                  image {
+                    url
+                  }
+                }
+                ... on GenericFile {
+                  url
+                }
+              }
+            }
           }
         }
       }
@@ -549,6 +561,168 @@ def product_create_media(config, product_id, image_urls):
     if errors:
         raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
     return payload.get("media") or []
+
+
+def staged_upload_image(config, filename, mime_type, image_bytes):
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation StagedUploadsCreate($input: [StagedUploadInput!]!) {
+      stagedUploadsCreate(input: $input) {
+        stagedTargets {
+          url
+          resourceUrl
+          parameters {
+            name
+            value
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"input": [{"filename": clean(filename) or "product_image.jpg", "mimeType": clean(mime_type) or "image/jpeg", "resource": "IMAGE"}]},
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("stagedUploadsCreate") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    targets = payload.get("stagedTargets") or []
+    if not targets:
+        raise ShopifyApiError("Shopify no devolvio staged upload target.")
+    target = targets[0]
+    headers = {item.get("name"): item.get("value") for item in target.get("parameters") or [] if item.get("name")}
+    headers["Content-Type"] = headers.get("content_type") or clean(mime_type) or "image/jpeg"
+    request = Request(target.get("url"), data=image_bytes, headers=headers, method="PUT")
+    try:
+        with urlopen(request, timeout=60) as response:
+            if response.status >= 400:
+                raise ShopifyApiError(f"Staged upload respondio HTTP {response.status}.")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ShopifyApiError(f"Staged upload respondio HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise ShopifyApiError(f"No se pudo subir imagen a Shopify staged upload: {exc.reason}") from exc
+    return clean(target.get("resourceUrl"))
+
+
+def file_create(config, original_source, alt="", content_type="IMAGE"):
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation FileCreateForMatrixify($files: [FileCreateInput!]!) {
+      fileCreate(files: $files) {
+        files {
+          id
+          fileStatus
+          alt
+          ... on MediaImage {
+            image {
+              url
+            }
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"files": [{"originalSource": clean(original_source), "alt": clean(alt), "contentType": clean(content_type) or "IMAGE"}]},
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("fileCreate") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("files") or []
+
+
+def fetch_file_statuses(config, file_ids):
+    file_ids = [clean(file_id) for file_id in file_ids if clean(file_id)]
+    if not file_ids:
+        return []
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query FileStatusesForMatrixify($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        id
+        ... on File {
+          fileStatus
+          preview {
+            image {
+              url
+            }
+          }
+        }
+      }
+    }
+    """
+    data = graphql_request(shop_domain, token, query, {"ids": file_ids}, api_version=api_version, timeout=45)
+    return [node for node in data.get("nodes") or [] if node]
+
+
+def wait_file_statuses(config, file_ids, attempts=8, delay_seconds=3):
+    statuses = []
+    pending = set(file_ids)
+    for attempt in range(max(1, attempts)):
+        statuses = fetch_file_statuses(config, list(pending))
+        pending = {
+            clean(file_node.get("id"))
+            for file_node in statuses
+            if clean(file_node.get("id")) and clean(file_node.get("fileStatus")).upper() in ("UPLOADED", "PROCESSING")
+        }
+        if not pending:
+            break
+        if attempt < attempts - 1:
+            time.sleep(delay_seconds)
+    return statuses
+
+
+def product_set_files(config, product_id, file_ids):
+    file_ids = [clean(file_id) for file_id in file_ids if clean(file_id)]
+    if not file_ids:
+        return {}
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation ProductSetFilesForMatrixify($input: ProductSetInput!) {
+      productSet(input: $input, synchronous: true) {
+        product {
+          id
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"input": {"id": product_id, "files": [{"originalSource": file_id, "contentType": "IMAGE"} for file_id in file_ids]}},
+        api_version=api_version,
+        timeout=60,
+    )
+    payload = data.get("productSet") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("product") or {}
 
 
 def product_variants_bulk_create(config, product_id, variants, strategy=None):

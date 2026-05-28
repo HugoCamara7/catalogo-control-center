@@ -275,6 +275,11 @@ def fetch_metaobjects(config, metaobject_type, max_items=1000):
           id
           handle
           type
+          displayName
+          fields {
+            key
+            value
+          }
         }
       }
     }

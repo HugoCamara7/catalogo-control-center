@@ -19,9 +19,12 @@ from generate_columbia_matrixify import (
 from shopify_api import (
     DEFAULT_API_VERSION,
     ShopifyApiError,
+    fetch_metaobjects,
     fetch_products,
     metafields_set,
     normalize_shop_domain,
+    product_create_media,
+    product_delete_media,
     product_update,
     test_connection,
 )
@@ -795,6 +798,41 @@ def shopify_products_to_matrixify_df(shopify_products):
     return pd.DataFrame(rows, columns=default_columns)
 
 
+def siblings_by_model_from_shopify(shopify_products):
+    products_df = pd.DataFrame(shopify_products)
+    if products_df.empty or "Mod-Col" not in products_df.columns or "Handle" not in products_df.columns:
+        return {}
+    products_df["__MODEL"] = products_df["Mod-Col"].map(lambda value: clean_value(value).upper().rsplit("-", 1)[0])
+    return (
+        products_df[products_df["__MODEL"] != ""]
+        .groupby("__MODEL")["Handle"]
+        .apply(lambda values: ", ".join(dict.fromkeys(clean_value(value) for value in values if clean_value(value))))
+        .to_dict()
+    )
+
+
+def apply_shopify_siblings_to_matrixify(matrixify_df, shopify_products):
+    siblings_map = siblings_by_model_from_shopify(shopify_products)
+    if matrixify_df is None or matrixify_df.empty or not siblings_map:
+        return matrixify_df
+    df = matrixify_df.copy()
+    key_column = "Metafield: custom.codigo_modelo_color [id]"
+    siblings_column = "Metafield: theme.siblings [single_line_text_field]"
+    if key_column not in df.columns or siblings_column not in df.columns:
+        return df
+
+    def sibling_value(row):
+        key = clean_value(row.get(key_column)).upper()
+        if not key:
+            return row.get(siblings_column)
+        model = key.rsplit("-", 1)[0]
+        return siblings_map.get(model, row.get(siblings_column))
+
+    top_rows = df["Handle"].map(clean_value) != ""
+    df.loc[top_rows, siblings_column] = df.loc[top_rows].apply(sibling_value, axis=1)
+    return df
+
+
 def _product_gid(value):
     text = clean_value(value)
     if not text:
@@ -808,7 +846,80 @@ def _metafield_type_from_column(column):
     match = re.search(r"\[(.+?)\]$", clean_value(column))
     if not match:
         return "single_line_text_field"
-    return match.group(1)
+    matrixify_type = match.group(1)
+    if matrixify_type == "id":
+        return "single_line_text_field"
+    return matrixify_type
+
+
+def _metafield_can_write_direct(column):
+    namespace, key = _metafield_namespace_key(column)
+    field_type = _metafield_type_from_column(column)
+    if field_type in ("page_reference", "list.page_reference"):
+        return False, f"{namespace}.{key} requiere IDs internos de Shopify; se mantiene para Matrixify"
+    return True, ""
+
+
+def _metaobject_gid_lookup(shopify_config, metaobject_type):
+    cache_key = f"metaobject_lookup_{clean_value(metaobject_type)}"
+    if cache_key not in st.session_state:
+        records = fetch_metaobjects(shopify_config, metaobject_type)
+        st.session_state[cache_key] = {
+            clean_value(record.get("handle")).lower(): clean_value(record.get("id"))
+            for record in records
+            if clean_value(record.get("handle")) and clean_value(record.get("id"))
+        }
+    return st.session_state[cache_key]
+
+
+def _resolve_metaobject_reference_value(shopify_config, column, value):
+    text = clean_value(value)
+    field_type = _metafield_type_from_column(column)
+    if field_type not in ("metaobject_reference", "list.metaobject_reference") or not text:
+        return text
+
+    references = [item.strip() for item in text.split(",") if item.strip()]
+    gids = []
+    missing = []
+    for reference in references:
+        if reference.startswith("gid://shopify/Metaobject/"):
+            gids.append(reference)
+            continue
+        if "." not in reference:
+            missing.append(reference)
+            continue
+        metaobject_type, handle = reference.split(".", 1)
+        lookup = _metaobject_gid_lookup(shopify_config, metaobject_type)
+        gid = lookup.get(handle.lower())
+        if gid:
+            gids.append(gid)
+        else:
+            missing.append(reference)
+
+    if missing:
+        raise ValueError(f"No encontre metaobjects para: {', '.join(missing)}")
+    if field_type == "list.metaobject_reference":
+        return json.dumps(gids, ensure_ascii=False)
+    return gids[0] if gids else ""
+
+
+def _metafield_value_for_api(column, value, shopify_config=None):
+    text = clean_value(value)
+    field_type = _metafield_type_from_column(column)
+    if field_type in ("metaobject_reference", "list.metaobject_reference"):
+        if shopify_config is None:
+            return text
+        return _resolve_metaobject_reference_value(shopify_config, column, text)
+    if field_type.startswith("list.") and text and not text.startswith("["):
+        items = [item.strip() for item in text.split(",") if item.strip()]
+        return json.dumps(items, ensure_ascii=False)
+    if field_type == "boolean":
+        lowered = text.lower()
+        if lowered in ("true", "1", "yes", "si", "sí"):
+            return "true"
+        if lowered in ("false", "0", "no"):
+            return "false"
+    return text
 
 
 def _metafield_namespace_key(column):
@@ -847,6 +958,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
         handle = clean_value(row.get("Handle"))
         product_id = clean_value(row.get("ID"))
         product_gid = _product_gid(product_id)
+        product_messages = []
+        product_status = "OK"
         if not product_gid:
             rows.append(
                 {
@@ -877,8 +990,10 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 product_type=clean_value(row.get("Type")) or None,
                 status=shopify_status,
             )
+            product_messages.append("Producto actualizado")
 
             metafields = []
+            skipped_metafields = []
             for column in metafield_columns:
                 value = clean_value(row.get(column))
                 if value == "":
@@ -886,25 +1001,60 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 namespace, key = _metafield_namespace_key(column)
                 if not namespace or not key:
                     continue
+                can_write, skip_reason = _metafield_can_write_direct(column)
+                if not can_write:
+                    skipped_metafields.append(skip_reason)
+                    continue
                 metafields.append(
                     {
                         "ownerId": product_gid,
                         "namespace": namespace,
                         "key": key,
                         "type": _metafield_type_from_column(column),
-                        "value": value,
+                        "value": _metafield_value_for_api(column, value, shopify_config),
                     }
                 )
             if metafields:
-                for start in range(0, len(metafields), 25):
-                    metafields_set(shopify_config, metafields[start : start + 25])
+                metafield_ok = 0
+                metafield_errors = []
+                for metafield in metafields:
+                    try:
+                        metafields_set(shopify_config, [metafield])
+                        metafield_ok += 1
+                    except Exception as exc:
+                        metafield_errors.append(f"{metafield['namespace']}.{metafield['key']}: {exc}")
+                if metafield_ok:
+                    product_messages.append(f"{metafield_ok} metafields actualizados")
+                if metafield_errors:
+                    product_status = "PARCIAL"
+                    product_messages.append("Errores metafields: " + " | ".join(metafield_errors[:5]))
+                if skipped_metafields:
+                    product_status = "PARCIAL" if product_status == "OK" else product_status
+                    product_messages.append("Metafields omitidos: " + " | ".join(dict.fromkeys(skipped_metafields)))
+
+            image_urls = [url.strip() for url in clean_value(row.get("Image Src")).split(";") if url.strip()]
+            if image_urls:
+                try:
+                    existing_media_ids = [
+                        media_id.strip()
+                        for media_id in clean_value(row.get("Media IDs")).split(";")
+                        if media_id.strip()
+                    ]
+                    if clean_value(row.get("Image Command")).upper() == "REPLACE" and existing_media_ids:
+                        product_delete_media(shopify_config, product_gid, existing_media_ids)
+                        product_messages.append(f"{len(existing_media_ids)} fotos anteriores eliminadas")
+                    created_media = product_create_media(shopify_config, product_gid, image_urls[:10])
+                    product_messages.append(f"{len(created_media)} fotos enviadas")
+                except Exception as exc:
+                    product_status = "PARCIAL"
+                    product_messages.append(f"Error fotos: {exc}")
 
             rows.append(
                 {
                     "Handle": handle,
                     "ID": product_id,
-                    "Resultado": "OK",
-                    "Mensaje": "Producto/metafields actualizados. Variantes, precios, inventario y media quedan para etapa controlada.",
+                    "Resultado": product_status,
+                    "Mensaje": ". ".join(product_messages) or "Sin cambios aplicados",
                 }
             )
         except Exception as exc:
@@ -1466,6 +1616,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     st.stop()
                 with st.spinner("Leyendo productos y variantes actuales desde Shopify..."):
                     shopify_products = fetch_products(shopify_config)
+                st.session_state["complete_shopify_products"] = shopify_products
                 template_df = shopify_products_to_matrixify_df(shopify_products)
                 template_source = f"Shopify API ({len(shopify_products):,} productos)"
             else:
@@ -1528,6 +1679,11 @@ api_version = "{DEFAULT_API_VERSION}"
                 matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
                     input_df, arti_df, template_df, brand_config=brand_config
                 )
+                if complete_source == "Shopify API":
+                    matrixify_df = apply_shopify_siblings_to_matrixify(
+                        matrixify_df,
+                        st.session_state.get("complete_shopify_products", []),
+                    )
                 st.session_state["complete_matrixify_df"] = matrixify_df
                 st.session_state["complete_summary_df"] = summary_df
                 st.session_state["complete_issues_df"] = issues_df

@@ -1,4 +1,5 @@
 import json
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -279,6 +280,16 @@ def fetch_metaobjects(config, metaobject_type, max_items=1000):
           fields {
             key
             value
+            reference {
+              ... on MediaImage {
+                image {
+                  url
+                }
+              }
+              ... on GenericFile {
+                url
+              }
+            }
           }
         }
       }
@@ -391,6 +402,65 @@ def product_update(config, product_id, title=None, body_html=None, tags=None, ve
         return run_product_update("ProductInput")
 
 
+def product_create(
+    config,
+    title,
+    handle=None,
+    body_html=None,
+    tags=None,
+    vendor=None,
+    product_type=None,
+    status=None,
+    option_name="Talla",
+    option_values=None,
+):
+    shop_domain, api_version, token = _client(config)
+    product = {"title": clean(title) or "Producto sin titulo"}
+    if handle:
+        product["handle"] = clean(handle)
+    if body_html:
+        product["descriptionHtml"] = clean(body_html)
+    if tags is not None:
+        product["tags"] = tags
+    if vendor:
+        product["vendor"] = clean(vendor)
+    if product_type:
+        product["productType"] = clean(product_type)
+    if status:
+        product["status"] = clean(status).upper()
+
+    values = [clean(value) for value in option_values or [] if clean(value)]
+    if values:
+        product["productOptions"] = [
+            {
+                "name": clean(option_name) or "Talla",
+                "values": [{"name": value} for value in dict.fromkeys(values)],
+            }
+        ]
+
+    mutation = """
+    mutation ProductCreate($product: ProductCreateInput!) {
+      productCreate(product: $product) {
+        product {
+          id
+          legacyResourceId
+          handle
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(shop_domain, token, mutation, {"product": product}, api_version=api_version, timeout=45)
+    payload = data.get("productCreate") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("product") or {}
+
+
 def metafields_set(config, metafields):
     shop_domain, api_version, token = _client(config)
     mutation = """
@@ -479,3 +549,90 @@ def product_create_media(config, product_id, image_urls):
     if errors:
         raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
     return payload.get("media") or []
+
+
+def product_variants_bulk_create(config, product_id, variants, strategy=None):
+    variants = [variant for variant in variants if variant]
+    if not variants:
+        return []
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation ProductVariantsBulkCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!, $strategy: ProductVariantsBulkCreateStrategy) {
+      productVariantsBulkCreate(productId: $productId, variants: $variants, strategy: $strategy) {
+        productVariants {
+          id
+          legacyResourceId
+          sku
+          selectedOptions {
+            name
+            value
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"productId": product_id, "variants": variants, "strategy": strategy},
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("productVariantsBulkCreate") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("productVariants") or []
+
+
+def fetch_media_statuses(config, media_ids):
+    media_ids = [clean(media_id) for media_id in media_ids if clean(media_id)]
+    if not media_ids:
+        return []
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query MediaStatusesForMatrixify($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        id
+        ... on MediaImage {
+          status
+          mediaErrors {
+            code
+            details
+            message
+          }
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        query,
+        {"ids": media_ids},
+        api_version=api_version,
+        timeout=45,
+    )
+    return [node for node in data.get("nodes") or [] if node]
+
+
+def wait_media_statuses(config, media_ids, attempts=6, delay_seconds=3):
+    statuses = []
+    pending = set(media_ids)
+    for attempt in range(max(1, attempts)):
+        statuses = fetch_media_statuses(config, list(pending))
+        pending = {
+            clean(media.get("id"))
+            for media in statuses
+            if clean(media.get("id")) and clean(media.get("status")).upper() in ("UPLOADED", "PROCESSING")
+        }
+        if not pending:
+            break
+        if attempt < attempts - 1:
+            time.sleep(delay_seconds)
+    return statuses

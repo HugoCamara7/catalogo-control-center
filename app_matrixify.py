@@ -19,6 +19,7 @@ from generate_columbia_matrixify import (
 from shopify_api import (
     DEFAULT_API_VERSION,
     ShopifyApiError,
+    fetch_metaobject_definitions,
     fetch_metaobjects,
     fetch_products,
     metafields_set,
@@ -846,10 +847,7 @@ def _metafield_type_from_column(column):
     match = re.search(r"\[(.+?)\]$", clean_value(column))
     if not match:
         return "single_line_text_field"
-    matrixify_type = match.group(1)
-    if matrixify_type == "id":
-        return "single_line_text_field"
-    return matrixify_type
+    return match.group(1)
 
 
 def _metafield_can_write_direct(column):
@@ -872,6 +870,30 @@ def _metaobject_gid_lookup(shopify_config, metaobject_type):
     return st.session_state[cache_key]
 
 
+def _all_metaobject_gid_lookup(shopify_config):
+    cache_key = "metaobject_lookup_all"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    by_handle = {}
+    by_reference = {}
+    definitions = fetch_metaobject_definitions(shopify_config)
+    for definition in definitions:
+        metaobject_type = clean_value(definition.get("type"))
+        if not metaobject_type:
+            continue
+        try:
+            lookup = _metaobject_gid_lookup(shopify_config, metaobject_type)
+        except Exception:
+            continue
+        for handle, gid in lookup.items():
+            by_handle.setdefault(handle.lower(), gid)
+            by_reference[f"{metaobject_type}.{handle}".lower()] = gid
+
+    st.session_state[cache_key] = {"by_handle": by_handle, "by_reference": by_reference}
+    return st.session_state[cache_key]
+
+
 def _resolve_metaobject_reference_value(shopify_config, column, value):
     text = clean_value(value)
     field_type = _metafield_type_from_column(column)
@@ -891,6 +913,13 @@ def _resolve_metaobject_reference_value(shopify_config, column, value):
         metaobject_type, handle = reference.split(".", 1)
         lookup = _metaobject_gid_lookup(shopify_config, metaobject_type)
         gid = lookup.get(handle.lower())
+        if not gid:
+            fallback_lookup = _all_metaobject_gid_lookup(shopify_config)
+            gid = (
+                fallback_lookup["by_reference"].get(reference.lower())
+                or fallback_lookup["by_handle"].get(handle.lower())
+                or fallback_lookup["by_handle"].get(reference.lower())
+            )
         if gid:
             gids.append(gid)
         else:
@@ -994,6 +1023,7 @@ def apply_full_product_updates(shopify_config, matrixify_df):
 
             metafields = []
             skipped_metafields = []
+            metafield_errors = []
             for column in metafield_columns:
                 value = clean_value(row.get(column))
                 if value == "":
@@ -1005,18 +1035,22 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 if not can_write:
                     skipped_metafields.append(skip_reason)
                     continue
+                try:
+                    api_value = _metafield_value_for_api(column, value, shopify_config)
+                except Exception as exc:
+                    metafield_errors.append(f"{namespace}.{key}: {exc}")
+                    continue
                 metafields.append(
                     {
                         "ownerId": product_gid,
                         "namespace": namespace,
                         "key": key,
                         "type": _metafield_type_from_column(column),
-                        "value": _metafield_value_for_api(column, value, shopify_config),
+                        "value": api_value,
                     }
                 )
             if metafields:
                 metafield_ok = 0
-                metafield_errors = []
                 for metafield in metafields:
                     try:
                         metafields_set(shopify_config, [metafield])
@@ -1031,6 +1065,9 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 if skipped_metafields:
                     product_status = "PARCIAL" if product_status == "OK" else product_status
                     product_messages.append("Metafields omitidos: " + " | ".join(dict.fromkeys(skipped_metafields)))
+            elif metafield_errors:
+                product_status = "PARCIAL"
+                product_messages.append("Errores metafields: " + " | ".join(metafield_errors[:5]))
 
             image_urls = [url.strip() for url in clean_value(row.get("Image Src")).split(";") if url.strip()]
             if image_urls:

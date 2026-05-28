@@ -925,8 +925,6 @@ def build_new_type_warnings(input_df):
         ("Type", "Type"),
         ("Metafield custom.tipo", "Metafield: custom.tipo [single_line_text_field]"),
     ]
-    if not tech_col:
-        tech_col = first_existing(input_df, ["METAFIELD TECNOLOGÍAS", "Tecnologias ", "Tecnologías"])
     rows = []
     for label, column in checks:
         if column not in input_df.columns:
@@ -1822,7 +1820,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     arti = arti[arti["__SIZE"] != ""].copy()
     arti = arti.sort_values(by=["__KEY", "__SIZE"], key=lambda series: series.map(size_sort_key))
 
-    tech_col = first_existing(input_df, ["METAFIELD TECNOLOGÍAS"])
+    tech_col = first_existing(input_df, ["METAFIELD TECNOLOGÍAS", "METAFIELD TECNOLOGÃAS", "Tecnologias ", "Tecnologías"])
     rows = []
     sial_rows = []
     issues = []

@@ -1043,6 +1043,26 @@ def get_sial_columns(brand_config=None):
     return deduped
 
 
+def coalesce_duplicate_columns(df):
+    if df is None or df.empty or not df.columns.duplicated().any():
+        return df
+
+    result = pd.DataFrame(index=df.index)
+    for column in dict.fromkeys(df.columns):
+        same_name = df.loc[:, df.columns == column]
+        if same_name.shape[1] == 1:
+            result[column] = same_name.iloc[:, 0]
+            continue
+
+        merged = same_name.iloc[:, 0].copy()
+        for index in range(1, same_name.shape[1]):
+            candidate = same_name.iloc[:, index]
+            empty_mask = merged.map(clean) == ""
+            merged.loc[empty_mask] = candidate.loc[empty_mask]
+        result[column] = merged
+    return result
+
+
 BIGQUERY_ARTI_COLUMN_CANDIDATES = {
     "CODINT_MA": [
         "CODINT_MA",
@@ -2025,8 +2045,10 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
 
     output_df = pd.DataFrame(rows, columns=matrixify_columns)
     sial_df = pd.DataFrame(sial_rows, columns=get_sial_columns(brand_config))
+    sial_df = coalesce_duplicate_columns(sial_df)
     issues_df = pd.DataFrame(issues)
     output_df, sial_df, issues_df = final_variant_filter(output_df, sial_df, issues_df)
+    sial_df = coalesce_duplicate_columns(sial_df)
     skipped_df = pd.DataFrame(
         skipped_rows,
         columns=["Mod-Col", "Handle", "Filas omitidas", "Motivo"],

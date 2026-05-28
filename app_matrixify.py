@@ -858,15 +858,50 @@ def _metafield_can_write_direct(column):
     return True, ""
 
 
+def _logo_lookup_keys(record):
+    keys = set()
+    candidates = [
+        record.get("handle"),
+        record.get("displayName"),
+    ]
+    for field in record.get("fields") or []:
+        candidates.append(field.get("value"))
+
+    for candidate in candidates:
+        text = clean_value(candidate).lower()
+        if not text:
+            continue
+        normalized = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+        compact = re.sub(r"[^a-z0-9]+", "", text)
+        for key in (text, normalized, compact):
+            if key:
+                keys.add(key)
+                keys.add(f"logo.{key}")
+                keys.add(f"{key}-clb")
+                keys.add(f"logo.{key}-clb")
+        if normalized.endswith("-clb"):
+            base = normalized[:-4]
+            keys.update({base, f"logo.{base}"})
+        if text.startswith("logo."):
+            bare = text.split(".", 1)[1]
+            keys.add(bare)
+            if bare.endswith("-clb"):
+                keys.add(bare[:-4])
+    return keys
+
+
 def _metaobject_gid_lookup(shopify_config, metaobject_type):
     cache_key = f"metaobject_lookup_{clean_value(metaobject_type)}"
     if cache_key not in st.session_state:
         records = fetch_metaobjects(shopify_config, metaobject_type)
-        st.session_state[cache_key] = {
-            clean_value(record.get("handle")).lower(): clean_value(record.get("id"))
-            for record in records
-            if clean_value(record.get("handle")) and clean_value(record.get("id"))
-        }
+        lookup = {}
+        for record in records:
+            gid = clean_value(record.get("id"))
+            if not gid:
+                continue
+            for key in _logo_lookup_keys(record):
+                lookup[key.lower()] = gid
+        st.session_state[cache_key] = lookup
     return st.session_state[cache_key]
 
 
@@ -930,6 +965,14 @@ def _resolve_metaobject_reference_value(shopify_config, column, value):
     if field_type == "list.metaobject_reference":
         return json.dumps(gids, ensure_ascii=False)
     return gids[0] if gids else ""
+
+
+def _shopify_image_url(value):
+    url = clean_value(value)
+    prefix = "https://ecom-imagenes.forus-digital.xyz.peru.s3.amazonaws.com/"
+    if url.startswith(prefix):
+        return "https://s3.amazonaws.com/ecom-imagenes.forus-digital.xyz.peru/" + url[len(prefix):]
+    return url
 
 
 def _metafield_value_for_api(column, value, shopify_config=None):
@@ -1069,7 +1112,11 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 product_status = "PARCIAL"
                 product_messages.append("Errores metafields: " + " | ".join(metafield_errors[:5]))
 
-            image_urls = [url.strip() for url in clean_value(row.get("Image Src")).split(";") if url.strip()]
+            image_urls = [
+                _shopify_image_url(url.strip())
+                for url in clean_value(row.get("Image Src")).split(";")
+                if url.strip()
+            ]
             if image_urls:
                 try:
                     existing_media_ids = [
@@ -1080,7 +1127,9 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     if clean_value(row.get("Image Command")).upper() == "REPLACE" and existing_media_ids:
                         product_delete_media(shopify_config, product_gid, existing_media_ids)
                         product_messages.append(f"{len(existing_media_ids)} fotos anteriores eliminadas")
-                    created_media = product_create_media(shopify_config, product_gid, image_urls[:10])
+                    created_media = []
+                    for image_url in image_urls[:10]:
+                        created_media.extend(product_create_media(shopify_config, product_gid, [image_url]))
                     product_messages.append(f"{len(created_media)} fotos enviadas")
                 except Exception as exc:
                     product_status = "PARCIAL"

@@ -43,6 +43,12 @@ from shopify_api import (
     wait_media_statuses,
 )
 
+try:
+    from shopify_api import fetch_metaobjects_for_definition, fetch_metafield_definition
+except ImportError:
+    fetch_metaobjects_for_definition = None
+    fetch_metafield_definition = None
+
 
 APP_TITLE = "Conversor Matrixify por Tallas"
 DEFAULT_ARTI_PATH = "data/arti.xlsx"
@@ -987,6 +993,64 @@ def _all_metaobject_gid_lookup(shopify_config):
     return st.session_state[cache_key]
 
 
+def _metaobject_definition_ids_from_metafield(shopify_config, namespace, key):
+    cache_key = f"metafield_definition_metaobjects_{namespace}_{key}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    definition_ids = []
+    if fetch_metafield_definition is None:
+        st.session_state[cache_key] = definition_ids
+        return definition_ids
+    try:
+        definition = fetch_metafield_definition(shopify_config, "PRODUCT", namespace, key)
+    except Exception:
+        definition = {}
+    for validation in definition.get("validations") or []:
+        name = clean_value(validation.get("name"))
+        value = clean_value(validation.get("value"))
+        if name not in ("metaobject_definition_id", "metaobject_definition_ids") or not value:
+            continue
+        try:
+            parsed_value = json.loads(value)
+            if isinstance(parsed_value, list):
+                definition_ids.extend(clean_value(item) for item in parsed_value if clean_value(item))
+            elif clean_value(parsed_value):
+                definition_ids.append(clean_value(parsed_value))
+        except Exception:
+            definition_ids.extend(
+                clean_value(item)
+                for item in re.split(r"[,|\s]+", value)
+                if clean_value(item).startswith("gid://shopify/MetaobjectDefinition/")
+            )
+    st.session_state[cache_key] = list(dict.fromkeys(definition_ids))
+    return st.session_state[cache_key]
+
+
+def _metaobject_gid_lookup_for_metafield(shopify_config, namespace, key):
+    cache_key = f"metaobject_lookup_metafield_{namespace}_{key}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    lookup = {}
+    if fetch_metaobjects_for_definition is None:
+        st.session_state[cache_key] = lookup
+        return lookup
+    for definition_id in _metaobject_definition_ids_from_metafield(shopify_config, namespace, key):
+        try:
+            records = fetch_metaobjects_for_definition(shopify_config, definition_id)
+        except Exception:
+            continue
+        for record in records:
+            gid = clean_value(record.get("id"))
+            if not gid:
+                continue
+            for lookup_key in _logo_lookup_keys(record):
+                lookup[lookup_key.lower()] = gid
+    st.session_state[cache_key] = lookup
+    return lookup
+
+
 def _resolve_metaobject_reference_value(shopify_config, column, value):
     text = clean_value(value)
     field_type = _metafield_type_from_column(column)
@@ -1013,6 +1077,13 @@ def _resolve_metaobject_reference_value(shopify_config, column, value):
             gid = lookup.get(candidate)
             if gid:
                 break
+        if not gid:
+            namespace, key = _metafield_namespace_key(column)
+            metafield_lookup = _metaobject_gid_lookup_for_metafield(shopify_config, namespace, key)
+            for candidate in _logo_reference_candidates(reference, handle):
+                gid = metafield_lookup.get(candidate)
+                if gid:
+                    break
         if not gid:
             fallback_lookup = _all_metaobject_gid_lookup(shopify_config)
             for candidate in _logo_reference_candidates(reference, handle):
@@ -1105,6 +1176,63 @@ def _file_status_summary(file_statuses):
         else:
             pending.append(file_node)
     return ready, failed, pending
+
+
+def _file_cdn_url(file_node):
+    image = file_node.get("image") or {}
+    preview = file_node.get("preview") or {}
+    preview_image = preview.get("image") or {}
+    return clean_value(image.get("url")) or clean_value(preview_image.get("url"))
+
+
+def _product_set_files_with_fallback(shopify_config, product_gid, product_files):
+    try:
+        product_set_files(shopify_config, product_gid, product_files)
+        return "productSet staged"
+    except Exception as product_set_exc:
+        cdn_files = []
+        file_errors = []
+        for product_file in product_files:
+            try:
+                created = file_create(
+                    shopify_config,
+                    product_file.get("originalSource"),
+                    alt=product_file.get("alt"),
+                    content_type=product_file.get("contentType") or "IMAGE",
+                )
+                file_ids = [clean_value(file_node.get("id")) for file_node in created if clean_value(file_node.get("id"))]
+                statuses = wait_file_statuses(shopify_config, file_ids) if file_ids else created
+                ready_files, failed_files, pending_files = _file_status_summary(statuses)
+                if failed_files:
+                    file_errors.append(f"{product_file.get('filename')}: archivo fallido")
+                    continue
+                if pending_files and not ready_files:
+                    file_errors.append(f"{product_file.get('filename')}: archivo en procesamiento")
+                    continue
+                source_node = (ready_files or statuses or created or [{}])[0]
+                cdn_url = _file_cdn_url(source_node)
+                if not cdn_url:
+                    file_errors.append(f"{product_file.get('filename')}: sin URL CDN")
+                    continue
+                cdn_files.append(
+                    {
+                        "originalSource": cdn_url,
+                        "alt": product_file.get("alt"),
+                        "filename": product_file.get("filename"),
+                        "contentType": "IMAGE",
+                        "duplicateResolutionMode": "APPEND_UUID",
+                    }
+                )
+            except Exception as exc:
+                file_errors.append(f"{product_file.get('filename')}: {exc}")
+        if cdn_files:
+            product_set_files(shopify_config, product_gid, cdn_files)
+            if file_errors:
+                raise ShopifyApiError(
+                    f"productSet staged fallo ({product_set_exc}); fallback CDN parcial: {' | '.join(file_errors[:3])}"
+                )
+            return "fileCreate CDN"
+        raise ShopifyApiError(f"productSet staged fallo: {product_set_exc}; fallback sin archivos: {' | '.join(file_errors[:3])}")
 
 
 def _media_status_summary(media_statuses):
@@ -1479,55 +1607,32 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     if clean_value(row.get("Image Command")).upper() == "REPLACE" and existing_media_ids:
                         product_delete_media(shopify_config, product_gid, existing_media_ids)
                         product_messages.append(f"{len(existing_media_ids)} fotos anteriores eliminadas")
-                    created_files = []
-                    ready_files = []
-                    failed_files = []
-                    pending_files = []
+                    product_files = []
                     image_errors = []
                     for image_index, raw_image_url in enumerate(raw_image_urls[:10], start=1):
                         try:
                             image_bytes, mime_type, filename, source_url = _download_image_bytes(raw_image_url)
                             resource_url = staged_upload_image(shopify_config, filename, mime_type, image_bytes)
-                            file_batch = file_create(
-                                shopify_config,
-                                resource_url,
-                                alt=clean_value(row.get("Image Alt Text")) or clean_value(row.get("Title")),
+                            product_files.append(
+                                {
+                                    "originalSource": resource_url,
+                                    "alt": clean_value(row.get("Image Alt Text")) or clean_value(row.get("Title")),
+                                    "filename": filename,
+                                    "contentType": "IMAGE",
+                                    "duplicateResolutionMode": "APPEND_UUID",
+                                }
                             )
-                            created_files.extend(file_batch)
-                            file_ids = [clean_value(file_node.get("id")) for file_node in file_batch if clean_value(file_node.get("id"))]
-                            file_statuses = wait_file_statuses(shopify_config, file_ids) if file_ids else []
-                            ready_batch, failed_batch, pending_batch = _file_status_summary(file_statuses)
-                            ready_files.extend(ready_batch)
-                            failed_files.extend(failed_batch)
-                            pending_files.extend(pending_batch)
-                            if not ready_batch and not pending_batch:
-                                image_errors.append(f"foto {image_index}: Shopify no dejo el archivo listo ({source_url})")
                         except Exception as exc:
                             image_errors.append(f"foto {image_index}: {exc}")
-                    ready_file_ids = [clean_value(file_node.get("id")) for file_node in ready_files if clean_value(file_node.get("id"))]
-                    if ready_file_ids:
-                        product_set_files(shopify_config, product_gid, ready_file_ids)
+                    if product_files:
+                        route = _product_set_files_with_fallback(shopify_config, product_gid, product_files)
+                        product_messages.append(f"{len(product_files)} fotos enviadas por {route}")
                     if image_errors:
                         product_status = "PARCIAL"
                         product_messages.append(
                             f"Fotos no cargadas: {len(image_errors)} de {min(len(raw_image_urls), 10)}. "
                             f"Detalle: {' | '.join(image_errors[:3])}"
                         )
-                    if failed_files:
-                        product_status = "PARCIAL"
-                        product_messages.append(
-                            f"Archivos con error Shopify: {len(failed_files)} de {len(created_files)}"
-                        )
-                    if pending_files:
-                        product_status = "PARCIAL"
-                        product_messages.append(
-                            f"Archivos aun en procesamiento: {len(pending_files)} de {len(created_files)}"
-                        )
-                    if ready_files:
-                        product_messages.append(f"{len(ready_files)} fotos listas en CDN Shopify y asociadas")
-                    elif created_files and not failed_files and not pending_files:
-                        product_status = "PARCIAL"
-                        product_messages.append(f"{len(created_files)} archivos recibidos por Shopify, pero sin estado final confirmado")
                 except Exception as exc:
                     product_status = "PARCIAL"
                     product_messages.append(f"Error fotos: {exc}")

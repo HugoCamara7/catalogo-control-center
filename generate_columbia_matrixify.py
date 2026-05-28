@@ -484,6 +484,11 @@ def is_zero_size(value):
     return False
 
 
+def is_internal_k_size(value):
+    size = clean(normalize_size(value)).upper().replace(" ", "")
+    return bool(re.fullmatch(r"K\d+", size))
+
+
 def sial_product_bullets(product, product_type, color_web, tech_col, brand_config=None):
     brand_config = brand_config or get_brand_config()
     pieces = [
@@ -1594,6 +1599,11 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             if "__SIZE" in variants.columns and should_block_zero_size
             else 0
         )
+        internal_k_size_count = (
+            int(variants["__SIZE"].map(is_internal_k_size).sum())
+            if "__SIZE" in variants.columns
+            else 0
+        )
         if zero_size_count:
             variants = variants[~variants["__SIZE"].map(is_zero_size)].copy()
             issues.append(
@@ -1602,6 +1612,16 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     "Problema": "Se omitieron variantes con talla 0 en vestuario/calzado",
                     "Fila input": input_index + 2,
                     "Cantidad": zero_size_count,
+                }
+            )
+        if internal_k_size_count:
+            variants = variants[~variants["__SIZE"].map(is_internal_k_size)].copy()
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Se omitieron variantes con talla interna K",
+                    "Fila input": input_index + 2,
+                    "Cantidad": internal_k_size_count,
                 }
             )
         if variants.empty:
@@ -1646,6 +1666,8 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         product_sial_rows = []
 
         for position, (_, variant) in enumerate(variants.iterrows(), start=1):
+            if is_internal_k_size(variant.get("__SIZE")) or is_internal_k_size(variant.get("TALNUM_MA")):
+                continue
             if should_block_zero_size and (
                 is_zero_size(variant.get("__SIZE")) or is_zero_size(variant.get("TALNUM_MA"))
             ):

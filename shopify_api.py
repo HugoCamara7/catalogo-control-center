@@ -590,6 +590,115 @@ def product_variants_bulk_create(config, product_id, variants, strategy=None):
     return payload.get("productVariants") or []
 
 
+def fetch_product_options_and_variants(config, product_id):
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query ProductOptionsAndVariantsForMatrixify($id: ID!) {
+      product(id: $id) {
+        id
+        options {
+          id
+          name
+          position
+          values
+          optionValues {
+            id
+            name
+            hasVariants
+          }
+        }
+        variants(first: 250) {
+          nodes {
+            id
+            legacyResourceId
+            sku
+            selectedOptions {
+              name
+              value
+            }
+          }
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        query,
+        {"id": product_id},
+        api_version=api_version,
+        timeout=45,
+    )
+    return data.get("product") or {}
+
+
+def product_options_reorder(config, product_id, options):
+    options = [option for option in options if option]
+    if not options:
+        return {}
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation ProductOptionsReorder($productId: ID!, $options: [OptionReorderInput!]!) {
+      productOptionsReorder(productId: $productId, options: $options) {
+        product {
+          id
+        }
+        userErrors {
+          field
+          message
+          code
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"productId": product_id, "options": options},
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("productOptionsReorder") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("product") or {}
+
+
+def product_variants_bulk_reorder(config, product_id, positions):
+    positions = [position for position in positions if position]
+    if not positions:
+        return {}
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation ProductVariantsBulkReorder($productId: ID!, $positions: [ProductVariantPositionInput!]!) {
+      productVariantsBulkReorder(productId: $productId, positions: $positions) {
+        product {
+          id
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"productId": product_id, "positions": positions},
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("productVariantsBulkReorder") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("product") or {}
+
+
 def fetch_media_statuses(config, media_ids):
     media_ids = [clean(media_id) for media_id in media_ids if clean(media_id)]
     if not media_ids:

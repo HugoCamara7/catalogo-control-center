@@ -301,6 +301,44 @@ def fetch_metaobjects(config, metaobject_type, max_items=1000):
     return records
 
 
+def fetch_metaobject_definitions(config, max_items=250):
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query MetaobjectDefinitionsForMatrixify($first: Int!, $after: String) {
+      metaobjectDefinitions(first: $first, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          type
+          name
+        }
+      }
+    }
+    """
+    records = []
+    after = None
+    while len(records) < max_items:
+        data = graphql_request(
+            shop_domain,
+            token,
+            query,
+            variables={"first": min(250, max_items - len(records)), "after": after},
+            api_version=api_version,
+            timeout=45,
+        )
+        definitions = data.get("metaobjectDefinitions") or {}
+        records.extend(definitions.get("nodes") or [])
+        page_info = definitions.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    return records
+
+
 def product_update(config, product_id, title=None, body_html=None, tags=None, vendor=None, product_type=None, status=None):
     shop_domain, api_version, token = _client(config)
     input_data = {"id": product_id}

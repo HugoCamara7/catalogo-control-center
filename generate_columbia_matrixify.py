@@ -489,6 +489,64 @@ def is_internal_k_size(value):
     return bool(re.fullmatch(r"K\d+", size))
 
 
+def _row_blocks_zero_size(row):
+    return category_blocks_zero_size(row)
+
+
+def final_variant_filter(output_df, sial_df, issues_df):
+    issues = [] if issues_df is None or issues_df.empty else issues_df.to_dict("records")
+
+    if output_df is not None and not output_df.empty and "Option1 Value" in output_df.columns:
+        k_mask = output_df["Option1 Value"].map(is_internal_k_size)
+        if k_mask.any():
+            issues.append(
+                {
+                    "Mod-Col": "Salida final",
+                    "Problema": "Se eliminaron filas finales con talla interna K",
+                    "Fila input": "",
+                    "Cantidad": int(k_mask.sum()),
+                }
+            )
+            output_df = output_df[~k_mask].copy()
+
+        zero_mask = output_df.apply(
+            lambda row: is_zero_size(row.get("Option1 Value")) and _row_blocks_zero_size(row),
+            axis=1,
+        )
+        if zero_mask.any():
+            issues.append(
+                {
+                    "Mod-Col": "Salida final",
+                    "Problema": "Se eliminaron filas finales con talla 0/000 en vestuario/calzado",
+                    "Fila input": "",
+                    "Cantidad": int(zero_mask.sum()),
+                }
+            )
+            output_df = output_df[~zero_mask].copy()
+
+    if sial_df is not None and not sial_df.empty and "Talla" in sial_df.columns:
+        k_mask = sial_df["Talla"].map(is_internal_k_size)
+        if k_mask.any():
+            sial_df = sial_df[~k_mask].copy()
+        def sial_zero_blocked(row):
+            if not is_zero_size(row.get("Talla")):
+                return False
+            text = normalize_text(
+                " ".join(
+                    clean(row.get(column))
+                    for column in ("Categoria ", "Sub Categoria", "Tipo de Producto")
+                    if column in row.index
+                )
+            )
+            return "calzado" in text or "vestuario" in text
+
+        zero_mask = sial_df.apply(sial_zero_blocked, axis=1)
+        if zero_mask.any():
+            sial_df = sial_df[~zero_mask].copy()
+
+    return output_df, sial_df, pd.DataFrame(issues)
+
+
 def sial_product_bullets(product, product_type, color_web, tech_col, brand_config=None):
     brand_config = brand_config or get_brand_config()
     pieces = [
@@ -1797,6 +1855,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     output_df = pd.DataFrame(rows, columns=matrixify_columns)
     sial_df = pd.DataFrame(sial_rows, columns=get_sial_columns(brand_config))
     issues_df = pd.DataFrame(issues)
+    output_df, sial_df, issues_df = final_variant_filter(output_df, sial_df, issues_df)
     skipped_df = pd.DataFrame(
         skipped_rows,
         columns=["Mod-Col", "Handle", "Filas omitidas", "Motivo"],

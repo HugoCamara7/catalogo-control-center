@@ -4,6 +4,9 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
@@ -24,10 +27,13 @@ from shopify_api import (
     fetch_products,
     metafields_set,
     normalize_shop_domain,
+    product_create,
     product_create_media,
     product_delete_media,
     product_update,
+    product_variants_bulk_create,
     test_connection,
+    wait_media_statuses,
 )
 
 
@@ -866,8 +872,24 @@ def _logo_lookup_keys(record):
     ]
     for field in record.get("fields") or []:
         candidates.append(field.get("value"))
+        reference = field.get("reference") or {}
+        image = reference.get("image") or {}
+        candidates.append(reference.get("url"))
+        candidates.append(image.get("url"))
 
+    expanded_candidates = []
     for candidate in candidates:
+        expanded_candidates.append(candidate)
+        text = clean_value(candidate).lower()
+        if not text:
+            continue
+        parsed_path = unquote(urlparse(text).path or "")
+        if parsed_path:
+            filename = Path(parsed_path).stem
+            if filename:
+                expanded_candidates.append(filename)
+
+    for candidate in expanded_candidates:
         text = clean_value(candidate).lower()
         if not text:
             continue
@@ -888,6 +910,31 @@ def _logo_lookup_keys(record):
             if bare.endswith("-clb"):
                 keys.add(bare[:-4])
     return keys
+
+
+def _logo_reference_candidates(reference, handle=""):
+    values = [reference, handle]
+    candidates = set()
+    for value in values:
+        text = clean_value(value).lower()
+        if not text:
+            continue
+        if text.startswith("logo."):
+            text = text.split(".", 1)[1]
+        base_values = {text}
+        if text.endswith("-clb"):
+            base_values.add(text[:-4])
+        for base in list(base_values):
+            normalized = re.sub(r"[^a-z0-9]+", "-", base).strip("-")
+            compact = re.sub(r"[^a-z0-9]+", "", base)
+            spaced = normalized.replace("-", " ")
+            for item in (base, normalized, compact, spaced):
+                if item:
+                    candidates.add(item)
+                    candidates.add(f"logo.{item}")
+                    candidates.add(f"{item}-clb")
+                    candidates.add(f"logo.{item}-clb")
+    return {candidate.lower() for candidate in candidates if candidate}
 
 
 def _metaobject_gid_lookup(shopify_config, metaobject_type):
@@ -946,15 +993,21 @@ def _resolve_metaobject_reference_value(shopify_config, column, value):
             missing.append(reference)
             continue
         metaobject_type, handle = reference.split(".", 1)
-        lookup = _metaobject_gid_lookup(shopify_config, metaobject_type)
-        gid = lookup.get(handle.lower())
+        try:
+            lookup = _metaobject_gid_lookup(shopify_config, metaobject_type)
+        except Exception:
+            lookup = {}
+        gid = ""
+        for candidate in _logo_reference_candidates(reference, handle):
+            gid = lookup.get(candidate)
+            if gid:
+                break
         if not gid:
             fallback_lookup = _all_metaobject_gid_lookup(shopify_config)
-            gid = (
-                fallback_lookup["by_reference"].get(reference.lower())
-                or fallback_lookup["by_handle"].get(handle.lower())
-                or fallback_lookup["by_handle"].get(reference.lower())
-            )
+            for candidate in _logo_reference_candidates(reference, handle):
+                gid = fallback_lookup["by_reference"].get(candidate) or fallback_lookup["by_handle"].get(candidate)
+                if gid:
+                    break
         if gid:
             gids.append(gid)
         else:
@@ -973,6 +1026,64 @@ def _shopify_image_url(value):
     if url.startswith(prefix):
         return "https://s3.amazonaws.com/ecom-imagenes.forus-digital.xyz.peru/" + url[len(prefix):]
     return url
+
+
+def _image_url_candidates(value):
+    original = clean_value(value)
+    converted = _shopify_image_url(original)
+    return list(dict.fromkeys([url for url in (converted, original) if url]))
+
+
+def _url_is_reachable_image(url, timeout=8):
+    headers = {"User-Agent": "Mozilla/5.0", "Range": "bytes=0-512"}
+    for method in ("HEAD", "GET"):
+        request = Request(url, method=method, headers=headers)
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                content_type = clean_value(response.headers.get("Content-Type")).lower()
+                return response.status < 400 and content_type.startswith("image/")
+        except HTTPError as exc:
+            if exc.code in (403, 405) and method == "HEAD":
+                continue
+            return False
+        except (URLError, TimeoutError, OSError):
+            return False
+    return False
+
+
+def _first_reachable_image_url(value):
+    candidates = _image_url_candidates(value)
+    for url in candidates:
+        if _url_is_reachable_image(url):
+            return url, ""
+    return "", candidates[0] if candidates else clean_value(value)
+
+
+def _media_status_summary(media_statuses):
+    ready = []
+    failed = []
+    pending = []
+    for media in media_statuses or []:
+        status = clean_value(media.get("status")).upper()
+        if status == "READY":
+            ready.append(media)
+        elif status == "FAILED":
+            failed.append(media)
+        else:
+            pending.append(media)
+    return ready, failed, pending
+
+
+def _media_error_text(media):
+    errors = media.get("mediaErrors") or []
+    if not errors:
+        return clean_value(media.get("status")) or "sin detalle"
+    messages = []
+    for error in errors[:2]:
+        detail = clean_value(error.get("message")) or clean_value(error.get("details")) or clean_value(error.get("code"))
+        if detail:
+            messages.append(detail)
+    return "; ".join(messages) if messages else "sin detalle"
 
 
 def _metafield_value_for_api(column, value, shopify_config=None):
@@ -1014,6 +1125,116 @@ def _top_product_rows(matrixify_df):
     return df.drop_duplicates(subset=["__HANDLE"], keep="first").copy()
 
 
+def _variant_rows_for_handle(matrixify_df, handle):
+    if matrixify_df.empty or "Handle" not in matrixify_df.columns:
+        return pd.DataFrame()
+    current_handle = ""
+    matching_indexes = []
+    target_handle = clean_value(handle)
+    for index, row in matrixify_df.iterrows():
+        row_handle = clean_value(row.get("Handle"))
+        if row_handle:
+            current_handle = row_handle
+        if current_handle == target_handle:
+            matching_indexes.append(index)
+    return matrixify_df.loc[matching_indexes].copy() if matching_indexes else pd.DataFrame()
+
+
+def _variant_bulk_input_from_row(row):
+    size = clean_value(row.get("Option1 Value"))
+    if not size:
+        return None
+
+    option_name = clean_value(row.get("Option1 Name")) or "Talla"
+    variant = {
+        "optionValues": [
+            {
+                "optionName": option_name,
+                "name": size,
+            }
+        ]
+    }
+    price = clean_value(row.get("Variant Price"))
+    compare_at_price = clean_value(row.get("Variant Compare At Price"))
+    barcode = clean_value(row.get("Variant Barcode"))
+    sku = clean_value(row.get("Variant SKU"))
+    if price:
+        variant["price"] = price
+    if compare_at_price:
+        variant["compareAtPrice"] = compare_at_price
+    if barcode:
+        variant["barcode"] = barcode
+    if sku:
+        variant["inventoryItem"] = {"sku": sku, "tracked": True}
+    return variant
+
+
+def _missing_variant_inputs(product_variant_rows):
+    if product_variant_rows.empty:
+        return []
+
+    existing_skus = set()
+    existing_sizes = set()
+    for _, row in product_variant_rows.iterrows():
+        if not clean_value(row.get("Variant ID")):
+            continue
+        sku = clean_value(row.get("Variant SKU")).upper()
+        size = clean_value(row.get("Option1 Value")).upper()
+        if sku:
+            existing_skus.add(sku)
+        if size:
+            existing_sizes.add(size)
+
+    variants = []
+    seen_keys = set()
+    for _, variant_row in product_variant_rows.iterrows():
+        if clean_value(variant_row.get("Variant ID")):
+            continue
+        sku = clean_value(variant_row.get("Variant SKU"))
+        size = clean_value(variant_row.get("Option1 Value"))
+        if not size:
+            continue
+        if sku and sku.upper() in existing_skus:
+            continue
+        if size.upper() in existing_sizes:
+            continue
+        dedupe_key = (sku.upper(), size.upper())
+        if dedupe_key in seen_keys:
+            continue
+        payload = _variant_bulk_input_from_row(variant_row)
+        if payload:
+            variants.append(payload)
+            seen_keys.add(dedupe_key)
+    return variants
+
+
+def _all_variant_inputs(product_variant_rows):
+    variants = []
+    seen_keys = set()
+    for _, variant_row in product_variant_rows.iterrows():
+        sku = clean_value(variant_row.get("Variant SKU"))
+        size = clean_value(variant_row.get("Option1 Value"))
+        if not size:
+            continue
+        dedupe_key = (sku.upper(), size.upper())
+        if dedupe_key in seen_keys:
+            continue
+        payload = _variant_bulk_input_from_row(variant_row)
+        if payload:
+            variants.append(payload)
+            seen_keys.add(dedupe_key)
+    return variants
+
+
+def _variant_option_values(product_variant_rows):
+    values = []
+    for _, row in product_variant_rows.iterrows():
+        size = clean_value(row.get("Option1 Value"))
+        if size and size not in values:
+            values.append(size)
+    return values
+
+
 def apply_full_product_updates(shopify_config, matrixify_df):
     rows = []
     product_rows = _top_product_rows(matrixify_df)
@@ -1032,16 +1253,7 @@ def apply_full_product_updates(shopify_config, matrixify_df):
         product_gid = _product_gid(product_id)
         product_messages = []
         product_status = "OK"
-        if not product_gid:
-            rows.append(
-                {
-                    "Handle": handle,
-                    "ID": product_id,
-                    "Resultado": "OMITIDO",
-                    "Mensaje": "Producto nuevo o sin ID. Creacion directa queda pendiente; usar Matrixify por ahora.",
-                }
-            )
-            continue
+        product_variant_rows = _variant_rows_for_handle(matrixify_df, handle)
 
         try:
             status = clean_value(row.get("Status")).upper()
@@ -1052,17 +1264,34 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             else:
                 shopify_status = None
 
-            product_update(
-                shopify_config,
-                product_gid,
-                title=clean_value(row.get("Title")) or None,
-                body_html=clean_value(row.get("Body HTML")) or None,
-                tags=_split_tags(row.get("Tags")) if clean_value(row.get("Tags")) else None,
-                vendor=clean_value(row.get("Vendor")) or None,
-                product_type=clean_value(row.get("Type")) or None,
-                status=shopify_status,
-            )
-            product_messages.append("Producto actualizado")
+            if product_gid:
+                product_update(
+                    shopify_config,
+                    product_gid,
+                    title=clean_value(row.get("Title")) or None,
+                    body_html=clean_value(row.get("Body HTML")) or None,
+                    tags=_split_tags(row.get("Tags")) if clean_value(row.get("Tags")) else None,
+                    vendor=clean_value(row.get("Vendor")) or None,
+                    product_type=clean_value(row.get("Type")) or None,
+                    status=shopify_status,
+                )
+                product_messages.append("Producto actualizado")
+            else:
+                created_product = product_create(
+                    shopify_config,
+                    title=clean_value(row.get("Title")) or handle,
+                    handle=handle or None,
+                    body_html=clean_value(row.get("Body HTML")) or None,
+                    tags=_split_tags(row.get("Tags")) if clean_value(row.get("Tags")) else None,
+                    vendor=clean_value(row.get("Vendor")) or None,
+                    product_type=clean_value(row.get("Type")) or None,
+                    status=shopify_status or "ACTIVE",
+                    option_name=clean_value(row.get("Option1 Name")) or "Talla",
+                    option_values=_variant_option_values(product_variant_rows),
+                )
+                product_gid = clean_value(created_product.get("id"))
+                product_id = clean_value(created_product.get("legacyResourceId")) or product_id
+                product_messages.append("Producto nuevo creado")
 
             metafields = []
             skipped_metafields = []
@@ -1112,12 +1341,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 product_status = "PARCIAL"
                 product_messages.append("Errores metafields: " + " | ".join(metafield_errors[:5]))
 
-            image_urls = [
-                _shopify_image_url(url.strip())
-                for url in clean_value(row.get("Image Src")).split(";")
-                if url.strip()
-            ]
-            if image_urls:
+            raw_image_urls = [url.strip() for url in clean_value(row.get("Image Src")).split(";") if url.strip()]
+            if raw_image_urls:
                 try:
                     existing_media_ids = [
                         media_id.strip()
@@ -1128,12 +1353,102 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                         product_delete_media(shopify_config, product_gid, existing_media_ids)
                         product_messages.append(f"{len(existing_media_ids)} fotos anteriores eliminadas")
                     created_media = []
-                    for image_url in image_urls[:10]:
-                        created_media.extend(product_create_media(shopify_config, product_gid, [image_url]))
-                    product_messages.append(f"{len(created_media)} fotos enviadas")
+                    ready_media = []
+                    failed_media = []
+                    pending_media = []
+                    image_errors = []
+                    for image_index, raw_image_url in enumerate(raw_image_urls[:10], start=1):
+                        image_loaded = False
+                        candidate_errors = []
+                        failed_candidates = []
+                        for image_url in _image_url_candidates(raw_image_url):
+                            try:
+                                media_batch = product_create_media(shopify_config, product_gid, [image_url])
+                                created_media.extend(media_batch)
+                                media_ids = [
+                                    clean_value(media.get("id"))
+                                    for media in media_batch
+                                    if clean_value(media.get("id"))
+                                ]
+                                media_statuses = wait_media_statuses(shopify_config, media_ids) if media_ids else []
+                                ready_batch, failed_batch, pending_batch = _media_status_summary(media_statuses)
+                                ready_media.extend(ready_batch)
+                                pending_media.extend(pending_batch)
+                                if ready_batch or pending_batch:
+                                    image_loaded = True
+                                    break
+                                if failed_batch:
+                                    failed_candidates.extend(failed_batch)
+                                    candidate_errors.append(_media_error_text(failed_batch[0]))
+                                    continue
+                                candidate_errors.append("Shopify recibio la foto, pero no devolvio estado final")
+                            except Exception as exc:
+                                candidate_errors.append(str(exc))
+                        if not image_loaded:
+                            failed_media.extend(failed_candidates)
+                            image_errors.append(f"foto {image_index}: {' / '.join(candidate_errors[:2])}")
+                    if image_errors:
+                        product_status = "PARCIAL"
+                        product_messages.append(
+                            f"Fotos no cargadas: {len(image_errors)} de {min(len(raw_image_urls), 10)}. "
+                            f"Detalle: {' | '.join(image_errors[:3])}"
+                        )
+                    if failed_media:
+                        product_status = "PARCIAL"
+                        product_messages.append(
+                            f"Fotos con error Shopify: {len(failed_media)} de {len(created_media)}. "
+                            f"Detalle: {_media_error_text(failed_media[0])}"
+                        )
+                    if pending_media:
+                        product_status = "PARCIAL"
+                        product_messages.append(
+                            f"Fotos aun en procesamiento: {len(pending_media)} de {len(created_media)}"
+                        )
+                    if ready_media:
+                        product_messages.append(f"{len(ready_media)} fotos listas en Shopify")
+                    elif created_media and not failed_media and not pending_media:
+                        product_status = "PARCIAL"
+                        product_messages.append(f"{len(created_media)} fotos recibidas por Shopify, pero sin estado final confirmado")
                 except Exception as exc:
                     product_status = "PARCIAL"
                     product_messages.append(f"Error fotos: {exc}")
+
+            missing_variants = (
+                _missing_variant_inputs(product_variant_rows)
+                if clean_value(row.get("ID"))
+                else _all_variant_inputs(product_variant_rows)
+            )
+            if missing_variants:
+                try:
+                    created_variants = []
+                    variant_errors = []
+                    for variant_input in missing_variants:
+                        size_label = ", ".join(
+                            clean_value(option.get("name"))
+                            for option in variant_input.get("optionValues", [])
+                            if clean_value(option.get("name"))
+                        )
+                        try:
+                            created_variants.extend(
+                                product_variants_bulk_create(
+                                    shopify_config,
+                                    product_gid,
+                                    [variant_input],
+                                    strategy="REMOVE_STANDALONE_VARIANT" if not clean_value(row.get("ID")) else None,
+                                )
+                            )
+                        except Exception as exc:
+                            variant_errors.append(f"{size_label or 'variante'}: {exc}")
+                    if created_variants:
+                        product_messages.append(
+                            f"{len(created_variants)} variantes creadas de {len(missing_variants)} faltantes"
+                        )
+                    if variant_errors:
+                        product_status = "PARCIAL"
+                        product_messages.append("Errores variantes: " + " | ".join(variant_errors[:5]))
+                except Exception as exc:
+                    product_status = "PARCIAL"
+                    product_messages.append(f"Error variantes: {exc}")
 
             rows.append(
                 {
@@ -1519,7 +1834,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         )
                         st.stop()
 
-                if st.button(f"Generar vista previa {update_label}", type="primary"):
+                if st.button(f"Analizar actualizacion: {update_label}", type="primary"):
                     with st.spinner("Leyendo productos actuales desde Shopify..."):
                         shopify_products = fetch_products(shopify_config)
                     preview_df, issues_df, matrixify_df = build_shopify_update_preview(
@@ -1558,7 +1873,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         }
                     )
                     st.download_button(
-                        "Descargar Excel de vista previa",
+                        "Descargar estructura Matrixify",
                         data=excel_bytes,
                         file_name=f"vista_previa_{update_operation}_{brand_config['site_key']}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1566,16 +1881,16 @@ api_version = "{DEFAULT_API_VERSION}"
 
                     can_apply = update_operation in ("tags", "title", "body", "siblings") and preview_df is not None and not preview_df.empty
                     if update_operation == "photos":
-                        st.info("Fotos directas por API quedan desactivadas por seguridad. Descarga la hoja Matrixify fotos para cargarla por Matrixify.")
+                        st.info("Para actualizacion puntual de fotos, descarga la estructura Matrixify y revisa las URLs antes de importar.")
                     elif can_apply:
                         confirm_apply = st.checkbox("Confirmo que revise la vista previa y quiero aplicar en Shopify")
-                        if confirm_apply and st.button("Aplicar cambios en Shopify", type="primary"):
-                            with st.spinner("Aplicando cambios en Shopify..."):
+                        if confirm_apply and st.button("Sincronizar Shopify", type="primary"):
+                            with st.spinner("Sincronizando cambios en Shopify..."):
                                 result_df = apply_shopify_preview(shopify_config, preview_df)
                             st.session_state["shopify_apply_result_df"] = result_df
                             st.dataframe(result_df, use_container_width=True)
                             st.download_button(
-                                "Descargar resultado de aplicacion",
+                                "Descargar reporte de sincronizacion",
                                 data=dataframe_to_excel_bytes({"Resultado": result_df}),
                                 file_name=f"resultado_shopify_{update_operation}_{brand_config['site_key']}.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1609,7 +1924,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         )
                         st.stop()
 
-                if st.button(f"Generar actualizacion {update_label}", type="primary"):
+                if st.button(f"Analizar actualizacion: {update_label}", type="primary"):
                     update_arti_df = None
                     if update_operation == "photos":
                         try:
@@ -1637,7 +1952,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         st.dataframe(issues_df, use_container_width=True)
                     excel_bytes = update_to_excel_bytes(matrixify_df, issues_df)
                     st.download_button(
-                        "Descargar actualizacion Matrixify",
+                        "Descargar estructura Matrixify",
                         data=excel_bytes,
                         file_name=f"actualizacion_{update_operation}_{brand_config['site_key']}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1759,9 +2074,9 @@ api_version = "{DEFAULT_API_VERSION}"
             col2.metric("Marcas detectadas", len(detected_brands))
             st.markdown("</div>", unsafe_allow_html=True)
 
-            st.markdown('<div class="section-card"><h2>Procesar y generar Excel</h2>', unsafe_allow_html=True)
-            st.write(f"Convierte el input en una salida Matrixify para {brand_config['site_label']} y agrega una hoja Carga Sial.")
-            if st.button(f"Generar Matrixify {brand_config['site_label']}", type="primary"):
+            st.markdown('<div class="section-card"><h2>Analizar y preparar carga</h2>', unsafe_allow_html=True)
+            st.write(f"Analiza el input para {brand_config['site_label']}, arma la estructura Matrixify y agrega la hoja Carga Sial.")
+            if st.button("Analizar input", type="primary"):
                 matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
                     input_df, arti_df, template_df, brand_config=brand_config
                 )
@@ -1812,7 +2127,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df
                 )
                 st.download_button(
-                    "Descargar Excel de vista previa",
+                    "Descargar estructura Matrixify",
                     data=excel_bytes,
                     file_name=brand_config["output_filename"],
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1820,19 +2135,19 @@ api_version = "{DEFAULT_API_VERSION}"
 
                 if complete_source == "Shopify API" and is_shopify_configured(shopify_config) and not matrixify_df.empty:
                     st.info(
-                        "Carga directa habilitada para productos existentes: titulo, descripcion, vendor, tipo, tags y metafields. "
-                        "Productos nuevos, variantes, precios, inventario y fotos directas quedan como pendiente controlado."
+                        "Sincronizacion directa habilitada para productos existentes: titulo, descripcion, vendor, tipo, tags, metafields y fotos."
+                        " Productos nuevos, variantes, precios e inventario quedan para importacion Matrixify."
                     )
-                    confirm_complete = st.checkbox("Confirmo que revise la vista previa y quiero aplicar productos existentes en Shopify")
-                    if confirm_complete and st.button("Aplicar carga completa en Shopify", type="primary"):
-                        with st.spinner("Aplicando productos existentes en Shopify..."):
+                    confirm_complete = st.checkbox("Confirmo que revise la vista previa y quiero sincronizar productos existentes en Shopify")
+                    if confirm_complete and st.button("Sincronizar Shopify", type="primary"):
+                        with st.spinner("Sincronizando productos existentes en Shopify..."):
                             result_df = apply_full_product_updates(shopify_config, matrixify_df)
                         st.session_state["complete_apply_result_df"] = result_df
                         st.dataframe(result_df, use_container_width=True)
                     result_df = st.session_state.get("complete_apply_result_df")
                     if result_df is not None:
                         st.download_button(
-                            "Descargar resultado de aplicacion",
+                            "Descargar reporte de sincronizacion",
                             data=dataframe_to_excel_bytes({"Resultado": result_df}),
                             file_name=f"resultado_carga_completa_{brand_config['site_key']}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

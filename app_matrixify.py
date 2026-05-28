@@ -24,14 +24,17 @@ from shopify_api import (
     ShopifyApiError,
     fetch_metaobject_definitions,
     fetch_metaobjects,
+    fetch_product_options_and_variants,
     fetch_products,
     metafields_set,
     normalize_shop_domain,
     product_create,
     product_create_media,
     product_delete_media,
+    product_options_reorder,
     product_update,
     product_variants_bulk_create,
+    product_variants_bulk_reorder,
     test_connection,
     wait_media_statuses,
 )
@@ -1235,6 +1238,85 @@ def _variant_option_values(product_variant_rows):
     return values
 
 
+def _ordered_sizes_from_rows(product_variant_rows):
+    if product_variant_rows.empty:
+        return []
+    ordered = []
+    for _, row in product_variant_rows.iterrows():
+        size = clean_value(row.get("Option1 Value"))
+        if size and size not in ordered:
+            ordered.append(size)
+    return ordered
+
+
+def _selected_option_value(variant, option_name):
+    expected = clean_value(option_name).lower()
+    for option in variant.get("selectedOptions") or []:
+        if clean_value(option.get("name")).lower() == expected:
+            return clean_value(option.get("value"))
+    if (variant.get("selectedOptions") or []):
+        return clean_value((variant.get("selectedOptions") or [{}])[0].get("value"))
+    return ""
+
+
+def _reorder_product_sizes(shopify_config, product_gid, product_variant_rows):
+    ordered_sizes = _ordered_sizes_from_rows(product_variant_rows)
+    if not product_gid or len(ordered_sizes) < 2:
+        return ""
+
+    product_data = fetch_product_options_and_variants(shopify_config, product_gid)
+    options = product_data.get("options") or []
+    variants = ((product_data.get("variants") or {}).get("nodes")) or []
+    if not options or not variants:
+        return ""
+
+    option_name = clean_value(product_variant_rows.iloc[0].get("Option1 Name")) or "Talla"
+    size_option = None
+    for option in options:
+        if clean_value(option.get("name")).lower() == option_name.lower():
+            size_option = option
+            break
+    if size_option is None:
+        size_option = options[0]
+        option_name = clean_value(size_option.get("name")) or option_name
+
+    existing_values = [
+        clean_value(option_value.get("name"))
+        for option_value in size_option.get("optionValues") or []
+        if clean_value(option_value.get("name"))
+    ]
+    values_in_order = [size for size in ordered_sizes if size in existing_values]
+    values_in_order.extend(value for value in existing_values if value not in values_in_order)
+
+    messages = []
+    if values_in_order:
+        option_payloads = []
+        for option in options:
+            payload = {"id": option.get("id"), "name": option.get("name")}
+            if clean_value(option.get("id")) == clean_value(size_option.get("id")):
+                payload["values"] = [{"name": value} for value in values_in_order]
+            option_payloads.append(payload)
+        product_options_reorder(shopify_config, product_gid, option_payloads)
+        messages.append("orden de tallas actualizado")
+
+    variant_by_size = {}
+    for variant in variants:
+        size = _selected_option_value(variant, option_name)
+        if size and size not in variant_by_size:
+            variant_by_size[size] = variant.get("id")
+    variant_order = [size for size in ordered_sizes if size in variant_by_size]
+    variant_order.extend(size for size in variant_by_size if size not in variant_order)
+    positions = [
+        {"id": variant_by_size[size], "position": position}
+        for position, size in enumerate(variant_order, start=1)
+        if clean_value(variant_by_size.get(size))
+    ]
+    if positions:
+        product_variants_bulk_reorder(shopify_config, product_gid, positions)
+        messages.append("orden de variantes actualizado")
+    return ", ".join(messages)
+
+
 def apply_full_product_updates(shopify_config, matrixify_df):
     rows = []
     product_rows = _top_product_rows(matrixify_df)
@@ -1449,6 +1531,14 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 except Exception as exc:
                     product_status = "PARCIAL"
                     product_messages.append(f"Error variantes: {exc}")
+
+            try:
+                reorder_message = _reorder_product_sizes(shopify_config, product_gid, product_variant_rows)
+                if reorder_message:
+                    product_messages.append(reorder_message)
+            except Exception as exc:
+                product_status = "PARCIAL"
+                product_messages.append(f"Error orden tallas: {exc}")
 
             rows.append(
                 {

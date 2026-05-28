@@ -626,6 +626,41 @@ def first_existing(df, candidates):
     return None
 
 
+def ensure_mod_col_column(df):
+    if "Mod-Col" in df.columns:
+        return df
+    mod_col = first_existing(
+        df,
+        [
+            "Mod-Col",
+            "Mod Col",
+            "ModCol",
+            "MODCOL",
+            "COD MOD COL",
+            "COD_MOD_COL",
+            "COD-MOD-COL",
+            "Cod Mod Col",
+            "Codigo Modelo Color",
+            "Código Modelo Color",
+            "Codigo Modelo-Color",
+            "Código Modelo-Color",
+            "codigo_modelo_color",
+            "codigo modelo color",
+            "Metafield: custom.codigo_modelo_color [id]",
+        ],
+    )
+    if not mod_col:
+        available = ", ".join(str(column) for column in df.columns)
+        raise ValueError(
+            "No encontre la columna de codigo modelo-color. "
+            "El input debe tener una columna llamada Mod-Col, COD MOD COL o codigo_modelo_color. "
+            f"Columnas recibidas: {available}"
+        )
+    df = df.copy()
+    df["Mod-Col"] = df[mod_col]
+    return df
+
+
 def detect_brand_column(df):
     return first_existing(
         df,
@@ -1506,7 +1541,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     matrixify_columns, matrixify_df = prepare_matrixify_context(matrixify_source)
     product_by_key, product_by_handle, variant_by_sku = build_existing_lookup(matrixify_df)
 
-    input_df = input_df.dropna(how="all").copy()
+    input_df = ensure_mod_col_column(input_df.dropna(how="all").copy())
     input_df["__KEY"] = input_df["Mod-Col"].map(lambda value: clean(value).upper())
     input_df["__MODEL"] = input_df["Mod-Col"].map(model_code)
     input_df["__HANDLE"] = input_df.apply(

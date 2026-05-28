@@ -792,11 +792,22 @@ def build_body_html(row):
 
 def first_existing(df, candidates):
     normalized = {str(col).strip().lower(): col for col in df.columns}
+    normalized_compact = {normalize_header_key(col): col for col in df.columns}
     for candidate in candidates:
         found = normalized.get(candidate.lower())
         if found is not None:
             return found
+        found = normalized_compact.get(normalize_header_key(candidate))
+        if found is not None:
+            return found
     return None
+
+
+def normalize_header_key(value):
+    text = normalize_brand_name(value).lower()
+    text = text.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+    text = text.replace("ñ", "n")
+    return re.sub(r"[^a-z0-9]+", "", text)
 
 
 def ensure_mod_col_column(df):
@@ -1427,7 +1438,78 @@ def product_publication_date(product):
         value = clean(product.get(column))
         if value:
             return value
+    by_normalized = {normalize_header_key(column): column for column in getattr(product, "index", [])}
+    for column in PUBLICATION_DATE_CANDIDATES:
+        found = by_normalized.get(normalize_header_key(column))
+        if found is not None:
+            value = clean(product.get(found))
+            if value:
+                return value
     return ""
+
+
+def row_first_existing(product, candidates):
+    for column in candidates:
+        value = clean(product.get(column))
+        if value:
+            return value
+    by_normalized = {normalize_header_key(column): column for column in getattr(product, "index", [])}
+    for column in candidates:
+        found = by_normalized.get(normalize_header_key(column))
+        if found is not None:
+            value = clean(product.get(found))
+            if value:
+                return value
+    return ""
+
+
+def find_technology_column(df):
+    direct = first_existing(df, ["METAFIELD TECNOLOGÍAS", "METAFIELD TECNOLOGIAS", "Tecnologias ", "Tecnologías"])
+    if direct:
+        return direct
+    for column in df.columns:
+        key = normalize_header_key(column)
+        if key in ("metafieldtecnologias", "metafieldtecnologas", "tecnologias", "tecnologas", "tecnologia"):
+            return column
+        if key.startswith("metafieldtecnolog") or key in ("tecnolog", "tecnologas"):
+            return column
+    return ""
+
+
+def fill_top_row_product_fields(output_df, input_df, tech_col=None):
+    if output_df is None or output_df.empty or input_df is None or input_df.empty:
+        return output_df
+    if PRODUCT_KEY_COLUMN not in output_df.columns:
+        return output_df
+
+    tech_by_key = {}
+    publication_by_key = {}
+    for _, product in input_df.iterrows():
+        key = clean(product.get("__KEY")) or clean(product.get("Mod-Col")).upper()
+        if not key:
+            continue
+        tech_by_key[key] = row_first_existing(product, [tech_col, find_technology_column(input_df)])
+        publication_by_key[key] = product_publication_date(product)
+
+    if "Handle" in output_df.columns:
+        top_mask = output_df["Handle"].map(clean) != ""
+    else:
+        top_mask = pd.Series([True] * len(output_df), index=output_df.index)
+
+    for idx, row in output_df[top_mask].iterrows():
+        key = clean(row.get(PRODUCT_KEY_COLUMN)).upper()
+        technology_value = tech_by_key.get(key, "")
+        if technology_value:
+            logo_col = "Metafield: custom.logo [list.metaobject_reference]"
+            tech_field_col = "Metafield: custom.tecnologia [list.single_line_text_field]"
+            if logo_col in output_df.columns and not clean(row.get(logo_col)):
+                output_df.at[idx, logo_col] = format_technology_logos(technology_value)
+            if tech_field_col in output_df.columns and not clean(row.get(tech_field_col)):
+                output_df.at[idx, tech_field_col] = format_technology(technology_value)
+        publication_date = publication_by_key.get(key, "")
+        if publication_date and PUBLICATION_DATE_COLUMN in output_df.columns and not clean(row.get(PUBLICATION_DATE_COLUMN)):
+            output_df.at[idx, PUBLICATION_DATE_COLUMN] = publication_date
+    return output_df
 
 
 SKIP_COMPARE_EXCLUDED_COLUMNS = {
@@ -1820,7 +1902,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     arti = arti[arti["__SIZE"] != ""].copy()
     arti = arti.sort_values(by=["__KEY", "__SIZE"], key=lambda series: series.map(size_sort_key))
 
-    tech_col = first_existing(input_df, ["METAFIELD TECNOLOGÍAS", "METAFIELD TECNOLOGÃAS", "Tecnologias ", "Tecnologías"])
+    tech_col = find_technology_column(input_df)
     rows = []
     sial_rows = []
     issues = []
@@ -1888,7 +1970,10 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         body_html = build_body_html(product)
         tags = clean(product.get("Tags"))
         product_type = clean(product.get("Type"))
-        technology_value = product.get(tech_col) if tech_col else ""
+        technology_value = row_first_existing(
+            product,
+            [tech_col, "METAFIELD TECNOLOGÍAS", "METAFIELD TECNOLOGIAS", "Tecnologias ", "Tecnologías"],
+        )
         color_web = clean(product.get("Color Web"))
         product_brand_label = brand_display_name(product.get(brand_column) if brand_column else "", brand_config["label"])
         publication_date = product_publication_date(product)
@@ -2042,10 +2127,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         sial_rows.extend(product_sial_rows)
 
     output_df = pd.DataFrame(rows, columns=matrixify_columns)
+    output_df = fill_top_row_product_fields(output_df, input_df, tech_col)
     sial_df = pd.DataFrame(sial_rows, columns=get_sial_columns(brand_config))
     sial_df = coalesce_duplicate_columns(sial_df)
     issues_df = pd.DataFrame(issues)
     output_df, sial_df, issues_df = final_variant_filter(output_df, sial_df, issues_df)
+    output_df = fill_top_row_product_fields(output_df, input_df, tech_col)
     sial_df = coalesce_duplicate_columns(sial_df)
     skipped_df = pd.DataFrame(
         skipped_rows,

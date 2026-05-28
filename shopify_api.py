@@ -142,6 +142,8 @@ def _product_node_to_record(node):
     metafield = node.get("codigoModeloColor") or {}
     siblings = node.get("siblings") or {}
     siblings_color = node.get("siblingsColor") or {}
+    custom_siblings = node.get("customSiblings") or {}
+    custom_siblings_color = node.get("customSiblingsColor") or {}
     media_nodes = ((node.get("media") or {}).get("nodes")) or []
     image_urls = []
     media_ids = []
@@ -163,6 +165,8 @@ def _product_node_to_record(node):
                 "Variant Inventory Item ID": clean(inventory_item.get("legacyResourceId")),
                 "Variant Inventory Item GID": clean(inventory_item.get("id")),
                 "Variant Image": clean(variant_image.get("url")),
+                "Variant Price": clean(variant.get("price")),
+                "Variant Compare At Price": clean(variant.get("compareAtPrice")),
             }
         )
     return {
@@ -178,6 +182,8 @@ def _product_node_to_record(node):
         "Mod-Col": clean(metafield.get("value")).upper(),
         "Siblings": clean(siblings.get("value")),
         "Siblings Color": clean(siblings_color.get("value")),
+        "Custom Siblings": clean(custom_siblings.get("value")),
+        "Custom Siblings Color": clean(custom_siblings_color.get("value")),
         "Image Src": "; ".join(image_urls),
         "Media IDs": "; ".join(media_ids),
         "Variants": variant_records,
@@ -212,6 +218,12 @@ def fetch_products(config, max_products=5000):
           siblingsColor: metafield(namespace: "theme", key: "siblings_color") {
             value
           }
+          customSiblings: metafield(namespace: "custom", key: "siblings") {
+            value
+          }
+          customSiblingsColor: metafield(namespace: "custom", key: "siblings_color") {
+            value
+          }
           media(first: 20) {
             nodes {
               id
@@ -228,6 +240,8 @@ def fetch_products(config, max_products=5000):
               legacyResourceId
               sku
               barcode
+              price
+              compareAtPrice
               image {
                 url
               }
@@ -574,6 +588,79 @@ def metafields_set(config, metafields):
     return payload.get("metafields") or []
 
 
+def fetch_publications(config, max_items=50):
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query Publications($first: Int!) {
+      publications(first: $first) {
+        nodes {
+          id
+          name
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        query,
+        {"first": max_items},
+        api_version=api_version,
+    )
+    return ((data.get("publications") or {}).get("nodes")) or []
+
+
+def online_store_publication_id(config):
+    configured = clean(config.get("publication_id") or config.get("online_store_publication_id"))
+    if configured:
+        return configured
+    publications = fetch_publications(config)
+    for publication in publications:
+        name = clean(publication.get("name")).lower()
+        if name in ("online store", "tienda online", "canal online"):
+            return clean(publication.get("id"))
+    return clean((publications[0] if publications else {}).get("id"))
+
+
+def publishable_publish(config, product_id, publication_id=None, publish_date=None):
+    publication_id = clean(publication_id) or online_store_publication_id(config)
+    if not publication_id:
+        raise ShopifyApiError("No encontre publication_id para publicar el producto.")
+    shop_domain, api_version, token = _client(config)
+    publication_input = {"publicationId": publication_id}
+    if clean(publish_date):
+        publication_input["publishDate"] = clean(publish_date)
+    mutation = """
+    mutation PublishProduct($id: ID!, $input: [PublicationInput!]!) {
+      publishablePublish(id: $id, input: $input) {
+        publishable {
+          ... on Product {
+            id
+            handle
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"id": product_id, "input": [publication_input]},
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("publishablePublish") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("publishable") or {}
+
+
 def product_delete_media(config, product_id, media_ids):
     media_ids = [clean(media_id) for media_id in media_ids if clean(media_id)]
     if not media_ids:
@@ -876,6 +963,8 @@ def fetch_product_options_and_variants(config, product_id):
             id
             legacyResourceId
             sku
+            price
+            compareAtPrice
             selectedOptions {
               name
               value

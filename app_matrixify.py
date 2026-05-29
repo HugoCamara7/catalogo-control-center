@@ -2089,9 +2089,19 @@ def inject_custom_css(config):
             --text-muted: #64748B;
         }}
         .stApp {{ background: var(--bg-main); color: var(--text-main); }}
+        header[data-testid="stHeader"] {{
+            display: none;
+        }}
+        div[data-testid="stToolbar"],
+        div[data-testid="stDecoration"],
+        #MainMenu,
+        footer {{
+            visibility: hidden;
+            height: 0;
+        }}
         .block-container {{
             max-width: 1180px;
-            padding-top: 18px;
+            padding-top: 26px;
             padding-bottom: 34px;
         }}
         section[data-testid="stSidebar"] {{
@@ -2205,7 +2215,7 @@ def inject_custom_css(config):
             border: 1px solid #DDE6F2;
             border-radius: 0;
             background: white;
-            padding: 18px 26px;
+            padding: 22px 28px;
             margin-bottom: 16px;
             box-shadow: none;
         }}
@@ -2420,11 +2430,105 @@ def inject_custom_css(config):
             font-size: 11px;
             font-weight: 900;
         }}
-        div[data-testid="stFileUploader"] {{
-            border: 1px dashed color-mix(in srgb, var(--brand-accent) 55%, white);
+        .upload-shell {{
+            border: 1px solid #DDE6F2;
+            border-radius: 26px;
+            background: linear-gradient(180deg, #FFFFFF 0%, #FBFDFF 100%);
+            padding: 26px 28px 22px;
+            margin: 22px 0 12px;
+            box-shadow: 0 18px 38px rgba(15,23,42,0.07);
+            position: relative;
+            overflow: hidden;
+        }}
+        .upload-shell::after {{
+            content: "";
+            position: absolute;
+            width: 180px;
+            height: 180px;
+            right: -70px;
+            top: -90px;
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--brand-accent) 14%, transparent);
+            pointer-events: none;
+        }}
+        .upload-title-row {{
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 18px;
+            margin-bottom: 18px;
+            position: relative;
+            z-index: 1;
+        }}
+        .upload-title-row h2 {{
+            margin: 0 0 8px;
+            font-size: 25px;
+            line-height: 1.15;
+            color: #0F172A;
+            font-weight: 900;
+        }}
+        .upload-title-row p {{
+            margin: 0;
+            color: var(--text-muted);
+            font-size: 13px;
+            line-height: 1.5;
+        }}
+        .upload-icon {{
+            width: 52px;
+            height: 52px;
             border-radius: 18px;
-            padding: 14px;
-            background: #FBFDFF;
+            display: grid;
+            place-items: center;
+            color: var(--brand-primary);
+            background: var(--brand-soft);
+            border: 1px solid color-mix(in srgb, var(--brand-accent) 30%, white);
+            font-weight: 900;
+            font-size: 22px;
+        }}
+        .upload-note {{
+            border: 1px dashed color-mix(in srgb, var(--brand-accent) 45%, white);
+            background: #F8FBFF;
+            border-radius: 20px;
+            padding: 15px 18px;
+            margin-bottom: 12px;
+            color: #475569;
+            font-size: 13px;
+            font-weight: 700;
+            position: relative;
+            z-index: 1;
+        }}
+        div[data-testid="stFileUploader"] {{
+            border: 1px dashed color-mix(in srgb, var(--brand-accent) 52%, white) !important;
+            border-radius: 22px !important;
+            padding: 14px !important;
+            background: #FFFFFF !important;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.65);
+        }}
+        div[data-testid="stFileUploader"] section {{
+            border: 0 !important;
+            background: #F1F5F9 !important;
+            border-radius: 16px !important;
+            padding: 18px !important;
+        }}
+        div[data-testid="stFileUploader"] button {{
+            border-radius: 12px !important;
+            background: #FFFFFF !important;
+            color: var(--brand-primary) !important;
+            border: 1px solid #CBD5E1 !important;
+            font-weight: 900 !important;
+        }}
+        div[data-testid="stFileUploader"] small,
+        div[data-testid="stFileUploader"] span {{
+            color: #64748B !important;
+            font-weight: 700;
+        }}
+        div[data-testid="stRadio"] {{
+            background: transparent;
+            margin-bottom: 10px;
+        }}
+        div[data-testid="stRadio"] label p {{
+            color: #172554 !important;
+            font-weight: 800;
         }}
         div[data-testid="stDataFrame"] {{
             border-radius: 18px;
@@ -2600,10 +2704,6 @@ def render_sources_card(config, bigquery_ready, arti_source="", template_source=
                 <div class="source-card"><b>ARTI BigQuery</b><span>{arti_source or table_label or bigquery_status}</span></div>
             </div>
             <p class="caption" style="margin-top:12px;">Datos actualizados desde BigQuery. Proyecto: {project or "configurado en Secrets"}. Dataset/tabla: {table_label or "configurado en Secrets"}.</p>
-            <div class="source-card" style="margin-top:12px;background:#FBFDFF;border-style:dashed;">
-                <b>Input comercial</b>
-                <span>Arrastra tu archivo o seleccionalo. Formatos permitidos: .xlsx, .xls. Maximo 200 MB.</span>
-            </div>
             <div class="chip-row">
                 <span class="chip">SKU obligatorio</span>
                 <span class="chip">Talla por variante</span>
@@ -2694,6 +2794,23 @@ def render_matrixify_result_card(ready=False):
             <span class="status-badge{tone}">{state}</span>
         </div>
         """,
+    )
+
+
+def render_input_upload_card():
+    render_html(
+        """
+        <div class="upload-shell">
+            <div class="upload-title-row">
+                <div>
+                    <h2>Input comercial</h2>
+                    <p>Sube el archivo comercial para analizar productos, variantes, precios y estructura Sial.</p>
+                </div>
+                <div class="upload-icon">XLS</div>
+            </div>
+            <div class="upload-note">Arrastra tu archivo o seleccionalo. Formatos permitidos: .xlsx, .xls. Maximo 200 MB.</div>
+        </div>
+        """
     )
 
 
@@ -2965,7 +3082,7 @@ api_version = "{DEFAULT_API_VERSION}"
         return
 
     render_sources_card(ui_config, bigquery_ready)
-    st.markdown('<div class="section-card"><h2>Input comercial</h2><p>Arrastra tu archivo o seleccionalo. Formatos permitidos: .xlsx, .xls. Maximo 200 MB.</p>', unsafe_allow_html=True)
+    render_input_upload_card()
     complete_source = st.radio(
         "Fuente de datos actuales",
         ["Shopify API", "Respaldo Excel"],
@@ -2982,7 +3099,6 @@ api_version = "{DEFAULT_API_VERSION}"
             key="template",
             help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
         )
-    st.markdown("</div>", unsafe_allow_html=True)
 
     setup_rows = [
         {
@@ -3177,7 +3293,7 @@ api_version = "{DEFAULT_API_VERSION}"
     st.markdown(
         """
         <div class="benefits">
-            <div class="benefit"><b>Actualiza con IDs</b><p>Usa la ultima descarga Matrixify para conservar IDs de producto y variante.</p></div>
+            <div class="benefit"><b>Actualiza con IDs</b><p>Usa Shopify API como referencia operativa para conservar IDs de producto y variante.</p></div>
             <div class="benefit"><b>Variantes por talla</b><p>Lee ARTI y genera SKUs, barcodes, precios y tallas ordenadas.</p></div>
             <div class="benefit"><b>Estructura controlada</b><p>Entrega siempre las hojas y columnas necesarias para carga Matrixify.</p></div>
         </div>

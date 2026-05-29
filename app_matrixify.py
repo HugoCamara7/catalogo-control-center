@@ -3700,23 +3700,3 @@ api_version = "{DEFAULT_API_VERSION}"
 
 if __name__ == "__main__":
     main()
-header[data-testid="stHeader"] {
-    background: transparent;
-}
-
-section[data-testid="stSidebar"] {
-    display: block !important;
-    visibility: visible !important;
-    transform: translateX(0px) !important;
-    min-width: 320px !important;
-    width: 320px !important;
-}
-
-button[data-testid="baseButton-headerNoPadding"],
-button[data-testid="stSidebarCollapseButton"],
-[data-testid="collapsedControl"],
-[data-testid="stSidebarCollapseButton"] {
-    display: none !important;
-    visibility: hidden !important;
-    pointer-events: none !important;
-}

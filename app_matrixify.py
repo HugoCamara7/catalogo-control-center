@@ -2542,7 +2542,7 @@ def inject_custom_css(config):
             padding: 0 !important;
             background: transparent !important;
             box-shadow: none !important;
-            margin-top: 4px;
+            margin-top: 0;
         }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] section {{
             border: 0 !important;
@@ -2560,10 +2560,19 @@ def inject_custom_css(config):
             padding: 0 22px !important;
             font-size: 0 !important;
             font-weight: 900 !important;
+            width: 100%;
+        }}
+        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::before {{
+            content: "↥";
+            font-size: 19px !important;
+            color: #FFFFFF !important;
+            margin-right: 9px;
+            line-height: 1;
         }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::after {{
             content: "Cargar input";
             font-size: 15px !important;
+            color: #FFFFFF !important;
         }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"] {{
             display: block !important;
@@ -3314,17 +3323,13 @@ api_version = "{DEFAULT_API_VERSION}"
         return
 
     with st.container(key="sources_upload_panel"):
-        header_col, upload_col = st.columns([4, 1], gap="large")
-        with header_col:
-            render_sources_card(
-                ui_config,
-                bigquery_ready,
-                input_count=int(st.session_state.get("input_row_count") or 0),
-                shopify_count=int(st.session_state.get("shopify_product_count") or 0),
-                arti_count=int(st.session_state.get("arti_row_count") or 0),
-            )
-        with upload_col:
-            input_file = st.file_uploader("Cargar input", type=["xlsx", "xls"], key="input", label_visibility="collapsed")
+        render_sources_card(
+            ui_config,
+            bigquery_ready,
+            input_count=int(st.session_state.get("input_row_count") or 0),
+            shopify_count=int(st.session_state.get("shopify_product_count") or 0),
+            arti_count=int(st.session_state.get("arti_row_count") or 0),
+        )
         complete_source = st.radio(
             "Fuente de datos actuales",
             ["Shopify API", "Respaldo Excel"],
@@ -3332,14 +3337,20 @@ api_version = "{DEFAULT_API_VERSION}"
             help="Shopify API es la referencia operativa. El respaldo Excel solo se usa si la API no esta disponible.",
         )
         template_file = None
-        st.session_state["input_loaded"] = bool(input_file)
-        if complete_source == "Respaldo Excel":
+        upload_left, upload_right = st.columns([4, 1], gap="large")
+        with upload_left:
+            if complete_source == "Respaldo Excel":
+                st.caption(f"Primero carga el input comercial. El respaldo operativo se pedira solo si hace falta conservar IDs.")
+        with upload_right:
+            input_file = st.file_uploader("Cargar input", type=["xlsx", "xls"], key="input", label_visibility="collapsed")
+        if complete_source == "Respaldo Excel" and input_file:
             template_file = st.file_uploader(
-                f"Subir respaldo operativo de {brand_config['site_label']}",
+                f"Cargar respaldo operativo de {brand_config['site_label']}",
                 type=["xlsx", "xls"],
                 key="template",
                 help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
-        )
+            )
+        st.session_state["input_loaded"] = bool(input_file)
 
     setup_rows = [
         {

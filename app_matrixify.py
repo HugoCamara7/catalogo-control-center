@@ -671,11 +671,18 @@ def build_shopify_update_preview(
             .apply(lambda values: ", ".join(dict.fromkeys(clean_value(value) for value in values if clean_value(value))))
             .to_dict()
         )
+        custom_siblings_by_model = (
+            products_df[products_df["__MODEL"] != ""]
+            .groupby("__MODEL")["Product ID"]
+            .apply(lambda values: json.dumps(list(dict.fromkeys(clean_value(value) for value in values if clean_value(value)))))
+            .to_dict()
+        )
         for _, product in products_df.iterrows():
             new_value = siblings_by_model.get(product["__MODEL"], "")
+            custom_new_value = custom_siblings_by_model.get(product["__MODEL"], "[]")
             current_theme = clean_value(product.get("Siblings"))
             current_custom = clean_value(product.get("Custom Siblings"))
-            if not new_value or (current_theme == new_value and current_custom == new_value):
+            if not new_value or (current_theme == new_value and current_custom == custom_new_value):
                 continue
             rows.append(
                 {
@@ -688,8 +695,9 @@ def build_shopify_update_preview(
                     "Campo": "Metafield: theme.siblings + Metafield: custom.siblings",
                     "Valor actual": f"theme: {current_theme} | custom: {current_custom}",
                     "Valor nuevo": new_value,
+                    "Valor nuevo custom": custom_new_value,
                     "Metafield: theme.siblings [single_line_text_field]": new_value,
-                    "Metafield: custom.siblings [single_line_text_field]": new_value,
+                    "Metafield: custom.siblings [list.product_reference]": custom_new_value,
                     "Estado": "OK",
                     "Observacion": f"{len(_split_tags(new_value))} handles del mismo modelo",
                 }
@@ -836,6 +844,11 @@ def apply_shopify_preview(shopify_config, preview_df):
                 product_update(shopify_config, product_id, body_html=clean_value(row.get("Valor nuevo")))
             elif operation == "siblings":
                 sibling_value = clean_value(row.get("Valor nuevo"))
+                custom_sibling_value = clean_value(
+                    row.get("Valor nuevo custom") or row.get("Metafield: custom.siblings [list.product_reference]")
+                )
+                if not custom_sibling_value:
+                    custom_sibling_value = "[]"
                 metafields_set(
                     shopify_config,
                     [
@@ -850,8 +863,8 @@ def apply_shopify_preview(shopify_config, preview_df):
                             "ownerId": product_id,
                             "namespace": "custom",
                             "key": "siblings",
-                            "type": "single_line_text_field",
-                            "value": sibling_value,
+                            "type": "list.product_reference",
+                            "value": custom_sibling_value,
                         }
                     ],
                 )

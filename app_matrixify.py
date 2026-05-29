@@ -2584,6 +2584,13 @@ def inject_custom_css(config):
             line-height: 1;
             white-space: nowrap;
         }}
+        .st-key-catalog_upload_slot div[data-testid="stFileUploader"] button::after {{
+            content: "Subir Catalogo Matrixify";
+            font-size: 15px !important;
+            color: #FFFFFF !important;
+            line-height: 1;
+            white-space: nowrap;
+        }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"] {{
             display: block !important;
             color: #0F172A !important;
@@ -3348,18 +3355,25 @@ api_version = "{DEFAULT_API_VERSION}"
         )
         template_file = None
         upload_left, upload_right = st.columns([3.5, 1.5], gap="large")
+        input_file = st.session_state.get("input")
         with upload_left:
-            if complete_source == "Respaldo Excel":
-                st.caption(f"Primero carga el input comercial. El respaldo operativo se pedira solo si hace falta conservar IDs.")
+            if complete_source == "Respaldo Excel" and input_file:
+                st.caption("Input cargado. Ahora sube el Catalogo Matrixify para conservar IDs.")
+            elif complete_source == "Respaldo Excel":
+                st.caption("Primero carga el input comercial. Luego este mismo espacio pedira el Catalogo Matrixify.")
         with upload_right:
-            input_file = st.file_uploader("Cargar input", type=["xlsx", "xls"], key="input", label_visibility="collapsed")
-        if complete_source == "Respaldo Excel" and input_file:
-            template_file = st.file_uploader(
-                f"Cargar respaldo operativo de {brand_config['site_label']}",
-                type=["xlsx", "xls"],
-                key="template",
-                help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
-            )
+            if complete_source == "Respaldo Excel" and input_file:
+                with st.container(key="catalog_upload_slot"):
+                    template_file = st.file_uploader(
+                        "Subir Catalogo Matrixify",
+                        type=["xlsx", "xls"],
+                        key="template",
+                        label_visibility="collapsed",
+                        help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
+                    )
+            else:
+                with st.container(key="input_upload_slot"):
+                    input_file = st.file_uploader("Cargar input", type=["xlsx", "xls"], key="input", label_visibility="collapsed")
         st.session_state["input_loaded"] = bool(input_file)
 
     setup_rows = [

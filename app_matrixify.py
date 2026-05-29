@@ -673,8 +673,9 @@ def build_shopify_update_preview(
         )
         for _, product in products_df.iterrows():
             new_value = siblings_by_model.get(product["__MODEL"], "")
-            current = clean_value(product.get("Siblings"))
-            if not new_value or current == new_value:
+            current_theme = clean_value(product.get("Siblings"))
+            current_custom = clean_value(product.get("Custom Siblings"))
+            if not new_value or (current_theme == new_value and current_custom == new_value):
                 continue
             rows.append(
                 {
@@ -684,9 +685,11 @@ def build_shopify_update_preview(
                     "Mod-Col": product.get("Mod-Col"),
                     "Product ID": product.get("Product ID"),
                     "Handle": product.get("Handle"),
-                    "Campo": "Metafield: theme.siblings",
-                    "Valor actual": current,
+                    "Campo": "Metafield: theme.siblings + Metafield: custom.siblings",
+                    "Valor actual": f"theme: {current_theme} | custom: {current_custom}",
                     "Valor nuevo": new_value,
+                    "Metafield: theme.siblings [single_line_text_field]": new_value,
+                    "Metafield: custom.siblings [single_line_text_field]": new_value,
                     "Estado": "OK",
                     "Observacion": f"{len(_split_tags(new_value))} handles del mismo modelo",
                 }
@@ -2706,7 +2709,7 @@ def render_stepper(config, current_step=1):
         ("Input", "Archivo comercial"),
         ("BigQuery", "Fuente maestra"),
         ("Validacion", "Reglas y cruces"),
-        ("Matrixify", "Excel final"),
+        ("Shopify", "Sincronizacion final"),
     ]
     items = []
     for index, (title, caption) in enumerate(steps, start=1):

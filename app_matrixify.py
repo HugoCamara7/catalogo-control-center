@@ -3193,7 +3193,7 @@ def render_input_upload_card():
 
 
 def main():
-    st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
+    st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide", initial_sidebar_state="expanded",)
     bigquery_config = get_bigquery_config()
     bigquery_ready = is_bigquery_configured(bigquery_config)
 

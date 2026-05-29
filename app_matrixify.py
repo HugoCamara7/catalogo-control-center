@@ -2672,6 +2672,39 @@ def inject_custom_css(config):
             line-height: 1.35;
             min-height: 30px;
         }}
+        .wide-checklist {{
+            border: 1px solid #DDE6F2;
+            border-radius: 26px;
+            background: #FFFFFF;
+            padding: 22px;
+            margin: 0 0 24px;
+            box-shadow: 0 10px 22px rgba(15,23,42,0.05);
+        }}
+        .wide-checklist h2 {{
+            margin: 0 0 6px;
+            color: #0F172A;
+            font-size: 22px;
+            font-weight: 950;
+        }}
+        .wide-checklist p {{
+            margin: 0 0 16px;
+            color: #64748B;
+            font-size: 13px;
+        }}
+        .wide-checklist-grid {{
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+        }}
+        .wide-checklist-item {{
+            border: 1px solid #E2E8F0;
+            border-radius: 16px;
+            background: #F8FAFC;
+            padding: 14px;
+            color: #475569;
+            font-size: 12px;
+            line-height: 1.35;
+        }}
         .chip-row {{
             display: flex;
             flex-wrap: wrap;
@@ -3080,13 +3113,15 @@ def render_preview_table(input_df):
 def render_validations_card():
     render_html(
         """
-        <div class="section-card">
+        <div class="wide-checklist">
             <h2>Checklist</h2>
             <p>Estado de preparacion</p>
-            <div class="check-item">SKU, barcode y talla obligatorios.</div>
-            <div class="check-item">Vendor validado contra marcas permitidas.</div>
-            <div class="check-item">Cruce automatico con BigQuery.</div>
-            <div class="check-item">Reporte de errores antes de exportar.</div>
+            <div class="wide-checklist-grid">
+                <div class="wide-checklist-item">SKU, barcode y talla obligatorios.</div>
+                <div class="wide-checklist-item">Vendor validado contra marcas permitidas.</div>
+                <div class="wide-checklist-item">Cruce automatico con BigQuery.</div>
+                <div class="wide-checklist-item">Reporte de errores antes de exportar.</div>
+            </div>
         </div>
         """,
     )
@@ -3541,6 +3576,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 with st.container(key="action_panel"):
                     render_analyze_card(ui_config)
                     analyze_clicked = st.button("Analizar input", type="primary")
+                render_validations_card()
             with right_col:
                 render_summary_metrics(
                     [
@@ -3551,7 +3587,6 @@ api_version = "{DEFAULT_API_VERSION}"
                     ]
                 )
                 render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
-                render_validations_card()
 
             if analyze_clicked:
                 matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(

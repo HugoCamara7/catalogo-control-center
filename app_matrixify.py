@@ -2476,6 +2476,10 @@ def inject_custom_css(config):
         .section-card.action-card p {{
             color: #E0E7FF;
         }}
+        .section-card.action-card {{
+            padding: 20px 22px;
+            margin-bottom: 12px;
+        }}
         .section-card p, .section-card .caption {{
             color: var(--text-muted);
             font-size: 13px;
@@ -2615,12 +2619,58 @@ def inject_custom_css(config):
             line-height: 1.35;
         }}
         .st-key-action_panel .stButton button {{
-            width: 100%;
+            width: auto;
+            min-width: 180px;
             min-height: 48px;
-            background: #FFFFFF !important;
-            color: var(--forus-blue) !important;
-            border-color: #FFFFFF !important;
-            box-shadow: 0 10px 22px rgba(15,23,42,0.18);
+            background: var(--forus-blue) !important;
+            color: #FFFFFF !important;
+            border-color: var(--forus-blue) !important;
+            box-shadow: 0 10px 22px rgba(23,38,154,0.22);
+        }}
+        .base-status-card {{
+            border: 1px solid #DDE6F2;
+            border-radius: 22px;
+            background: #FFFFFF;
+            padding: 18px;
+            margin: 0 0 22px;
+            box-shadow: 0 10px 22px rgba(15,23,42,0.05);
+        }}
+        .base-status-head {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 14px;
+        }}
+        .base-status-head h3 {{
+            margin: 0;
+            color: #0F172A;
+            font-size: 18px;
+            font-weight: 950;
+        }}
+        .base-status-grid {{
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }}
+        .base-status-item {{
+            border: 1px solid #E2E8F0;
+            border-radius: 18px;
+            background: #F8FAFC;
+            padding: 14px 16px;
+        }}
+        .base-status-item b {{
+            display: block;
+            color: #0F172A;
+            font-size: 13px;
+            margin-bottom: 6px;
+        }}
+        .base-status-item span {{
+            display: block;
+            color: #64748B;
+            font-size: 12px;
+            line-height: 1.35;
+            min-height: 30px;
         }}
         .chip-row {{
             display: flex;
@@ -3068,6 +3118,35 @@ def render_matrixify_result_card(ready=False):
     )
 
 
+def render_base_status_card(setup_rows):
+    cards = []
+    for row in setup_rows:
+        status = clean_value(row.get("Estado"))
+        tone = "" if status.upper().startswith("OK") else " warn"
+        cards.append(
+            f"""
+            <div class="base-status-item">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                    <b>{row.get("Base", "")}</b>
+                    <span class="status-badge{tone}">{status}</span>
+                </div>
+                <span>{row.get("Ruta", "")}</span>
+            </div>
+            """
+        )
+    render_html(
+        f"""
+        <div class="base-status-card">
+            <div class="base-status-head">
+                <h3>Estado de bases</h3>
+                <span class="status-badge blue">Fuentes listas</span>
+            </div>
+            <div class="base-status-grid">{"".join(cards)}</div>
+        </div>
+        """
+    )
+
+
 def render_input_upload_card():
     st.markdown(
         """
@@ -3399,8 +3478,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Estado": "OK" if Path("data/tipos_shopify.xlsx").exists() else "Opcional",
         },
     ]
-    with st.expander("Estado de bases", expanded=False):
-        st.dataframe(pd.DataFrame(setup_rows), use_container_width=True, hide_index=True)
+    render_base_status_card(setup_rows)
 
     can_process_complete = input_file and (complete_source == "Shopify API" or template_file)
     if can_process_complete:
@@ -3457,8 +3535,12 @@ api_version = "{DEFAULT_API_VERSION}"
 
             st.session_state["arti_row_count"] = len(arti_df)
             left_col, right_col = st.columns([2, 1], gap="large")
+            analyze_clicked = False
             with left_col:
                 render_preview_table(input_df)
+                with st.container(key="action_panel"):
+                    render_analyze_card(ui_config)
+                    analyze_clicked = st.button("Analizar input", type="primary")
             with right_col:
                 render_summary_metrics(
                     [
@@ -3468,9 +3550,6 @@ api_version = "{DEFAULT_API_VERSION}"
                         ("Marcas detectadas", len(detected_brands)),
                     ]
                 )
-                with st.container(key="action_panel"):
-                    render_analyze_card(ui_config)
-                    analyze_clicked = st.button("Analizar input", type="primary")
                 render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
                 render_validations_card()
 

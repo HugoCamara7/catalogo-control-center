@@ -2124,6 +2124,9 @@ def inject_custom_css(config):
             background: #F3F6FB;
             border-right: 1px solid #DDE6F2;
         }}
+        section[data-testid="stSidebar"] > div {{
+            padding: 28px 18px;
+        }}
         section[data-testid="stSidebar"] p,
         section[data-testid="stSidebar"] label,
         section[data-testid="stSidebar"] span {{
@@ -2135,10 +2138,16 @@ def inject_custom_css(config):
             color: #0F172A !important;
         }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] div[role="radiogroup"],
         section[data-testid="stSidebar"] details,
         section[data-testid="stSidebar"] .stButton button {{
-            border-radius: 8px;
+            border-radius: 18px;
+        }}
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
+            min-height: 56px;
+            background: #FFFFFF;
+            border: 1px solid #DDE6F2;
+            box-shadow: 0 10px 22px rgba(15,23,42,0.07);
+            padding-left: 12px;
         }}
         section[data-testid="stSidebar"] .stSelectbox label,
         section[data-testid="stSidebar"] .stRadio label {{
@@ -2146,9 +2155,9 @@ def inject_custom_css(config):
             font-weight: 800;
         }}
         .forus-sidebar {{
-            border-radius: 22px;
-            padding: 20px;
-            margin: 6px 0 26px;
+            border-radius: 24px;
+            padding: 22px 20px;
+            margin: 2px 0 28px;
             background: #FFFFFF;
             border: 1px solid #DDE6F2;
             box-shadow: 0 12px 24px rgba(15,23,42,0.08);
@@ -2168,6 +2177,7 @@ def inject_custom_css(config):
             font-weight: 900;
         }}
         .sidebar-brand-card {{
+            display: none;
             border-radius: 22px;
             padding: 14px;
             margin: 12px 0 16px;
@@ -2202,26 +2212,94 @@ def inject_custom_css(config):
         }}
         .sidebar-card {{
             border-radius: 22px;
-            padding: 18px 20px;
-            margin: 16px 0;
+            padding: 22px 20px;
+            margin: 18px 0 24px;
             background: #FFFFFF;
             border: 1px solid #DDE6F2;
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         .sidebar-label {{
-            margin: 0 0 8px;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.12em;
+            margin: 18px 0 10px;
+            font-size: 14px;
+            text-transform: none;
+            letter-spacing: 0;
             color: #5B6B86;
             font-weight: 900;
         }}
         .sidebar-value {{
             margin: 0;
-            font-size: 13px;
-            line-height: 1.55;
+            font-size: 16px;
+            line-height: 1.6;
             color: #172554 !important;
-            font-weight: 700;
+            font-weight: 800;
+        }}
+        .allowed-card .sidebar-value {{
+            font-size: 17px;
+            line-height: 1.75;
+            font-weight: 500;
+        }}
+        .allowed-card strong {{
+            color: #17269A;
+            font-weight: 950;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] {{
+            display: grid;
+            gap: 10px;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label {{
+            min-height: 58px;
+            border-radius: 18px;
+            border: 1px solid #DDE6F2;
+            background: #FFFFFF;
+            box-shadow: 0 10px 22px rgba(15,23,42,0.06);
+            padding: 8px 16px;
+            margin: 0;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {{
+            border-color: #93C5FD;
+            box-shadow: 0 0 0 1px #BFDBFE, 0 10px 22px rgba(23,38,154,0.08);
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label p {{
+            color: #172554 !important;
+            font-size: 16px;
+            font-weight: 850;
+        }}
+        .st-key-shopify_sidebar_card {{
+            border-radius: 24px;
+            background: #FFFFFF;
+            border: 1px solid #DDE6F2;
+            padding: 20px;
+            margin-top: 18px;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.08);
+        }}
+        .st-key-shopify_sidebar_card h3 {{
+            margin: 0;
+            color: #0F172A;
+            font-size: 19px;
+            font-weight: 950;
+        }}
+        .shopify-card-head {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+        }}
+        .shopify-config-box {{
+            border-radius: 18px;
+            background: #ECFDF5;
+            border: 1px solid #BBF7D0;
+            padding: 16px;
+            color: #047857;
+            font-size: 14px;
+            line-height: 1.55;
+            font-weight: 800;
+            margin-bottom: 14px;
+        }}
+        .shopify-meta {{
+            color: #64748B !important;
+            font-size: 13px;
+            margin: 0 0 14px;
         }}
         .top-header {{
             display: flex;
@@ -2423,6 +2501,67 @@ def inject_custom_css(config):
         .source-card span, .metric-card span, .check-item {{
             color: var(--text-muted);
             font-size: 12px;
+        }}
+        .source-card strong {{
+            display: block;
+            color: #0F172A;
+            font-size: 18px;
+            margin-top: 8px;
+            font-weight: 900;
+        }}
+        .st-key-sources_upload_panel {{
+            border: 1px solid #DDE6F2;
+            border-radius: 26px;
+            background: #FFFFFF;
+            padding: 26px 28px;
+            margin: 0 0 24px;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
+        }}
+        .st-key-sources_upload_panel h2 {{
+            color: #0F172A;
+            margin: 0 0 8px;
+            font-size: 24px;
+            line-height: 1.2;
+            font-weight: 900;
+            letter-spacing: 0;
+        }}
+        .st-key-sources_upload_panel p {{
+            color: var(--text-muted);
+            font-size: 13px;
+            margin: 0;
+        }}
+        .st-key-sources_upload_panel div[data-testid="stFileUploader"] {{
+            border: 0 !important;
+            border-radius: 0 !important;
+            padding: 0 !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            margin-top: 4px;
+        }}
+        .st-key-sources_upload_panel div[data-testid="stFileUploader"] section {{
+            border: 0 !important;
+            background: transparent !important;
+            padding: 0 !important;
+            min-height: 0 !important;
+        }}
+        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button {{
+            border-radius: 18px !important;
+            background: var(--forus-blue) !important;
+            color: #FFFFFF !important;
+            border: 1px solid var(--forus-blue) !important;
+            box-shadow: 0 10px 20px rgba(23,38,154,0.24);
+            min-height: 48px;
+            padding: 0 22px !important;
+            font-size: 0 !important;
+            font-weight: 900 !important;
+        }}
+        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::after {{
+            content: "Cargar input";
+            font-size: 15px !important;
+        }}
+        .st-key-sources_upload_panel div[data-testid="stFileUploader"] small,
+        .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] {{
+            display: none !important;
         }}
         .metric-card strong {{
             display: block;
@@ -2659,22 +2798,32 @@ def render_sidebar(config, shopify_config=None, bigquery_ready=False, input_load
 
 
 def render_sidebar_status(config, shopify_config, bigquery_ready, input_loaded=False):
-    shopify_state = "Conectado" if is_shopify_configured(shopify_config) else "Pendiente"
     input_state = "Cargado" if input_loaded else "Pendiente"
     render_html(
         f"""
-        <div class="sidebar-card">
-            <p class="sidebar-label">Integraciones</p>
-            <p class="sidebar-value">Shopify API: {shopify_state}</p>
-            <p class="sidebar-value">BigQuery: {"Activo" if bigquery_ready else "Respaldo local"}</p>
-            <p class="sidebar-value">Admin API: {config["api_version"]}</p>
-        </div>
         <div class="sidebar-card">
             <p class="sidebar-label">Estado operativo</p>
             <p class="sidebar-value">Marca activa: {config["brand_name"]}</p>
             <p class="sidebar-value">Input comercial: {input_state}</p>
             <p class="sidebar-value">Salida: {config["output_file"]}</p>
         </div>
+        """,
+        sidebar=True,
+    )
+
+
+def render_sidebar_shopify_card(config, shopify_config):
+    configured = is_shopify_configured(shopify_config)
+    state = "OK" if configured else "Pend."
+    domain = clean_value(shopify_config.get("shop_domain")) or config.get("shopify_store") or "No configurado"
+    render_html(
+        f"""
+        <div class="shopify-card-head">
+            <h3>Shopify API</h3>
+            <span class="status-badge">{state}</span>
+        </div>
+        <div class="shopify-config-box">Configurado:<br>{domain}</div>
+        <p class="shopify-meta">Admin API {config["api_version"]} · Token en Secrets</p>
         """,
         sidebar=True,
     )
@@ -2744,8 +2893,17 @@ def render_stepper(config, current_step=1):
     render_html(f'<div class="matrix-stepper">{"".join(items)}</div>')
 
 
-def render_sources_card(config, bigquery_ready, arti_source="", template_source="Shopify API"):
-    bigquery_status = "Fuente maestra activa" if bigquery_ready else "Usando respaldo local"
+def current_flow_step():
+    if st.session_state.get("complete_apply_result_df") is not None or st.session_state.get("shopify_apply_result_df") is not None:
+        return 4
+    if st.session_state.get("complete_matrixify_df") is not None or st.session_state.get("shopify_preview_df") is not None:
+        return 3
+    if st.session_state.get("input_loaded") or st.session_state.get("input") is not None or st.session_state.get("input_row_count"):
+        return 2
+    return 1
+
+
+def render_sources_card(config, bigquery_ready, arti_source="", template_source="Shopify API", input_count=0, shopify_count=0, arti_count=0):
     bigquery_config = get_bigquery_config()
     project = clean_value(bigquery_config.get("project_id"))
     if not project and isinstance(bigquery_config.get("service_account_info"), dict):
@@ -2753,20 +2911,20 @@ def render_sources_card(config, bigquery_ready, arti_source="", template_source=
     dataset = clean_value(bigquery_config.get("dataset"))
     table = clean_value(bigquery_config.get("table")) or "ARTI"
     table_label = table if table.count(".") == 2 else ".".join(part for part in [project, dataset, table] if part)
+    input_text = f"{input_count:,} productos detectados" if input_count else "Pendiente de carga"
+    shopify_text = f"{shopify_count:,} productos sincronizados" if shopify_count else (config["shopify_store"] or template_source)
+    arti_text = f"{arti_count:,} filas BigQuery" if arti_count else "Tabla central enlazada"
     render_html(
         f"""
-        <div class="section-card">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
-                <div>
-                    <h2>Archivos y fuentes cargadas</h2>
-                    <p>Resumen limpio de lo que la app usara para preparar la carga.</p>
-                </div>
-                <span class="status-badge blue">Cargar input</span>
+        <div>
+            <div>
+                <h2>Archivos y fuentes cargadas</h2>
+                <p>Resumen limpio de lo que la app usara para preparar la carga.</p>
             </div>
             <div class="source-grid">
-                <div class="source-card" style="background:#EFF6FF;border-color:#BFDBFE;"><b>Input productos</b><span>Archivo comercial cargado</span></div>
-                <div class="source-card" style="background:#ECFDF5;border-color:#BBF7D0;"><b>Shopify API</b><span>{config["shopify_store"] or template_source}</span></div>
-                <div class="source-card"><b>ARTI BigQuery</b><span>Tabla central enlazada</span></div>
+                <div class="source-card" style="background:#EFF6FF;border-color:#BFDBFE;"><b>Input productos</b><span>{input_text}</span></div>
+                <div class="source-card" style="background:#ECFDF5;border-color:#BBF7D0;"><b>Shopify API</b><span>{shopify_text}</span></div>
+                <div class="source-card"><b>ARTI BigQuery</b><span>{arti_text}</span></div>
             </div>
         </div>
         """,
@@ -2879,10 +3037,11 @@ def main():
     shopify_config = get_shopify_config(selected_site_key)
     ui_config = get_site_config(brand_config, shopify_config)
     inject_styles(ui_config)
-    render_sidebar(ui_config)
     st.sidebar.markdown('<p class="sidebar-label">Marca(s) permitidas</p>', unsafe_allow_html=True)
+    allowed = ", ".join(brand_config["allowed_arti_brands"])
+    first_allowed, _, rest_allowed = allowed.partition(",")
     st.sidebar.markdown(
-        f'<div class="sidebar-card"><p class="sidebar-value">{", ".join(brand_config["allowed_arti_brands"])}</p></div>',
+        f'<div class="sidebar-card allowed-card"><p class="sidebar-value"><strong>{first_allowed}</strong>{"," + rest_allowed if rest_allowed else ""}</p></div>',
         unsafe_allow_html=True,
     )
     operation_mode = st.sidebar.radio(
@@ -2890,16 +3049,9 @@ def main():
         ["Carga completa", "Actualizacion puntual"],
         index=0,
     )
-    render_sidebar_status(ui_config, shopify_config, bigquery_ready, input_loaded=bool(st.session_state.get("input_loaded")))
-
-    with st.sidebar.expander("Shopify API", expanded=False):
+    with st.sidebar.container(key="shopify_sidebar_card"):
+        render_sidebar_shopify_card(ui_config, shopify_config)
         if is_shopify_configured(shopify_config):
-            st.success(f"Configurado: {shopify_config['shop_domain']}")
-            st.caption(f"Version Admin API: {shopify_config['api_version']}")
-            if shopify_config.get("admin_access_token"):
-                st.caption("Token: configurado en Secrets")
-            else:
-                st.caption("Token: se obtendra con client_id/client_secret")
             if st.button("Probar conexion Shopify"):
                 try:
                     shop = test_connection(shopify_config)
@@ -2922,7 +3074,7 @@ api_version = "{DEFAULT_API_VERSION}"
             )
 
     render_top_header(ui_config)
-    render_stepper(ui_config, current_step=1)
+    render_stepper(ui_config, current_step=current_flow_step())
 
     if operation_mode == "Actualizacion puntual":
         operation_labels = {
@@ -3133,16 +3285,24 @@ api_version = "{DEFAULT_API_VERSION}"
             st.info("Sube los archivos requeridos para generar la actualizacion puntual.")
         return
 
-    render_sources_card(ui_config, bigquery_ready)
-    with st.container(key="input_upload_panel"):
-        render_input_upload_card()
+    with st.container(key="sources_upload_panel"):
+        header_col, upload_col = st.columns([4, 1], gap="large")
+        with header_col:
+            render_sources_card(
+                ui_config,
+                bigquery_ready,
+                input_count=int(st.session_state.get("input_row_count") or 0),
+                shopify_count=int(st.session_state.get("shopify_product_count") or 0),
+                arti_count=int(st.session_state.get("arti_row_count") or 0),
+            )
+        with upload_col:
+            input_file = st.file_uploader("Cargar input", type=["xlsx", "xls"], key="input", label_visibility="collapsed")
         complete_source = st.radio(
             "Fuente de datos actuales",
             ["Shopify API", "Respaldo Excel"],
             index=0 if is_shopify_configured(shopify_config) else 1,
             help="Shopify API es la referencia operativa. El respaldo Excel solo se usa si la API no esta disponible.",
         )
-        input_file = st.file_uploader("Subir input comercial", type=["xlsx", "xls"], key="input")
         template_file = None
         st.session_state["input_loaded"] = bool(input_file)
         if complete_source == "Respaldo Excel":
@@ -3188,6 +3348,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     st.stop()
                 with st.spinner("Leyendo productos y variantes actuales desde Shopify..."):
                     shopify_products = fetch_products(shopify_config)
+                st.session_state["shopify_product_count"] = len(shopify_products)
                 st.session_state["complete_shopify_products"] = shopify_products
                 template_df = shopify_products_to_matrixify_df(shopify_products)
                 template_source = f"Shopify API ({len(shopify_products):,} productos)"
@@ -3209,6 +3370,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         st.stop()
 
             input_df = read_excel(input_file)
+            st.session_state["input_row_count"] = len(input_df)
             brand_column, detected_brands, blocked_brands = input_brand_report(input_df, brand_config)
             if blocked_brands:
                 st.error(
@@ -3230,7 +3392,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.exception(exc)
                 st.stop()
 
-            render_sources_card(ui_config, bigquery_ready, arti_source=arti_source, template_source=template_source)
+            st.session_state["arti_row_count"] = len(arti_df)
             left_col, right_col = st.columns([2, 1], gap="large")
             with left_col:
                 render_preview_table(input_df)

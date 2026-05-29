@@ -2480,11 +2480,17 @@ def inject_custom_css(config):
             color: var(--text-muted);
             font-size: 13px;
         }}
-        .source-grid, .metric-grid {{
+        .source-grid {{
             display: grid;
             grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 14px;
             margin-top: 22px;
+        }}
+        .metric-grid {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            margin-top: 16px;
         }}
         .source-card, .metric-card, .check-item {{
             border: 1px solid #E2E8F0;
@@ -2559,6 +2565,12 @@ def inject_custom_css(config):
             content: "Cargar input";
             font-size: 15px !important;
         }}
+        .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"] {{
+            display: block !important;
+            color: #0F172A !important;
+            font-weight: 800;
+            margin-top: 8px;
+        }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] small,
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] {{
             display: none !important;
@@ -2567,9 +2579,22 @@ def inject_custom_css(config):
             display: block;
             margin-top: 4px;
             color: #0F172A;
-            font-size: 22px;
+            font-size: 18px;
             line-height: 1;
             font-weight: 900;
+        }}
+        .metric-card span {{
+            display: block;
+            min-height: 30px;
+            line-height: 1.35;
+        }}
+        .st-key-action_panel .stButton button {{
+            width: 100%;
+            min-height: 48px;
+            background: #FFFFFF !important;
+            color: var(--forus-blue) !important;
+            border-color: #FFFFFF !important;
+            box-shadow: 0 10px 22px rgba(15,23,42,0.18);
         }}
         .chip-row {{
             display: flex;
@@ -2585,6 +2610,9 @@ def inject_custom_css(config):
             color: var(--brand-primary);
             font-size: 11px;
             font-weight: 900;
+        }}
+        .benefits-wrap {{
+            display: none;
         }}
         .upload-shell {{
             border: 1px solid #DDE6F2;
@@ -3007,7 +3035,7 @@ def render_matrixify_result_card(ready=False):
         f"""
         <div class="section-card">
             <h2>Archivo Matrixify</h2>
-            <p>El Excel final estara listo para importar en Matrixify.</p>
+            <p>La estructura queda lista para revisar, descargar y sincronizar con Shopify.</p>
             <span class="status-badge{tone}">{state}</span>
         </div>
         """,
@@ -3397,7 +3425,6 @@ api_version = "{DEFAULT_API_VERSION}"
             with left_col:
                 render_preview_table(input_df)
             with right_col:
-                render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
                 render_summary_metrics(
                     [
                         ("Columnas base", len(template_df.columns)),
@@ -3406,10 +3433,13 @@ api_version = "{DEFAULT_API_VERSION}"
                         ("Marcas detectadas", len(detected_brands)),
                     ]
                 )
+                with st.container(key="action_panel"):
+                    render_analyze_card(ui_config)
+                    analyze_clicked = st.button("Analizar input", type="primary")
+                render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
                 render_validations_card()
 
-            render_analyze_card(ui_config)
-            if st.button("Analizar input", type="primary"):
+            if analyze_clicked:
                 matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
                     input_df, arti_df, template_df, brand_config=brand_config
                 )
@@ -3507,10 +3537,12 @@ api_version = "{DEFAULT_API_VERSION}"
 
     st.markdown(
         """
+        <div class="benefits-wrap">
         <div class="benefits">
             <div class="benefit"><b>Actualiza con IDs</b><p>Usa Shopify API como referencia operativa para conservar IDs de producto y variante.</p></div>
             <div class="benefit"><b>Variantes por talla</b><p>Lee ARTI y genera SKUs, barcodes, precios y tallas ordenadas.</p></div>
             <div class="benefit"><b>Estructura controlada</b><p>Entrega siempre las hojas y columnas necesarias para carga Matrixify.</p></div>
+        </div>
         </div>
         """,
         unsafe_allow_html=True,

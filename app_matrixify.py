@@ -1980,242 +1980,591 @@ def apply_full_product_updates(shopify_config, matrixify_df):
     return pd.DataFrame(rows)
 
 
-def inject_styles():
+SITE_UI_CONFIG = {
+    "Columbia.pe": {
+        "brand_name": "Columbia",
+        "logo": "assets/brands/columbia.png",
+        "primary_color": "#004B8D",
+        "accent_color": "#009FE3",
+        "shopify_store": "columbiape.myshopify.com",
+    },
+    "Rockford.pe": {
+        "brand_name": "Rockford",
+        "logo": "assets/brands/rockford.png",
+        "primary_color": "#0B2345",
+        "accent_color": "#B0895B",
+        "shopify_store": "rockfordpe.myshopify.com",
+    },
+    "HushPuppies.pe": {
+        "brand_name": "Hush Puppies",
+        "logo": "assets/brands/hushpuppies.png",
+        "primary_color": "#4B2E1F",
+        "accent_color": "#C49A6C",
+        "shopify_store": "hushpuppiespe.myshopify.com",
+    },
+    "Vans.pe": {
+        "brand_name": "Vans",
+        "logo": "assets/brands/vans.png",
+        "primary_color": "#111827",
+        "accent_color": "#D71920",
+        "shopify_store": "vans-dev.myshopify.com",
+    },
+    "Patagonia.pe": {
+        "brand_name": "Patagonia",
+        "logo": "assets/brands/patagonia.png",
+        "primary_color": "#1D4E89",
+        "accent_color": "#F15A24",
+        "shopify_store": "patagoniape.myshopify.com",
+    },
+    "Sorel.pe": {
+        "brand_name": "Sorel",
+        "logo": "assets/brands/sorel.png",
+        "primary_color": "#111827",
+        "accent_color": "#C2410C",
+        "shopify_store": "sorelpe.myshopify.com",
+    },
+    "MountainHardwear.pe": {
+        "brand_name": "Mountain Hardwear",
+        "logo": "assets/brands/mountainhardwear.png",
+        "primary_color": "#B91C1C",
+        "accent_color": "#111827",
+        "shopify_store": "mountainhardwearpe.myshopify.com",
+    },
+}
+
+
+def image_data_uri(path):
+    path = Path(path)
+    if not path.exists():
+        return ""
+    suffix = path.suffix.lower().replace(".", "")
+    mime = "jpeg" if suffix in ("jpg", "jpeg") else "png"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:image/{mime};base64,{encoded}"
+
+
+def get_site_config(brand_config, shopify_config=None):
+    ui_config = SITE_UI_CONFIG.get(brand_config["site_label"], {}).copy()
+    ui_config.setdefault("brand_name", brand_config["label"])
+    ui_config.setdefault("logo", f"assets/brands/{brand_config['site_key']}.png")
+    ui_config.setdefault("primary_color", "#17269A")
+    ui_config.setdefault("accent_color", "#009FE3")
+    ui_config["site_label"] = brand_config["site_label"]
+    ui_config["allowed_brands"] = brand_config.get("allowed_arti_brands", [])
+    ui_config["output_file"] = brand_config.get("output_filename", "")
+    ui_config["shopify_store"] = clean_value((shopify_config or {}).get("shop_domain")) or ui_config.get("shopify_store", "")
+    ui_config["api_version"] = clean_value((shopify_config or {}).get("api_version")) or DEFAULT_API_VERSION
+    return ui_config
+
+
+def inject_custom_css(config):
     st.markdown(
-        """
+        f"""
         <style>
-        .block-container {
-            max-width: 1120px;
-            padding-top: 42px;
-            padding-bottom: 36px;
-        }
-        .brand-row {
+        :root {{
+            --brand-primary: {config["primary_color"]};
+            --brand-accent: {config["accent_color"]};
+            --brand-soft: color-mix(in srgb, var(--brand-accent) 12%, white);
+            --forus-blue: #17269A;
+            --shopify-green: #95BF47;
+            --bg-main: #F6F8FC;
+            --card-bg: #FFFFFF;
+            --text-main: #0F172A;
+            --text-muted: #64748B;
+        }}
+        .stApp {{ background: var(--bg-main); color: var(--text-main); }}
+        .block-container {{
+            max-width: 1280px;
+            padding-top: 24px;
+            padding-bottom: 34px;
+        }}
+        section[data-testid="stSidebar"] {{
+            background: linear-gradient(180deg, #071B4D 0%, #0B2345 100%);
+            border-right: 0;
+        }}
+        section[data-testid="stSidebar"] * {{ color: #E5ECFF; }}
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
+        section[data-testid="stSidebar"] div[role="radiogroup"],
+        section[data-testid="stSidebar"] details,
+        section[data-testid="stSidebar"] .stButton button {{
+            border-radius: 8px;
+        }}
+        section[data-testid="stSidebar"] .stSelectbox label,
+        section[data-testid="stSidebar"] .stRadio label {{
+            color: #B8C7F2 !important;
+            font-weight: 800;
+        }}
+        .forus-sidebar {{
+            border-radius: 8px;
+            padding: 16px;
+            margin: 4px 0 18px;
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.12);
+        }}
+        .forus-logo {{
+            font-size: 30px;
+            line-height: 1;
+            font-weight: 900;
+            letter-spacing: -0.06em;
+            color: #FFFFFF;
+        }}
+        .forus-tagline {{
+            margin-top: 5px;
+            color: #93C5FD;
+            font-size: 9px;
+            letter-spacing: 0.28em;
+            font-weight: 900;
+        }}
+        .sidebar-card {{
+            border-radius: 8px;
+            padding: 14px;
+            margin: 14px 0;
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.12);
+        }}
+        .sidebar-label {{
+            margin: 0 0 8px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: #B8C7F2;
+            font-weight: 900;
+        }}
+        .sidebar-value {{
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.55;
+            color: #FFFFFF;
+            font-weight: 700;
+        }}
+        .top-header {{
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 24px;
-            margin-bottom: 42px;
-        }
-        .brand-row .brand-img {
-            max-width: 205px;
-            max-height: 82px;
-            object-fit: contain;
-            object-position: left center;
-            display: block;
-        }
-        .brand-row .shopify-img {
-            max-width: 96px;
-            max-height: 96px;
-            object-fit: contain;
-            object-position: right center;
-            display: block;
-        }
-        .forus-logo {
-            font-size: 46px;
-            line-height: 0.92;
-            font-weight: 900;
-            color: #123a8c;
-            letter-spacing: 0;
-        }
-        .forus-tagline {
-            color: #123a8c;
-            font-size: 13px;
-            letter-spacing: 5px;
-            font-weight: 800;
-            margin-top: 4px;
-        }
-        .hero-copy {
-            margin: 0 0 22px;
-        }
-        .hero-copy h1 {
-            color: #001f4f;
-            font-size: 32px;
-            margin: 0 0 18px;
-            letter-spacing: 0;
-        }
-        .hero-copy p {
-            color: #4d6383;
-            margin: 0;
-            font-size: 15px;
-        }
-        .matrix-card {
-            min-height: 0;
-            border: 0;
-            border-radius: 0;
-            background: transparent;
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            margin-top: 0;
-            padding: 0;
-            box-shadow: none;
-        }
-        .matrix-card img {
-            max-height: 108px;
-            max-width: 190px;
-            object-fit: contain;
-        }
-        .brand-img {
-            max-width: 205px;
-            max-height: 82px;
-            object-fit: contain;
-            object-position: left center;
-            display: block;
-        }
-        .matrix-icon {
-            position: relative;
-            width: 120px;
-            height: 84px;
-            border-radius: 8px;
-            background: white;
-            box-shadow: 0 12px 26px rgba(0, 60, 140, 0.14);
-        }
-        .matrix-icon:before {
-            content: "SHOPIFY";
-            position: absolute;
-            left: -24px;
-            top: 34px;
-            background: #00a047;
-            color: white;
-            font-weight: 800;
-            border-radius: 5px;
-            padding: 7px 10px;
-            font-size: 13px;
-            box-shadow: 0 8px 16px rgba(0, 100, 50, 0.25);
-        }
-        .matrix-icon:after {
-            content: "M";
-            position: absolute;
-            right: -20px;
-            top: 18px;
-            width: 70px;
-            height: 54px;
-            border-radius: 18px;
-            background: #1465f4;
-            color: white;
-            font-weight: 900;
-            font-size: 34px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .info-box {
-            border: 1px solid #cfe2ff;
-            background: #f2f8ff;
-            border-radius: 8px;
-            padding: 18px 22px;
-            color: #002b66;
-            margin: 14px 0 22px;
-        }
-        .section-card {
-            border: 1px solid #d9e6f7;
-            border-radius: 8px;
-            padding: 22px;
-            margin: 18px 0;
-            background: white;
-            box-shadow: 0 14px 34px rgba(20, 60, 120, 0.06);
-        }
-        .section-card h2 {
-            color: #001f4f;
-            font-size: 23px;
-            margin: 0 0 14px;
-            letter-spacing: 0;
-        }
-        .benefits {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
             gap: 18px;
-            margin-top: 26px;
-        }
-        .benefit {
-            border: 1px solid #d9e6f7;
+            border: 1px solid #E2E8F0;
             border-radius: 8px;
-            padding: 18px;
             background: white;
-        }
-        .benefit b {
-            color: #001f4f;
-        }
-        .benefit p {
-            color: #4d6383;
-            margin: 10px 0 0;
+            padding: 18px 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 10px 28px rgba(15,23,42,0.05);
+        }}
+        .brand-lockup {{
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            min-width: 0;
+        }}
+        .brand-logo-card {{
+            width: 92px;
+            height: 58px;
+            border: 1px solid #E2E8F0;
+            border-radius: 8px;
+            display: grid;
+            place-items: center;
+            background: #FFFFFF;
+            overflow: hidden;
+            flex: 0 0 auto;
+        }}
+        .brand-logo-card img {{
+            max-width: 82px;
+            max-height: 42px;
+            object-fit: contain;
+        }}
+        .brand-fallback {{
+            color: var(--brand-primary);
+            font-weight: 900;
             font-size: 14px;
-        }
-        div[data-testid="stFileUploader"] {
-            border: 1px dashed #9cc3ff;
+            text-align: center;
+            padding: 0 6px;
+        }}
+        .header-eyebrow {{
+            color: var(--brand-accent);
+            font-size: 11px;
+            font-weight: 900;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            margin: 0;
+        }}
+        .header-title {{
+            margin: 3px 0 2px;
+            font-size: 26px;
+            line-height: 1.15;
+            font-weight: 900;
+            color: #0F172A;
+            letter-spacing: 0;
+        }}
+        .header-subtitle {{
+            margin: 0;
+            color: var(--text-muted);
+            font-size: 13px;
+            line-height: 1.45;
+        }}
+        .shopify-lockup {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex: 0 0 auto;
+        }}
+        .shopify-bag {{
+            width: 44px;
+            height: 44px;
             border-radius: 8px;
+            display: grid;
+            place-items: center;
+            background: var(--shopify-green);
+            color: white;
+            font-size: 23px;
+            font-weight: 900;
+            font-style: italic;
+        }}
+        .status-badge {{
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 5px 10px;
+            font-size: 11px;
+            font-weight: 900;
+            background: #ECFDF5;
+            color: #047857;
+            border: 1px solid #A7F3D0;
+            white-space: nowrap;
+        }}
+        .status-badge.warn {{
+            background: #FFFBEB;
+            color: #B45309;
+            border-color: #FDE68A;
+        }}
+        .matrix-stepper {{
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+            margin: 12px 0 18px;
+        }}
+        .step-card {{
+            min-height: 76px;
+            border-radius: 8px;
+            background: white;
+            border: 1px solid #E2E8F0;
+            padding: 13px;
+            box-shadow: 0 8px 20px rgba(15,23,42,0.04);
+        }}
+        .step-card.current {{
+            border-color: var(--brand-accent);
+            background: linear-gradient(180deg, var(--brand-soft), #FFFFFF);
+        }}
+        .step-index {{
+            display: inline-grid;
+            place-items: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 999px;
+            background: var(--brand-primary);
+            color: white;
+            font-size: 12px;
+            font-weight: 900;
+        }}
+        .step-title {{
+            margin: 8px 0 2px;
+            color: #0F172A;
+            font-size: 13px;
+            font-weight: 900;
+        }}
+        .step-caption {{
+            margin: 0;
+            color: var(--text-muted);
+            font-size: 12px;
+        }}
+        .section-card {{
+            border: 1px solid #E2E8F0;
+            border-radius: 8px;
+            background: white;
             padding: 18px;
-            background: #fbfdff;
-        }
-        .stButton button, .stDownloadButton button {
+            margin: 14px 0;
+            box-shadow: 0 10px 28px rgba(15,23,42,0.05);
+        }}
+        .section-card h2 {{
+            color: #0F172A;
+            margin: 0 0 8px;
+            font-size: 20px;
+            line-height: 1.2;
+            font-weight: 900;
+            letter-spacing: 0;
+        }}
+        .section-card p, .section-card .caption {{
+            color: var(--text-muted);
+            font-size: 13px;
+        }}
+        .source-grid, .metric-grid {{
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin-top: 12px;
+        }}
+        .source-card, .metric-card, .check-item {{
+            border: 1px solid #E2E8F0;
             border-radius: 8px;
-            font-weight: 700;
-        }
-        @media (max-width: 760px) {
-            .brand-row {
-                align-items: flex-start;
-                margin-bottom: 28px;
-            }
-            .brand-row .brand-img {
-                max-width: 165px;
-            }
-            .brand-row .shopify-img {
-                max-width: 72px;
-            }
-            .benefits {
-                grid-template-columns: 1fr;
-            }
-        }
+            background: #F8FAFC;
+            padding: 13px;
+        }}
+        .source-card b, .metric-card b {{
+            display: block;
+            color: #0F172A;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }}
+        .source-card span, .metric-card span, .check-item {{
+            color: var(--text-muted);
+            font-size: 12px;
+        }}
+        .metric-card strong {{
+            display: block;
+            margin-top: 4px;
+            color: #0F172A;
+            font-size: 22px;
+            line-height: 1;
+            font-weight: 900;
+        }}
+        .chip-row {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+        }}
+        .chip {{
+            border-radius: 999px;
+            padding: 6px 10px;
+            background: var(--brand-soft);
+            border: 1px solid color-mix(in srgb, var(--brand-accent) 34%, white);
+            color: var(--brand-primary);
+            font-size: 11px;
+            font-weight: 900;
+        }}
+        div[data-testid="stFileUploader"] {{
+            border: 1px dashed color-mix(in srgb, var(--brand-accent) 55%, white);
+            border-radius: 8px;
+            padding: 14px;
+            background: #FBFDFF;
+        }}
+        div[data-testid="stDataFrame"] {{
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #E2E8F0;
+        }}
+        .stButton button, .stDownloadButton button {{
+            border-radius: 8px;
+            font-weight: 800;
+            border-color: var(--brand-primary);
+        }}
+        .stButton button[kind="primary"], .stDownloadButton button[kind="primary"] {{
+            background: var(--brand-primary);
+            border-color: var(--brand-primary);
+        }}
+        @media (max-width: 900px) {{
+            .top-header {{ align-items: flex-start; flex-direction: column; }}
+            .matrix-stepper, .source-grid, .metric-grid {{ grid-template-columns: 1fr; }}
+            .shopify-lockup {{ width: 100%; justify-content: space-between; }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def render_header(brand_config=None):
-    brand_config = brand_config or get_brand_config()
-    def image_data_uri(path):
-        if not path.exists():
-            return ""
-        suffix = path.suffix.lower().replace(".", "")
-        mime = "jpeg" if suffix in ("jpg", "jpeg") else "png"
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        return f"data:image/{mime};base64,{encoded}"
+def inject_styles(config=None):
+    inject_custom_css(config or get_site_config(get_brand_config()))
 
+
+def render_sidebar_brand():
     forus_src = image_data_uri(FORUS_LOGO_PATH)
-    shopify_src = image_data_uri(SHOPIFY_LOGO_PATH)
-
-    forus_html = (
-        f'<img class="brand-img" src="{forus_src}" alt="Forus">'
+    logo_html = (
+        f'<img src="{forus_src}" alt="Forus" style="max-width:138px;max-height:54px;object-fit:contain;">'
         if forus_src
-        else '<div><div class="forus-logo">FORUS</div><div class="forus-tagline">CONSUMER FANATIC</div></div>'
+        else '<div class="forus-logo">FORUS</div><div class="forus-tagline">CONSUMER FANATIC</div>'
+    )
+    st.sidebar.markdown(f'<div class="forus-sidebar">{logo_html}</div>', unsafe_allow_html=True)
+
+
+def render_sidebar_status(config, shopify_config, bigquery_ready, input_loaded=False):
+    shopify_state = "Conectado" if is_shopify_configured(shopify_config) else "Pendiente"
+    input_state = "Cargado" if input_loaded else "Pendiente"
+    st.sidebar.markdown(
+        f"""
+        <div class="sidebar-card">
+            <p class="sidebar-label">Integraciones</p>
+            <p class="sidebar-value">Shopify API: {shopify_state}</p>
+            <p class="sidebar-value">BigQuery: {"Activo" if bigquery_ready else "Respaldo local"}</p>
+            <p class="sidebar-value">Admin API: {config["api_version"]}</p>
+        </div>
+        <div class="sidebar-card">
+            <p class="sidebar-label">Estado operativo</p>
+            <p class="sidebar-value">Marca activa: {config["brand_name"]}</p>
+            <p class="sidebar-value">Input comercial: {input_state}</p>
+            <p class="sidebar-value">Salida: {config["output_file"]}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_top_header(config):
+    brand_src = image_data_uri(config.get("logo", ""))
+    shopify_src = image_data_uri(SHOPIFY_LOGO_PATH)
+    brand_html = (
+        f'<img src="{brand_src}" alt="{config["brand_name"]}">'
+        if brand_src
+        else f'<div class="brand-fallback">{config["brand_name"]}</div>'
     )
     shopify_html = (
-        f'<img class="shopify-img" src="{shopify_src}" alt="Shopify">'
+        f'<img src="{shopify_src}" alt="Shopify" style="max-width:44px;max-height:44px;object-fit:contain;">'
         if shopify_src
-        else '<div class="matrix-icon"></div>'
+        else '<div class="shopify-bag">S</div>'
     )
     st.markdown(
         f"""
-        <div class="brand-row">
-            {forus_html}
-            {shopify_html}
-        </div>
-        <div class="hero">
-            <div class="hero-copy">
-                <h1>Matrixify {brand_config['site_label']} - Shopify</h1>
-                <p>Sube el input comercial y el ultimo catalogo Matrixify del sitio para conservar IDs y evitar duplicados.</p>
+        <div class="top-header">
+            <div class="brand-lockup">
+                <div class="brand-logo-card">{brand_html}</div>
+                <div>
+                    <p class="header-eyebrow">Matrixify Control Center</p>
+                    <h1 class="header-title">{config["site_label"]} &rarr; Shopify</h1>
+                    <p class="header-subtitle">Convierte el input comercial en un Excel Matrixify validado usando BigQuery como fuente maestra.</p>
+                </div>
+            </div>
+            <div class="shopify-lockup">
+                <span class="status-badge">Activo</span>
+                {shopify_html}
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+
+def render_header(brand_config=None):
+    render_top_header(get_site_config(brand_config or get_brand_config()))
+
+
+def render_stepper(config, current_step=1):
+    steps = [
+        ("Input comercial", "Archivo base"),
+        ("BigQuery", "Fuente maestra"),
+        ("Validacion", "Reglas y cruces"),
+        ("Matrixify", "Excel final"),
+    ]
+    items = []
+    for index, (title, caption) in enumerate(steps, start=1):
+        current = " current" if index == current_step else ""
+        items.append(
+            f"""
+            <div class="step-card{current}">
+                <span class="step-index">{index}</span>
+                <p class="step-title">{title}</p>
+                <p class="step-caption">{caption}</p>
+            </div>
+            """
+        )
+    st.markdown(f'<div class="matrix-stepper">{"".join(items)}</div>', unsafe_allow_html=True)
+
+
+def render_sources_card(config, bigquery_ready, arti_source="", template_source="Shopify API"):
+    bigquery_status = "Fuente maestra activa" if bigquery_ready else "Usando respaldo local"
+    st.markdown(
+        f"""
+        <div class="section-card">
+            <h2>Archivos y fuentes</h2>
+            <p>La app usa BigQuery como fuente maestra, Shopify API como referencia operativa y el input comercial como origen de contenido.</p>
+            <div class="source-grid">
+                <div class="source-card"><b>BigQuery</b><span>{bigquery_status}</span></div>
+                <div class="source-card"><b>Shopify API</b><span>{config["shopify_store"] or template_source}</span></div>
+                <div class="source-card"><b>ARTI</b><span>{arti_source or "Tabla central enlazada"}</span></div>
+            </div>
+            <div class="chip-row">
+                <span class="chip">SKU obligatorio</span>
+                <span class="chip">Talla por variante</span>
+                <span class="chip">Vendor validado</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_operational_status(config, shopify_config, bigquery_ready, input_loaded):
+    st.markdown(
+        f"""
+        <div class="section-card">
+            <h2>Estado operativo</h2>
+            <div class="check-item">Shopify API: {"Conectado" if is_shopify_configured(shopify_config) else "Pendiente"}</div>
+            <div class="check-item">BigQuery: {"Activo" if bigquery_ready else "Respaldo local"}</div>
+            <div class="check-item">Marca activa: {config["brand_name"]}</div>
+            <div class="check-item">Input comercial: {"Cargado" if input_loaded else "Pendiente"}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_summary_metrics(metrics):
+    items = "".join(
+        f'<div class="metric-card"><span>{label}</span><strong>{value}</strong></div>'
+        for label, value in metrics
+    )
+    st.markdown(f'<div class="section-card"><h2>Resumen de bases</h2><div class="metric-grid">{items}</div></div>', unsafe_allow_html=True)
+
+
+def render_preview_table(input_df):
+    total = len(input_df) if input_df is not None else 0
+    shown = min(total, 20)
+    st.markdown(
+        f"""
+        <div class="section-card">
+            <h2>Vista previa del input comercial</h2>
+            <p>Mostrando {shown} de {total} productos.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if input_df is not None and not input_df.empty:
+        st.dataframe(input_df.head(20), use_container_width=True, height=330)
+
+
+def render_validations_card():
     st.markdown(
         """
-        <div class="info-box">
-            <b>Flujo obligatorio:</b><br>
-            Elige el sitio destino, sube el input comercial y sube el ultimo catalogo Matrixify del mismo sitio.
+        <div class="section-card">
+            <h2>Validaciones automaticas</h2>
+            <div class="check-item">SKU, barcode y talla obligatorios.</div>
+            <div class="check-item">Vendor validado contra marcas permitidas.</div>
+            <div class="check-item">Cruce automatico con BigQuery.</div>
+            <div class="check-item">Reporte de errores antes de exportar.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_analyze_card(config):
+    st.markdown(
+        f"""
+        <div class="section-card">
+            <h2>Analizar y preparar carga</h2>
+            <p>Analiza el input para {config["site_label"]}, arma la estructura Matrixify y agrega la hoja Carga Sial.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_matrixify_result_card(ready=False):
+    state = "Listo para descargar" if ready else "Pendiente de analisis"
+    tone = "" if ready else " warn"
+    st.markdown(
+        f"""
+        <div class="section-card">
+            <h2>Archivo Matrixify</h2>
+            <p>El Excel final estara listo para importar en Matrixify.</p>
+            <span class="status-badge{tone}">{state}</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -2224,23 +2573,28 @@ def render_header(brand_config=None):
 
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
-    inject_styles()
     bigquery_config = get_bigquery_config()
     bigquery_ready = is_bigquery_configured(bigquery_config)
 
+    render_sidebar_brand()
     site_options = {config["site_label"]: key for key, config in SITE_CONFIGS.items()}
     selected_site_label = st.sidebar.selectbox("Sitio destino", list(site_options), index=0)
     selected_site_key = site_options[selected_site_label]
     brand_config = get_brand_config(selected_site_key)
     shopify_config = get_shopify_config(selected_site_key)
-    st.sidebar.markdown("**Marcas permitidas**")
-    st.sidebar.write(", ".join(brand_config["allowed_arti_brands"]))
-    st.sidebar.caption(f"Vendor: segun marca del producto | Salida: {brand_config['output_filename']}")
+    ui_config = get_site_config(brand_config, shopify_config)
+    inject_styles(ui_config)
+    st.sidebar.markdown('<p class="sidebar-label">Marca(s) permitidas</p>', unsafe_allow_html=True)
+    st.sidebar.markdown(
+        f'<div class="sidebar-card"><p class="sidebar-value">{", ".join(brand_config["allowed_arti_brands"])}</p></div>',
+        unsafe_allow_html=True,
+    )
     operation_mode = st.sidebar.radio(
         "Tipo de operacion",
         ["Carga completa", "Actualizacion puntual"],
         index=0,
     )
+    render_sidebar_status(ui_config, shopify_config, bigquery_ready, input_loaded=bool(st.session_state.get("input_loaded")))
 
     with st.sidebar.expander("Shopify API", expanded=False):
         if is_shopify_configured(shopify_config):
@@ -2271,7 +2625,8 @@ api_version = "{DEFAULT_API_VERSION}"
                 language="toml",
             )
 
-    render_header(brand_config)
+    render_top_header(ui_config)
+    render_stepper(ui_config, current_step=1)
 
     if operation_mode == "Actualizacion puntual":
         operation_labels = {
@@ -2286,17 +2641,17 @@ api_version = "{DEFAULT_API_VERSION}"
         update_operation = operation_labels[update_label]
         update_source = st.radio(
             "Fuente de datos actuales",
-            ["Shopify API", "Catalogo Matrixify"],
+            ["Shopify API", "Respaldo Excel"],
             index=0 if is_shopify_configured(shopify_config) else 1,
-            help="Shopify API evita subir el ultimo catalogo. Catalogo Matrixify queda como respaldo.",
+            help="Shopify API es la referencia operativa. El respaldo Excel solo se usa si la API no esta disponible.",
         )
         template_file = None
-        if update_source == "Catalogo Matrixify":
+        if update_source == "Respaldo Excel":
             template_file = st.file_uploader(
-                f"1. Subir ultimo catalogo Matrixify de {brand_config['site_label']}",
+                f"1. Subir respaldo operativo de {brand_config['site_label']}",
                 type=["xlsx", "xls"],
                 key="template_update",
-                help="Se usa para encontrar ID, Handle, tags actuales, fotos actuales y codigo modelo color.",
+                help="Se usa como respaldo para encontrar ID, Handle, tags actuales, fotos actuales y codigo modelo color.",
             )
 
         update_file = None
@@ -2320,7 +2675,7 @@ api_version = "{DEFAULT_API_VERSION}"
         elif update_operation == "body":
             body_source = st.radio(
                 "Origen para corregir Body HTML",
-                ["Desde input comercial", "Detectar desde catalogo Matrixify"],
+                ["Desde input comercial", "Detectar desde respaldo Excel"],
                 key="body_source",
             )
             body_mode = "from_input" if body_source == "Desde input comercial" else "fix_catalog"
@@ -2415,7 +2770,7 @@ api_version = "{DEFAULT_API_VERSION}"
             except Exception as exc:
                 st.error("No pude generar o aplicar la actualizacion con Shopify API.")
                 st.exception(exc)
-        elif update_source == "Catalogo Matrixify" and template_file and update_ready:
+        elif update_source == "Respaldo Excel" and template_file and update_ready:
             try:
                 template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
                 if "Vendor" in template_df.columns:
@@ -2427,7 +2782,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     expected_vendors = expected_catalog_vendors(brand_config)
                     if catalog_vendors and catalog_vendors.isdisjoint(expected_vendors):
                         st.error(
-                            f"El catalogo Matrixify cargado no parece ser de {brand_config['site_label']}. "
+                            f"El respaldo Excel cargado no parece ser de {brand_config['site_label']}. "
                             f"Vendors esperados: {', '.join(sorted(expected_vendors))}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
                         )
                         st.stop()
@@ -2482,18 +2837,20 @@ api_version = "{DEFAULT_API_VERSION}"
             st.info("Sube los archivos requeridos para generar la actualizacion puntual.")
         return
 
-    st.markdown('<div class="section-card"><h2>Cargar archivos obligatorios</h2>', unsafe_allow_html=True)
+    render_sources_card(ui_config, bigquery_ready)
+    st.markdown('<div class="section-card"><h2>Input comercial</h2><p>Arrastra tu archivo o seleccionalo. Formatos permitidos: .xlsx, .xls. Maximo 200 MB.</p>', unsafe_allow_html=True)
     complete_source = st.radio(
         "Fuente de datos actuales",
-        ["Shopify API", "Catalogo Matrixify"],
+        ["Shopify API", "Respaldo Excel"],
         index=0 if is_shopify_configured(shopify_config) else 1,
-        help="Shopify API evita subir el ultimo catalogo Matrixify.",
+        help="Shopify API es la referencia operativa. El respaldo Excel solo se usa si la API no esta disponible.",
     )
     input_file = st.file_uploader("1. Subir input comercial", type=["xlsx", "xls"], key="input")
     template_file = None
-    if complete_source == "Catalogo Matrixify":
+    st.session_state["input_loaded"] = bool(input_file)
+    if complete_source == "Respaldo Excel":
         template_file = st.file_uploader(
-            f"2. Subir ultimo catalogo Matrixify de {brand_config['site_label']}",
+            f"2. Subir respaldo operativo de {brand_config['site_label']}",
             type=["xlsx", "xls"],
             key="template",
             help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
@@ -2503,8 +2860,8 @@ api_version = "{DEFAULT_API_VERSION}"
     setup_rows = [
         {
             "Base": "Datos actuales Shopify",
-            "Ruta": "Shopify API" if complete_source == "Shopify API" else f"Subir ultimo catalogo de {brand_config['site_label']}",
-            "Estado": "OK API" if complete_source == "Shopify API" and is_shopify_configured(shopify_config) else ("Obligatorio" if complete_source == "Catalogo Matrixify" else "Falta API"),
+            "Ruta": "Shopify API" if complete_source == "Shopify API" else f"Respaldo Excel de {brand_config['site_label']}",
+            "Estado": "OK API" if complete_source == "Shopify API" and is_shopify_configured(shopify_config) else ("Obligatorio" if complete_source == "Respaldo Excel" else "Falta API"),
         },
         {
             "Base": "ARTI",
@@ -2540,7 +2897,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 template_source = f"Shopify API ({len(shopify_products):,} productos)"
             else:
                 template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
-                template_source = f"catalogo Matrixify cargado para {brand_config['site_label']}"
+                template_source = f"respaldo operativo cargado para {brand_config['site_label']}"
                 if "Vendor" in template_df.columns:
                     catalog_vendors = {
                         clean_value(value).lower()
@@ -2550,7 +2907,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     expected_vendors = expected_catalog_vendors(brand_config)
                     if catalog_vendors and catalog_vendors.isdisjoint(expected_vendors):
                         st.error(
-                            f"El catalogo Matrixify cargado no parece ser de {brand_config['site_label']}. "
+                            f"El respaldo Excel cargado no parece ser de {brand_config['site_label']}. "
                             f"Vendors esperados: {', '.join(sorted(expected_vendors))}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
                         )
                         st.stop()
@@ -2577,24 +2934,23 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.exception(exc)
                 st.stop()
 
-            st.markdown('<div class="section-card"><h2>Archivos cargados</h2>', unsafe_allow_html=True)
-            st.caption(f"Datos actuales usados: {template_source}")
-            st.caption(f"Arti usado: {arti_source}")
-            st.caption(
-                f"Marcas detectadas: {', '.join(detected_brands) if detected_brands else 'No se encontro columna de marca en el input'}"
-            )
-            col1, col2 = st.columns([2, 1])
-            col1.write("Input productos")
-            col1.dataframe(input_df.head(20), use_container_width=True)
-            col2.write("Resumen bases")
-            col2.metric("Columnas base", len(template_df.columns))
-            col2.metric("Filas ARTI", len(arti_df))
-            col2.metric("Productos input", len(input_df))
-            col2.metric("Marcas detectadas", len(detected_brands))
-            st.markdown("</div>", unsafe_allow_html=True)
+            render_sources_card(ui_config, bigquery_ready, arti_source=arti_source, template_source=template_source)
+            left_col, right_col = st.columns([2, 1], gap="large")
+            with left_col:
+                render_preview_table(input_df)
+            with right_col:
+                render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
+                render_summary_metrics(
+                    [
+                        ("Columnas base", len(template_df.columns)),
+                        ("Filas ARTI BigQuery", len(arti_df)),
+                        ("Productos input", len(input_df)),
+                        ("Marcas detectadas", len(detected_brands)),
+                    ]
+                )
+                render_validations_card()
 
-            st.markdown('<div class="section-card"><h2>Analizar y preparar carga</h2>', unsafe_allow_html=True)
-            st.write(f"Analiza el input para {brand_config['site_label']}, arma la estructura Matrixify y agrega la hoja Carga Sial.")
+            render_analyze_card(ui_config)
             if st.button("Analizar input", type="primary"):
                 matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
                     input_df, arti_df, template_df, brand_config=brand_config
@@ -2631,12 +2987,13 @@ api_version = "{DEFAULT_API_VERSION}"
                 skipped_df = coalesce_duplicate_columns(skipped_df)
                 sial_df = coalesce_duplicate_columns(sial_df)
 
+                render_matrixify_result_card(ready=not matrixify_df.empty)
                 if matrixify_df.empty:
                     st.error("No se pudo generar ninguna fila Matrixify. Revisa la hoja Revision.")
                 else:
                     st.success(f"Vista previa generada con {len(matrixify_df):,} variantes.")
                     st.dataframe(summary_df, use_container_width=True)
-                    st.dataframe(matrixify_df.head(100), use_container_width=True)
+                    st.dataframe(matrixify_df.head(100), use_container_width=True, height=360)
 
                 if issues_df is not None and not issues_df.empty:
                     st.warning(f"Hay {len(issues_df):,} observaciones para revisar.")
@@ -2652,7 +3009,7 @@ api_version = "{DEFAULT_API_VERSION}"
 
                 if sial_df is not None and not sial_df.empty:
                     st.write("Vista previa Carga Sial")
-                    st.dataframe(sial_df.head(100), use_container_width=True)
+                    st.dataframe(sial_df.head(100), use_container_width=True, height=320)
 
                 excel_bytes = columbia_to_excel_bytes(
                     matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df
@@ -2688,7 +3045,7 @@ api_version = "{DEFAULT_API_VERSION}"
             st.error("No pude procesar los archivos.")
             st.exception(exc)
     else:
-        st.info("Carga el input comercial para comenzar. Si usas Catalogo Matrixify, tambien sube el ultimo catalogo del sitio.")
+        st.info("Carga el input comercial para comenzar. Si no usas Shopify API, tambien sube el respaldo Excel del sitio.")
 
     st.markdown(
         """

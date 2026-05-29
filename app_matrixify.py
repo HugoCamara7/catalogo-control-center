@@ -2556,23 +2556,33 @@ def inject_custom_css(config):
             color: #FFFFFF !important;
             border: 1px solid var(--forus-blue) !important;
             box-shadow: 0 10px 20px rgba(23,38,154,0.24);
-            min-height: 48px;
-            padding: 0 22px !important;
+            min-height: 52px;
+            min-width: 190px;
+            padding: 0 24px !important;
             font-size: 0 !important;
             font-weight: 900 !important;
             width: 100%;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            gap: 10px !important;
+            overflow: hidden !important;
+        }}
+        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button * {{
+            display: none !important;
         }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::before {{
-            content: "↥";
-            font-size: 19px !important;
+            content: "⇧";
+            font-size: 18px !important;
             color: #FFFFFF !important;
-            margin-right: 9px;
             line-height: 1;
         }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::after {{
             content: "Cargar input";
             font-size: 15px !important;
             color: #FFFFFF !important;
+            line-height: 1;
+            white-space: nowrap;
         }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"] {{
             display: block !important;
@@ -3337,7 +3347,7 @@ api_version = "{DEFAULT_API_VERSION}"
             help="Shopify API es la referencia operativa. El respaldo Excel solo se usa si la API no esta disponible.",
         )
         template_file = None
-        upload_left, upload_right = st.columns([4, 1], gap="large")
+        upload_left, upload_right = st.columns([3.5, 1.5], gap="large")
         with upload_left:
             if complete_source == "Respaldo Excel":
                 st.caption(f"Primero carga el input comercial. El respaldo operativo se pedira solo si hace falta conservar IDs.")

@@ -2216,7 +2216,7 @@ def inject_custom_css(config):
             border-radius: 0;
             background: white;
             padding: 22px 28px;
-            margin-bottom: 16px;
+            margin: 0 0 16px;
             box-shadow: none;
         }}
         .brand-lockup {{
@@ -2314,7 +2314,7 @@ def inject_custom_css(config):
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 12px;
-            margin: 0;
+            margin: 0 0 24px;
             border: 1px solid #DDE6F2;
             border-radius: 28px;
             padding: 18px;
@@ -2364,8 +2364,9 @@ def inject_custom_css(config):
             border-radius: 26px;
             background: white;
             padding: 26px 28px;
-            margin: 22px 0;
+            margin: 0 0 24px;
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
+            overflow: visible;
         }}
         .section-card h2 {{
             color: #0F172A;
@@ -2435,10 +2436,58 @@ def inject_custom_css(config):
             border-radius: 26px;
             background: linear-gradient(180deg, #FFFFFF 0%, #FBFDFF 100%);
             padding: 26px 28px 22px;
-            margin: 22px 0 12px;
+            margin: 0 0 18px;
             box-shadow: 0 18px 38px rgba(15,23,42,0.07);
             position: relative;
             overflow: hidden;
+        }}
+        .st-key-input_upload_panel {{
+            border: 1px solid #DDE6F2;
+            border-radius: 26px;
+            background: linear-gradient(180deg, #FFFFFF 0%, #FBFDFF 100%);
+            padding: 26px 28px 24px;
+            margin: 0 0 24px;
+            box-shadow: 0 18px 38px rgba(15,23,42,0.07);
+            position: relative;
+            overflow: hidden;
+        }}
+        .st-key-input_upload_panel::after {{
+            content: "XLS";
+            position: absolute;
+            right: 24px;
+            top: 24px;
+            width: 56px;
+            height: 56px;
+            border-radius: 18px;
+            display: grid;
+            place-items: center;
+            color: var(--brand-primary);
+            background: var(--brand-soft);
+            border: 1px solid color-mix(in srgb, var(--brand-accent) 30%, white);
+            font-weight: 900;
+            font-size: 17px;
+        }}
+        .st-key-input_upload_panel h2 {{
+            margin: 0 0 8px;
+            font-size: 25px;
+            color: #0F172A;
+            font-weight: 900;
+            letter-spacing: 0;
+        }}
+        .st-key-input_upload_panel p {{
+            color: var(--text-muted);
+            font-size: 13px;
+            margin-bottom: 14px;
+        }}
+        .st-key-input_upload_panel div[data-testid="stRadio"] {{
+            margin: 14px 0 10px;
+            padding: 14px 16px;
+            border: 1px solid #E2E8F0;
+            border-radius: 18px;
+            background: #F8FAFC;
+        }}
+        .st-key-input_upload_panel div[data-testid="stFileUploader"] {{
+            margin-top: 12px;
         }}
         .upload-shell::after {{
             content: "";
@@ -2701,13 +2750,7 @@ def render_sources_card(config, bigquery_ready, arti_source="", template_source=
             <div class="source-grid">
                 <div class="source-card" style="background:#EFF6FF;border-color:#BFDBFE;"><b>Input productos</b><span>Archivo comercial cargado</span></div>
                 <div class="source-card" style="background:#ECFDF5;border-color:#BBF7D0;"><b>Shopify API</b><span>{config["shopify_store"] or template_source}</span></div>
-                <div class="source-card"><b>ARTI BigQuery</b><span>{arti_source or table_label or bigquery_status}</span></div>
-            </div>
-            <p class="caption" style="margin-top:12px;">Datos actualizados desde BigQuery. Proyecto: {project or "configurado en Secrets"}. Dataset/tabla: {table_label or "configurado en Secrets"}.</p>
-            <div class="chip-row">
-                <span class="chip">SKU obligatorio</span>
-                <span class="chip">Talla por variante</span>
-                <span class="chip">Vendor validado</span>
+                <div class="source-card"><b>ARTI BigQuery</b><span>Tabla central enlazada</span></div>
             </div>
         </div>
         """,
@@ -2798,19 +2841,12 @@ def render_matrixify_result_card(ready=False):
 
 
 def render_input_upload_card():
-    render_html(
+    st.markdown(
         """
-        <div class="upload-shell">
-            <div class="upload-title-row">
-                <div>
-                    <h2>Input comercial</h2>
-                    <p>Sube el archivo comercial para analizar productos, variantes, precios y estructura Sial.</p>
-                </div>
-                <div class="upload-icon">XLS</div>
-            </div>
-            <div class="upload-note">Arrastra tu archivo o seleccionalo. Formatos permitidos: .xlsx, .xls. Maximo 200 MB.</div>
-        </div>
-        """
+        <h2>Input comercial</h2>
+        <p>Sube el archivo comercial para analizar productos, variantes, precios y estructura Sial. Arrastra tu archivo o seleccionalo; formatos permitidos: .xlsx, .xls.</p>
+        """,
+        unsafe_allow_html=True,
     )
 
 
@@ -3082,22 +3118,23 @@ api_version = "{DEFAULT_API_VERSION}"
         return
 
     render_sources_card(ui_config, bigquery_ready)
-    render_input_upload_card()
-    complete_source = st.radio(
-        "Fuente de datos actuales",
-        ["Shopify API", "Respaldo Excel"],
-        index=0 if is_shopify_configured(shopify_config) else 1,
-        help="Shopify API es la referencia operativa. El respaldo Excel solo se usa si la API no esta disponible.",
-    )
-    input_file = st.file_uploader("1. Subir input comercial", type=["xlsx", "xls"], key="input")
-    template_file = None
-    st.session_state["input_loaded"] = bool(input_file)
-    if complete_source == "Respaldo Excel":
-        template_file = st.file_uploader(
-            f"2. Subir respaldo operativo de {brand_config['site_label']}",
-            type=["xlsx", "xls"],
-            key="template",
-            help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
+    with st.container(key="input_upload_panel"):
+        render_input_upload_card()
+        complete_source = st.radio(
+            "Fuente de datos actuales",
+            ["Shopify API", "Respaldo Excel"],
+            index=0 if is_shopify_configured(shopify_config) else 1,
+            help="Shopify API es la referencia operativa. El respaldo Excel solo se usa si la API no esta disponible.",
+        )
+        input_file = st.file_uploader("Subir input comercial", type=["xlsx", "xls"], key="input")
+        template_file = None
+        st.session_state["input_loaded"] = bool(input_file)
+        if complete_source == "Respaldo Excel":
+            template_file = st.file_uploader(
+                f"Subir respaldo operativo de {brand_config['site_label']}",
+                type=["xlsx", "xls"],
+                key="template",
+                help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
         )
 
     setup_rows = [

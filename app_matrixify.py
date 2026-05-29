@@ -2106,7 +2106,7 @@ def inject_custom_css(config):
         }}
         .stApp {{ background: var(--bg-main); color: var(--text-main); }}
         header[data-testid="stHeader"] {{
-            display: none;
+            background: transparent;
         }}
         div[data-testid="stToolbar"],
         div[data-testid="stDecoration"],
@@ -2115,6 +2115,30 @@ def inject_custom_css(config):
             visibility: hidden;
             height: 0;
         }}
+        /* Sidebar fijo: se mantiene visible y sin boton para esconder */
+        section[data-testid="stSidebar"] {{
+            display: block !important;
+            visibility: visible !important;
+            transform: translateX(0px) !important;
+        }}
+
+        button[data-testid="stSidebarCollapseButton"],
+        [data-testid="stSidebarCollapseButton"],
+        [data-testid="collapsedControl"],
+        button[data-testid="baseButton-headerNoPadding"],
+        button[kind="headerNoPadding"],
+        button[aria-label="Close sidebar"],
+        button[title="Close sidebar"],
+        button[aria-label="Cerrar barra lateral"],
+        button[title="Cerrar barra lateral"] {{
+            display: none !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+            width: 0 !important;
+            min-width: 0 !important;
+        }}
+
         .block-container {{
             max-width: 1180px;
             padding-top: 26px;
@@ -2123,6 +2147,9 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] {{
             background: #F3F6FB;
             border-right: 1px solid #DDE6F2;
+            display: block !important;
+            visibility: visible !important;
+            transform: translateX(0px) !important;
         }}
         section[data-testid="stSidebar"] > div {{
             padding: 28px 18px;
@@ -3193,7 +3220,12 @@ def render_input_upload_card():
 
 
 def main():
-    st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide", initial_sidebar_state="expanded",)
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon="XL",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
     bigquery_config = get_bigquery_config()
     bigquery_ready = is_bigquery_configured(bigquery_config)
 

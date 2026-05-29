@@ -1983,49 +1983,49 @@ def apply_full_product_updates(shopify_config, matrixify_df):
 SITE_UI_CONFIG = {
     "Columbia.pe": {
         "brand_name": "Columbia",
-        "logo": "assets/brands/columbia.png",
+        "logo_path": "assets/brands/columbia.png",
         "primary_color": "#004B8D",
         "accent_color": "#009FE3",
         "shopify_store": "columbiape.myshopify.com",
     },
     "Rockford.pe": {
         "brand_name": "Rockford",
-        "logo": "assets/brands/rockford.png",
+        "logo_path": "assets/brands/rockford.png",
         "primary_color": "#0B2345",
         "accent_color": "#B0895B",
         "shopify_store": "rockfordpe.myshopify.com",
     },
     "HushPuppies.pe": {
         "brand_name": "Hush Puppies",
-        "logo": "assets/brands/hushpuppies.png",
+        "logo_path": "assets/brands/hushpuppies.png",
         "primary_color": "#4B2E1F",
         "accent_color": "#C49A6C",
         "shopify_store": "hushpuppiespe.myshopify.com",
     },
     "Vans.pe": {
         "brand_name": "Vans",
-        "logo": "assets/brands/vans.png",
+        "logo_path": "assets/brands/vans.png",
         "primary_color": "#111827",
         "accent_color": "#D71920",
         "shopify_store": "vans-dev.myshopify.com",
     },
     "Patagonia.pe": {
         "brand_name": "Patagonia",
-        "logo": "assets/brands/patagonia.png",
+        "logo_path": "assets/brands/patagonia.png",
         "primary_color": "#1D4E89",
         "accent_color": "#F15A24",
         "shopify_store": "patagoniape.myshopify.com",
     },
     "Sorel.pe": {
         "brand_name": "Sorel",
-        "logo": "assets/brands/sorel.png",
+        "logo_path": "assets/brands/sorel.png",
         "primary_color": "#111827",
         "accent_color": "#C2410C",
         "shopify_store": "sorelpe.myshopify.com",
     },
     "MountainHardwear.pe": {
         "brand_name": "Mountain Hardwear",
-        "logo": "assets/brands/mountainhardwear.png",
+        "logo_path": "assets/brands/mountainhardwear.png",
         "primary_color": "#B91C1C",
         "accent_color": "#111827",
         "shopify_store": "mountainhardwearpe.myshopify.com",
@@ -2043,10 +2043,26 @@ def image_data_uri(path):
     return f"data:image/{mime};base64,{encoded}"
 
 
+def render_html(html, sidebar=False):
+    target = st.sidebar if sidebar else st
+    if hasattr(target, "html"):
+        target.html(html)
+    else:
+        target.markdown(html, unsafe_allow_html=True)
+
+
 def get_site_config(brand_config, shopify_config=None):
+    if isinstance(brand_config, str):
+        selected_site = brand_config
+        site_key = next(
+            (key for key, config in SITE_CONFIGS.items() if config["site_label"] == selected_site),
+            selected_site,
+        )
+        brand_config = get_brand_config(site_key)
     ui_config = SITE_UI_CONFIG.get(brand_config["site_label"], {}).copy()
     ui_config.setdefault("brand_name", brand_config["label"])
-    ui_config.setdefault("logo", f"assets/brands/{brand_config['site_key']}.png")
+    ui_config.setdefault("logo_path", ui_config.get("logo") or f"assets/brands/{brand_config['site_key']}.png")
+    ui_config["logo"] = ui_config["logo_path"]
     ui_config.setdefault("primary_color", "#17269A")
     ui_config.setdefault("accent_color", "#009FE3")
     ui_config["site_label"] = brand_config["site_label"]
@@ -2074,15 +2090,24 @@ def inject_custom_css(config):
         }}
         .stApp {{ background: var(--bg-main); color: var(--text-main); }}
         .block-container {{
-            max-width: 1280px;
-            padding-top: 24px;
+            max-width: 1180px;
+            padding-top: 18px;
             padding-bottom: 34px;
         }}
         section[data-testid="stSidebar"] {{
-            background: linear-gradient(180deg, #071B4D 0%, #0B2345 100%);
-            border-right: 0;
+            background: #F3F6FB;
+            border-right: 1px solid #DDE6F2;
         }}
-        section[data-testid="stSidebar"] * {{ color: #E5ECFF; }}
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] span {{
+            color: #172554;
+        }}
+        section[data-testid="stSidebar"] div[data-baseweb="select"] span,
+        section[data-testid="stSidebar"] div[data-baseweb="select"] input,
+        section[data-testid="stSidebar"] div[data-baseweb="popover"] span {{
+            color: #0F172A !important;
+        }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
         section[data-testid="stSidebar"] div[role="radiogroup"],
         section[data-testid="stSidebar"] details,
@@ -2091,50 +2116,85 @@ def inject_custom_css(config):
         }}
         section[data-testid="stSidebar"] .stSelectbox label,
         section[data-testid="stSidebar"] .stRadio label {{
-            color: #B8C7F2 !important;
+            color: #5B6B86 !important;
             font-weight: 800;
         }}
         .forus-sidebar {{
-            border-radius: 8px;
-            padding: 16px;
-            margin: 4px 0 18px;
-            background: rgba(255,255,255,0.08);
-            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 22px;
+            padding: 20px;
+            margin: 6px 0 26px;
+            background: #FFFFFF;
+            border: 1px solid #DDE6F2;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.08);
         }}
         .forus-logo {{
             font-size: 30px;
             line-height: 1;
             font-weight: 900;
             letter-spacing: -0.06em;
-            color: #FFFFFF;
+            color: #17269A;
         }}
         .forus-tagline {{
             margin-top: 5px;
-            color: #93C5FD;
+            color: #17269A;
             font-size: 9px;
             letter-spacing: 0.28em;
             font-weight: 900;
         }}
-        .sidebar-card {{
-            border-radius: 8px;
+        .sidebar-brand-card {{
+            border-radius: 22px;
             padding: 14px;
-            margin: 14px 0;
-            background: rgba(255,255,255,0.08);
-            border: 1px solid rgba(255,255,255,0.12);
+            margin: 12px 0 16px;
+            background: #FFFFFF;
+            border: 1px solid #DDE6F2;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
+        }}
+        .sidebar-brand-logo {{
+            min-height: 66px;
+            display: grid;
+            place-items: center;
+        }}
+        .sidebar-brand-logo img {{
+            max-width: 150px;
+            max-height: 54px;
+            object-fit: contain;
+        }}
+        .sidebar-brand-name {{
+            color: var(--brand-primary) !important;
+            font-size: 18px;
+            line-height: 1.15;
+            text-align: center;
+            font-weight: 900;
+            margin: 0;
+        }}
+        .sidebar-brand-caption {{
+            color: #64748B !important;
+            font-size: 11px;
+            text-align: center;
+            margin: 8px 0 0;
+            font-weight: 800;
+        }}
+        .sidebar-card {{
+            border-radius: 22px;
+            padding: 18px 20px;
+            margin: 16px 0;
+            background: #FFFFFF;
+            border: 1px solid #DDE6F2;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         .sidebar-label {{
             margin: 0 0 8px;
             font-size: 11px;
             text-transform: uppercase;
             letter-spacing: 0.12em;
-            color: #B8C7F2;
+            color: #5B6B86;
             font-weight: 900;
         }}
         .sidebar-value {{
             margin: 0;
             font-size: 13px;
             line-height: 1.55;
-            color: #FFFFFF;
+            color: #172554 !important;
             font-weight: 700;
         }}
         .top-header {{
@@ -2142,12 +2202,12 @@ def inject_custom_css(config):
             align-items: center;
             justify-content: space-between;
             gap: 18px;
-            border: 1px solid #E2E8F0;
-            border-radius: 8px;
+            border: 1px solid #DDE6F2;
+            border-radius: 0;
             background: white;
-            padding: 18px 20px;
+            padding: 18px 26px;
             margin-bottom: 16px;
-            box-shadow: 0 10px 28px rgba(15,23,42,0.05);
+            box-shadow: none;
         }}
         .brand-lockup {{
             display: flex;
@@ -2159,7 +2219,7 @@ def inject_custom_css(config):
             width: 92px;
             height: 58px;
             border: 1px solid #E2E8F0;
-            border-radius: 8px;
+            border-radius: 18px;
             display: grid;
             place-items: center;
             background: #FFFFFF;
@@ -2188,7 +2248,7 @@ def inject_custom_css(config):
         }}
         .header-title {{
             margin: 3px 0 2px;
-            font-size: 26px;
+            font-size: 28px;
             line-height: 1.15;
             font-weight: 900;
             color: #0F172A;
@@ -2209,7 +2269,7 @@ def inject_custom_css(config):
         .shopify-bag {{
             width: 44px;
             height: 44px;
-            border-radius: 8px;
+            border-radius: 16px;
             display: grid;
             place-items: center;
             background: var(--shopify-green);
@@ -2230,6 +2290,11 @@ def inject_custom_css(config):
             border: 1px solid #A7F3D0;
             white-space: nowrap;
         }}
+        .status-badge.blue {{
+            background: #EFF6FF;
+            color: #17269A;
+            border-color: #BFDBFE;
+        }}
         .status-badge.warn {{
             background: #FFFBEB;
             color: #B45309;
@@ -2238,36 +2303,45 @@ def inject_custom_css(config):
         .matrix-stepper {{
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 10px;
-            margin: 12px 0 18px;
+            gap: 12px;
+            margin: 0;
+            border: 1px solid #DDE6F2;
+            border-radius: 28px;
+            padding: 18px;
+            background: #FFFFFF;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         .step-card {{
-            min-height: 76px;
-            border-radius: 8px;
-            background: white;
-            border: 1px solid #E2E8F0;
-            padding: 13px;
-            box-shadow: 0 8px 20px rgba(15,23,42,0.04);
+            min-height: 74px;
+            border-radius: 18px;
+            background: #F8FAFC;
+            border: 1px solid #E8EEF7;
+            padding: 14px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
         }}
         .step-card.current {{
-            border-color: var(--brand-accent);
-            background: linear-gradient(180deg, var(--brand-soft), #FFFFFF);
+            border-color: #BFDBFE;
+            background: #EFF6FF;
         }}
         .step-index {{
             display: inline-grid;
             place-items: center;
-            width: 24px;
-            height: 24px;
+            width: 40px;
+            height: 40px;
             border-radius: 999px;
-            background: var(--brand-primary);
-            color: white;
-            font-size: 12px;
+            background: #FFFFFF;
+            color: var(--brand-primary);
+            border: 1px solid #DDE6F2;
+            font-size: 15px;
             font-weight: 900;
+            box-shadow: 0 7px 15px rgba(15,23,42,0.08);
         }}
         .step-title {{
-            margin: 8px 0 2px;
+            margin: 0 0 2px;
             color: #0F172A;
-            font-size: 13px;
+            font-size: 16px;
             font-weight: 900;
         }}
         .step-caption {{
@@ -2276,20 +2350,26 @@ def inject_custom_css(config):
             font-size: 12px;
         }}
         .section-card {{
-            border: 1px solid #E2E8F0;
-            border-radius: 8px;
+            border: 1px solid #DDE6F2;
+            border-radius: 26px;
             background: white;
-            padding: 18px;
-            margin: 14px 0;
-            box-shadow: 0 10px 28px rgba(15,23,42,0.05);
+            padding: 26px 28px;
+            margin: 22px 0;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         .section-card h2 {{
             color: #0F172A;
             margin: 0 0 8px;
-            font-size: 20px;
+            font-size: 24px;
             line-height: 1.2;
             font-weight: 900;
             letter-spacing: 0;
+        }}
+        .section-card.action-card h2 {{
+            color: #FFFFFF;
+        }}
+        .section-card.action-card p {{
+            color: #E0E7FF;
         }}
         .section-card p, .section-card .caption {{
             color: var(--text-muted);
@@ -2298,14 +2378,14 @@ def inject_custom_css(config):
         .source-grid, .metric-grid {{
             display: grid;
             grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 10px;
-            margin-top: 12px;
+            gap: 14px;
+            margin-top: 22px;
         }}
         .source-card, .metric-card, .check-item {{
             border: 1px solid #E2E8F0;
-            border-radius: 8px;
+            border-radius: 18px;
             background: #F8FAFC;
-            padding: 13px;
+            padding: 18px 20px;
         }}
         .source-card b, .metric-card b {{
             display: block;
@@ -2342,17 +2422,17 @@ def inject_custom_css(config):
         }}
         div[data-testid="stFileUploader"] {{
             border: 1px dashed color-mix(in srgb, var(--brand-accent) 55%, white);
-            border-radius: 8px;
+            border-radius: 18px;
             padding: 14px;
             background: #FBFDFF;
         }}
         div[data-testid="stDataFrame"] {{
-            border-radius: 8px;
+            border-radius: 18px;
             overflow: hidden;
             border: 1px solid #E2E8F0;
         }}
         .stButton button, .stDownloadButton button {{
-            border-radius: 8px;
+            border-radius: 18px;
             font-weight: 800;
             border-color: var(--brand-primary);
         }}
@@ -2382,13 +2462,37 @@ def render_sidebar_brand():
         if forus_src
         else '<div class="forus-logo">FORUS</div><div class="forus-tagline">CONSUMER FANATIC</div>'
     )
-    st.sidebar.markdown(f'<div class="forus-sidebar">{logo_html}</div>', unsafe_allow_html=True)
+    render_html(f'<div class="forus-sidebar">{logo_html}</div>', sidebar=True)
+
+
+def render_sidebar_brand_card(config):
+    brand_src = image_data_uri(config.get("logo_path") or config.get("logo", ""))
+    brand_html = (
+        f'<img src="{brand_src}" alt="{config["brand_name"]}">'
+        if brand_src
+        else f'<p class="sidebar-brand-name">{config["brand_name"]}</p>'
+    )
+    render_html(
+        f"""
+        <div class="sidebar-brand-card">
+            <div class="sidebar-brand-logo">{brand_html}</div>
+            <p class="sidebar-brand-caption">{config["site_label"]}</p>
+        </div>
+        """,
+        sidebar=True,
+    )
+
+
+def render_sidebar(config, shopify_config=None, bigquery_ready=False, input_loaded=False):
+    render_sidebar_brand_card(config)
+    if shopify_config is not None:
+        render_sidebar_status(config, shopify_config, bigquery_ready, input_loaded=input_loaded)
 
 
 def render_sidebar_status(config, shopify_config, bigquery_ready, input_loaded=False):
     shopify_state = "Conectado" if is_shopify_configured(shopify_config) else "Pendiente"
     input_state = "Cargado" if input_loaded else "Pendiente"
-    st.sidebar.markdown(
+    render_html(
         f"""
         <div class="sidebar-card">
             <p class="sidebar-label">Integraciones</p>
@@ -2403,12 +2507,12 @@ def render_sidebar_status(config, shopify_config, bigquery_ready, input_loaded=F
             <p class="sidebar-value">Salida: {config["output_file"]}</p>
         </div>
         """,
-        unsafe_allow_html=True,
+        sidebar=True,
     )
 
 
 def render_top_header(config):
-    brand_src = image_data_uri(config.get("logo", ""))
+    brand_src = image_data_uri(config.get("logo_path") or config.get("logo", ""))
     shopify_src = image_data_uri(SHOPIFY_LOGO_PATH)
     brand_html = (
         f'<img src="{brand_src}" alt="{config["brand_name"]}">'
@@ -2420,11 +2524,10 @@ def render_top_header(config):
         if shopify_src
         else '<div class="shopify-bag">S</div>'
     )
-    st.markdown(
+    render_html(
         f"""
         <div class="top-header">
             <div class="brand-lockup">
-                <div class="brand-logo-card">{brand_html}</div>
                 <div>
                     <p class="header-eyebrow">Matrixify Control Center</p>
                     <h1 class="header-title">{config["site_label"]} &rarr; Shopify</h1>
@@ -2432,12 +2535,12 @@ def render_top_header(config):
                 </div>
             </div>
             <div class="shopify-lockup">
-                <span class="status-badge">Activo</span>
+                <span class="status-badge blue">BigQuery activo</span>
+                <span class="status-badge">Shopify conectado</span>
                 {shopify_html}
             </div>
         </div>
         """,
-        unsafe_allow_html=True,
     )
 
 
@@ -2447,7 +2550,7 @@ def render_header(brand_config=None):
 
 def render_stepper(config, current_step=1):
     steps = [
-        ("Input comercial", "Archivo base"),
+        ("Input", "Archivo comercial"),
         ("BigQuery", "Fuente maestra"),
         ("Validacion", "Reglas y cruces"),
         ("Matrixify", "Excel final"),
@@ -2455,29 +2558,51 @@ def render_stepper(config, current_step=1):
     items = []
     for index, (title, caption) in enumerate(steps, start=1):
         current = " current" if index == current_step else ""
+        status = "Actual" if index == 1 else ("OK" if index == 2 else ("Revisar" if index == 3 else "Pend."))
+        tone = "blue" if index == 1 else ("" if index == 2 else (" warn" if index == 3 else " blue"))
         items.append(
             f"""
             <div class="step-card{current}">
                 <span class="step-index">{index}</span>
-                <p class="step-title">{title}</p>
-                <p class="step-caption">{caption}</p>
+                <div style="min-width:0;flex:1;">
+                    <p class="step-title">{title}</p>
+                    <p class="step-caption">{caption}</p>
+                </div>
+                <span class="status-badge{tone}">{status}</span>
             </div>
             """
         )
-    st.markdown(f'<div class="matrix-stepper">{"".join(items)}</div>', unsafe_allow_html=True)
+    render_html(f'<div class="matrix-stepper">{"".join(items)}</div>')
 
 
 def render_sources_card(config, bigquery_ready, arti_source="", template_source="Shopify API"):
     bigquery_status = "Fuente maestra activa" if bigquery_ready else "Usando respaldo local"
-    st.markdown(
+    bigquery_config = get_bigquery_config()
+    project = clean_value(bigquery_config.get("project_id"))
+    if not project and isinstance(bigquery_config.get("service_account_info"), dict):
+        project = clean_value(bigquery_config["service_account_info"].get("project_id"))
+    dataset = clean_value(bigquery_config.get("dataset"))
+    table = clean_value(bigquery_config.get("table")) or "ARTI"
+    table_label = table if table.count(".") == 2 else ".".join(part for part in [project, dataset, table] if part)
+    render_html(
         f"""
         <div class="section-card">
-            <h2>Archivos y fuentes</h2>
-            <p>La app usa BigQuery como fuente maestra, Shopify API como referencia operativa y el input comercial como origen de contenido.</p>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
+                <div>
+                    <h2>Archivos y fuentes cargadas</h2>
+                    <p>Resumen limpio de lo que la app usara para preparar la carga.</p>
+                </div>
+                <span class="status-badge blue">Cargar input</span>
+            </div>
             <div class="source-grid">
-                <div class="source-card"><b>BigQuery</b><span>{bigquery_status}</span></div>
-                <div class="source-card"><b>Shopify API</b><span>{config["shopify_store"] or template_source}</span></div>
-                <div class="source-card"><b>ARTI</b><span>{arti_source or "Tabla central enlazada"}</span></div>
+                <div class="source-card" style="background:#EFF6FF;border-color:#BFDBFE;"><b>Input productos</b><span>Archivo comercial cargado</span></div>
+                <div class="source-card" style="background:#ECFDF5;border-color:#BBF7D0;"><b>Shopify API</b><span>{config["shopify_store"] or template_source}</span></div>
+                <div class="source-card"><b>ARTI BigQuery</b><span>{arti_source or table_label or bigquery_status}</span></div>
+            </div>
+            <p class="caption" style="margin-top:12px;">Datos actualizados desde BigQuery. Proyecto: {project or "configurado en Secrets"}. Dataset/tabla: {table_label or "configurado en Secrets"}.</p>
+            <div class="source-card" style="margin-top:12px;background:#FBFDFF;border-style:dashed;">
+                <b>Input comercial</b>
+                <span>Arrastra tu archivo o seleccionalo. Formatos permitidos: .xlsx, .xls. Maximo 200 MB.</span>
             </div>
             <div class="chip-row">
                 <span class="chip">SKU obligatorio</span>
@@ -2486,12 +2611,11 @@ def render_sources_card(config, bigquery_ready, arti_source="", template_source=
             </div>
         </div>
         """,
-        unsafe_allow_html=True,
     )
 
 
 def render_operational_status(config, shopify_config, bigquery_ready, input_loaded):
-    st.markdown(
+    render_html(
         f"""
         <div class="section-card">
             <h2>Estado operativo</h2>
@@ -2501,7 +2625,6 @@ def render_operational_status(config, shopify_config, bigquery_ready, input_load
             <div class="check-item">Input comercial: {"Cargado" if input_loaded else "Pendiente"}</div>
         </div>
         """,
-        unsafe_allow_html=True,
     )
 
 
@@ -2510,56 +2633,60 @@ def render_summary_metrics(metrics):
         f'<div class="metric-card"><span>{label}</span><strong>{value}</strong></div>'
         for label, value in metrics
     )
-    st.markdown(f'<div class="section-card"><h2>Resumen de bases</h2><div class="metric-grid">{items}</div></div>', unsafe_allow_html=True)
+    render_html(f'<div class="section-card"><h2>Resumen bases</h2><p>Datos principales</p><div class="metric-grid">{items}</div></div>')
 
 
 def render_preview_table(input_df):
     total = len(input_df) if input_df is not None else 0
     shown = min(total, 20)
-    st.markdown(
+    render_html(
         f"""
         <div class="section-card">
-            <h2>Vista previa del input comercial</h2>
-            <p>Mostrando {shown} de {total} productos.</p>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
+                <div>
+                    <h2>Vista previa del input</h2>
+                    <p>Primeras filas detectadas antes de analizar. Mostrando {shown} de {total} productos.</p>
+                </div>
+                <span class="status-badge blue">Preview</span>
+            </div>
         </div>
         """,
-        unsafe_allow_html=True,
     )
     if input_df is not None and not input_df.empty:
         st.dataframe(input_df.head(20), use_container_width=True, height=330)
 
 
 def render_validations_card():
-    st.markdown(
+    render_html(
         """
         <div class="section-card">
-            <h2>Validaciones automaticas</h2>
+            <h2>Checklist</h2>
+            <p>Estado de preparacion</p>
             <div class="check-item">SKU, barcode y talla obligatorios.</div>
             <div class="check-item">Vendor validado contra marcas permitidas.</div>
             <div class="check-item">Cruce automatico con BigQuery.</div>
             <div class="check-item">Reporte de errores antes de exportar.</div>
         </div>
         """,
-        unsafe_allow_html=True,
     )
 
 
 def render_analyze_card(config):
-    st.markdown(
+    render_html(
         f"""
-        <div class="section-card">
+        <div class="section-card action-card" style="background:var(--forus-blue);border-color:var(--forus-blue);">
+            <p style="color:#BFDBFE;font-size:12px;font-weight:900;letter-spacing:.22em;text-transform:uppercase;margin:0 0 10px;">Siguiente accion</p>
             <h2>Analizar y preparar carga</h2>
-            <p>Analiza el input para {config["site_label"]}, arma la estructura Matrixify y agrega la hoja Carga Sial.</p>
+            <p>Cuando el input este correcto, genera la estructura Matrixify y la hoja Carga Sial.</p>
         </div>
         """,
-        unsafe_allow_html=True,
     )
 
 
 def render_matrixify_result_card(ready=False):
     state = "Listo para descargar" if ready else "Pendiente de analisis"
     tone = "" if ready else " warn"
-    st.markdown(
+    render_html(
         f"""
         <div class="section-card">
             <h2>Archivo Matrixify</h2>
@@ -2567,7 +2694,6 @@ def render_matrixify_result_card(ready=False):
             <span class="status-badge{tone}">{state}</span>
         </div>
         """,
-        unsafe_allow_html=True,
     )
 
 
@@ -2584,6 +2710,7 @@ def main():
     shopify_config = get_shopify_config(selected_site_key)
     ui_config = get_site_config(brand_config, shopify_config)
     inject_styles(ui_config)
+    render_sidebar(ui_config)
     st.sidebar.markdown('<p class="sidebar-label">Marca(s) permitidas</p>', unsafe_allow_html=True)
     st.sidebar.markdown(
         f'<div class="sidebar-card"><p class="sidebar-value">{", ".join(brand_config["allowed_arti_brands"])}</p></div>',

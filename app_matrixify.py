@@ -2120,12 +2120,60 @@ def inject_custom_css(config):
             padding-top: 26px;
             padding-bottom: 34px;
         }}
+        button[kind="header"],
+        button[data-testid="stBaseButton-header"],
+        button[data-testid="stSidebarCollapseButton"],
+        button[data-testid="collapsedControl"],
+        div[data-testid="collapsedControl"] {{
+            display: none !important;
+            pointer-events: none !important;
+        }}
         section[data-testid="stSidebar"] {{
             background: #F3F6FB;
             border-right: 1px solid #DDE6F2;
+            display: block !important;
+            visibility: visible !important;
+            min-width: 360px !important;
+            width: 360px !important;
+            max-width: 360px !important;
+            transform: translateX(0) !important;
+            position: fixed !important;
+            left: 0 !important;
+            top: 0 !important;
+            bottom: 0 !important;
+            z-index: 999 !important;
         }}
         section[data-testid="stSidebar"] > div {{
             padding: 28px 18px;
+            width: 360px !important;
+            overflow-y: auto !important;
+        }}
+        div[data-testid="stSidebarContent"] {{
+            width: 360px !important;
+        }}
+        [data-testid="stSidebar"][aria-expanded="false"],
+        [data-testid="stSidebar"][aria-hidden="true"] {{
+            display: block !important;
+            visibility: visible !important;
+            transform: translateX(0) !important;
+            margin-left: 0 !important;
+        }}
+        section[data-testid="stSidebar"] + div,
+        div[data-testid="stAppViewContainer"] > .main {{
+            margin-left: 360px !important;
+        }}
+        @media (max-width: 900px) {{
+            section[data-testid="stSidebar"],
+            section[data-testid="stSidebar"] > div,
+            div[data-testid="stSidebarContent"] {{
+                min-width: 330px !important;
+                width: 330px !important;
+                max-width: 330px !important;
+            }}
+            section[data-testid="stSidebar"] + div,
+            div[data-testid="stAppViewContainer"] > .main {{
+                margin-left: 330px !important;
+            }}
         }}
         section[data-testid="stSidebar"] p,
         section[data-testid="stSidebar"] label,
@@ -3206,7 +3254,10 @@ def main():
     ui_config = get_site_config(brand_config, shopify_config)
     inject_styles(ui_config)
     st.sidebar.markdown('<p class="sidebar-label">Marca(s) permitidas</p>', unsafe_allow_html=True)
-    allowed = ", ".join(brand_config["allowed_arti_brands"])
+    allowed_brands = list(brand_config["allowed_arti_brands"])
+    primary_brand = brand_config["label"].upper()
+    ordered_allowed = [primary_brand] + [brand for brand in allowed_brands if brand != primary_brand]
+    allowed = ", ".join(ordered_allowed)
     first_allowed, _, rest_allowed = allowed.partition(",")
     st.sidebar.markdown(
         f'<div class="sidebar-card allowed-card"><p class="sidebar-value"><strong>{first_allowed}</strong>{"," + rest_allowed if rest_allowed else ""}</p></div>',

@@ -2121,7 +2121,10 @@ def inject_custom_css(config):
             padding-bottom: 34px;
         }}
         button[kind="header"],
+        button[kind="headerNoPadding"],
         button[data-testid="stBaseButton-header"],
+        button[data-testid="stBaseButton-headerNoPadding"],
+        button[data-testid="stExpandSidebarButton"],
         button[data-testid="stSidebarCollapseButton"],
         button[data-testid="collapsedControl"],
         div[data-testid="collapsedControl"] {{

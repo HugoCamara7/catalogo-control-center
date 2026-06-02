@@ -3425,7 +3425,11 @@ api_version = "{DEFAULT_API_VERSION}"
             update_file = st.file_uploader("2. Subir archivo con Mod-Col y Tags", type=["xlsx", "xls"], key="update_tags")
         elif update_operation == "photos":
             image_mode = st.radio("Comando de fotos", ["replace", "merge"], format_func=lambda v: "Reemplazar fotos del producto" if v == "replace" else "Agregar/mezclar fotos")
-            only_missing_images = st.checkbox("Solo productos sin foto en el catalogo", value=True)
+            if image_mode == "replace":
+                only_missing_images = False
+                st.caption("REPLACE procesa productos aunque ya tengan fotos: elimina las actuales y sube las 10 vistas nuevas por API.")
+            else:
+                only_missing_images = st.checkbox("Solo productos sin foto en el catalogo", value=False)
             update_file = st.file_uploader("2. Opcional: subir lista con Mod-Col a corregir", type=["xlsx", "xls"], key="update_photos")
             st.caption("Si no subes lista, revisa el catalogo completo. Siempre genera 10 URLs por producto.")
         elif update_operation == "siblings":

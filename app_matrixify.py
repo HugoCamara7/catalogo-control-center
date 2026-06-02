@@ -921,16 +921,13 @@ def apply_shopify_preview(shopify_config, preview_df):
                 image_urls = _split_semicolon_values(row.get("Valor nuevo"))
                 media_ids = _split_semicolon_values(row.get("Media IDs"))
                 image_mode = clean_value(row.get("Modo fotos")).lower() or "replace"
-                deleted_count = 0
-                if image_mode == "replace" and media_ids:
-                    deleted = product_delete_media(shopify_config, product_id, media_ids)
-                    deleted_count = len(deleted)
-                created = product_create_media(shopify_config, product_id, image_urls)
-                message = (
-                    f"{deleted_count} fotos anteriores eliminadas. "
-                    f"{len(created)} fotos nuevas enviadas."
-                    if image_mode == "replace"
-                    else f"{len(created)} fotos nuevas agregadas."
+                message = _sync_product_photos_direct(
+                    shopify_config,
+                    product_id,
+                    image_urls,
+                    existing_media_ids=media_ids,
+                    image_mode=image_mode,
+                    alt_text=clean_value(row.get("Handle")) or clean_value(row.get("Mod-Col")),
                 )
             elif operation == "siblings":
                 sibling_value = clean_value(row.get("Valor nuevo"))
@@ -1500,6 +1497,49 @@ def _product_set_files_with_fallback(shopify_config, product_gid, product_files)
                 )
             return "fileCreate CDN"
         raise ShopifyApiError(f"productSet staged fallo: {product_set_exc}; fallback sin archivos: {' | '.join(file_errors[:3])}")
+
+
+def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existing_media_ids=None, image_mode="replace", alt_text=""):
+    existing_media_ids = existing_media_ids or []
+    image_urls = [url for url in image_urls[:10] if clean_value(url)]
+    image_mode = clean_value(image_mode).lower() or "replace"
+    product_files = []
+    image_errors = []
+
+    for image_index, raw_image_url in enumerate(image_urls, start=1):
+        try:
+            image_bytes, mime_type, filename, _ = _download_image_bytes(raw_image_url)
+            resource_url = staged_upload_image(shopify_config, filename, mime_type, image_bytes)
+            product_files.append(
+                {
+                    "originalSource": resource_url,
+                    "alt": clean_value(alt_text),
+                    "filename": filename,
+                    "contentType": "IMAGE",
+                    "duplicateResolutionMode": "APPEND_UUID",
+                }
+            )
+        except Exception as exc:
+            image_errors.append(f"foto {image_index}: {exc}")
+
+    if not product_files:
+        raise ShopifyApiError("No se pudo subir ninguna foto nueva. " + " | ".join(image_errors[:3]))
+
+    route = _product_set_files_with_fallback(shopify_config, product_gid, product_files)
+    deleted_count = 0
+    if image_mode == "replace" and existing_media_ids:
+        deleted = product_delete_media(shopify_config, product_gid, existing_media_ids)
+        deleted_count = len(deleted)
+
+    message = (
+        f"{deleted_count} fotos anteriores eliminadas. "
+        f"{len(product_files)} fotos nuevas inyectadas por API ({route})."
+        if image_mode == "replace"
+        else f"{len(product_files)} fotos nuevas agregadas por API ({route})."
+    )
+    if image_errors:
+        message += f" No se cargaron {len(image_errors)} de {len(image_urls)} URLs: {' | '.join(image_errors[:3])}"
+    return message
 
 
 def _media_status_summary(media_statuses):

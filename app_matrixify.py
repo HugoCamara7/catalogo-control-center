@@ -1527,9 +1527,18 @@ def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existin
 
     route = _product_set_files_with_fallback(shopify_config, product_gid, product_files)
     deleted_count = 0
+    delete_note = ""
     if image_mode == "replace" and existing_media_ids:
-        deleted = product_delete_media(shopify_config, product_gid, existing_media_ids)
-        deleted_count = len(deleted)
+        try:
+            deleted = product_delete_media(shopify_config, product_gid, existing_media_ids)
+            deleted_count = len(deleted)
+        except Exception as exc:
+            detail = clean_value(exc).lower()
+            if "do not exist" in detail or "does not exist" in detail:
+                deleted_count = len(existing_media_ids)
+                delete_note = " Las fotos anteriores ya no existian despues del reemplazo."
+            else:
+                raise
 
     message = (
         f"{deleted_count} fotos anteriores eliminadas. "
@@ -1537,6 +1546,8 @@ def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existin
         if image_mode == "replace"
         else f"{len(product_files)} fotos nuevas agregadas por API ({route})."
     )
+    if delete_note:
+        message += delete_note
     if image_errors:
         message += f" No se cargaron {len(image_errors)} de {len(image_urls)} URLs: {' | '.join(image_errors[:3])}"
     return message

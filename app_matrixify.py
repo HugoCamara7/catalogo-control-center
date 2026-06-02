@@ -157,6 +157,30 @@ def clean_value(value):
     return str(value).strip()
 
 
+def looks_like_mod_col(value):
+    text = clean_value(value).upper()
+    if not text or text.startswith("UNNAMED:"):
+        return False
+    if normalize_header(text) in {"modcol", "codmodcol", "codigomodelocolor", "codigomodelo"}:
+        return False
+    return bool(re.fullmatch(r"[A-Z0-9]+(?:[-_ ][A-Z0-9]+)+", text))
+
+
+def product_lookup_key(value):
+    return re.sub(r"[^A-Z0-9]+", "", clean_value(value).upper())
+
+
+def variant_mod_col_candidates(variant):
+    sku = clean_value((variant or {}).get("Variant SKU")).upper()
+    if not sku:
+        return []
+    candidates = [sku]
+    parts = [part for part in re.split(r"[-_ ]+", sku) if part]
+    if len(parts) >= 2:
+        candidates.append(f"{parts[0]}-{parts[1]}")
+    return list(dict.fromkeys(candidate for candidate in candidates if looks_like_mod_col(candidate)))
+
+
 def coalesce_duplicate_columns(df):
     if df is None or not isinstance(df, pd.DataFrame) or not df.columns.duplicated().any():
         return df
@@ -624,14 +648,28 @@ def _join_tags(values):
     return ", ".join(dict.fromkeys(tag for tag in values if clean_value(tag)))
 
 
+def _split_semicolon_values(value):
+    return [item.strip() for item in re.split(r"[;\n\r]+", clean_value(value)) if item.strip()]
+
+
 def _product_lookup_from_shopify(records):
     by_key = {}
     by_handle = {}
+
+    def add_key(value, record):
+        key = clean_value(value).upper()
+        compact_key = product_lookup_key(key)
+        for candidate in (key, compact_key):
+            if candidate and candidate not in by_key:
+                by_key[candidate] = record
+
     for record in records:
         key = clean_value(record.get("Mod-Col")).upper()
         handle = clean_value(record.get("Handle"))
-        if key and key not in by_key:
-            by_key[key] = record
+        add_key(key, record)
+        for variant in record.get("Variants") or []:
+            for candidate in variant_mod_col_candidates(variant):
+                add_key(candidate, record)
         if handle and handle not in by_handle:
             by_handle[handle] = record
     return by_key, by_handle
@@ -643,6 +681,39 @@ def _source_key_for_update(row):
         if value:
             return value.upper()
     return ""
+
+
+def normalize_photo_update_input(df):
+    if df is None:
+        return None
+    source = df.dropna(how="all").copy()
+    if source.empty:
+        return source
+
+    mod_col = first_existing_column(
+        source,
+        [
+            "Mod-Col",
+            "Mod Col",
+            "COD MOD COL",
+            "Codigo Modelo Color",
+            "Código Modelo Color",
+            "codigo_modelo_color",
+            "Modelo Color",
+            "Modelo-Color",
+        ],
+    )
+    if mod_col:
+        source["Mod-Col"] = source[mod_col]
+        return source
+
+    first_column = source.columns[0]
+    values = []
+    if looks_like_mod_col(first_column):
+        values.append(first_column)
+    values.extend(source[first_column].dropna().tolist())
+    values = [clean_value(value).upper() for value in values if clean_value(value)]
+    return pd.DataFrame({"Mod-Col": values})
 
 
 def build_shopify_update_preview(
@@ -704,6 +775,8 @@ def build_shopify_update_preview(
             )
         return pd.DataFrame(rows), pd.DataFrame(issues), pd.DataFrame()
 
+    if operation == "photos":
+        update_input_df = normalize_photo_update_input(update_input_df)
     source_df = update_input_df.dropna(how="all").copy() if update_input_df is not None else pd.DataFrame()
     if operation == "photos" and source_df.empty:
         source_df = pd.DataFrame(shopify_products)
@@ -712,7 +785,7 @@ def build_shopify_update_preview(
     for input_index, row in source_df.iterrows():
         key = _source_key_for_update(row)
         handle = clean_value(row.get("Handle"))
-        product = by_key.get(key) or by_handle.get(handle)
+        product = by_key.get(key) or by_key.get(product_lookup_key(key)) or by_handle.get(handle)
         if not product:
             issues.append({"Mod-Col": key, "Handle": handle, "Problema": "No se encontro producto en Shopify", "Fila": input_index + 2})
             continue
@@ -800,7 +873,7 @@ def build_shopify_update_preview(
             urls_text = "; ".join(urls)
             rows.append(
                 {
-                    "Accion": "Generar Matrixify",
+                    "Accion": "Sincronizar Shopify" if image_mode == "replace" else "Agregar fotos Shopify",
                     "Sitio": brand_config["site_label"],
                     "Operacion": "photos",
                     "Mod-Col": product_key,
@@ -809,8 +882,10 @@ def build_shopify_update_preview(
                     "Campo": "Fotos",
                     "Valor actual": current_images,
                     "Valor nuevo": urls_text,
+                    "Modo fotos": image_mode,
+                    "Media IDs": product.get("Media IDs"),
                     "Estado": "OK",
-                    "Observacion": "Vista previa API. Aplicacion directa de media queda desactivada por seguridad.",
+                    "Observacion": "REPLACE elimina fotos actuales antes de subir las 10 URLs nuevas; MERGE agrega las URLs nuevas.",
                 }
             )
             matrixify_rows.append(
@@ -842,6 +917,21 @@ def apply_shopify_preview(shopify_config, preview_df):
                 product_update(shopify_config, product_id, title=clean_value(row.get("Valor nuevo")))
             elif operation == "body":
                 product_update(shopify_config, product_id, body_html=clean_value(row.get("Valor nuevo")))
+            elif operation == "photos":
+                image_urls = _split_semicolon_values(row.get("Valor nuevo"))
+                media_ids = _split_semicolon_values(row.get("Media IDs"))
+                image_mode = clean_value(row.get("Modo fotos")).lower() or "replace"
+                deleted_count = 0
+                if image_mode == "replace" and media_ids:
+                    deleted = product_delete_media(shopify_config, product_id, media_ids)
+                    deleted_count = len(deleted)
+                created = product_create_media(shopify_config, product_id, image_urls)
+                message = (
+                    f"{deleted_count} fotos anteriores eliminadas. "
+                    f"{len(created)} fotos nuevas enviadas."
+                    if image_mode == "replace"
+                    else f"{len(created)} fotos nuevas agregadas."
+                )
             elif operation == "siblings":
                 sibling_value = clean_value(row.get("Valor nuevo"))
                 custom_sibling_value = clean_value(
@@ -3421,10 +3511,10 @@ api_version = "{DEFAULT_API_VERSION}"
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
-                    can_apply = update_operation in ("tags", "title", "body", "siblings") and preview_df is not None and not preview_df.empty
+                    can_apply = update_operation in ("tags", "title", "body", "siblings", "photos") and preview_df is not None and not preview_df.empty
                     if update_operation == "photos":
-                        st.info("Para actualizacion puntual de fotos, descarga la estructura Matrixify y revisa las URLs antes de importar.")
-                    elif can_apply:
+                        st.info("REPLACE elimina las fotos actuales del producto y sube las 10 URLs nuevas. MERGE agrega las URLs nuevas sin borrar las actuales.")
+                    if can_apply:
                         confirm_apply = st.checkbox("Confirmo que revise la vista previa y quiero aplicar en Shopify")
                         if confirm_apply and st.button("Sincronizar Shopify", type="primary"):
                             with st.spinner("Sincronizando cambios en Shopify..."):

@@ -2245,7 +2245,7 @@ def resolve_logo_path(path):
     return str(path)
 
 
-def brand_logo_path_for_name(brand_name):
+def brand_logo_stem_for_name(brand_name):
     normalized = re.sub(r"[^a-z0-9]+", "", clean_value(brand_name).lower())
     logo_stems = {
         "columbia": "columbia",
@@ -2254,12 +2254,16 @@ def brand_logo_path_for_name(brand_name):
         "sorel": "sorel",
         "mountainhardwear": "mountainhardwear",
         "hushpuppies": "hushpuppies",
-        "hushpuppieskids": "hushpuppies",
+        "hushpuppieskids": "hpk",
         "accesorioshp": "hushpuppies",
         "keds": "keds",
         "vans": "vans",
     }
-    stem = logo_stems.get(normalized, normalized)
+    return logo_stems.get(normalized, normalized)
+
+
+def brand_logo_path_for_name(brand_name):
+    stem = brand_logo_stem_for_name(brand_name)
     return resolve_logo_path(f"assets/brands/{stem}.png")
 
 
@@ -3289,12 +3293,17 @@ def render_allowed_brands_card(brand_config):
     primary_brand = brand_config["label"].upper()
     ordered_allowed = [primary_brand] + [brand for brand in allowed_brands if brand != primary_brand]
     chips = []
+    rendered_logo_stems = set()
     for index, brand in enumerate(ordered_allowed):
         clean_brand = clean_value(brand)
+        logo_stem = brand_logo_stem_for_name(clean_brand)
+        if logo_stem in rendered_logo_stems:
+            continue
+        rendered_logo_stems.add(logo_stem)
         brand_src = image_data_uri(brand_logo_path_for_name(clean_brand))
         brand_label = escape(clean_brand.title())
         visual = f'<img src="{brand_src}" alt="{brand_label}">' if brand_src else f"<span>{brand_label}</span>"
-        primary_class = " primary" if index == 0 else ""
+        primary_class = " primary" if not chips else ""
         chips.append(
             f"""
             <div class="allowed-logo-chip{primary_class}" title="{brand_label}">

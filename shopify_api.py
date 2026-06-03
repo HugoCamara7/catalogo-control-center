@@ -179,6 +179,7 @@ def _product_node_to_record(node):
         "Vendor": clean(node.get("vendor")),
         "Type": clean(node.get("productType")),
         "Status": clean(node.get("status")),
+        "Online Store URL": clean(node.get("onlineStoreUrl")),
         "Mod-Col": clean(metafield.get("value")).upper(),
         "Siblings": clean(siblings.get("value")),
         "Siblings Color": clean(siblings_color.get("value")),
@@ -209,6 +210,7 @@ def fetch_products(config, max_products=5000):
           vendor
           productType
           status
+          onlineStoreUrl
           codigoModeloColor: metafield(namespace: "custom", key: "codigo_modelo_color") {
             value
           }

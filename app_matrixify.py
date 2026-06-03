@@ -1051,6 +1051,254 @@ def shopify_products_to_matrixify_df(shopify_products):
     return pd.DataFrame(rows, columns=default_columns)
 
 
+STOCK_QUERY_DEFAULT = """
+WITH stock_base AS (
+  SELECT
+    fecha_corte,
+    id_producto,
+    conca || '-' || talla AS key_producto,
+    codigo_tienda,
+    stock_tiendas,
+    stock_bodega
+  FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
+  WHERE fecha_corte = (
+    SELECT MAX(fecha_corte)
+    FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
+    WHERE EXTRACT(YEAR FROM fecha_corte) = EXTRACT(YEAR FROM CURRENT_DATE())
+  )
+)
+SELECT
+  fecha_corte,
+  ANY_VALUE(id_producto) AS id_producto,
+  UPPER(TRIM(key_producto)) AS key_producto,
+  SUM(COALESCE(stock_tiendas, 0)) AS stock_tiendas,
+  SUM(COALESCE(stock_bodega, 0)) AS stock_bodega,
+  SUM(COALESCE(stock_tiendas, 0) + COALESCE(stock_bodega, 0)) AS stock_total
+FROM stock_base
+GROUP BY fecha_corte, key_producto
+"""
+
+
+def read_current_stock_from_bigquery(bigquery_config):
+    try:
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+    except ImportError as exc:
+        raise RuntimeError("Faltan dependencias de BigQuery para leer stock.") from exc
+
+    config = dict(bigquery_config or {})
+    credentials_info = config.get("service_account_info")
+    credentials = None
+    project_id = clean_value(config.get("project_id"))
+    if credentials_info:
+        credentials = service_account.Credentials.from_service_account_info(dict(credentials_info))
+        project_id = project_id or credentials.project_id
+
+    job_project_id = clean_value(config.get("job_project_id")) or project_id
+    client = bigquery.Client(project=job_project_id or None, credentials=credentials)
+    query = clean_value(config.get("stock_query")) or STOCK_QUERY_DEFAULT
+    job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
+    df = client.query(query, job_config=job_config, location=clean_value(config.get("location")) or None).to_dataframe()
+    for column in ("fecha_corte", "id_producto", "key_producto", "stock_tiendas", "stock_bodega", "stock_total"):
+        if column not in df.columns:
+            df[column] = 0 if column.startswith("stock_") else ""
+    df["key_producto"] = df["key_producto"].map(lambda value: clean_value(value).upper())
+    for column in ("stock_tiendas", "stock_bodega", "stock_total"):
+        df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0)
+    return df
+
+
+def stock_key_from_parts(mod_col, size):
+    mod_col = clean_value(mod_col).upper()
+    size = clean_value(normalize_size(size)).upper()
+    return f"{mod_col}-{size}" if mod_col and size else ""
+
+
+def valid_kpi_price(value):
+    text = clean_value(value)
+    if not text:
+        return False
+    try:
+        return float(text.replace(",", ".")) > 0
+    except ValueError:
+        return False
+
+
+def flatten_shopify_for_kpis(shopify_products):
+    product_rows = []
+    variant_rows = []
+    for product in shopify_products or []:
+        mod_col = clean_value(product.get("Mod-Col")).upper()
+        status = clean_value(product.get("Status")).upper()
+        online_url = clean_value(product.get("Online Store URL"))
+        variants = product.get("Variants") or []
+        has_price = any(valid_kpi_price(variant.get("Variant Price")) for variant in variants)
+        product_rows.append(
+            {
+                "Mod-Col": mod_col,
+                "Handle": clean_value(product.get("Handle")),
+                "Title": clean_value(product.get("Title")),
+                "Status": status,
+                "Publicado": "SI" if online_url else "",
+                "Visible": status == "ACTIVE" and (bool(online_url) or not online_url),
+                "Tiene precio": has_price,
+                "Fotos": len([url for url in clean_value(product.get("Image Src")).split(";") if clean_value(url)]),
+            }
+        )
+        for variant in variants:
+            variant_rows.append(
+                {
+                    "Mod-Col": mod_col,
+                    "Handle": clean_value(product.get("Handle")),
+                    "Status": status,
+                    "Publicado": "SI" if online_url else "",
+                    "Variant SKU": clean_value(variant.get("Variant SKU")),
+                    "Variant Price": clean_value(variant.get("Variant Price")),
+                    "Tiene precio": valid_kpi_price(variant.get("Variant Price")),
+                }
+            )
+    return pd.DataFrame(product_rows), pd.DataFrame(variant_rows)
+
+
+def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
+    arti = arti_df.copy() if isinstance(arti_df, pd.DataFrame) else pd.DataFrame()
+    stock = stock_df.copy() if isinstance(stock_df, pd.DataFrame) else pd.DataFrame()
+    allowed = set(brand_config.get("allowed_arti_brands") or [])
+    if "MARCA_MA" in arti.columns and allowed:
+        arti = arti[arti["MARCA_MA"].map(lambda value: clean_value(value).upper()).isin(allowed)].copy()
+    if "Mod-Col" not in arti.columns:
+        arti["Mod-Col"] = ""
+    if "COD MOD COL" not in arti.columns:
+        arti["COD MOD COL"] = ""
+    for column in ("CODINT_MA", "TALNUM_MA", "MARCA_MA"):
+        if column not in arti.columns:
+            arti[column] = ""
+
+    arti["Mod-Col KPI"] = arti["Mod-Col"].where(arti["Mod-Col"].map(clean_value) != "", arti["COD MOD COL"])
+    arti["Mod-Col KPI"] = arti["Mod-Col KPI"].map(lambda value: clean_value(value).upper())
+    arti["Talla KPI"] = arti["TALNUM_MA"].map(normalize_size)
+    arti["Stock Key"] = arti.apply(lambda row: stock_key_from_parts(row.get("Mod-Col KPI"), row.get("Talla KPI")), axis=1)
+    expected = arti[(arti["Mod-Col KPI"] != "") & (arti["Stock Key"] != "")].copy()
+
+    if stock.empty:
+        stock = pd.DataFrame(columns=["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"])
+    stock["key_producto"] = stock["key_producto"].map(lambda value: clean_value(value).upper())
+    expected = expected.merge(
+        stock[["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"]],
+        how="left",
+        left_on="Stock Key",
+        right_on="key_producto",
+    )
+    for column in ("stock_tiendas", "stock_bodega", "stock_total"):
+        expected[column] = pd.to_numeric(expected[column], errors="coerce").fillna(0)
+
+    products_df, variants_df = flatten_shopify_for_kpis(shopify_products)
+    shopify_model_keys = {clean_value(value).upper() for value in products_df.get("Mod-Col", pd.Series(dtype=object)) if clean_value(value)}
+    shopify_variant_skus = {clean_value(value) for value in variants_df.get("Variant SKU", pd.Series(dtype=object)) if clean_value(value)}
+    product_status_by_key = products_df.drop_duplicates("Mod-Col").set_index("Mod-Col").to_dict("index") if not products_df.empty and "Mod-Col" in products_df.columns else {}
+
+    expected["SKU"] = expected["CODINT_MA"].map(clean_value)
+    expected["Con stock"] = expected["stock_total"] > 0
+    expected["Producto creado Shopify"] = expected["Mod-Col KPI"].map(lambda value: value in shopify_model_keys)
+    expected["Variante creada Shopify"] = expected["SKU"].map(lambda value: value in shopify_variant_skus)
+    expected["Status Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Status")))
+    expected["Visible Shopify"] = expected["Status Shopify"].map(lambda value: clean_value(value).upper() == "ACTIVE")
+
+    model_stock = (
+        expected.groupby("Mod-Col KPI", as_index=False)
+        .agg(
+            Marca=("MARCA_MA", "first"),
+            Stock_total=("stock_total", "sum"),
+            Tallas_BigQuery=("Talla KPI", "nunique"),
+            Tallas_con_stock=("Con stock", "sum"),
+            Producto_creado=("Producto creado Shopify", "max"),
+            Visible_Shopify=("Visible Shopify", "max"),
+        )
+    )
+    model_stock["Debe estar visible"] = model_stock["Stock_total"] > 0
+    model_stock["Estado"] = model_stock.apply(
+        lambda row: (
+            "OK visible con stock"
+            if row["Debe estar visible"] and row["Visible_Shopify"]
+            else "Con stock no visible"
+            if row["Debe estar visible"] and not row["Visible_Shopify"]
+            else "Sin stock visible"
+            if not row["Debe estar visible"] and row["Visible_Shopify"]
+            else "OK apagado sin stock"
+        ),
+        axis=1,
+    )
+
+    missing_models = model_stock[(model_stock["Debe estar visible"]) & (~model_stock["Producto_creado"])].copy()
+    stock_not_visible = model_stock[
+        (model_stock["Debe estar visible"]) & (model_stock["Producto_creado"]) & (~model_stock["Visible_Shopify"])
+    ].copy()
+    no_stock_visible = model_stock[(~model_stock["Debe estar visible"]) & (model_stock["Visible_Shopify"])].copy()
+    missing_stock_variants = expected[(expected["Con stock"]) & (~expected["Variante creada Shopify"])].copy()
+
+    price_by_model = (
+        variants_df.groupby("Mod-Col", as_index=False)["Tiene precio"].max()
+        if not variants_df.empty and "Mod-Col" in variants_df.columns
+        else pd.DataFrame(columns=["Mod-Col", "Tiene precio"])
+    )
+    no_price_models = model_stock[model_stock["Producto_creado"] & model_stock["Debe estar visible"]].merge(
+        price_by_model,
+        how="left",
+        left_on="Mod-Col KPI",
+        right_on="Mod-Col",
+    )
+    no_price_models["Tiene precio"] = no_price_models["Tiene precio"].fillna(False)
+    no_price_models = no_price_models[~no_price_models["Tiene precio"]].copy()
+
+    kpis = {
+        "modelos_con_stock": int(model_stock["Debe estar visible"].sum()),
+        "modelos_creados_shopify": int((model_stock["Debe estar visible"] & model_stock["Producto_creado"]).sum()),
+        "cobertura_shopify": float((model_stock["Debe estar visible"] & model_stock["Producto_creado"]).sum() / model_stock["Debe estar visible"].sum()) if model_stock["Debe estar visible"].sum() else 0,
+        "modelos_pendientes": int(len(missing_models)),
+        "con_stock_no_visibles": int(len(stock_not_visible)),
+        "sin_stock_visibles": int(len(no_stock_visible)),
+        "tallas_con_stock_faltantes": int(len(missing_stock_variants)),
+        "modelos_sin_precio": int(len(no_price_models)),
+    }
+
+    action_rows = []
+    for _, row in missing_models.iterrows():
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock no creado", "Accion sugerida": "Pedir input al Brand Manager", "Stock total": row["Stock_total"]})
+    for _, row in stock_not_visible.iterrows():
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Con stock no visible", "Accion sugerida": "Activar/publicar o revisar bloqueo en Shopify", "Stock total": row["Stock_total"]})
+    for _, row in no_stock_visible.iterrows():
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Sin stock visible", "Accion sugerida": "Apagar producto en Shopify", "Stock total": row["Stock_total"]})
+    for _, row in no_price_models.iterrows():
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Creado con stock sin precio", "Accion sugerida": "Cargar precio en Shopify", "Stock total": row["Stock_total"]})
+    for _, row in missing_stock_variants.iterrows():
+        action_rows.append(
+            {
+                "Mod-Col": row["Mod-Col KPI"],
+                "Marca": row["MARCA_MA"],
+                "Problema": "Talla con stock faltante",
+                "Accion sugerida": f"Crear variante talla {row['Talla KPI']} en Shopify",
+                "Stock total": row["stock_total"],
+            }
+        )
+
+    actions_df = pd.DataFrame(action_rows)
+    missing_stock_variants_export = (
+        missing_stock_variants[["Mod-Col KPI", "MARCA_MA", "Talla KPI", "SKU", "stock_total"]]
+        .rename(columns={"Mod-Col KPI": "Mod-Col", "Talla KPI": "Talla", "stock_total": "Stock total"})
+        if not missing_stock_variants.empty
+        else pd.DataFrame(columns=["Mod-Col", "MARCA_MA", "Talla", "SKU", "Stock total"])
+    )
+    return {
+        "kpis": kpis,
+        "model_stock": model_stock,
+        "actions": actions_df,
+        "missing_stock_variants": missing_stock_variants_export,
+        "no_price_models": no_price_models,
+        "stock_not_visible": stock_not_visible,
+        "no_stock_visible": no_stock_visible,
+    }
+
+
 def siblings_by_model_from_shopify(shopify_products):
     products_df = pd.DataFrame(shopify_products)
     if products_df.empty or "Mod-Col" not in products_df.columns or "Handle" not in products_df.columns:
@@ -3659,6 +3907,109 @@ def render_input_upload_card():
     )
 
 
+def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready):
+    st.markdown('<div class="section-card"><h2>KPIs de catalogo</h2><p>Diagnostico BigQuery stock vs Shopify para decidir que debe estar visible, apagado o pendiente.</p></div>', unsafe_allow_html=True)
+
+    if not bigquery_ready:
+        st.error("BigQuery no esta configurado. Para KPIs se necesita leer stock actual y ARTI.")
+        return
+    if not is_shopify_configured(shopify_config):
+        st.error("Shopify API no esta configurado para este sitio.")
+        return
+
+    run_key = f"kpi_result_{brand_config['site_key']}"
+    if st.button("Actualizar diagnostico KPIs", type="primary"):
+        with st.spinner("Leyendo ARTI/BigQuery, stock actual y productos Shopify..."):
+            arti_df, arti_source = read_arti_for_app(brand_config)
+            stock_df = read_current_stock_from_bigquery(get_bigquery_config())
+            shopify_products = fetch_products(shopify_config)
+            result = build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config)
+            result["meta"] = {
+                "arti_source": arti_source,
+                "stock_rows": len(stock_df),
+                "shopify_products": len(shopify_products),
+                "fecha_corte": clean_value(stock_df["fecha_corte"].max()) if not stock_df.empty and "fecha_corte" in stock_df.columns else "",
+            }
+            st.session_state[run_key] = result
+
+    result = st.session_state.get(run_key)
+    if not result:
+        st.info("Ejecuta el diagnostico para generar KPIs, graficos y descargables.")
+        return
+
+    meta = result.get("meta", {})
+    st.caption(
+        f"Fuente ARTI: {meta.get('arti_source', '')} | Stock filas: {meta.get('stock_rows', 0):,} | "
+        f"Shopify productos: {meta.get('shopify_products', 0):,} | Fecha corte: {meta.get('fecha_corte', '')}"
+    )
+    kpis = result["kpis"]
+    metric_items = [
+        ("Modelos con stock", kpis["modelos_con_stock"]),
+        ("Creados Shopify", kpis["modelos_creados_shopify"]),
+        ("Cobertura", f"{kpis['cobertura_shopify']:.0%}"),
+        ("Pendientes creacion", kpis["modelos_pendientes"]),
+        ("Stock no visible", kpis["con_stock_no_visibles"]),
+        ("Sin stock visibles", kpis["sin_stock_visibles"]),
+        ("Tallas faltantes", kpis["tallas_con_stock_faltantes"]),
+        ("Sin precio", kpis["modelos_sin_precio"]),
+    ]
+    for chunk_start in range(0, len(metric_items), 4):
+        cols = st.columns(4)
+        for col, (label, value) in zip(cols, metric_items[chunk_start : chunk_start + 4]):
+            col.metric(label, value)
+
+    actions_df = result["actions"]
+    problem_counts = (
+        actions_df["Problema"].value_counts().rename_axis("Problema").reset_index(name="Casos")
+        if actions_df is not None and not actions_df.empty
+        else pd.DataFrame({"Problema": ["Sin observaciones"], "Casos": [0]})
+    )
+    funnel_df = pd.DataFrame(
+        [
+            {"Etapa": "BQ con stock", "Valor": kpis["modelos_con_stock"]},
+            {"Etapa": "Creados", "Valor": kpis["modelos_creados_shopify"]},
+            {"Etapa": "Visibles OK", "Valor": max(kpis["modelos_creados_shopify"] - kpis["con_stock_no_visibles"], 0)},
+            {"Etapa": "Sin precio", "Valor": kpis["modelos_sin_precio"]},
+        ]
+    )
+
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Funnel de catalogo**")
+        st.bar_chart(funnel_df, x="Etapa", y="Valor", use_container_width=True)
+    with right:
+        st.markdown("**Pareto de problemas**")
+        st.bar_chart(problem_counts, x="Problema", y="Casos", use_container_width=True)
+
+    st.markdown("**Pendientes accionables**")
+    if actions_df is None or actions_df.empty:
+        st.success("No hay pendientes accionables con la regla actual.")
+    else:
+        st.dataframe(actions_df, use_container_width=True, height=280)
+
+    missing_variants_df = result["missing_stock_variants"]
+    if missing_variants_df is not None and not missing_variants_df.empty:
+        st.markdown("**Tallas con stock faltantes en Shopify**")
+        st.dataframe(missing_variants_df, use_container_width=True, height=260)
+
+    excel_bytes = dataframe_to_excel_bytes(
+        {
+            "Resumen modelos": result["model_stock"],
+            "Pendientes accionables": actions_df if actions_df is not None else pd.DataFrame(),
+            "Tallas con stock faltantes": missing_variants_df if missing_variants_df is not None else pd.DataFrame(),
+            "Con stock no visibles": result["stock_not_visible"],
+            "Sin stock visibles": result["no_stock_visible"],
+            "Sin precio": result["no_price_models"],
+        }
+    )
+    st.download_button(
+        "Descargar diagnostico KPIs",
+        data=excel_bytes,
+        file_name=f"kpis_catalogo_{brand_config['site_key']}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
     bigquery_config = get_bigquery_config()
@@ -3680,11 +4031,18 @@ def main():
     ui_config = get_site_config(brand_config, shopify_config)
     inject_styles(ui_config)
     render_allowed_brands_card(brand_config)
-    operation_mode = st.sidebar.radio(
+    operation_area = st.sidebar.radio(
         "Tipo de operacion",
-        ["Carga completa", "Actualizacion puntual"],
+        ["KPIs de catalogo", "Carga de catalogo"],
         index=0,
     )
+    operation_mode = "Carga completa"
+    if operation_area == "Carga de catalogo":
+        operation_mode = st.sidebar.radio(
+            "Tipo de carga",
+            ["Carga completa", "Carga parcial"],
+            index=0,
+        )
     with st.sidebar.container(key="shopify_sidebar_card"):
         render_sidebar_shopify_card(ui_config, shopify_config)
         if is_shopify_configured(shopify_config):
@@ -3710,9 +4068,13 @@ api_version = "{DEFAULT_API_VERSION}"
             )
 
     render_top_header(ui_config)
+    if operation_area == "KPIs de catalogo":
+        render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready)
+        return
+
     render_stepper(ui_config, current_step=current_flow_step())
 
-    if operation_mode == "Actualizacion puntual":
+    if operation_mode == "Carga parcial":
         operation_labels = {
             "Tags": "tags",
             "Fotos 10 vistas": "photos",
@@ -3720,7 +4082,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Titulo": "title",
             "Body HTML / Material / Cuidado": "body",
         }
-        st.markdown('<div class="section-card"><h2>Actualizacion puntual</h2>', unsafe_allow_html=True)
+        st.markdown('<div class="section-card"><h2>Carga parcial</h2>', unsafe_allow_html=True)
         update_label = st.selectbox("Que quieres actualizar", list(operation_labels), index=0)
         update_operation = operation_labels[update_label]
         update_source = st.radio(
@@ -3794,7 +4156,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         )
                         st.stop()
 
-                if st.button(f"Analizar actualizacion: {update_label}", type="primary"):
+                if st.button(f"Analizar carga parcial: {update_label}", type="primary"):
                     with st.spinner("Leyendo productos actuales desde Shopify..."):
                         shopify_products = fetch_products(shopify_config)
                     preview_df, issues_df, matrixify_df = build_shopify_update_preview(
@@ -3856,7 +4218,7 @@ api_version = "{DEFAULT_API_VERSION}"
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             )
             except Exception as exc:
-                st.error("No pude generar o aplicar la actualizacion con Shopify API.")
+                st.error("No pude generar o aplicar la carga parcial con Shopify API.")
                 st.exception(exc)
         elif update_source == "Respaldo Excel" and template_file and update_ready:
             try:
@@ -3885,7 +4247,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         )
                         st.stop()
 
-                if st.button(f"Analizar actualizacion: {update_label}", type="primary"):
+                if st.button(f"Analizar carga parcial: {update_label}", type="primary"):
                     update_arti_df = None
                     if update_operation == "photos":
                         try:
@@ -3904,9 +4266,9 @@ api_version = "{DEFAULT_API_VERSION}"
                         body_mode=body_mode,
                     )
                     if matrixify_df.empty:
-                        st.warning("No se genero ninguna fila de actualizacion. Revisa la hoja Revision.")
+                        st.warning("No se genero ninguna fila de carga parcial. Revisa la hoja Revision.")
                     else:
-                        st.success(f"Actualizacion generada con {len(matrixify_df):,} productos.")
+                        st.success(f"Carga parcial generada con {len(matrixify_df):,} productos.")
                         st.dataframe(matrixify_df.head(100), use_container_width=True)
                     if issues_df is not None and not issues_df.empty:
                         st.warning(f"Hay {len(issues_df):,} observaciones.")
@@ -3915,14 +4277,14 @@ api_version = "{DEFAULT_API_VERSION}"
                     st.download_button(
                         "Descargar estructura Matrixify",
                         data=excel_bytes,
-                        file_name=f"actualizacion_{update_operation}_{brand_config['site_key']}.xlsx",
+                        file_name=f"carga_parcial_{update_operation}_{brand_config['site_key']}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
             except Exception as exc:
-                st.error("No pude generar la actualizacion puntual.")
+                st.error("No pude generar la carga parcial.")
                 st.exception(exc)
         else:
-            st.info("Sube los archivos requeridos para generar la actualizacion puntual.")
+            st.info("Sube los archivos requeridos para generar la carga parcial.")
         return
 
     with st.container(key="sources_upload_panel"):

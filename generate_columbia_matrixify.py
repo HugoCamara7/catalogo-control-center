@@ -680,6 +680,18 @@ def sial_product_bullets(product, product_type, color_web, tech_col, brand_confi
     return ", ".join(f"{label} | {value}" for label, value in pieces if clean(value))
 
 
+def sial_short_features(value, max_length=45):
+    text = clean(strip_html(value))
+    text = re.sub(r"\s+", " ", text).strip(" -:;,.")
+    if len(text) <= max_length:
+        return text
+
+    clipped = text[: max_length + 1].strip()
+    if " " in clipped:
+        clipped = clipped.rsplit(" ", 1)[0].strip()
+    return clipped[:max_length].strip(" -:;,.")
+
+
 def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None, brand_label=""):
     brand_config = brand_config or get_brand_config()
     brand_label = clean(brand_label) or brand_config["label"]
@@ -689,7 +701,6 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
     color_web = clean(product.get("Color Web"))
     title = clean(product.get("Title"))
     body_html = build_body_html(product)
-    image_url = product_images[0] if product_images else ""
     existing_id = clean(existing_product.get("ID"))
     row = {
         "Cod. Modelo": model,
@@ -701,7 +712,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
             sial_product_bullets(product, product_type, color_web, tech_col, brand_config, brand_label),
         ),
         "Product Description": first_non_empty(product.get("Product Description"), strip_html(body_html)),
-        "Image URL": image_url,
+        "Image URL": "",
         "Product Weight": first_non_empty(product.get("Product Weight"), 300),
         "Product Length": first_non_empty(product.get("Product Length"), 35),
         "Product Width": first_non_empty(product.get("Product Width"), 27),
@@ -722,7 +733,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Modelo": clean(product.get("Modelo")),
         "Marca": brand_label,
         "Tecnologias ": product_technology(product, tech_col),
-        "Caracteristicas": clean(product.get("Caracteristicas")),
+        "Caracteristicas": sial_short_features(product.get("Caracteristicas")),
         "Tipo de Boardshort": clean(product.get("Tipo de Boardshort")),
         "Tipo de Bikini": clean(product.get("Tipo de Bikini")),
         "Iniciativas": clean(product.get("Iniciativas")),

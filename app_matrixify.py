@@ -2227,6 +2227,20 @@ def resolve_logo_path(path):
             candidate = folder / f"{candidate_stem}.{suffix}"
             if candidate.exists():
                 return str(candidate)
+
+    wanted_keys = {re.sub(r"[^a-z0-9]+", "", stem.lower())}
+    for alias in aliases.get(stem, []):
+        wanted_keys.add(re.sub(r"[^a-z0-9]+", "", alias.lower()))
+    if folder.exists():
+        for candidate in folder.iterdir():
+            if not candidate.is_file() or candidate.suffix.lower().replace(".", "") not in ("png", "jpg", "jpeg", "webp"):
+                continue
+            candidate_key = candidate.stem.lower()
+            candidate_key = re.sub(r"^logo[_-]*", "", candidate_key)
+            candidate_key = re.sub(r"\.(png|jpg|jpeg|webp)$", "", candidate_key)
+            candidate_key = re.sub(r"[^a-z0-9]+", "", candidate_key)
+            if candidate_key in wanted_keys:
+                return str(candidate)
     return str(path)
 
 
@@ -3205,6 +3219,7 @@ def render_top_header(config):
         f"""
         <div class="top-header">
             <div class="brand-lockup">
+                <div class="brand-logo-card">{brand_html}</div>
                 <div>
                     <p class="header-eyebrow">Catalogo Control Center</p>
                     <h1 class="header-title">{config["site_label"]} &rarr; Shopify</h1>

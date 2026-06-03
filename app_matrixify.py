@@ -2195,9 +2195,39 @@ def image_data_uri(path):
     if not path.exists():
         return ""
     suffix = path.suffix.lower().replace(".", "")
-    mime = "jpeg" if suffix in ("jpg", "jpeg") else "png"
+    mime_by_suffix = {
+        "jpg": "jpeg",
+        "jpeg": "jpeg",
+        "png": "png",
+        "webp": "webp",
+        "gif": "gif",
+    }
+    mime = mime_by_suffix.get(suffix, "png")
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:image/{mime};base64,{encoded}"
+
+
+def resolve_logo_path(path):
+    path = Path(path)
+    if path.exists():
+        return str(path)
+
+    folder = path.parent
+    stem = path.stem
+    aliases = {
+        "mountainhardwear": ["mhw", "mountainhardwear"],
+        "hushpuppies": ["hushpuppies", "hush_puppies"],
+    }
+    stems = [stem, f"logo_{stem}"]
+    for alias in aliases.get(stem, []):
+        stems.extend([alias, f"logo_{alias}"])
+
+    for candidate_stem in dict.fromkeys(stems):
+        for suffix in ("png", "jpg", "jpeg", "webp"):
+            candidate = folder / f"{candidate_stem}.{suffix}"
+            if candidate.exists():
+                return str(candidate)
+    return str(path)
 
 
 def render_html(html, sidebar=False):
@@ -3103,7 +3133,7 @@ def render_sidebar_brand():
 
 
 def render_sidebar_brand_card(config):
-    brand_src = image_data_uri(config.get("logo_path") or config.get("logo", ""))
+    brand_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
     brand_html = (
         f'<img src="{brand_src}" alt="{config["brand_name"]}">'
         if brand_src
@@ -3159,7 +3189,7 @@ def render_sidebar_shopify_card(config, shopify_config):
 
 
 def render_top_header(config):
-    brand_src = image_data_uri(config.get("logo_path") or config.get("logo", ""))
+    brand_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
     shopify_src = image_data_uri(SHOPIFY_LOGO_PATH)
     brand_html = (
         f'<img src="{brand_src}" alt="{config["brand_name"]}">'

@@ -2298,12 +2298,17 @@ def get_site_config(brand_config, shopify_config=None):
 
 
 def inject_custom_css(config):
+    site_logo_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
+    site_logo_css = f'url("{site_logo_src}")' if site_logo_src else "none"
+    site_label_css = clean_value(config.get("site_label")).replace("\\", "\\\\").replace('"', '\\"')
     st.markdown(
         f"""
         <style>
         :root {{
             --brand-primary: {config["primary_color"]};
             --brand-accent: {config["accent_color"]};
+            --site-logo-url: {site_logo_css};
+            --site-label: "{site_label_css}";
             --brand-soft: color-mix(in srgb, var(--brand-accent) 12%, white);
             --forus-blue: #17269A;
             --shopify-green: #95BF47;
@@ -2413,12 +2418,71 @@ def inject_custom_css(config):
             color: #5B6B86 !important;
             font-weight: 800;
         }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card {{
+            position: relative;
+            margin: 6px 0 24px;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card::after {{
+            content: "Sitio activo";
+            position: absolute;
+            left: 108px;
+            top: 18px;
+            z-index: 3;
+            color: #172554;
+            font-size: 13px;
+            line-height: 1;
+            font-weight: 950;
+            pointer-events: none;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card::before {{
+            content: "";
+            position: absolute;
+            left: 18px;
+            top: 50%;
+            width: 72px;
+            height: 46px;
+            transform: translateY(-50%);
+            border-radius: 13px;
+            background-color: #F8FAFC;
+            background-image: var(--site-logo-url);
+            background-repeat: no-repeat;
+            background-position: center;
+            background-size: contain;
+            border: 1px solid #E2E8F0;
+            z-index: 2;
+            pointer-events: none;
+        }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
-            min-height: 56px;
-            border-radius: 18px;
+            min-height: 78px;
+            border-radius: 20px;
             align-items: center;
             justify-content: center;
             text-align: center;
+            border-color: #DDE6F2;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
+            padding-left: 108px;
+            padding-right: 36px;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] {{
+            position: relative;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"]::before {{
+            content: var(--site-label);
+            position: absolute;
+            left: 108px;
+            right: 48px;
+            top: 37px;
+            z-index: 3;
+            color: #0F172A;
+            font-size: 18px;
+            line-height: 1.15;
+            font-weight: 950;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: clip;
+            pointer-events: none;
         }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] > div > div:first-child {{
             flex: 1 1 auto;
@@ -2430,8 +2494,13 @@ def inject_custom_css(config):
         }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] span {{
             color: #0F172A !important;
-            font-size: 16px;
+            font-size: 18px;
             font-weight: 900;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] span,
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] input {{
+            color: transparent !important;
+            caret-color: transparent !important;
         }}
         .forus-sidebar {{
             border-radius: 24px;
@@ -2513,20 +2582,19 @@ def inject_custom_css(config):
             font-weight: 800;
         }}
         .active-site-card {{
-            display: flex;
-            align-items: center;
-            gap: 14px;
+            display: grid;
+            place-items: center;
             border-radius: 20px;
-            padding: 14px;
+            padding: 12px 14px;
             margin: 12px 0 22px;
             background: #FFFFFF;
             border: 1px solid #DDE6F2;
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         .active-site-logo {{
-            width: 74px;
-            min-width: 74px;
-            height: 48px;
+            width: 100%;
+            min-width: 0;
+            height: 54px;
             display: grid;
             place-items: center;
             border-radius: 14px;
@@ -2535,8 +2603,8 @@ def inject_custom_css(config):
             overflow: hidden;
         }}
         .active-site-logo img {{
-            max-width: 62px;
-            max-height: 34px;
+            max-width: 150px;
+            max-height: 42px;
             object-fit: contain;
         }}
         .active-site-name {{
@@ -3267,7 +3335,6 @@ def render_sidebar_brand_card(config):
 
 def render_active_site_card(config):
     brand_name = escape(clean_value(config.get("brand_name")) or "Sitio")
-    site_label = escape(clean_value(config.get("site_label")) or brand_name)
     brand_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
     logo_html = (
         f'<img src="{brand_src}" alt="{brand_name}">'
@@ -3278,10 +3345,6 @@ def render_active_site_card(config):
         f"""
         <div class="active-site-card">
             <div class="active-site-logo">{logo_html}</div>
-            <div>
-                <p class="sidebar-label" style="margin:0;">Sitio activo</p>
-                <p class="active-site-name">{site_label}</p>
-            </div>
         </div>
         """,
         sidebar=True,
@@ -3594,13 +3657,19 @@ def main():
 
     render_sidebar_brand()
     site_options = {config["site_label"]: key for key, config in SITE_CONFIGS.items()}
-    selected_site_label = st.sidebar.selectbox("Sitio destino", list(site_options), index=0)
+    with st.sidebar.container(key="site_picker_card"):
+        selected_site_label = st.selectbox(
+            "Sitio destino",
+            list(site_options),
+            index=0,
+            key="site_picker",
+            label_visibility="collapsed",
+        )
     selected_site_key = site_options[selected_site_label]
     brand_config = get_brand_config(selected_site_key)
     shopify_config = get_shopify_config(selected_site_key)
     ui_config = get_site_config(brand_config, shopify_config)
     inject_styles(ui_config)
-    render_active_site_card(ui_config)
     render_allowed_brands_card(brand_config)
     operation_mode = st.sidebar.radio(
         "Tipo de operacion",

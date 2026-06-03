@@ -2502,6 +2502,15 @@ def inject_custom_css(config):
             color: transparent !important;
             caret-color: transparent !important;
         }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div *:not(svg):not(path) {{
+            color: transparent !important;
+            text-shadow: none !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] svg,
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] path {{
+            color: #0F172A !important;
+            fill: #0F172A !important;
+        }}
         .forus-sidebar {{
             border-radius: 24px;
             padding: 22px 20px;

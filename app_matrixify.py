@@ -4,6 +4,7 @@ import json
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from html import escape
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlparse
@@ -2244,6 +2245,24 @@ def resolve_logo_path(path):
     return str(path)
 
 
+def brand_logo_path_for_name(brand_name):
+    normalized = re.sub(r"[^a-z0-9]+", "", clean_value(brand_name).lower())
+    logo_stems = {
+        "columbia": "columbia",
+        "rockford": "rockford",
+        "patagonia": "patagonia",
+        "sorel": "sorel",
+        "mountainhardwear": "mountainhardwear",
+        "hushpuppies": "hushpuppies",
+        "hushpuppieskids": "hushpuppies",
+        "accesorioshp": "hushpuppies",
+        "keds": "keds",
+        "vans": "vans",
+    }
+    stem = logo_stems.get(normalized, normalized)
+    return resolve_logo_path(f"assets/brands/{stem}.png")
+
+
 def render_html(html, sidebar=False):
     target = st.sidebar if sidebar else st
     if hasattr(target, "html"):
@@ -2390,6 +2409,26 @@ def inject_custom_css(config):
             color: #5B6B86 !important;
             font-weight: 800;
         }}
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
+            min-height: 56px;
+            border-radius: 18px;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+        }}
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div > div:first-child {{
+            flex: 1 1 auto;
+            justify-content: center;
+        }}
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div > div:first-child > div {{
+            width: 100%;
+            text-align: center;
+        }}
+        section[data-testid="stSidebar"] div[data-baseweb="select"] span {{
+            color: #0F172A !important;
+            font-size: 16px;
+            font-weight: 900;
+        }}
         .forus-sidebar {{
             border-radius: 24px;
             padding: 22px 20px;
@@ -2469,14 +2508,72 @@ def inject_custom_css(config):
             color: #172554 !important;
             font-weight: 800;
         }}
-        .allowed-card .sidebar-value {{
-            font-size: 17px;
-            line-height: 1.75;
-            font-weight: 500;
+        .active-site-card {{
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            border-radius: 20px;
+            padding: 14px;
+            margin: 12px 0 22px;
+            background: #FFFFFF;
+            border: 1px solid #DDE6F2;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
-        .allowed-card strong {{
-            color: #17269A;
+        .active-site-logo {{
+            width: 74px;
+            min-width: 74px;
+            height: 48px;
+            display: grid;
+            place-items: center;
+            border-radius: 14px;
+            background: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            overflow: hidden;
+        }}
+        .active-site-logo img {{
+            max-width: 62px;
+            max-height: 34px;
+            object-fit: contain;
+        }}
+        .active-site-name {{
+            margin: 2px 0 0;
+            color: #0F172A !important;
+            font-size: 18px;
+            line-height: 1.1;
             font-weight: 950;
+        }}
+        .allowed-logo-grid {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }}
+        .allowed-logo-chip {{
+            min-height: 66px;
+            display: grid;
+            place-items: center;
+            padding: 12px 8px;
+            border-radius: 16px;
+            background: #FFFFFF;
+            border: 1px solid #DDE6F2;
+            box-shadow: 0 10px 20px rgba(15,23,42,0.05);
+        }}
+        .allowed-logo-chip.primary {{
+            border-color: #93C5FD;
+            box-shadow: 0 0 0 1px #BFDBFE, 0 10px 20px rgba(23,38,154,0.08);
+        }}
+        .allowed-logo-chip img {{
+            max-width: 104px;
+            max-height: 40px;
+            object-fit: contain;
+        }}
+        .allowed-logo-chip span {{
+            max-width: 100%;
+            color: #172554 !important;
+            font-size: 10px;
+            line-height: 1.15;
+            text-align: center;
+            font-weight: 950;
+            text-transform: uppercase;
         }}
         section[data-testid="stSidebar"] div[role="radiogroup"] {{
             display: grid;
@@ -3164,6 +3261,58 @@ def render_sidebar_brand_card(config):
     )
 
 
+def render_active_site_card(config):
+    brand_name = escape(clean_value(config.get("brand_name")) or "Sitio")
+    site_label = escape(clean_value(config.get("site_label")) or brand_name)
+    brand_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
+    logo_html = (
+        f'<img src="{brand_src}" alt="{brand_name}">'
+        if brand_src
+        else f'<span>{brand_name[:2].upper()}</span>'
+    )
+    render_html(
+        f"""
+        <div class="active-site-card">
+            <div class="active-site-logo">{logo_html}</div>
+            <div>
+                <p class="sidebar-label" style="margin:0;">Sitio activo</p>
+                <p class="active-site-name">{site_label}</p>
+            </div>
+        </div>
+        """,
+        sidebar=True,
+    )
+
+
+def render_allowed_brands_card(brand_config):
+    allowed_brands = list(brand_config["allowed_arti_brands"])
+    primary_brand = brand_config["label"].upper()
+    ordered_allowed = [primary_brand] + [brand for brand in allowed_brands if brand != primary_brand]
+    chips = []
+    for index, brand in enumerate(ordered_allowed):
+        clean_brand = clean_value(brand)
+        brand_src = image_data_uri(brand_logo_path_for_name(clean_brand))
+        brand_label = escape(clean_brand.title())
+        visual = f'<img src="{brand_src}" alt="{brand_label}">' if brand_src else f"<span>{brand_label}</span>"
+        primary_class = " primary" if index == 0 else ""
+        chips.append(
+            f"""
+            <div class="allowed-logo-chip{primary_class}" title="{brand_label}">
+                {visual}
+            </div>
+            """
+        )
+    render_html(
+        f"""
+        <p class="sidebar-label">Marca(s) permitidas</p>
+        <div class="allowed-logo-grid">
+            {''.join(chips)}
+        </div>
+        """,
+        sidebar=True,
+    )
+
+
 def render_sidebar(config, shopify_config=None, bigquery_ready=False, input_loaded=False):
     render_sidebar_brand_card(config)
     if shopify_config is not None:
@@ -3442,16 +3591,8 @@ def main():
     shopify_config = get_shopify_config(selected_site_key)
     ui_config = get_site_config(brand_config, shopify_config)
     inject_styles(ui_config)
-    st.sidebar.markdown('<p class="sidebar-label">Marca(s) permitidas</p>', unsafe_allow_html=True)
-    allowed_brands = list(brand_config["allowed_arti_brands"])
-    primary_brand = brand_config["label"].upper()
-    ordered_allowed = [primary_brand] + [brand for brand in allowed_brands if brand != primary_brand]
-    allowed = ", ".join(ordered_allowed)
-    first_allowed, _, rest_allowed = allowed.partition(",")
-    st.sidebar.markdown(
-        f'<div class="sidebar-card allowed-card"><p class="sidebar-value"><strong>{first_allowed}</strong>{"," + rest_allowed if rest_allowed else ""}</p></div>',
-        unsafe_allow_html=True,
-    )
+    render_active_site_card(ui_config)
+    render_allowed_brands_card(brand_config)
     operation_mode = st.sidebar.radio(
         "Tipo de operacion",
         ["Carga completa", "Actualizacion puntual"],

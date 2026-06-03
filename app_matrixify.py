@@ -52,7 +52,7 @@ except ImportError:
     fetch_metafield_definition = None
 
 
-APP_TITLE = "Conversor Matrixify por Tallas"
+APP_TITLE = "Catalogo Control Center"
 DEFAULT_ARTI_PATH = "data/arti.xlsx"
 DEFAULT_ARTI_CSV_PATH = "data/arti.csv"
 DEFAULT_ARTI_ZIP_PATH = "data/arti.zip"
@@ -3176,7 +3176,7 @@ def render_top_header(config):
         <div class="top-header">
             <div class="brand-lockup">
                 <div>
-                    <p class="header-eyebrow">Matrixify Control Center</p>
+                    <p class="header-eyebrow">Catalogo Control Center</p>
                     <h1 class="header-title">{config["site_label"]} &rarr; Shopify</h1>
                     <p class="header-subtitle">Convierte el input comercial en un Excel Matrixify validado usando BigQuery como fuente maestra.</p>
                 </div>

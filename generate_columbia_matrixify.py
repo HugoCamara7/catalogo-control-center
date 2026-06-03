@@ -589,6 +589,19 @@ def is_zero_size(value):
     return False
 
 
+def is_one_size(value):
+    size = clean(normalize_size(value)).upper().replace(" ", "")
+    return size in ("O/S", "OS", "ONESIZE", "UNICA", "ÚNICA", "TALLAUNICA")
+
+
+def display_size_for_site(value, brand_config=None):
+    brand_config = brand_config or get_brand_config()
+    site_label = clean(brand_config.get("site_label"))
+    if site_label == "Rockford.pe" and (is_one_size(value) or is_zero_size(value)):
+        return "Talla Única"
+    return normalize_size(value)
+
+
 def is_internal_k_size(value):
     size = clean(normalize_size(value)).upper().replace(" ", "")
     return bool(re.fullmatch(r"K\d+", size))
@@ -670,6 +683,7 @@ def sial_product_bullets(product, product_type, color_web, tech_col, brand_confi
 def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None, brand_label=""):
     brand_config = brand_config or get_brand_config()
     brand_label = clean(brand_label) or brand_config["label"]
+    display_size = display_size_for_site(variant["__SIZE"], brand_config)
     model, color = split_model_color(key)
     product_type = clean(product.get("Type"))
     color_web = clean(product.get("Color Web"))
@@ -680,7 +694,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
     row = {
         "Cod. Modelo": model,
         "Cod. Color": color,
-        "Talla": variant["__SIZE"],
+        "Talla": display_size,
         "Product Name ": title,
         "Product Bullets": first_non_empty(
             product.get("Product Bullets"),
@@ -697,7 +711,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Package Width": first_non_empty(product.get("Package Width"), 27),
         "Package Height": first_non_empty(product.get("Package Height"), 2),
         "Boost ": clean(product.get("Boost ")),
-        "Talla Web ": variant["__SIZE"],
+        "Talla Web ": display_size,
         "Color Web": color_web,
         "Categoria ": product_category(product),
         "Sub Categoria": product_type,
@@ -1911,6 +1925,22 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     for input_index, product in input_df.iterrows():
         key = product["__KEY"]
         variants = arti[arti["__KEY"] == key].copy()
+        has_one_size = variants["__SIZE"].map(is_one_size).any() if "__SIZE" in variants.columns else False
+        one_size_zero_count = (
+            int(variants["__SIZE"].map(is_zero_size).sum())
+            if has_one_size and "__SIZE" in variants.columns
+            else 0
+        )
+        if one_size_zero_count:
+            variants = variants[~variants["__SIZE"].map(is_zero_size)].copy()
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Se omitio talla 0/000 porque el producto tambien tiene O/S",
+                    "Fila input": input_index + 2,
+                    "Cantidad": one_size_zero_count,
+                }
+            )
         should_block_zero_size = category_blocks_zero_size(product)
         zero_size_count = (
             int(variants["__SIZE"].map(is_zero_size).sum())
@@ -1999,6 +2029,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                 continue
 
             is_first = position == 1
+            display_size = display_size_for_site(variant["__SIZE"], brand_config)
             output = {column: "" for column in matrixify_columns}
             variant_sku = clean(variant.get("CODINT_MA"))
             existing_variant = variant_by_sku.get(variant_sku, {})
@@ -2043,7 +2074,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     "Variant ID": existing_variant.get("Variant ID", ""),
                     "Variant Command": "MERGE",
                     "Option1 Name": "Talla",
-                    "Option1 Value": variant["__SIZE"],
+                    "Option1 Value": display_size,
                     "Variant Position": position,
                     "Variant SKU": variant_sku,
                     "Variant Barcode": clean(variant.get("CodBarras")),
@@ -2092,11 +2123,20 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                             product.get("Metafield: custom.codigo_modelo_color [id]")
                         )
                         or key,
-                        "Metafield: custom.sub_categoria [single_line_text_field]": product_type,
+                        "Metafield: custom.materialidad [single_line_text_field]": clean(
+                            product.get("Metafield: custom.materialidad [single_line_text_field]")
+                        ),
+                        "Metafield: custom.marca [single_line_text_field]": product_brand_label,
+                        "Metafield: custom.sub_categoria [single_line_text_field]": clean(
+                            product.get("Metafield: custom.sub_categoria [single_line_text_field]")
+                        )
+                        or product_type,
                         "Metafield: custom.categoria [single_line_text_field]": clean(
                             product.get("Metafield: custom.categoria [single_line_text_field]")
                         ),
-                        "Metafield: custom.guia_de_tallas [page_reference]": "",
+                        "Metafield: custom.guia_de_tallas [page_reference]": clean(
+                            product.get("Metafield: custom.guia_de_tallas [page_reference]")
+                        ),
                         "Metafield: custom.tecnologia [list.single_line_text_field]": format_technology(
                             technology_value
                         ),

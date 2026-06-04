@@ -380,6 +380,9 @@ def normalize_size(value):
         if 50 <= number <= 130 and number % 5 == 0:
             converted = number / 10
             return str(int(converted)) if converted.is_integer() else str(converted)
+        if 140 <= number <= 490 and number % 5 == 0:
+            converted = number / 10
+            return str(int(converted)) if converted.is_integer() else str(converted)
         return text
 
     aliases = {
@@ -602,6 +605,10 @@ def display_size_for_site(value, brand_config=None):
     return normalize_size(value)
 
 
+def sial_size_value(value):
+    return clean(value)
+
+
 def is_internal_k_size(value):
     size = clean(normalize_size(value)).upper().replace(" ", "")
     return bool(re.fullmatch(r"K\d+", size))
@@ -695,7 +702,7 @@ def sial_short_features(value, max_length=45):
 def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None, brand_label=""):
     brand_config = brand_config or get_brand_config()
     brand_label = clean(brand_label) or brand_config["label"]
-    display_size = display_size_for_site(variant["__SIZE"], brand_config)
+    display_size = sial_size_value(variant["__SIZE"])
     model, color = split_model_color(key)
     product_type = clean(product.get("Type"))
     color_web = clean(product.get("Color Web"))

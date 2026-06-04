@@ -5,3 +5,4 @@ xlsxwriter
 google-cloud-bigquery
 db-dtypes
 google-auth
+altair

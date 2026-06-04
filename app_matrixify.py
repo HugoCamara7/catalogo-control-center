@@ -3526,7 +3526,10 @@ def inject_custom_css(config):
         .kpi-card.red .kpi-icon {{ background:#FEECEF; color:#DC2626; }}
         .kpi-card.slate .kpi-icon {{ background:#EEF2F7; color:#334155; }}
         .combo-card {{
-            margin:24px 0 28px;
+            width:100%;
+            max-width:100%;
+            box-sizing:border-box;
+            margin:18px 0 28px;
             background:#FFFFFF;
             border:1px solid #DDE6F2;
             border-radius:18px;
@@ -3564,7 +3567,7 @@ def inject_custom_css(config):
             font-weight:750;
         }}
         .combo-chip {{
-            padding:12px 16px;
+            padding:10px 14px;
             border:1px solid #DDE6F2;
             border-radius:12px;
             color:#172554;
@@ -3572,9 +3575,17 @@ def inject_custom_css(config):
             background:#F8FAFC;
             white-space:nowrap;
         }}
-        .combo-table-wrap {{ padding:0 24px 18px; }}
+        .combo-table-wrap {{
+            width:100%;
+            max-width:100%;
+            padding:0 24px 18px;
+            box-sizing:border-box;
+            overflow-x:auto;
+        }}
         .combo-table {{
             width:100%;
+            min-width:900px;
+            table-layout:fixed;
             border-collapse:separate;
             border-spacing:0;
             border:1px solid #DDE6F2;
@@ -3582,15 +3593,16 @@ def inject_custom_css(config):
             overflow:hidden;
         }}
         .combo-table th {{
-            padding:18px 20px;
+            padding:16px 14px;
             text-align:left;
             background:#F8FAFC;
             color:#475569;
             font-weight:950;
+            font-size:13px;
             border-bottom:1px solid #DDE6F2;
         }}
         .combo-table td {{
-            padding:20px;
+            padding:16px 14px;
             border-bottom:1px solid #E6EDF7;
             border-right:1px solid #E6EDF7;
             vertical-align:middle;
@@ -3601,25 +3613,29 @@ def inject_custom_css(config):
         .combo-table tbody tr:last-child td {{ border-bottom:none; }}
         .combo-blocker {{
             display:grid;
-            grid-template-columns:92px 1fr;
+            grid-template-columns:72px 1fr;
             align-items:center;
-            gap:14px;
-            min-width:260px;
+            gap:12px;
+            min-width:0;
         }}
-        .combo-blocker b {{ font-size:1rem; }}
+        .combo-blocker b {{
+            font-size:.94rem;
+            line-height:1.25;
+        }}
         .combo-blocker small {{
             grid-column:2;
             color:#0B1B46;
-            font-size:.92rem;
+            font-size:.82rem;
             font-weight:850;
+            line-height:1.25;
         }}
         .combo-bubble {{
             display:inline-block;
-            width:48px;
-            height:48px;
+            width:42px;
+            height:42px;
             border-radius:50%;
             opacity:.72;
-            margin-right:-18px;
+            margin-right:-16px;
             box-shadow:0 10px 22px rgba(15,23,42,0.08);
         }}
         .bubble-blue {{ background:#93C5FD; }}
@@ -3629,10 +3645,13 @@ def inject_custom_css(config):
         .bubble-slate {{ background:#CBD5E1; }}
         .combo-state {{
             display:inline-block;
-            max-width:420px;
-            padding:12px 14px;
+            width:100%;
+            max-width:100%;
+            box-sizing:border-box;
+            padding:10px 12px;
             border-radius:10px;
-            line-height:1.65;
+            line-height:1.45;
+            font-size:.9rem;
             font-weight:800;
             color:#0B1B46;
             border:1px solid rgba(148,163,184,.2);
@@ -3643,12 +3662,12 @@ def inject_custom_css(config):
         .combo-state.mint {{ background:#ECFDF5; }}
         .combo-state.slate {{ background:#F8FAFC; }}
         .combo-metric {{
-            min-width:150px;
+            min-width:0;
             text-align:center;
         }}
         .combo-metric strong {{
             display:block;
-            font-size:1.75rem;
+            font-size:1.55rem;
             line-height:1;
             font-weight:950;
         }}
@@ -3656,13 +3675,14 @@ def inject_custom_css(config):
             display:block;
             margin-top:7px;
             color:#0B1B46;
+            font-size:.9rem;
             font-weight:850;
         }}
         .combo-metric i {{
             display:block;
             height:7px;
             margin:12px auto 0;
-            width:112px;
+            width:min(112px, 84%);
             border-radius:999px;
             background:#E8EEF7;
             overflow:hidden;
@@ -4689,13 +4709,6 @@ def render_kpi_cards(kpis):
         ("Total creados Shopify", kpis["modelos_creados_shopify"], "green", "&#9635;"),
         ("Creados sin stock BQ", kpis["productos_creados_sin_stock"], "cyan", "&#9636;"),
     ]
-    no_visible_cards = [
-        ("Causa: sin stock Shopify", kpis["no_visible_sin_stock_shopify"], "red", "S"),
-        ("Causa: sin foto", kpis["no_visible_sin_foto"], "orange", "&#9673;"),
-        ("Causa: sin precio", kpis["no_visible_sin_precio"], "red", "$"),
-        ("Causa: no activo/publicado", kpis["no_visible_no_activo"], "orange", "&#9676;"),
-        ("Causa: otros", kpis["no_visible_otros"], "slate", "?"),
-    ]
 
     def cards_html(cards):
         return "".join(
@@ -4712,8 +4725,29 @@ def render_kpi_cards(kpis):
         f"""
         <div class="kpi-section-label">KPIs principales segun stock BigQuery</div>
         <div class="kpi-card-grid">{cards_html(primary_cards)}</div>
-        <div class="kpi-section-label secondary">Desglose exclusivo de no visibles en web</div>
-        <div class="kpi-card-grid">{cards_html(no_visible_cards)}</div>
+        """
+    )
+
+
+def render_kpi_context_cards(kpis):
+    secondary_cards = [
+        ("Total creados Shopify", kpis["modelos_creados_shopify"], "green", "&#9635;"),
+        ("Creados sin stock BQ", kpis["productos_creados_sin_stock"], "cyan", "&#9636;"),
+    ]
+
+    def cards_html(cards):
+        return "".join(
+            f"""
+            <div class="kpi-card {tone}">
+                <div class="kpi-icon">{icon}</div>
+                <div><span>{label}</span><strong>{format_kpi_number(value)}</strong></div>
+            </div>
+            """
+            for label, value, tone, icon in cards
+        )
+
+    render_html(
+        f"""
         <div class="kpi-section-label secondary">Contexto Shopify fuera del stock BQ</div>
         <div class="kpi-card-grid">{cards_html(secondary_cards)}</div>
         """
@@ -4944,6 +4978,13 @@ def render_non_visible_combo_table(combo_df):
             </div>
             <div class="combo-table-wrap">
                 <table class="combo-table">
+                    <colgroup>
+                        <col style="width:26%;">
+                        <col style="width:28%;">
+                        <col style="width:14%;">
+                        <col style="width:16%;">
+                        <col style="width:16%;">
+                    </colgroup>
                     <thead>
                         <tr>
                             <th>Bloqueos detectados</th>
@@ -5250,6 +5291,9 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     )
     kpis = result["kpis"]
     render_kpi_cards(kpis)
+    combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
+    render_non_visible_combo_table(combo_summary_df)
+    render_kpi_context_cards(kpis)
 
     actions_df = result["actions"]
     non_visible_web_df = result.get("non_visible_web", pd.DataFrame())
@@ -5284,8 +5328,6 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         render_brand_summary_table(brand_summary)
 
     render_kpi_chart_grid(funnel_rows, pareto_rows)
-    combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
-    render_non_visible_combo_table(combo_summary_df)
     filtered_actions_df = render_actions_table(actions_df, f"{brand_config['site_key']}_kpi")
     if filtered_actions_df is not None and not filtered_actions_df.empty:
         st.download_button(

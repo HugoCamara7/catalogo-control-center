@@ -1102,7 +1102,12 @@ def read_current_stock_from_bigquery(bigquery_config):
     client = bigquery.Client(project=job_project_id or None, credentials=credentials)
     query = clean_value(config.get("stock_query")) or STOCK_QUERY_DEFAULT
     job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
-    df = client.query(query, job_config=job_config, location=clean_value(config.get("location")) or None).to_dataframe()
+    location = clean_value(config.get("location")) or None
+    df = client.query(query, job_config=job_config, location=location).to_dataframe()
+    has_store_detail = "codigo_tienda" in df.columns and df["codigo_tienda"].map(clean_value).any()
+    if not has_store_detail and query.strip() != STOCK_QUERY_DEFAULT.strip():
+        df = client.query(STOCK_QUERY_DEFAULT, job_config=job_config, location=location).to_dataframe()
+
     for column in ("fecha_corte", "id_producto", "key_producto", "codigo_tienda", "stock_tiendas", "stock_bodega", "stock_total"):
         if column not in df.columns:
             df[column] = 0 if column.startswith("stock_") else ""

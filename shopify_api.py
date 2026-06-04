@@ -167,6 +167,7 @@ def _product_node_to_record(node):
                 "Variant Image": clean(variant_image.get("url")),
                 "Variant Price": clean(variant.get("price")),
                 "Variant Compare At Price": clean(variant.get("compareAtPrice")),
+                "Variant Inventory Qty": clean(variant.get("inventoryQuantity")),
             }
         )
     return {
@@ -244,6 +245,7 @@ def fetch_products(config, max_products=5000):
               barcode
               price
               compareAtPrice
+              inventoryQuantity
               image {
                 url
               }

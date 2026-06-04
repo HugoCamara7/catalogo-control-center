@@ -1223,6 +1223,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     expected["Variante creada Shopify"] = expected["SKU"].map(lambda value: value in shopify_variant_skus)
     expected["Status Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Status")))
     expected["Visible Shopify"] = expected["Status Shopify"].map(lambda value: clean_value(value).upper() == "ACTIVE")
+    expected["Fotos Shopify"] = expected["Mod-Col KPI"].map(lambda value: int(product_status_by_key.get(value, {}).get("Fotos") or 0))
 
     model_stock = (
         expected.groupby("Mod-Col KPI", as_index=False)
@@ -1233,6 +1234,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             Tallas_con_stock=("Con stock", "sum"),
             Producto_creado=("Producto creado Shopify", "max"),
             Visible_Shopify=("Visible Shopify", "max"),
+            Fotos_Shopify=("Fotos Shopify", "max"),
         )
     )
     model_stock["Debe estar visible"] = model_stock["Stock_total"] > 0
@@ -1276,13 +1278,19 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     )
     no_price_models["Tiene precio"] = no_price_models["Tiene precio"].fillna(False)
     no_price_models = no_price_models[~no_price_models["Tiene precio"]].copy()
+    no_photo_models = model_stock[
+        model_stock["Debe estar visible"] & model_stock["Producto_creado"] & (model_stock["Fotos_Shopify"] <= 0)
+    ].copy()
     no_price_keys = {clean_value(value) for value in no_price_models.get("Mod-Col KPI", pd.Series(dtype=object))}
     model_stock["Sin_precio_shopify"] = model_stock["Mod-Col KPI"].map(lambda value: clean_value(value) in no_price_keys)
+    no_photo_keys = {clean_value(value) for value in no_photo_models.get("Mod-Col KPI", pd.Series(dtype=object))}
+    model_stock["Sin_foto_shopify"] = model_stock["Mod-Col KPI"].map(lambda value: clean_value(value) in no_photo_keys)
     model_stock["Listo_venta"] = (
         model_stock["Debe estar visible"]
         & model_stock["Producto_creado"]
         & model_stock["Visible_Shopify"]
         & ~model_stock["Sin_precio_shopify"]
+        & ~model_stock["Sin_foto_shopify"]
     )
 
     kpis = {
@@ -1294,8 +1302,10 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "sin_stock_visibles": int(len(no_stock_visible)),
         "modelos_variantes_incompletas": int(model_stock["Variantes_stock_incompletas"].sum()),
         "productos_creados_sin_stock": int((model_stock["Producto_creado"] & ~model_stock["Debe estar visible"]).sum()),
+        "productos_visibles": int((model_stock["Debe estar visible"] & model_stock["Visible_Shopify"]).sum()),
         "modelos_listos_venta": int(model_stock["Listo_venta"].sum()),
         "modelos_sin_precio": int(len(no_price_models)),
+        "modelos_sin_foto": int(len(no_photo_models)),
     }
     model_stock["Creado_con_stock"] = model_stock["Debe estar visible"] & model_stock["Producto_creado"]
     brand_summary = (
@@ -1323,6 +1333,8 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Sin stock visible", "Accion sugerida": "Apagar producto en Shopify", "Stock total": row["Stock_total"]})
     for _, row in no_price_models.iterrows():
         action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Creado con stock sin precio", "Accion sugerida": "Cargar precio en Shopify", "Stock total": row["Stock_total"]})
+    for _, row in no_photo_models.iterrows():
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock sin foto", "Accion sugerida": "Solicitar fotos al Brand Manager", "Stock total": row["Stock_total"]})
 
     actions_df = pd.DataFrame(action_rows)
     missing_stock_variants_export = (
@@ -1338,6 +1350,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "actions": actions_df,
         "missing_stock_variants": missing_stock_variants_export,
         "no_price_models": no_price_models,
+        "no_photo_models": no_photo_models,
         "stock_not_visible": stock_not_visible,
         "no_stock_visible": no_stock_visible,
     }
@@ -4306,8 +4319,9 @@ def render_kpi_cards(kpis):
         ("Cobertura", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
         ("Pendientes creacion", kpis["modelos_pendientes"], "orange", "!"),
         ("Creados sin stock", kpis["productos_creados_sin_stock"], "cyan", "&#9636;"),
-        ("Sin stock visibles", kpis["sin_stock_visibles"], "lime", "&#10003;"),
-        ("Listos para venta", kpis["modelos_listos_venta"], "slate", "&#9679;"),
+        ("Sin foto Shopify", kpis["modelos_sin_foto"], "lime", "&#9673;"),
+        ("Productos visibles", kpis["productos_visibles"], "green", "&#9711;"),
+        ("Visibles sin stock", kpis["sin_stock_visibles"], "orange", "&#9888;"),
         ("Sin precio Shopify", kpis["modelos_sin_precio"], "red", "$"),
     ]
     html = "".join(
@@ -4432,7 +4446,7 @@ def render_actions_table(actions_df, key_prefix):
         st.success("No hay pendientes accionables con la regla actual.")
         return actions_df
 
-    control_left, control_right = st.columns([2.2, 1.3])
+    control_left, control_mid, control_right = st.columns([2.0, 1.1, 0.8])
     with control_left:
         search = st.text_input(
             "Buscar pendientes",
@@ -4440,13 +4454,20 @@ def render_actions_table(actions_df, key_prefix):
             label_visibility="collapsed",
             key=f"{key_prefix}_actions_search",
         )
-    with control_right:
+    with control_mid:
         problems = ["Todos"] + sorted(actions_df["Problema"].dropna().map(clean_value).unique().tolist())
         selected_problem = st.selectbox(
             "Filtrar",
             problems,
             label_visibility="collapsed",
             key=f"{key_prefix}_actions_filter",
+        )
+    with control_right:
+        page_size = st.selectbox(
+            "Filas",
+            [12, 25, 50, 100, "Todos"],
+            label_visibility="collapsed",
+            key=f"{key_prefix}_actions_rows",
         )
 
     filtered = actions_df.copy()
@@ -4458,8 +4479,9 @@ def render_actions_table(actions_df, key_prefix):
     if selected_problem != "Todos":
         filtered = filtered[filtered["Problema"].map(clean_value) == selected_problem].copy()
 
+    visible = filtered if page_size == "Todos" else filtered.head(int(page_size))
     rows = []
-    for index, row in filtered.head(12).reset_index(drop=True).iterrows():
+    for index, row in visible.reset_index(drop=True).iterrows():
         rows.append(
             f"""
             <tr>
@@ -4489,7 +4511,7 @@ def render_actions_table(actions_df, key_prefix):
                 <tbody>{''.join(rows)}</tbody>
             </table>
             <p style="color:#64748B;font-size:12px;font-weight:750;margin:14px 0 0;">
-                Mostrando {min(len(filtered), 12)} de {len(filtered)} resultados filtrados.
+                Mostrando {len(visible)} de {len(filtered)} resultados filtrados.
             </p>
         </div>
         """
@@ -4497,11 +4519,46 @@ def render_actions_table(actions_df, key_prefix):
     return filtered
 
 
-def render_missing_variants_table(missing_variants_df):
+def render_missing_variants_table(missing_variants_df, key_prefix):
     if missing_variants_df is None or missing_variants_df.empty:
-        return
+        return pd.DataFrame()
+    df = missing_variants_df.copy()
+    control_left, control_mid, control_right = st.columns([2.0, 1.1, 0.8])
+    with control_left:
+        search = st.text_input(
+            "Buscar variantes",
+            placeholder="Buscar por Mod-Col, marca, talla o SKU...",
+            label_visibility="collapsed",
+            key=f"{key_prefix}_variants_search",
+        )
+    with control_mid:
+        brands = ["Todas"] + sorted(df["MARCA_MA"].dropna().map(clean_value).unique().tolist())
+        selected_brand = st.selectbox(
+            "Filtrar marca",
+            brands,
+            label_visibility="collapsed",
+            key=f"{key_prefix}_variants_brand",
+        )
+    with control_right:
+        page_size = st.selectbox(
+            "Filas",
+            [12, 25, 50, 100, "Todas"],
+            label_visibility="collapsed",
+            key=f"{key_prefix}_variants_rows",
+        )
+
+    filtered = df.copy()
+    if search:
+        needle = clean_value(search).lower()
+        filtered = filtered[
+            filtered.apply(lambda row: needle in " ".join(clean_value(value).lower() for value in row.values), axis=1)
+        ].copy()
+    if selected_brand != "Todas":
+        filtered = filtered[filtered["MARCA_MA"].map(clean_value) == selected_brand].copy()
+
+    visible = filtered if page_size == "Todas" else filtered.head(int(page_size))
     rows = []
-    for index, row in missing_variants_df.head(12).reset_index(drop=True).iterrows():
+    for index, row in visible.reset_index(drop=True).iterrows():
         rows.append(
             f"""
             <tr>
@@ -4534,11 +4591,12 @@ def render_missing_variants_table(missing_variants_df):
                 <tbody>{''.join(rows)}</tbody>
             </table>
             <p style="color:#64748B;font-size:12px;font-weight:750;margin:14px 0 0;">
-                Mostrando {min(len(missing_variants_df), 12)} de {len(missing_variants_df)} variantes. Este detalle no cuenta como KPI principal.
+                Mostrando {len(visible)} de {len(filtered)} variantes filtradas. Este detalle no cuenta como KPI principal.
             </p>
         </div>
         """
     )
+    return filtered
 
 
 def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready):
@@ -4598,10 +4656,11 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         {"label": "Con stock", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
         {"label": "Creados", "value": kpis["modelos_creados_shopify"], "icon": "&#9635;"},
         {"label": "Creados sin stock", "value": kpis["productos_creados_sin_stock"], "icon": "&#9636;"},
-        {"label": "Listos venta", "value": kpis["modelos_listos_venta"], "icon": "&#9679;"},
+        {"label": "Productos visibles", "value": kpis["productos_visibles"], "icon": "&#9711;"},
         {"label": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
         {"label": "Sin precio", "value": kpis["modelos_sin_precio"], "icon": "$"},
-        {"label": "Sin stock visibles", "value": kpis["sin_stock_visibles"], "icon": "&#10003;"},
+        {"label": "Sin foto", "value": kpis["modelos_sin_foto"], "icon": "&#9673;"},
+        {"label": "Visibles sin stock", "value": kpis["sin_stock_visibles"], "icon": "&#9888;"},
     ]
     pareto_rows = [
         {
@@ -4618,20 +4677,36 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
 
     render_kpi_chart_grid(funnel_rows, pareto_rows)
     filtered_actions_df = render_actions_table(actions_df, f"{brand_config['site_key']}_kpi")
+    if filtered_actions_df is not None and not filtered_actions_df.empty:
+        st.download_button(
+            "Descargar pendientes filtrados",
+            data=dataframe_to_excel_bytes({"Pendientes filtrados": filtered_actions_df}),
+            file_name=f"pendientes_filtrados_{brand_config['site_key']}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
     missing_variants_df = result["missing_stock_variants"]
+    filtered_variants_df = missing_variants_df
     if missing_variants_df is not None and not missing_variants_df.empty:
-        render_missing_variants_table(missing_variants_df)
+        filtered_variants_df = render_missing_variants_table(missing_variants_df, f"{brand_config['site_key']}_kpi")
+        if filtered_variants_df is not None and not filtered_variants_df.empty:
+            st.download_button(
+                "Descargar variantes filtradas",
+                data=dataframe_to_excel_bytes({"Variantes filtradas": filtered_variants_df}),
+                file_name=f"variantes_filtradas_{brand_config['site_key']}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
     excel_bytes = dataframe_to_excel_bytes(
         {
             "Resumen modelos": result["model_stock"],
             "Resumen por marca": result.get("brand_summary", pd.DataFrame()),
             "Pendientes accionables": filtered_actions_df if filtered_actions_df is not None else pd.DataFrame(),
-            "Detalle variantes stock": missing_variants_df if missing_variants_df is not None else pd.DataFrame(),
+            "Detalle variantes stock": filtered_variants_df if filtered_variants_df is not None else pd.DataFrame(),
             "Con stock no visibles": result["stock_not_visible"],
             "Sin stock visibles": result["no_stock_visible"],
             "Sin precio": result["no_price_models"],
+            "Sin foto": result["no_photo_models"],
         }
     )
     st.download_button(

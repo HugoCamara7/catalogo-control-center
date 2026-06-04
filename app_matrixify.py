@@ -3459,6 +3459,207 @@ def inject_custom_css(config):
             color:#16A34A !important;
             font-weight:950;
         }}
+        .kpi-chart-grid {{
+            display:grid;
+            grid-template-columns:repeat(2,minmax(0,1fr));
+            gap:16px;
+            margin:18px 0;
+        }}
+        .chart-card {{
+            min-height:360px;
+            border-radius:14px;
+            background:#FFFFFF;
+            border:1px solid #DDE6F2;
+            box-shadow:0 12px 26px rgba(15,23,42,0.06);
+            padding:18px 20px 20px;
+        }}
+        .chart-head {{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:10px;
+            margin-bottom:18px;
+        }}
+        .chart-title {{
+            display:flex;
+            align-items:center;
+            gap:10px;
+            color:#172554;
+            font-size:20px;
+            font-weight:950;
+        }}
+        .chart-action {{
+            color:#64748B;
+            font-weight:950;
+            letter-spacing:2px;
+        }}
+        .bar-stage {{
+            height:250px;
+            display:flex;
+            align-items:flex-end;
+            gap:18px;
+            padding:16px 8px 4px;
+            border-bottom:1px solid #DDE6F2;
+            background:repeating-linear-gradient(to top, transparent 0, transparent 48px, #E8EEF7 49px);
+        }}
+        .bar-item {{
+            flex:1;
+            min-width:0;
+            display:flex;
+            flex-direction:column;
+            align-items:center;
+            justify-content:flex-end;
+            gap:7px;
+            height:100%;
+        }}
+        .bar-value {{
+            color:#0B5CF6;
+            font-size:12px;
+            font-weight:950;
+        }}
+        .bar-fill {{
+            width:64%;
+            min-height:3px;
+            border-radius:7px 7px 0 0;
+            background:linear-gradient(180deg,#2563FF 0%,#0958D9 100%);
+            box-shadow:0 8px 18px rgba(37,99,255,0.22);
+        }}
+        .bar-fill.purple {{
+            background:linear-gradient(180deg,#6D5BFF 0%,#3D2CCF 100%);
+        }}
+        .bar-label {{
+            min-height:54px;
+            display:flex;
+            flex-direction:column;
+            align-items:center;
+            justify-content:flex-start;
+            gap:5px;
+            color:#172554;
+            font-size:11px;
+            line-height:1.1;
+            text-align:center;
+            font-weight:850;
+        }}
+        .bar-label-icon {{
+            color:#17269A;
+            font-size:16px;
+            line-height:1;
+        }}
+        .kpi-table-card {{
+            border-radius:14px;
+            background:#FFFFFF;
+            border:1px solid #DDE6F2;
+            box-shadow:0 12px 26px rgba(15,23,42,0.06);
+            padding:18px;
+            margin:16px 0;
+        }}
+        .kpi-table-head {{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:16px;
+            margin-bottom:14px;
+        }}
+        .kpi-table-title {{
+            display:flex;
+            align-items:center;
+            gap:10px;
+            color:#172554;
+            font-size:20px;
+            font-weight:950;
+        }}
+        .kpi-table-controls {{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            margin:12px 0 16px;
+        }}
+        .kpi-filter-button {{
+            min-width:120px;
+            height:38px;
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            gap:8px;
+            border-radius:8px;
+            border:1px solid #DDE6F2;
+            color:#172554;
+            background:#FFFFFF;
+            font-size:13px;
+            font-weight:900;
+        }}
+        .kpi-table {{
+            width:100%;
+            border-collapse:separate;
+            border-spacing:0;
+            border:1px solid #E2E8F0;
+            border-radius:12px;
+            overflow:hidden;
+        }}
+        .kpi-table th,
+        .kpi-table td {{
+            padding:13px 14px;
+            border-bottom:1px solid #E2E8F0;
+            border-right:1px solid #E2E8F0;
+            color:#172554;
+            font-size:13px;
+            text-align:left;
+        }}
+        .kpi-table th {{
+            background:#F8FAFC;
+            color:#64748B;
+            font-weight:950;
+        }}
+        .kpi-table tr:last-child td {{ border-bottom:0; }}
+        .kpi-table th:last-child,
+        .kpi-table td:last-child {{ border-right:0; }}
+        .row-index {{
+            display:inline-grid;
+            place-items:center;
+            width:24px;
+            height:24px;
+            border-radius:8px;
+            background:#F1F5F9;
+            color:#172554;
+            font-size:12px;
+            font-weight:900;
+        }}
+        .problem-dot {{
+            display:inline-block;
+            width:8px;
+            height:8px;
+            border-radius:50%;
+            background:#F43F5E;
+            margin-right:8px;
+            box-shadow:0 0 0 3px #FFE4E6;
+        }}
+        .action-chip {{
+            display:inline-flex;
+            align-items:center;
+            gap:8px;
+        }}
+        .action-chip::before {{
+            content:"";
+            width:22px;
+            height:22px;
+            border-radius:50%;
+            background:#EAF2FF;
+            border:1px solid #BFDBFE;
+        }}
+        .stock-badge {{
+            display:inline-flex;
+            min-width:34px;
+            justify-content:center;
+            padding:4px 10px;
+            border-radius:999px;
+            color:#E11D48;
+            background:#FFE8EE;
+            font-weight:950;
+        }}
+        @media (max-width: 1100px) {{
+            .kpi-chart-grid {{ grid-template-columns:1fr; }}
+        }}
         @media (max-width: 1100px) {{
             .kpi-card-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
         }}
@@ -4172,6 +4373,174 @@ def render_brand_summary_table(brand_summary):
     )
 
 
+def render_kpi_bar_chart(title, rows, icon="&#9661;", purple=False):
+    rows = list(rows or [])
+    max_value = max([float(row.get("value") or 0) for row in rows] or [1]) or 1
+    bars = []
+    for row in rows:
+        value = float(row.get("value") or 0)
+        height = max(2, int((value / max_value) * 190)) if value else 2
+        label = escape(clean_value(row.get("label")))
+        label_html = "<br>".join(label.split(" "))
+        bar_class = "bar-fill purple" if purple else "bar-fill"
+        bars.append(
+            f"""
+            <div class="bar-item">
+                <div class="bar-value">{format_kpi_number(value)}</div>
+                <div class="{bar_class}" style="height:{height}px;"></div>
+                <div class="bar-label">
+                    <span class="bar-label-icon">{row.get("icon", "")}</span>
+                    <span>{label_html}</span>
+                </div>
+            </div>
+            """
+        )
+    return f"""
+    <div class="chart-card">
+        <div class="chart-head">
+            <div class="chart-title"><span>{icon}</span><span>{escape(title)}</span></div>
+            <div class="chart-action">...</div>
+        </div>
+        <div class="bar-stage">{''.join(bars)}</div>
+    </div>
+    """
+
+
+def render_kpi_chart_grid(funnel_rows, pareto_rows):
+    render_html(
+        f"""
+        <div class="kpi-chart-grid">
+            {render_kpi_bar_chart("Funnel de catalogo", funnel_rows, icon="&#9661;")}
+            {render_kpi_bar_chart("Pareto de problemas", pareto_rows, icon="&#9638;", purple=True)}
+        </div>
+        """
+    )
+
+
+def render_actions_table(actions_df, key_prefix):
+    actions_df = actions_df.copy() if isinstance(actions_df, pd.DataFrame) else pd.DataFrame()
+    render_html(
+        """
+        <div class="kpi-table-card">
+            <div class="kpi-table-head">
+                <div class="kpi-table-title"><span>▣</span><span>Pendientes accionables</span></div>
+            </div>
+        </div>
+        """
+    )
+    if actions_df.empty:
+        st.success("No hay pendientes accionables con la regla actual.")
+        return actions_df
+
+    control_left, control_right = st.columns([2.2, 1.3])
+    with control_left:
+        search = st.text_input(
+            "Buscar pendientes",
+            placeholder="Buscar por Mod-Col, marca o problema...",
+            label_visibility="collapsed",
+            key=f"{key_prefix}_actions_search",
+        )
+    with control_right:
+        problems = ["Todos"] + sorted(actions_df["Problema"].dropna().map(clean_value).unique().tolist())
+        selected_problem = st.selectbox(
+            "Filtrar",
+            problems,
+            label_visibility="collapsed",
+            key=f"{key_prefix}_actions_filter",
+        )
+
+    filtered = actions_df.copy()
+    if search:
+        needle = clean_value(search).lower()
+        filtered = filtered[
+            filtered.apply(lambda row: needle in " ".join(clean_value(value).lower() for value in row.values), axis=1)
+        ].copy()
+    if selected_problem != "Todos":
+        filtered = filtered[filtered["Problema"].map(clean_value) == selected_problem].copy()
+
+    rows = []
+    for index, row in filtered.head(12).reset_index(drop=True).iterrows():
+        rows.append(
+            f"""
+            <tr>
+                <td><span class="row-index">{index + 1}</span></td>
+                <td><strong>{escape(clean_value(row.get("Mod-Col")))}</strong></td>
+                <td>{escape(clean_value(row.get("Marca")))}</td>
+                <td><span class="problem-dot"></span>{escape(clean_value(row.get("Problema")))}</td>
+                <td><span class="action-chip">{escape(clean_value(row.get("Accion sugerida")))}</span></td>
+                <td style="text-align:center;"><span class="stock-badge">{format_kpi_number(row.get("Stock total"))}</span></td>
+            </tr>
+            """
+        )
+    render_html(
+        f"""
+        <div class="kpi-table-card" style="margin-top:0;">
+            <table class="kpi-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Mod-Col</th>
+                        <th>Marca</th>
+                        <th>Problema</th>
+                        <th>Accion sugerida</th>
+                        <th>Stock total</th>
+                    </tr>
+                </thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+            <p style="color:#64748B;font-size:12px;font-weight:750;margin:14px 0 0;">
+                Mostrando {min(len(filtered), 12)} de {len(filtered)} resultados filtrados.
+            </p>
+        </div>
+        """
+    )
+    return filtered
+
+
+def render_missing_variants_table(missing_variants_df):
+    if missing_variants_df is None or missing_variants_df.empty:
+        return
+    rows = []
+    for index, row in missing_variants_df.head(12).reset_index(drop=True).iterrows():
+        rows.append(
+            f"""
+            <tr>
+                <td><span class="row-index">{index + 1}</span></td>
+                <td><strong>{escape(clean_value(row.get("Mod-Col")))}</strong></td>
+                <td>{escape(clean_value(row.get("MARCA_MA")))}</td>
+                <td>{escape(clean_value(row.get("Talla")))}</td>
+                <td>{escape(clean_value(row.get("SKU")))}</td>
+                <td style="text-align:center;"><span class="stock-badge">{format_kpi_number(row.get("Stock total"))}</span></td>
+            </tr>
+            """
+        )
+    render_html(
+        f"""
+        <div class="kpi-table-card">
+            <div class="kpi-table-head">
+                <div class="kpi-table-title"><span>&#9635;</span><span>Detalle de variantes con stock incompletas</span></div>
+            </div>
+            <table class="kpi-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Mod-Col</th>
+                        <th>Marca</th>
+                        <th>Talla</th>
+                        <th>SKU</th>
+                        <th>Stock total</th>
+                    </tr>
+                </thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+            <p style="color:#64748B;font-size:12px;font-weight:750;margin:14px 0 0;">
+                Mostrando {min(len(missing_variants_df), 12)} de {len(missing_variants_df)} variantes. Este detalle no cuenta como KPI principal.
+            </p>
+        </div>
+        """
+    )
+
+
 def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready):
     render_html(
         """
@@ -4225,50 +4594,40 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         if actions_df is not None and not actions_df.empty
         else pd.DataFrame({"Problema": ["Sin observaciones"], "Casos": [0]})
     )
-    funnel_df = pd.DataFrame(
-        [
-            {"Etapa": "Con stock", "Valor": kpis["modelos_con_stock"]},
-            {"Etapa": "Creados", "Valor": kpis["modelos_creados_shopify"]},
-            {"Etapa": "Sin precio", "Valor": kpis["modelos_sin_precio"]},
-            {"Etapa": "Listos venta", "Valor": kpis["modelos_listos_venta"]},
-            {"Etapa": "Pendientes", "Valor": kpis["modelos_pendientes"]},
-            {"Etapa": "Creados sin stock", "Valor": kpis["productos_creados_sin_stock"]},
-            {"Etapa": "Sin stock visibles", "Valor": kpis["sin_stock_visibles"]},
-        ]
-    )
+    funnel_rows = [
+        {"label": "Con stock", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
+        {"label": "Creados", "value": kpis["modelos_creados_shopify"], "icon": "&#9635;"},
+        {"label": "Creados sin stock", "value": kpis["productos_creados_sin_stock"], "icon": "&#9636;"},
+        {"label": "Listos venta", "value": kpis["modelos_listos_venta"], "icon": "&#9679;"},
+        {"label": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
+        {"label": "Sin precio", "value": kpis["modelos_sin_precio"], "icon": "$"},
+        {"label": "Sin stock visibles", "value": kpis["sin_stock_visibles"], "icon": "&#10003;"},
+    ]
+    pareto_rows = [
+        {
+            "label": clean_value(row.get("Problema")),
+            "value": int(row.get("Casos") or 0),
+            "icon": "&#9679;",
+        }
+        for _, row in problem_counts.head(6).iterrows()
+    ]
 
     brand_summary = result.get("brand_summary", pd.DataFrame())
     if brand_summary is not None and not brand_summary.empty and len(brand_summary) > 1:
         render_brand_summary_table(brand_summary)
 
-    left, right = st.columns(2)
-    with left:
-        render_html('<div class="kpi-panel"><h3>Funnel de catalogo</h3>')
-        st.bar_chart(funnel_df, x="Etapa", y="Valor", use_container_width=True, height=320)
-        st.markdown("</div>", unsafe_allow_html=True)
-    with right:
-        render_html('<div class="kpi-panel"><h3>Pareto de problemas</h3>')
-        st.bar_chart(problem_counts, x="Problema", y="Casos", use_container_width=True, height=320)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    render_html('<div class="kpi-panel"><h3>Pendientes accionables</h3>')
-    if actions_df is None or actions_df.empty:
-        st.success("No hay pendientes accionables con la regla actual.")
-    else:
-        st.dataframe(actions_df, use_container_width=True, height=280)
-    st.markdown("</div>", unsafe_allow_html=True)
+    render_kpi_chart_grid(funnel_rows, pareto_rows)
+    filtered_actions_df = render_actions_table(actions_df, f"{brand_config['site_key']}_kpi")
 
     missing_variants_df = result["missing_stock_variants"]
     if missing_variants_df is not None and not missing_variants_df.empty:
-        render_html('<div class="kpi-panel"><h3>Detalle de variantes con stock incompletas</h3>')
-        st.dataframe(missing_variants_df, use_container_width=True, height=260)
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_missing_variants_table(missing_variants_df)
 
     excel_bytes = dataframe_to_excel_bytes(
         {
             "Resumen modelos": result["model_stock"],
             "Resumen por marca": result.get("brand_summary", pd.DataFrame()),
-            "Pendientes accionables": actions_df if actions_df is not None else pd.DataFrame(),
+            "Pendientes accionables": filtered_actions_df if filtered_actions_df is not None else pd.DataFrame(),
             "Detalle variantes stock": missing_variants_df if missing_variants_df is not None else pd.DataFrame(),
             "Con stock no visibles": result["stock_not_visible"],
             "Sin stock visibles": result["no_stock_visible"],

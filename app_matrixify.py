@@ -19,6 +19,9 @@ from generate_columbia_matrixify import (
     build_matrixify_updates,
     get_brand_config,
     input_brand_report,
+    is_internal_k_size,
+    is_one_size,
+    is_zero_size,
     read_arti_source,
 )
 from shopify_api import (
@@ -1114,6 +1117,22 @@ def stock_key_from_parts(mod_col, size):
     return f"{mod_col}-{size}" if mod_col and size else ""
 
 
+def filter_visible_kpi_sizes(df):
+    if df is None or df.empty or "Mod-Col KPI" not in df.columns or "Talla KPI" not in df.columns:
+        return df
+    result = df.copy()
+    result = result[~result["Talla KPI"].map(is_internal_k_size)].copy()
+    keep_parts = []
+    for _, group in result.groupby("Mod-Col KPI", dropna=False):
+        has_one_size = group["Talla KPI"].map(is_one_size).any()
+        if has_one_size:
+            group = group[~group["Talla KPI"].map(is_zero_size)].copy()
+        keep_parts.append(group)
+    if not keep_parts:
+        return result.iloc[0:0].copy()
+    return pd.concat(keep_parts, ignore_index=True)
+
+
 def valid_kpi_price(value):
     text = clean_value(value)
     if not text:
@@ -1179,6 +1198,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     arti["Talla KPI"] = arti["TALNUM_MA"].map(normalize_size)
     arti["Stock Key"] = arti.apply(lambda row: stock_key_from_parts(row.get("Mod-Col KPI"), row.get("Talla KPI")), axis=1)
     expected = arti[(arti["Mod-Col KPI"] != "") & (arti["Stock Key"] != "")].copy()
+    expected = filter_visible_kpi_sizes(expected)
 
     if stock.empty:
         stock = pd.DataFrame(columns=["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"])
@@ -1235,6 +1255,13 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     ].copy()
     no_stock_visible = model_stock[(~model_stock["Debe estar visible"]) & (model_stock["Visible_Shopify"])].copy()
     missing_stock_variants = expected[(expected["Con stock"]) & (~expected["Variante creada Shopify"])].copy()
+    models_with_missing_stock_variants = {
+        clean_value(value)
+        for value in missing_stock_variants.get("Mod-Col KPI", pd.Series(dtype=object)).dropna()
+    }
+    model_stock["Variantes_stock_incompletas"] = model_stock["Mod-Col KPI"].map(
+        lambda value: clean_value(value) in models_with_missing_stock_variants
+    )
 
     price_by_model = (
         variants_df.groupby("Mod-Col", as_index=False)["Tiene precio"].max()
@@ -1257,9 +1284,26 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "modelos_pendientes": int(len(missing_models)),
         "con_stock_no_visibles": int(len(stock_not_visible)),
         "sin_stock_visibles": int(len(no_stock_visible)),
-        "tallas_con_stock_faltantes": int(len(missing_stock_variants)),
+        "modelos_variantes_incompletas": int(model_stock["Variantes_stock_incompletas"].sum()),
+        "productos_creados_sin_stock": int((model_stock["Producto_creado"] & ~model_stock["Debe estar visible"]).sum()),
         "modelos_sin_precio": int(len(no_price_models)),
     }
+    model_stock["Creado_con_stock"] = model_stock["Debe estar visible"] & model_stock["Producto_creado"]
+    brand_summary = (
+        model_stock.groupby("Marca", as_index=False)
+        .agg(
+            Modelos_con_stock=("Debe estar visible", "sum"),
+            Creados_Shopify=("Creado_con_stock", "sum"),
+            Pendientes_creacion=("Producto_creado", lambda values: 0),
+            Stock_total=("Stock_total", "sum"),
+        )
+    )
+    if not brand_summary.empty:
+        brand_summary["Pendientes_creacion"] = brand_summary["Modelos_con_stock"] - brand_summary["Creados_Shopify"]
+        brand_summary["Cobertura"] = brand_summary.apply(
+            lambda row: row["Creados_Shopify"] / row["Modelos_con_stock"] if row["Modelos_con_stock"] else 0,
+            axis=1,
+        )
 
     action_rows = []
     for _, row in missing_models.iterrows():
@@ -1270,16 +1314,6 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Sin stock visible", "Accion sugerida": "Apagar producto en Shopify", "Stock total": row["Stock_total"]})
     for _, row in no_price_models.iterrows():
         action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Creado con stock sin precio", "Accion sugerida": "Cargar precio en Shopify", "Stock total": row["Stock_total"]})
-    for _, row in missing_stock_variants.iterrows():
-        action_rows.append(
-            {
-                "Mod-Col": row["Mod-Col KPI"],
-                "Marca": row["MARCA_MA"],
-                "Problema": "Talla con stock faltante",
-                "Accion sugerida": f"Crear variante talla {row['Talla KPI']} en Shopify",
-                "Stock total": row["stock_total"],
-            }
-        )
 
     actions_df = pd.DataFrame(action_rows)
     missing_stock_variants_export = (
@@ -1291,6 +1325,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     return {
         "kpis": kpis,
         "model_stock": model_stock,
+        "brand_summary": brand_summary,
         "actions": actions_df,
         "missing_stock_variants": missing_stock_variants_export,
         "no_price_models": no_price_models,
@@ -3280,6 +3315,91 @@ def inject_custom_css(config):
             min-height: 30px;
             line-height: 1.35;
         }}
+        .kpi-hero {{
+            display:flex;
+            align-items:flex-start;
+            justify-content:space-between;
+            gap:18px;
+            margin-bottom:20px;
+        }}
+        .kpi-title h2 {{
+            margin:0;
+            color:#0F172A;
+            font-size:30px;
+            font-weight:950;
+        }}
+        .kpi-title p {{
+            margin:8px 0 0;
+            color:#64748B;
+            font-size:13px;
+            font-weight:750;
+        }}
+        .kpi-card-grid {{
+            display:grid;
+            grid-template-columns:repeat(4,minmax(0,1fr));
+            gap:14px;
+            margin:18px 0 22px;
+        }}
+        .kpi-card {{
+            display:flex;
+            align-items:center;
+            gap:16px;
+            min-height:96px;
+            padding:18px 20px;
+            border-radius:14px;
+            background:#FFFFFF;
+            border:1px solid #DDE6F2;
+            box-shadow:0 12px 26px rgba(15,23,42,0.07);
+        }}
+        .kpi-icon {{
+            width:54px;
+            height:54px;
+            min-width:54px;
+            display:grid;
+            place-items:center;
+            border-radius:50%;
+            font-size:23px;
+            font-weight:950;
+        }}
+        .kpi-card span {{
+            display:block;
+            color:#334155;
+            font-size:13px;
+            font-weight:900;
+            margin-bottom:5px;
+        }}
+        .kpi-card strong {{
+            display:block;
+            color:#0F172A;
+            font-size:30px;
+            line-height:1;
+            font-weight:950;
+        }}
+        .kpi-card.blue .kpi-icon {{ background:#EAF2FF; color:#2563EB; }}
+        .kpi-card.green .kpi-icon {{ background:#EAF8EF; color:#16A34A; }}
+        .kpi-card.purple .kpi-icon {{ background:#F1EAFF; color:#6D28D9; }}
+        .kpi-card.orange .kpi-icon {{ background:#FFF3E4; color:#EA580C; }}
+        .kpi-card.cyan .kpi-icon {{ background:#E8F7FB; color:#0891B2; }}
+        .kpi-card.lime .kpi-icon {{ background:#ECFDF3; color:#15803D; }}
+        .kpi-card.red .kpi-icon {{ background:#FEECEF; color:#DC2626; }}
+        .kpi-card.slate .kpi-icon {{ background:#EEF2F7; color:#334155; }}
+        .kpi-panel {{
+            border-radius:16px;
+            background:#FFFFFF;
+            border:1px solid #DDE6F2;
+            box-shadow:0 12px 26px rgba(15,23,42,0.06);
+            padding:18px;
+            margin:14px 0;
+        }}
+        .kpi-panel h3 {{
+            margin:0 0 14px;
+            color:#172554;
+            font-size:20px;
+            font-weight:950;
+        }}
+        @media (max-width: 1100px) {{
+            .kpi-card-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
+        }}
         .st-key-action_panel .stButton button {{
             width: auto;
             min-width: 180px;
@@ -3907,8 +4027,49 @@ def render_input_upload_card():
     )
 
 
+def format_kpi_number(value):
+    if isinstance(value, str):
+        return value
+    try:
+        return f"{int(value):,}".replace(",", ".")
+    except (TypeError, ValueError):
+        return clean_value(value)
+
+
+def render_kpi_cards(kpis):
+    cards = [
+        ("Modelos con stock", kpis["modelos_con_stock"], "blue", "M"),
+        ("Creados Shopify", kpis["modelos_creados_shopify"], "green", "S"),
+        ("Cobertura", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
+        ("Pendientes creacion", kpis["modelos_pendientes"], "orange", "!"),
+        ("Creados sin stock", kpis["productos_creados_sin_stock"], "cyan", "0"),
+        ("Sin stock visibles", kpis["sin_stock_visibles"], "lime", "OK"),
+        ("Variantes incompletas", kpis["modelos_variantes_incompletas"], "slate", "V"),
+        ("Sin precio Shopify", kpis["modelos_sin_precio"], "red", "$"),
+    ]
+    html = "".join(
+        f"""
+        <div class="kpi-card {tone}">
+            <div class="kpi-icon">{icon}</div>
+            <div><span>{label}</span><strong>{format_kpi_number(value)}</strong></div>
+        </div>
+        """
+        for label, value, tone, icon in cards
+    )
+    render_html(f'<div class="kpi-card-grid">{html}</div>')
+
+
 def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready):
-    st.markdown('<div class="section-card"><h2>KPIs de catalogo</h2><p>Diagnostico BigQuery stock vs Shopify para decidir que debe estar visible, apagado o pendiente.</p></div>', unsafe_allow_html=True)
+    render_html(
+        """
+        <div class="kpi-hero">
+            <div class="kpi-title">
+                <h2>Dashboard Shopify</h2>
+                <p>Control por codigo modelo-color: stock BigQuery, creacion Shopify, visibilidad y precio.</p>
+            </div>
+        </div>
+        """
+    )
 
     if not bigquery_ready:
         st.error("BigQuery no esta configurado. Para KPIs se necesita leer stock actual y ARTI.")
@@ -3939,24 +4100,11 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
 
     meta = result.get("meta", {})
     st.caption(
-        f"Fuente ARTI: {meta.get('arti_source', '')} | Stock filas: {meta.get('stock_rows', 0):,} | "
-        f"Shopify productos: {meta.get('shopify_products', 0):,} | Fecha corte: {meta.get('fecha_corte', '')}"
+        f"Fuente ARTI: {meta.get('arti_source', '')}  |  Stock file: {format_kpi_number(meta.get('stock_rows', 0))}  |  "
+        f"Productos Shopify: {format_kpi_number(meta.get('shopify_products', 0))}  |  Fecha corte: {meta.get('fecha_corte', '')}"
     )
     kpis = result["kpis"]
-    metric_items = [
-        ("Modelos con stock", kpis["modelos_con_stock"]),
-        ("Creados Shopify", kpis["modelos_creados_shopify"]),
-        ("Cobertura", f"{kpis['cobertura_shopify']:.0%}"),
-        ("Pendientes creacion", kpis["modelos_pendientes"]),
-        ("Stock no visible", kpis["con_stock_no_visibles"]),
-        ("Sin stock visibles", kpis["sin_stock_visibles"]),
-        ("Tallas faltantes", kpis["tallas_con_stock_faltantes"]),
-        ("Sin precio", kpis["modelos_sin_precio"]),
-    ]
-    for chunk_start in range(0, len(metric_items), 4):
-        cols = st.columns(4)
-        for col, (label, value) in zip(cols, metric_items[chunk_start : chunk_start + 4]):
-            col.metric(label, value)
+    render_kpi_cards(kpis)
 
     actions_df = result["actions"]
     problem_counts = (
@@ -3966,37 +4114,52 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     )
     funnel_df = pd.DataFrame(
         [
-            {"Etapa": "BQ con stock", "Valor": kpis["modelos_con_stock"]},
+            {"Etapa": "Con stock", "Valor": kpis["modelos_con_stock"]},
             {"Etapa": "Creados", "Valor": kpis["modelos_creados_shopify"]},
-            {"Etapa": "Visibles OK", "Valor": max(kpis["modelos_creados_shopify"] - kpis["con_stock_no_visibles"], 0)},
             {"Etapa": "Sin precio", "Valor": kpis["modelos_sin_precio"]},
+            {"Etapa": "Validos OK", "Valor": max(kpis["modelos_creados_shopify"] - kpis["con_stock_no_visibles"] - kpis["modelos_sin_precio"], 0)},
+            {"Etapa": "Pendientes", "Valor": kpis["modelos_pendientes"]},
+            {"Etapa": "Creados sin stock", "Valor": kpis["productos_creados_sin_stock"]},
+            {"Etapa": "Sin stock visibles", "Valor": kpis["sin_stock_visibles"]},
+            {"Etapa": "Variantes incompletas", "Valor": kpis["modelos_variantes_incompletas"]},
         ]
     )
 
+    brand_summary = result.get("brand_summary", pd.DataFrame())
+    if brand_summary is not None and not brand_summary.empty and len(brand_summary) > 1:
+        render_html('<div class="kpi-panel"><h3>Resumen por marca</h3>',)
+        st.dataframe(brand_summary, use_container_width=True, height=220)
+        st.markdown("</div>", unsafe_allow_html=True)
+
     left, right = st.columns(2)
     with left:
-        st.markdown("**Funnel de catalogo**")
-        st.bar_chart(funnel_df, x="Etapa", y="Valor", use_container_width=True)
+        render_html('<div class="kpi-panel"><h3>Funnel de catalogo</h3>')
+        st.bar_chart(funnel_df, x="Etapa", y="Valor", use_container_width=True, height=320)
+        st.markdown("</div>", unsafe_allow_html=True)
     with right:
-        st.markdown("**Pareto de problemas**")
-        st.bar_chart(problem_counts, x="Problema", y="Casos", use_container_width=True)
+        render_html('<div class="kpi-panel"><h3>Pareto de problemas</h3>')
+        st.bar_chart(problem_counts, x="Problema", y="Casos", use_container_width=True, height=320)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("**Pendientes accionables**")
+    render_html('<div class="kpi-panel"><h3>Pendientes accionables</h3>')
     if actions_df is None or actions_df.empty:
         st.success("No hay pendientes accionables con la regla actual.")
     else:
         st.dataframe(actions_df, use_container_width=True, height=280)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     missing_variants_df = result["missing_stock_variants"]
     if missing_variants_df is not None and not missing_variants_df.empty:
-        st.markdown("**Tallas con stock faltantes en Shopify**")
+        render_html('<div class="kpi-panel"><h3>Detalle de variantes con stock incompletas</h3>')
         st.dataframe(missing_variants_df, use_container_width=True, height=260)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     excel_bytes = dataframe_to_excel_bytes(
         {
             "Resumen modelos": result["model_stock"],
+            "Resumen por marca": result.get("brand_summary", pd.DataFrame()),
             "Pendientes accionables": actions_df if actions_df is not None else pd.DataFrame(),
-            "Tallas con stock faltantes": missing_variants_df if missing_variants_df is not None else pd.DataFrame(),
+            "Detalle variantes stock": missing_variants_df if missing_variants_df is not None else pd.DataFrame(),
             "Con stock no visibles": result["stock_not_visible"],
             "Sin stock visibles": result["no_stock_visible"],
             "Sin precio": result["no_price_models"],

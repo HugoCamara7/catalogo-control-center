@@ -1349,12 +1349,49 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             return "No activo/publicado"
         return "Otros por revisar"
 
+    def non_visible_blockers(row):
+        blockers = []
+        if row.get("Sin_stock_shopify"):
+            blockers.append("Sin stock Shopify")
+        if row.get("Sin_foto_shopify"):
+            blockers.append("Sin foto")
+        if row.get("Sin_precio_shopify"):
+            blockers.append("Sin precio")
+        if not row.get("Visible_Shopify"):
+            blockers.append("No activo/publicado")
+        return " + ".join(blockers) if blockers else "Otros por revisar"
+
+    def non_visible_state(row):
+        pieces = [
+            "Stock Shopify OK" if row.get("Con_stock_shopify") else "Sin stock Shopify",
+            "Con foto" if row.get("Con_foto_shopify") else "Sin foto",
+            "Con precio" if not row.get("Sin_precio_shopify") else "Sin precio",
+            "Activo/publicado" if row.get("Visible_Shopify") else "No activo/publicado",
+        ]
+        return " | ".join(pieces)
+
     if not non_visible_web.empty:
         non_visible_web["Motivo principal"] = non_visible_web.apply(non_visible_reason, axis=1)
+        non_visible_web["Bloqueos"] = non_visible_web.apply(non_visible_blockers, axis=1)
+        non_visible_web["Estado operativo"] = non_visible_web.apply(non_visible_state, axis=1)
         non_visible_counts = non_visible_web["Motivo principal"].value_counts().to_dict()
+        non_visible_combo_summary = (
+            non_visible_web.groupby(["Bloqueos", "Estado operativo"], as_index=False)
+            .agg(
+                Modelos=("Mod-Col KPI", "nunique"),
+                Stock_BQ=("Stock_total", "sum"),
+                Stock_Shopify=("Stock_Shopify", "sum"),
+            )
+            .sort_values(["Modelos", "Stock_BQ"], ascending=[False, False])
+        )
     else:
         non_visible_web["Motivo principal"] = ""
+        non_visible_web["Bloqueos"] = ""
+        non_visible_web["Estado operativo"] = ""
         non_visible_counts = {}
+        non_visible_combo_summary = pd.DataFrame(
+            columns=["Bloqueos", "Estado operativo", "Modelos", "Stock_BQ", "Stock_Shopify"]
+        )
 
     kpis = {
         "modelos_con_stock": int(model_stock["Debe estar visible"].sum()),
@@ -1443,6 +1480,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "no_photo_models": no_photo_models,
         "no_shopify_stock_models": no_shopify_stock_models,
         "non_visible_web": non_visible_web,
+        "non_visible_combo_summary": non_visible_combo_summary,
         "stock_not_visible": stock_not_visible,
         "no_stock_visible": no_stock_visible,
     }
@@ -4618,6 +4656,32 @@ def render_kpi_chart_grid(funnel_rows, pareto_rows):
     )
 
 
+def render_non_visible_combo_table(combo_df):
+    combo_df = combo_df.copy() if isinstance(combo_df, pd.DataFrame) else pd.DataFrame()
+    render_html(
+        """
+        <div class="kpi-table-card">
+            <div class="kpi-table-head">
+                <div class="kpi-table-title"><span>◎</span><span>Que bloquea a los no visibles en web</span></div>
+            </div>
+        </div>
+        """
+    )
+    if combo_df.empty:
+        st.success("No hay modelos creados con stock bloqueados para web.")
+        return combo_df
+    display = combo_df.rename(
+        columns={
+            "Bloqueos": "Bloqueos detectados",
+            "Estado operativo": "Estado actual",
+            "Stock_BQ": "Stock BigQuery",
+            "Stock_Shopify": "Stock Shopify",
+        }
+    )
+    st.dataframe(display, use_container_width=True, hide_index=True, height=260)
+    return combo_df
+
+
 def render_actions_table(actions_df, key_prefix):
     actions_df = actions_df.copy() if isinstance(actions_df, pd.DataFrame) else pd.DataFrame()
     render_html(
@@ -4902,8 +4966,8 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     actions_df = result["actions"]
     non_visible_web_df = result.get("non_visible_web", pd.DataFrame())
     problem_counts = (
-        non_visible_web_df["Motivo principal"].value_counts().rename_axis("Problema").reset_index(name="Casos")
-        if non_visible_web_df is not None and not non_visible_web_df.empty and "Motivo principal" in non_visible_web_df.columns
+        non_visible_web_df["Bloqueos"].value_counts().rename_axis("Problema").reset_index(name="Casos")
+        if non_visible_web_df is not None and not non_visible_web_df.empty and "Bloqueos" in non_visible_web_df.columns
         else pd.DataFrame({"Problema": ["Sin observaciones"], "Casos": [0]})
     )
     funnel_rows = [
@@ -4932,6 +4996,8 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         render_brand_summary_table(brand_summary)
 
     render_kpi_chart_grid(funnel_rows, pareto_rows)
+    combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
+    render_non_visible_combo_table(combo_summary_df)
     filtered_actions_df = render_actions_table(actions_df, f"{brand_config['site_key']}_kpi")
     if filtered_actions_df is not None and not filtered_actions_df.empty:
         st.download_button(
@@ -4959,6 +5025,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
             "Resumen por marca": result.get("brand_summary", pd.DataFrame()),
             "Pendientes accionables": filtered_actions_df if filtered_actions_df is not None else pd.DataFrame(),
             "Detalle variantes stock": filtered_variants_df if filtered_variants_df is not None else pd.DataFrame(),
+            "Resumen bloqueos web": result.get("non_visible_combo_summary", pd.DataFrame()),
             "No visibles web": result.get("non_visible_web", pd.DataFrame()),
             "Sin stock Shopify": result.get("no_shopify_stock_models", pd.DataFrame()),
             "Sin precio": result["no_price_models"],

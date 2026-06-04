@@ -12,7 +12,6 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
-import altair as alt
 
 from generate_columbia_matrixify import (
     SITE_CONFIGS,
@@ -3554,6 +3553,68 @@ def inject_custom_css(config):
             text-align:center;
             font-weight:850;
         }}
+        .bar-item {{
+            position:relative;
+            cursor:pointer;
+            outline:none;
+        }}
+        .bar-item:hover .bar-fill,
+        .bar-item:focus .bar-fill {{
+            transform:scaleY(1.04);
+            filter:saturate(1.2);
+            box-shadow:0 12px 28px rgba(37,99,255,0.32);
+        }}
+        .bar-item:hover .bar-value,
+        .bar-item:focus .bar-value {{
+            color:#003BDB;
+            transform:translateY(-2px);
+        }}
+        .bar-fill {{
+            transition:transform .18s ease, filter .18s ease, box-shadow .18s ease;
+            transform-origin:bottom;
+        }}
+        .bar-value {{
+            transition:transform .18s ease, color .18s ease;
+        }}
+        .bar-tooltip {{
+            position:absolute;
+            left:50%;
+            bottom:calc(100% + 8px);
+            transform:translateX(-50%) translateY(6px);
+            min-width:138px;
+            padding:10px 12px;
+            border-radius:10px;
+            background:#0F172A;
+            color:#FFFFFF;
+            font-size:12px;
+            line-height:1.25;
+            font-weight:850;
+            opacity:0;
+            pointer-events:none;
+            z-index:8;
+            box-shadow:0 12px 24px rgba(15,23,42,0.2);
+            transition:opacity .16s ease, transform .16s ease;
+        }}
+        .bar-tooltip strong {{
+            display:block;
+            color:#FFFFFF;
+            font-size:15px;
+            margin-top:3px;
+        }}
+        .bar-tooltip::after {{
+            content:"";
+            position:absolute;
+            left:50%;
+            top:100%;
+            transform:translateX(-50%);
+            border:7px solid transparent;
+            border-top-color:#0F172A;
+        }}
+        .bar-item:hover .bar-tooltip,
+        .bar-item:focus .bar-tooltip {{
+            opacity:1;
+            transform:translateX(-50%) translateY(0);
+        }}
         .bar-label-icon {{
             color:#17269A;
             font-size:16px;
@@ -4388,67 +4449,50 @@ def render_brand_summary_table(brand_summary):
     )
 
 
-def kpi_altair_bar_chart(rows, color_start="#2563FF", color_end="#0958D9"):
-    df = pd.DataFrame(rows or [])
-    if df.empty:
-        df = pd.DataFrame([{"label": "Sin datos", "value": 0, "icon": ""}])
-    df["value"] = pd.to_numeric(df["value"], errors="coerce").fillna(0)
-    df["label"] = df["label"].map(clean_value)
-    df["tooltip_value"] = df["value"].map(lambda value: format_kpi_number(value))
-    order = list(df["label"])
-
-    hover = alt.selection_point(fields=["label"], on="mouseover", empty=False)
-    base = alt.Chart(df).encode(
-        x=alt.X("label:N", sort=order, title="", axis=alt.Axis(labelAngle=0, labelLimit=86)),
-        y=alt.Y("value:Q", title="Modelos", axis=alt.Axis(grid=True)),
-        tooltip=[
-            alt.Tooltip("label:N", title="Indicador"),
-            alt.Tooltip("tooltip_value:N", title="Valor"),
-        ],
-    )
-    bars = base.mark_bar(cornerRadiusTopLeft=7, cornerRadiusTopRight=7).encode(
-        color=alt.value(color_start),
-        opacity=alt.condition(hover, alt.value(1), alt.value(0.82)),
-    )
-    labels = base.mark_text(dy=-8, fontWeight="bold", color="#0B5CF6").encode(
-        text=alt.Text("tooltip_value:N")
-    )
-    return (
-        (bars + labels)
-        .add_params(hover)
-        .properties(height=285)
-        .interactive()
-        .configure_view(strokeWidth=0)
-        .configure_axis(labelColor="#172554", titleColor="#64748B", gridColor="#E8EEF7")
-    )
+def render_kpi_bar_chart(title, rows, icon="&#9661;", purple=False):
+    rows = list(rows or [])
+    max_value = max([float(row.get("value") or 0) for row in rows] or [1]) or 1
+    bars = []
+    for row in rows:
+        value = float(row.get("value") or 0)
+        height = max(3, int((value / max_value) * 190)) if value else 3
+        label = escape(clean_value(row.get("label")))
+        label_html = "<br>".join(label.split(" "))
+        value_text = format_kpi_number(value)
+        bar_class = "bar-fill purple" if purple else "bar-fill"
+        bars.append(
+            f"""
+            <div class="bar-item" tabindex="0" aria-label="{label}: {value_text}">
+                <div class="bar-tooltip">{label}<strong>{value_text}</strong></div>
+                <div class="bar-value">{value_text}</div>
+                <div class="{bar_class}" style="height:{height}px;"></div>
+                <div class="bar-label">
+                    <span class="bar-label-icon">{row.get("icon", "")}</span>
+                    <span>{label_html}</span>
+                </div>
+            </div>
+            """
+        )
+    return f"""
+    <div class="chart-card">
+        <div class="chart-head">
+            <div class="chart-title"><span>{icon}</span><span>{escape(title)}</span></div>
+            <div class="chart-action">...</div>
+        </div>
+        <div class="bar-stage">{''.join(bars)}</div>
+    </div>
+    """
 
 
 def render_kpi_chart_grid(funnel_rows, pareto_rows):
-    left, right = st.columns(2)
-    with left:
-        render_html(
-            """
-            <div class="chart-card">
-                <div class="chart-head">
-                    <div class="chart-title"><span>&#9661;</span><span>Funnel de catalogo</span></div>
-                    <div class="chart-action">...</div>
-                </div>
-            </div>
-            """
-        )
-        st.altair_chart(kpi_altair_bar_chart(funnel_rows, "#2563FF", "#0958D9"), use_container_width=True)
-    with right:
-        render_html(
-            """
-            <div class="chart-card">
-                <div class="chart-head">
-                    <div class="chart-title"><span>&#9638;</span><span>Pareto de problemas</span></div>
-                    <div class="chart-action">...</div>
-                </div>
-            </div>
-            """
-        )
-        st.altair_chart(kpi_altair_bar_chart(pareto_rows, "#5B4BFF", "#3D2CCF"), use_container_width=True)
+    render_html(
+        f"""
+        <div class="kpi-chart-grid">
+            {render_kpi_bar_chart("Funnel de catalogo", funnel_rows, icon="&#9661;")}
+            {render_kpi_bar_chart("Pareto de problemas", pareto_rows, icon="&#9638;", purple=True)}
+        </div>
+        """
+    )
 
 
 def render_actions_table(actions_df, key_prefix):

@@ -1122,6 +1122,10 @@ def normalize_warehouse_code(value):
     text = clean_value(value)
     if not text:
         return ""
+    tokens = re.findall(r"\d+", text)
+    if "-" in text and tokens:
+        preferred = next((token for token in tokens if len(token) >= 2), tokens[-1])
+        return str(int(preferred)) if preferred.isdigit() else preferred
     try:
         numeric = float(text)
         if numeric.is_integer():
@@ -1214,6 +1218,52 @@ def apply_ecomm_stock_rules(stock_df, brand_config):
         )
     )
     return grouped
+
+
+def build_ecomm_stock_match_summary(stock_df, brand_config):
+    rules = load_ecomm_stock_rules(str(DEFAULT_ECOMM_WAREHOUSES_PATH))
+    site_norm = normalize_site_for_stock(brand_config.get("site_label"))
+    site_rules = rules[rules["site_norm"] == site_norm].copy() if not rules.empty else pd.DataFrame()
+    if site_rules.empty:
+        return pd.DataFrame(
+            columns=["Bodega", "Nombre", "Stock seguridad", "Aparece en query", "Filas query", "Stock bruto", "Stock efectivo"]
+        )
+
+    stock = stock_df.copy() if isinstance(stock_df, pd.DataFrame) else pd.DataFrame()
+    if stock.empty or "codigo_tienda" not in stock.columns:
+        stock_summary = pd.DataFrame(columns=["bodega_code", "Filas query", "Stock bruto"])
+    else:
+        stock["bodega_code"] = stock["codigo_tienda"].map(normalize_warehouse_code)
+        for column in ("stock_tiendas", "stock_bodega", "stock_total"):
+            stock[column] = pd.to_numeric(stock.get(column, 0), errors="coerce").fillna(0)
+        stock["stock_bruto"] = stock["stock_tiendas"] + stock["stock_bodega"]
+        stock.loc[stock["stock_bruto"] <= 0, "stock_bruto"] = stock.loc[stock["stock_bruto"] <= 0, "stock_total"]
+        stock_summary = (
+            stock.groupby("bodega_code", as_index=False)
+            .agg(
+                **{
+                    "Filas query": ("key_producto", "count"),
+                    "Stock bruto": ("stock_bruto", "sum"),
+                }
+            )
+        )
+
+    summary = site_rules[["bodega_code", "bodega_nombre", "stock_seguridad"]].drop_duplicates("bodega_code").merge(
+        stock_summary,
+        how="left",
+        on="bodega_code",
+    )
+    summary["Filas query"] = pd.to_numeric(summary["Filas query"], errors="coerce").fillna(0).astype(int)
+    summary["Stock bruto"] = pd.to_numeric(summary["Stock bruto"], errors="coerce").fillna(0)
+    summary["Stock efectivo"] = (summary["Stock bruto"] - summary["stock_seguridad"]).clip(lower=0)
+    summary["Aparece en query"] = summary["Filas query"].map(lambda value: "Si" if int(value or 0) > 0 else "No")
+    return summary.rename(
+        columns={
+            "bodega_code": "Bodega",
+            "bodega_nombre": "Nombre",
+            "stock_seguridad": "Stock seguridad",
+        }
+    )[["Bodega", "Nombre", "Stock seguridad", "Aparece en query", "Filas query", "Stock bruto", "Stock efectivo"]]
 
 
 def stock_key_from_parts(mod_col, size):
@@ -1319,6 +1369,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     if stock.empty:
         stock = pd.DataFrame(columns=["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"])
     stock["key_producto"] = stock["key_producto"].map(lambda value: clean_value(value).upper())
+    ecomm_stock_match = build_ecomm_stock_match_summary(stock, brand_config)
     stock = apply_ecomm_stock_rules(stock, brand_config)
     stock_ecomm_rows = len(stock)
     stock_ecomm_models = stock["key_producto"].map(lambda value: clean_value(value).rsplit("-", 1)[0]).nunique() if not stock.empty and "key_producto" in stock.columns else 0
@@ -1598,6 +1649,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "no_shopify_stock_models": no_shopify_stock_models,
         "non_visible_web": non_visible_web,
         "non_visible_combo_summary": non_visible_combo_summary,
+        "ecomm_stock_match": ecomm_stock_match,
         "stock_not_visible": stock_not_visible,
         "no_stock_visible": no_stock_visible,
     }
@@ -5525,6 +5577,13 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         f"Stock eComm filtrado: {format_kpi_number(kpis.get('stock_ecomm_rows', 0))} filas tienda-talla | "
         f"{format_kpi_number(kpis.get('stock_ecomm_models', 0))} modelo-color con stock efectivo del sitio"
     )
+    ecomm_match_df = result.get("ecomm_stock_match", pd.DataFrame())
+    if ecomm_match_df is not None and not ecomm_match_df.empty:
+        matched_stores = int((ecomm_match_df["Aparece en query"] == "Si").sum())
+        total_stores = len(ecomm_match_df)
+        missing_stores = ecomm_match_df[ecomm_match_df["Aparece en query"] != "Si"]["Bodega"].astype(str).tolist()
+        missing_text = f" | Sin match: {', '.join(missing_stores[:8])}" if missing_stores else ""
+        st.caption(f"Bodegas eComm del sitio con match en query: {matched_stores}/{total_stores}{missing_text}")
     render_kpi_cards(kpis)
     combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
     render_non_visible_combo_table(combo_summary_df)
@@ -5588,6 +5647,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         {
             "Resumen modelos": result["model_stock"],
             "Resumen por marca": result.get("brand_summary", pd.DataFrame()),
+            "Match bodegas eComm": result.get("ecomm_stock_match", pd.DataFrame()),
             "Pendientes accionables": filtered_actions_df if filtered_actions_df is not None else pd.DataFrame(),
             "Detalle variantes stock": filtered_variants_df if filtered_variants_df is not None else pd.DataFrame(),
             "Resumen bloqueos web": result.get("non_visible_combo_summary", pd.DataFrame()),

@@ -2372,52 +2372,27 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     product_messages.append(f"Error fotos: {exc}")
 
             product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
-            if clean_value(row.get("ID")):
-                missing_variants = _missing_variant_inputs_from_shopify(
-                    product_variant_rows,
-                    product_data_for_variants,
-                )
-            else:
-                size_option = _size_option_from_product_data(
-                    product_data_for_variants,
-                    clean_value(row.get("Option1 Name")) or "Talla",
-                )
-                fallback_price, fallback_compare_at_price = _price_fallback_from_rows(product_variant_rows)
-                missing_variants = _all_variant_inputs(
-                    product_variant_rows,
-                    option_id=clean_value(size_option.get("id")),
-                    option_name=clean_value(size_option.get("name")) or clean_value(row.get("Option1 Name")) or "Talla",
-                    fallback_price=fallback_price,
-                    fallback_compare_at_price=fallback_compare_at_price,
-                )
+            missing_variants = _missing_variant_inputs_from_shopify(
+                product_variant_rows,
+                product_data_for_variants,
+            )
             if missing_variants:
                 try:
-                    created_variants = []
-                    variant_errors = []
-                    for variant_input in missing_variants:
-                        size_label = ", ".join(
-                            clean_value(option.get("name"))
-                            for option in variant_input.get("optionValues", [])
-                            if clean_value(option.get("name"))
-                        )
-                        try:
-                            created_variants.extend(
-                                product_variants_bulk_create(
-                                    shopify_config,
-                                    product_gid,
-                                    [variant_input],
-                                    strategy="REMOVE_STANDALONE_VARIANT" if not clean_value(row.get("ID")) else None,
-                                )
-                            )
-                        except Exception as exc:
-                            variant_errors.append(f"{size_label or 'variante'}: {exc}")
+                    created_variants = product_variants_bulk_create(
+                        shopify_config,
+                        product_gid,
+                        missing_variants,
+                        strategy=None,
+                    )
                     if created_variants:
                         product_messages.append(
                             f"{len(created_variants)} variantes creadas de {len(missing_variants)} faltantes"
                         )
-                    if variant_errors:
+                    if len(created_variants) < len(missing_variants):
                         product_status = "PARCIAL"
-                        product_messages.append("Errores variantes: " + " | ".join(variant_errors[:5]))
+                        product_messages.append(
+                            f"Shopify confirmo menos variantes de las enviadas: {len(created_variants)} de {len(missing_variants)}"
+                        )
                 except Exception as exc:
                     product_status = "PARCIAL"
                     product_messages.append(f"Error variantes: {exc}")

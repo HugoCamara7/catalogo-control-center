@@ -4470,9 +4470,6 @@ def render_kpi_cards(kpis):
         ("Cobertura stock BQ", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
         ("Visibles en web", kpis["modelos_visibles_web"], "green", "&#9711;"),
         ("No visibles en web", kpis["modelos_no_visibles_web"], "orange", "&#9676;"),
-        ("Con stock sin foto", kpis["modelos_sin_foto"], "orange", "&#9673;"),
-        ("Con stock sin precio", kpis["modelos_sin_precio"], "red", "$"),
-        ("Creados sin stock Shopify", kpis["modelos_sin_stock_shopify"], "red", "S"),
         ("Sync stock Shopify", f"{kpis['sincronizacion_stock_shopify']:.0%}", "purple", "%"),
     ]
     secondary_cards = [
@@ -4480,11 +4477,11 @@ def render_kpi_cards(kpis):
         ("Creados sin stock BQ", kpis["productos_creados_sin_stock"], "cyan", "&#9636;"),
     ]
     no_visible_cards = [
-        ("Sin stock Shopify", kpis["no_visible_sin_stock_shopify"], "red", "S"),
-        ("Sin foto", kpis["no_visible_sin_foto"], "orange", "&#9673;"),
-        ("Sin precio", kpis["no_visible_sin_precio"], "red", "$"),
-        ("No activo/publicado", kpis["no_visible_no_activo"], "orange", "&#9676;"),
-        ("Otros por revisar", kpis["no_visible_otros"], "slate", "?"),
+        ("Causa: sin stock Shopify", kpis["no_visible_sin_stock_shopify"], "red", "S"),
+        ("Causa: sin foto", kpis["no_visible_sin_foto"], "orange", "&#9673;"),
+        ("Causa: sin precio", kpis["no_visible_sin_precio"], "red", "$"),
+        ("Causa: no activo/publicado", kpis["no_visible_no_activo"], "orange", "&#9676;"),
+        ("Causa: otros", kpis["no_visible_otros"], "slate", "?"),
     ]
 
     def cards_html(cards):
@@ -4903,9 +4900,10 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     render_kpi_cards(kpis)
 
     actions_df = result["actions"]
+    non_visible_web_df = result.get("non_visible_web", pd.DataFrame())
     problem_counts = (
-        actions_df["Problema"].value_counts().rename_axis("Problema").reset_index(name="Casos")
-        if actions_df is not None and not actions_df.empty
+        non_visible_web_df["Motivo principal"].value_counts().rename_axis("Problema").reset_index(name="Casos")
+        if non_visible_web_df is not None and not non_visible_web_df.empty and "Motivo principal" in non_visible_web_df.columns
         else pd.DataFrame({"Problema": ["Sin observaciones"], "Casos": [0]})
     )
     funnel_rows = [
@@ -4914,9 +4912,10 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         {"label": "Pendientes de creacion", "short": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
         {"label": "Visibles en web", "short": "Visibles web", "value": kpis["modelos_visibles_web"], "icon": "&#9711;"},
         {"label": "No visibles en web", "short": "No visibles web", "value": kpis["modelos_no_visibles_web"], "icon": "&#9676;"},
-        {"label": "Con stock sin foto", "short": "Sin foto", "value": kpis["modelos_sin_foto"], "icon": "&#9673;"},
-        {"label": "Sin precio Shopify", "short": "Sin precio", "value": kpis["modelos_sin_precio"], "icon": "$"},
-        {"label": "Creados sin stock Shopify", "short": "Sin stock Shopify", "value": kpis["modelos_sin_stock_shopify"], "icon": "S"},
+        {"label": "Causa principal: sin stock Shopify", "short": "Causa stock", "value": kpis["no_visible_sin_stock_shopify"], "icon": "S"},
+        {"label": "Causa principal: sin foto", "short": "Causa foto", "value": kpis["no_visible_sin_foto"], "icon": "&#9673;"},
+        {"label": "Causa principal: sin precio", "short": "Causa precio", "value": kpis["no_visible_sin_precio"], "icon": "$"},
+        {"label": "Causa principal: no activo", "short": "Causa activo", "value": kpis["no_visible_no_activo"], "icon": "&#9676;"},
     ]
     pareto_rows = [
         {

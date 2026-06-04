@@ -1334,6 +1334,28 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     created_with_stock = int((model_stock["Debe estar visible"] & model_stock["Producto_creado"]).sum())
     created_without_stock = int((model_stock["Producto_creado"] & ~model_stock["Debe estar visible"]).sum())
     web_visible = int(model_stock["Listo_venta"].sum())
+    non_visible_web = model_stock[
+        model_stock["Debe estar visible"] & model_stock["Producto_creado"] & (~model_stock["Listo_venta"])
+    ].copy()
+
+    def non_visible_reason(row):
+        if row.get("Sin_stock_shopify"):
+            return "Sin stock Shopify"
+        if row.get("Sin_foto_shopify"):
+            return "Sin foto"
+        if row.get("Sin_precio_shopify"):
+            return "Sin precio"
+        if not row.get("Visible_Shopify"):
+            return "No activo/publicado"
+        return "Otros por revisar"
+
+    if not non_visible_web.empty:
+        non_visible_web["Motivo principal"] = non_visible_web.apply(non_visible_reason, axis=1)
+        non_visible_counts = non_visible_web["Motivo principal"].value_counts().to_dict()
+    else:
+        non_visible_web["Motivo principal"] = ""
+        non_visible_counts = {}
+
     kpis = {
         "modelos_con_stock": int(model_stock["Debe estar visible"].sum()),
         "modelos_creados_shopify": int(model_stock["Producto_creado"].sum()),
@@ -1347,6 +1369,11 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "productos_visibles": int((model_stock["Debe estar visible"] & model_stock["Visible_Shopify"]).sum()),
         "modelos_visibles_web": web_visible,
         "modelos_no_visibles_web": max(created_with_stock - web_visible, 0),
+        "no_visible_sin_stock_shopify": int(non_visible_counts.get("Sin stock Shopify", 0)),
+        "no_visible_sin_foto": int(non_visible_counts.get("Sin foto", 0)),
+        "no_visible_sin_precio": int(non_visible_counts.get("Sin precio", 0)),
+        "no_visible_no_activo": int(non_visible_counts.get("No activo/publicado", 0)),
+        "no_visible_otros": int(non_visible_counts.get("Otros por revisar", 0)),
         "modelos_listos_tienda": web_visible,
         "modelos_con_stock_con_foto": int(
             (model_stock["Debe estar visible"] & model_stock["Producto_creado"] & model_stock["Con_foto_shopify"]).sum()
@@ -1390,8 +1417,6 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     action_rows = []
     for _, row in missing_models.iterrows():
         action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock no creado", "Accion sugerida": "Pedir input al Brand Manager", "Stock total": row["Stock_total"]})
-    for _, row in stock_not_visible.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "No activo en Shopify", "Accion sugerida": "Activar/publicar o revisar bloqueo en Shopify", "Stock total": row["Stock_total"]})
     for _, row in no_stock_visible.iterrows():
         action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Sin stock visible", "Accion sugerida": "Apagar producto en Shopify", "Stock total": row["Stock_total"]})
     for _, row in no_price_models.iterrows():
@@ -1417,6 +1442,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "no_price_models": no_price_models,
         "no_photo_models": no_photo_models,
         "no_shopify_stock_models": no_shopify_stock_models,
+        "non_visible_web": non_visible_web,
         "stock_not_visible": stock_not_visible,
         "no_stock_visible": no_stock_visible,
     }
@@ -4444,15 +4470,21 @@ def render_kpi_cards(kpis):
         ("Cobertura stock BQ", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
         ("Visibles en web", kpis["modelos_visibles_web"], "green", "&#9711;"),
         ("No visibles en web", kpis["modelos_no_visibles_web"], "orange", "&#9676;"),
-        ("No activos en Shopify", kpis["con_stock_no_visibles"], "orange", "&#9676;"),
         ("Con stock sin foto", kpis["modelos_sin_foto"], "orange", "&#9673;"),
         ("Con stock sin precio", kpis["modelos_sin_precio"], "red", "$"),
-        ("Sin stock Shopify", kpis["modelos_sin_stock_shopify"], "red", "S"),
+        ("Creados sin stock Shopify", kpis["modelos_sin_stock_shopify"], "red", "S"),
         ("Sync stock Shopify", f"{kpis['sincronizacion_stock_shopify']:.0%}", "purple", "%"),
     ]
     secondary_cards = [
         ("Total creados Shopify", kpis["modelos_creados_shopify"], "green", "&#9635;"),
         ("Creados sin stock BQ", kpis["productos_creados_sin_stock"], "cyan", "&#9636;"),
+    ]
+    no_visible_cards = [
+        ("Sin stock Shopify", kpis["no_visible_sin_stock_shopify"], "red", "S"),
+        ("Sin foto", kpis["no_visible_sin_foto"], "orange", "&#9673;"),
+        ("Sin precio", kpis["no_visible_sin_precio"], "red", "$"),
+        ("No activo/publicado", kpis["no_visible_no_activo"], "orange", "&#9676;"),
+        ("Otros por revisar", kpis["no_visible_otros"], "slate", "?"),
     ]
 
     def cards_html(cards):
@@ -4470,6 +4502,8 @@ def render_kpi_cards(kpis):
         f"""
         <div class="kpi-section-label">KPIs principales segun stock BigQuery</div>
         <div class="kpi-card-grid">{cards_html(primary_cards)}</div>
+        <div class="kpi-section-label secondary">Desglose exclusivo de no visibles en web</div>
+        <div class="kpi-card-grid">{cards_html(no_visible_cards)}</div>
         <div class="kpi-section-label secondary">Contexto Shopify fuera del stock BQ</div>
         <div class="kpi-card-grid">{cards_html(secondary_cards)}</div>
         """
@@ -4880,10 +4914,9 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         {"label": "Pendientes de creacion", "short": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
         {"label": "Visibles en web", "short": "Visibles web", "value": kpis["modelos_visibles_web"], "icon": "&#9711;"},
         {"label": "No visibles en web", "short": "No visibles web", "value": kpis["modelos_no_visibles_web"], "icon": "&#9676;"},
-        {"label": "No activos en Shopify", "short": "No activos", "value": kpis["con_stock_no_visibles"], "icon": "&#9676;"},
         {"label": "Con stock sin foto", "short": "Sin foto", "value": kpis["modelos_sin_foto"], "icon": "&#9673;"},
         {"label": "Sin precio Shopify", "short": "Sin precio", "value": kpis["modelos_sin_precio"], "icon": "$"},
-        {"label": "Sin stock Shopify", "short": "Sin stock Shopify", "value": kpis["modelos_sin_stock_shopify"], "icon": "S"},
+        {"label": "Creados sin stock Shopify", "short": "Sin stock Shopify", "value": kpis["modelos_sin_stock_shopify"], "icon": "S"},
     ]
     pareto_rows = [
         {
@@ -4927,8 +4960,8 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
             "Resumen por marca": result.get("brand_summary", pd.DataFrame()),
             "Pendientes accionables": filtered_actions_df if filtered_actions_df is not None else pd.DataFrame(),
             "Detalle variantes stock": filtered_variants_df if filtered_variants_df is not None else pd.DataFrame(),
-            "Con stock no visibles": result["stock_not_visible"],
-            "Sin stock visibles": result["no_stock_visible"],
+            "No visibles web": result.get("non_visible_web", pd.DataFrame()),
+            "Sin stock Shopify": result.get("no_shopify_stock_models", pd.DataFrame()),
             "Sin precio": result["no_price_models"],
             "Sin foto": result["no_photo_models"],
         }

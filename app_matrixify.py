@@ -1293,15 +1293,18 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         & ~model_stock["Sin_foto_shopify"]
     )
 
+    created_with_stock = int((model_stock["Debe estar visible"] & model_stock["Producto_creado"]).sum())
+    created_without_stock = int((model_stock["Producto_creado"] & ~model_stock["Debe estar visible"]).sum())
     kpis = {
         "modelos_con_stock": int(model_stock["Debe estar visible"].sum()),
-        "modelos_creados_shopify": int((model_stock["Debe estar visible"] & model_stock["Producto_creado"]).sum()),
-        "cobertura_shopify": float((model_stock["Debe estar visible"] & model_stock["Producto_creado"]).sum() / model_stock["Debe estar visible"].sum()) if model_stock["Debe estar visible"].sum() else 0,
+        "modelos_creados_shopify": int(model_stock["Producto_creado"].sum()),
+        "modelos_creados_con_stock": created_with_stock,
+        "cobertura_shopify": float(created_with_stock / model_stock["Debe estar visible"].sum()) if model_stock["Debe estar visible"].sum() else 0,
         "modelos_pendientes": int(len(missing_models)),
         "con_stock_no_visibles": int(len(stock_not_visible)),
         "sin_stock_visibles": int(len(no_stock_visible)),
         "modelos_variantes_incompletas": int(model_stock["Variantes_stock_incompletas"].sum()),
-        "productos_creados_sin_stock": int((model_stock["Producto_creado"] & ~model_stock["Debe estar visible"]).sum()),
+        "productos_creados_sin_stock": created_without_stock,
         "productos_visibles": int((model_stock["Debe estar visible"] & model_stock["Visible_Shopify"]).sum()),
         "modelos_listos_venta": int(model_stock["Listo_venta"].sum()),
         "modelos_sin_precio": int(len(no_price_models)),
@@ -4782,6 +4785,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     funnel_rows = [
         {"label": "Modelos con stock", "short": "Con stock", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
         {"label": "Modelos creados en Shopify", "short": "Creados", "value": kpis["modelos_creados_shopify"], "icon": "&#9635;"},
+        {"label": "Creados con stock", "short": "Creados stock", "value": kpis["modelos_creados_con_stock"], "icon": "&#9635;"},
         {"label": "Creados sin stock", "short": "Sin stock", "value": kpis["productos_creados_sin_stock"], "icon": "&#9636;"},
         {"label": "Productos visibles", "short": "Visibles", "value": kpis["productos_visibles"], "icon": "&#9711;"},
         {"label": "Pendientes de creacion", "short": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},

@@ -1100,13 +1100,9 @@ def read_current_stock_from_bigquery(bigquery_config):
 
     job_project_id = clean_value(config.get("job_project_id")) or project_id
     client = bigquery.Client(project=job_project_id or None, credentials=credentials)
-    query = clean_value(config.get("stock_query")) or STOCK_QUERY_DEFAULT
     job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
     location = clean_value(config.get("location")) or None
-    df = client.query(query, job_config=job_config, location=location).to_dataframe()
-    has_store_detail = "codigo_tienda" in df.columns and df["codigo_tienda"].map(clean_value).any()
-    if not has_store_detail and query.strip() != STOCK_QUERY_DEFAULT.strip():
-        df = client.query(STOCK_QUERY_DEFAULT, job_config=job_config, location=location).to_dataframe()
+    df = client.query(STOCK_QUERY_DEFAULT, job_config=job_config, location=location).to_dataframe()
 
     for column in ("fecha_corte", "id_producto", "key_producto", "codigo_tienda", "stock_tiendas", "stock_bodega", "stock_total"):
         if column not in df.columns:
@@ -1171,17 +1167,20 @@ def load_ecomm_stock_rules(path_text):
 
 
 def apply_ecomm_stock_rules(stock_df, brand_config):
+    empty_filtered = pd.DataFrame(
+        columns=["fecha_corte", "id_producto", "key_producto", "stock_tiendas", "stock_bodega", "stock_total"]
+    )
     stock = stock_df.copy() if isinstance(stock_df, pd.DataFrame) else pd.DataFrame()
     if stock.empty:
         return stock
     if "codigo_tienda" not in stock.columns or not stock["codigo_tienda"].map(clean_value).any():
-        return stock
+        return empty_filtered
 
     rules = load_ecomm_stock_rules(str(DEFAULT_ECOMM_WAREHOUSES_PATH))
     site_norm = normalize_site_for_stock(brand_config.get("site_label"))
     site_rules = rules[rules["site_norm"] == site_norm].copy() if not rules.empty else pd.DataFrame()
     if site_rules.empty:
-        return stock
+        return empty_filtered
 
     stock["codigo_tienda_norm"] = stock["codigo_tienda"].map(normalize_warehouse_code)
     stock = stock.merge(
@@ -1191,7 +1190,7 @@ def apply_ecomm_stock_rules(stock_df, brand_config):
         right_on="bodega_code",
     )
     if stock.empty:
-        return pd.DataFrame(columns=["fecha_corte", "id_producto", "key_producto", "stock_tiendas", "stock_bodega", "stock_total"])
+        return empty_filtered
 
     for column in ("stock_tiendas", "stock_bodega", "stock_total", "stock_seguridad"):
         stock[column] = pd.to_numeric(stock.get(column, 0), errors="coerce").fillna(0)
@@ -1321,6 +1320,8 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         stock = pd.DataFrame(columns=["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"])
     stock["key_producto"] = stock["key_producto"].map(lambda value: clean_value(value).upper())
     stock = apply_ecomm_stock_rules(stock, brand_config)
+    stock_ecomm_rows = len(stock)
+    stock_ecomm_models = stock["key_producto"].map(lambda value: clean_value(value).rsplit("-", 1)[0]).nunique() if not stock.empty and "key_producto" in stock.columns else 0
     if stock.empty:
         stock = pd.DataFrame(columns=["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"])
     stock["key_producto"] = stock["key_producto"].map(lambda value: clean_value(value).upper())
@@ -1547,6 +1548,8 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "modelos_listos_venta": web_visible,
         "modelos_sin_precio": int(len(no_price_models)),
         "modelos_sin_foto": int(len(no_photo_models)),
+        "stock_ecomm_rows": int(stock_ecomm_rows),
+        "stock_ecomm_models": int(stock_ecomm_models),
     }
     model_stock["Creado_con_stock"] = model_stock["Debe estar visible"] & model_stock["Producto_creado"]
     brand_summary = (
@@ -5518,6 +5521,10 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         f"Productos Shopify: {format_kpi_number(meta.get('shopify_products', 0))}  |  Fecha corte: {meta.get('fecha_corte', '')}"
     )
     kpis = result["kpis"]
+    st.caption(
+        f"Stock eComm filtrado: {format_kpi_number(kpis.get('stock_ecomm_rows', 0))} filas tienda-talla | "
+        f"{format_kpi_number(kpis.get('stock_ecomm_models', 0))} modelo-color con stock efectivo del sitio"
+    )
     render_kpi_cards(kpis)
     combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
     render_non_visible_combo_table(combo_summary_df)

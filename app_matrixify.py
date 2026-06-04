@@ -1374,23 +1374,27 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         non_visible_web["Motivo principal"] = non_visible_web.apply(non_visible_reason, axis=1)
         non_visible_web["Bloqueos"] = non_visible_web.apply(non_visible_blockers, axis=1)
         non_visible_web["Estado operativo"] = non_visible_web.apply(non_visible_state, axis=1)
+        non_visible_web["ModCol_BQ"] = 1
+        non_visible_web["ModCol_stock_shopify"] = non_visible_web["Con_stock_shopify"].map(lambda value: 1 if value else 0)
         non_visible_counts = non_visible_web["Motivo principal"].value_counts().to_dict()
         non_visible_combo_summary = (
             non_visible_web.groupby(["Bloqueos", "Estado operativo"], as_index=False)
             .agg(
                 Modelos=("Mod-Col KPI", "nunique"),
-                Stock_BQ=("Stock_total", "sum"),
-                Stock_Shopify=("Stock_Shopify", "sum"),
+                Stock_BigQuery=("ModCol_BQ", "sum"),
+                Stock_Shopify=("ModCol_stock_shopify", "sum"),
             )
-            .sort_values(["Modelos", "Stock_BQ"], ascending=[False, False])
+            .sort_values(["Modelos", "Stock_BigQuery"], ascending=[False, False])
         )
     else:
         non_visible_web["Motivo principal"] = ""
         non_visible_web["Bloqueos"] = ""
         non_visible_web["Estado operativo"] = ""
+        non_visible_web["ModCol_BQ"] = 0
+        non_visible_web["ModCol_stock_shopify"] = 0
         non_visible_counts = {}
         non_visible_combo_summary = pd.DataFrame(
-            columns=["Bloqueos", "Estado operativo", "Modelos", "Stock_BQ", "Stock_Shopify"]
+            columns=["Bloqueos", "Estado operativo", "Modelos", "Stock_BigQuery", "Stock_Shopify"]
         )
 
     kpis = {
@@ -3521,6 +3525,177 @@ def inject_custom_css(config):
         .kpi-card.lime .kpi-icon {{ background:#ECFDF3; color:#15803D; }}
         .kpi-card.red .kpi-icon {{ background:#FEECEF; color:#DC2626; }}
         .kpi-card.slate .kpi-icon {{ background:#EEF2F7; color:#334155; }}
+        .combo-card {{
+            margin:24px 0 28px;
+            background:#FFFFFF;
+            border:1px solid #DDE6F2;
+            border-radius:18px;
+            box-shadow:0 18px 40px rgba(15,23,42,0.08);
+            overflow:hidden;
+        }}
+        .combo-card-head {{
+            display:flex;
+            justify-content:space-between;
+            align-items:flex-start;
+            gap:18px;
+            padding:24px 26px 18px;
+        }}
+        .combo-title {{
+            display:flex;
+            align-items:center;
+            gap:14px;
+            color:#0B1B46;
+            font-size:1.5rem;
+            font-weight:950;
+        }}
+        .combo-title-icon {{
+            display:inline-grid;
+            place-items:center;
+            width:44px;
+            height:44px;
+            border-radius:12px;
+            background:#EAF2FF;
+            color:#2563EB;
+            box-shadow:inset 0 0 0 1px #BFDBFE;
+        }}
+        .combo-card-head p {{
+            margin:8px 0 0 58px;
+            color:#64748B;
+            font-weight:750;
+        }}
+        .combo-chip {{
+            padding:12px 16px;
+            border:1px solid #DDE6F2;
+            border-radius:12px;
+            color:#172554;
+            font-weight:900;
+            background:#F8FAFC;
+            white-space:nowrap;
+        }}
+        .combo-table-wrap {{ padding:0 24px 18px; }}
+        .combo-table {{
+            width:100%;
+            border-collapse:separate;
+            border-spacing:0;
+            border:1px solid #DDE6F2;
+            border-radius:12px;
+            overflow:hidden;
+        }}
+        .combo-table th {{
+            padding:18px 20px;
+            text-align:left;
+            background:#F8FAFC;
+            color:#475569;
+            font-weight:950;
+            border-bottom:1px solid #DDE6F2;
+        }}
+        .combo-table td {{
+            padding:20px;
+            border-bottom:1px solid #E6EDF7;
+            border-right:1px solid #E6EDF7;
+            vertical-align:middle;
+            color:#0B1B46;
+            font-weight:750;
+        }}
+        .combo-table td:last-child, .combo-table th:last-child {{ border-right:none; }}
+        .combo-table tbody tr:last-child td {{ border-bottom:none; }}
+        .combo-blocker {{
+            display:grid;
+            grid-template-columns:92px 1fr;
+            align-items:center;
+            gap:14px;
+            min-width:260px;
+        }}
+        .combo-blocker b {{ font-size:1rem; }}
+        .combo-blocker small {{
+            grid-column:2;
+            color:#0B1B46;
+            font-size:.92rem;
+            font-weight:850;
+        }}
+        .combo-bubble {{
+            display:inline-block;
+            width:48px;
+            height:48px;
+            border-radius:50%;
+            opacity:.72;
+            margin-right:-18px;
+            box-shadow:0 10px 22px rgba(15,23,42,0.08);
+        }}
+        .bubble-blue {{ background:#93C5FD; }}
+        .bubble-amber {{ background:#FDBA74; }}
+        .bubble-rose {{ background:#FDA4AF; }}
+        .bubble-purple {{ background:#C4B5FD; }}
+        .bubble-slate {{ background:#CBD5E1; }}
+        .combo-state {{
+            display:inline-block;
+            max-width:420px;
+            padding:12px 14px;
+            border-radius:10px;
+            line-height:1.65;
+            font-weight:800;
+            color:#0B1B46;
+            border:1px solid rgba(148,163,184,.2);
+        }}
+        .combo-state.blue {{ background:#EFF6FF; }}
+        .combo-state.amber {{ background:#FFF7ED; }}
+        .combo-state.rose {{ background:#FFF1F2; }}
+        .combo-state.mint {{ background:#ECFDF5; }}
+        .combo-state.slate {{ background:#F8FAFC; }}
+        .combo-metric {{
+            min-width:150px;
+            text-align:center;
+        }}
+        .combo-metric strong {{
+            display:block;
+            font-size:1.75rem;
+            line-height:1;
+            font-weight:950;
+        }}
+        .combo-metric span {{
+            display:block;
+            margin-top:7px;
+            color:#0B1B46;
+            font-weight:850;
+        }}
+        .combo-metric i {{
+            display:block;
+            height:7px;
+            margin:12px auto 0;
+            width:112px;
+            border-radius:999px;
+            background:#E8EEF7;
+            overflow:hidden;
+        }}
+        .combo-metric b {{
+            display:block;
+            height:100%;
+            border-radius:999px;
+        }}
+        .combo-metric.purple strong {{ color:#7C3AED; }}
+        .combo-metric.blue strong {{ color:#2563EB; }}
+        .combo-metric.green strong {{ color:#16A34A; }}
+        .combo-metric.purple b {{ background:#7C3AED; }}
+        .combo-metric.blue b {{ background:#2563EB; }}
+        .combo-metric.green b {{ background:#16A34A; }}
+        .combo-table tfoot td {{
+            background:#EFF6FF;
+            color:#0B1B46;
+            font-size:1.1rem;
+            font-weight:950;
+        }}
+        .combo-table tfoot td:first-child span {{
+            margin-left:20px;
+            color:#475569;
+            font-size:1rem;
+            font-weight:800;
+        }}
+        .combo-table tfoot small {{
+            display:block;
+            margin-top:4px;
+            color:#2563EB;
+            font-weight:900;
+        }}
         .kpi-panel {{
             border-radius:16px;
             background:#FFFFFF;
@@ -4679,6 +4854,119 @@ def render_non_visible_combo_table(combo_df):
         }
     )
     st.dataframe(display, use_container_width=True, hide_index=True, height=260)
+    return combo_df
+
+
+def combo_metric_html(value, percent, tone):
+    value_text = format_kpi_number(value)
+    pct_text = f"{percent:.1f}%"
+    return f"""
+    <div class="combo-metric {tone}">
+        <strong>{value_text}</strong>
+        <span>({pct_text})</span>
+        <i><b style="width:{max(2, min(100, percent)):.1f}%"></b></i>
+    </div>
+    """
+
+
+def render_non_visible_combo_table(combo_df):
+    combo_df = combo_df.copy() if isinstance(combo_df, pd.DataFrame) else pd.DataFrame()
+    if combo_df.empty:
+        st.success("No hay modelos creados con stock bloqueados para web.")
+        return combo_df
+
+    total_models = float(combo_df["Modelos"].sum() or 0)
+    total_bq = float(combo_df.get("Stock_BigQuery", combo_df["Modelos"]).sum() or 0)
+    total_shopify_raw = float(combo_df.get("Stock_Shopify", pd.Series(dtype=float)).sum() or 0)
+    total_models_safe = total_models or 1
+    total_bq_safe = total_bq or 1
+    total_shopify_safe = total_shopify_raw or 1
+
+    def pct(value, total):
+        return max(0, min(100, (float(value or 0) / total) * 100))
+
+    def soft_class(text):
+        text = clean_value(text)
+        if "Sin stock Shopify" in text and "Sin foto" in text:
+            return "mint"
+        if "Sin stock Shopify" in text:
+            return "blue"
+        if "Sin foto" in text:
+            return "amber"
+        if "Sin precio" in text:
+            return "rose"
+        return "slate"
+
+    def bubble_html(text):
+        blockers = [part.strip() for part in clean_value(text).split("+") if part.strip()]
+        colors = {
+            "Sin stock Shopify": "bubble-blue",
+            "Sin foto": "bubble-amber",
+            "Sin precio": "bubble-rose",
+            "No activo/publicado": "bubble-purple",
+        }
+        bubbles = "".join(
+            f'<span class="combo-bubble {colors.get(blocker, "bubble-slate")}"></span>' for blocker in blockers[:4]
+        )
+        if not bubbles:
+            bubbles = '<span class="combo-bubble bubble-slate"></span>'
+        label = blockers[0] if blockers else clean_value(text)
+        rest = " + ".join(blockers[1:])
+        rest_html = f"<small>+ {escape(rest)}</small>" if rest else ""
+        return f'<div class="combo-blocker">{bubbles}<b>{escape(label)}</b>{rest_html}</div>'
+
+    rows = []
+    for _, row in combo_df.iterrows():
+        models = int(row.get("Modelos") or 0)
+        bq = int(row.get("Stock_BigQuery") or models)
+        shopify = int(row.get("Stock_Shopify") or 0)
+        rows.append(
+            f"""
+            <tr>
+                <td>{bubble_html(row.get("Bloqueos"))}</td>
+                <td><div class="combo-state {soft_class(row.get("Bloqueos"))}">{escape(clean_value(row.get("Estado operativo")))}</div></td>
+                <td>{combo_metric_html(models, pct(models, total_models_safe), "purple")}</td>
+                <td>{combo_metric_html(bq, pct(bq, total_bq_safe), "blue")}</td>
+                <td>{combo_metric_html(shopify, pct(shopify, total_shopify_safe), "green")}</td>
+            </tr>
+            """
+        )
+
+    render_html(
+        f"""
+        <div class="combo-card">
+            <div class="combo-card-head">
+                <div>
+                    <div class="combo-title"><span class="combo-title-icon">◎</span> Cruce de bloqueos web</div>
+                    <p>Combinaciones de estados para explicar los modelos creados con stock BQ que no son visibles en web.</p>
+                </div>
+                <div class="combo-chip">{format_kpi_number(int(total_models))} modelo-color</div>
+            </div>
+            <div class="combo-table-wrap">
+                <table class="combo-table">
+                    <thead>
+                        <tr>
+                            <th>Bloqueos detectados</th>
+                            <th>Estado actual</th>
+                            <th>Modelos</th>
+                            <th>Mod-Col BigQuery</th>
+                            <th>Mod-Col con stock Shopify</th>
+                        </tr>
+                    </thead>
+                    <tbody>{''.join(rows)}</tbody>
+                    <tfoot>
+                        <tr>
+                            <td colspan="2"><b>Totales</b><span>{len(combo_df)} combinaciones</span></td>
+                            <td>{format_kpi_number(int(total_models))}<small>100%</small></td>
+                            <td>{format_kpi_number(int(total_bq))}<small>100%</small></td>
+                            <td>{format_kpi_number(int(total_shopify_raw))}<small>100%</small></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+        """
+    )
     return combo_df
 
 

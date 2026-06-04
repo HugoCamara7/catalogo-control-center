@@ -3502,15 +3502,13 @@ def inject_custom_css(config):
             font-weight:950;
         }}
         .chart-action {{
-            color:#64748B;
-            font-weight:950;
-            letter-spacing:2px;
+            display:none;
         }}
         .bar-stage {{
             height:250px;
             display:flex;
             align-items:flex-end;
-            gap:18px;
+            gap:12px;
             padding:16px 8px 4px;
             border-bottom:1px solid #DDE6F2;
             background:repeating-linear-gradient(to top, transparent 0, transparent 48px, #E8EEF7 49px);
@@ -3541,17 +3539,29 @@ def inject_custom_css(config):
             background:linear-gradient(180deg,#6D5BFF 0%,#3D2CCF 100%);
         }}
         .bar-label {{
-            min-height:54px;
+            min-height:46px;
             display:flex;
             flex-direction:column;
             align-items:center;
             justify-content:flex-start;
             gap:5px;
             color:#172554;
-            font-size:11px;
+            font-size:10px;
             line-height:1.1;
             text-align:center;
             font-weight:850;
+        }}
+        .table-pager {{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            margin-top:14px;
+        }}
+        .pager-note {{
+            color:#64748B;
+            font-size:12px;
+            font-weight:750;
         }}
         .bar-item {{
             position:relative;
@@ -4398,6 +4408,18 @@ def render_kpi_cards(kpis):
     render_html(f'<div class="kpi-card-grid">{html}</div>')
 
 
+def short_problem_label(value):
+    text = clean_value(value)
+    mapping = {
+        "Con stock no visible": "Stock no visible",
+        "Modelo con stock no creado": "No creado",
+        "Modelo con stock sin foto": "Sin foto",
+        "Creado con stock sin precio": "Sin precio",
+        "Sin stock visible": "Visible sin stock",
+    }
+    return mapping.get(text, text[:18])
+
+
 def render_brand_summary_table(brand_summary):
     if brand_summary is None or brand_summary.empty:
         return
@@ -4457,7 +4479,8 @@ def render_kpi_bar_chart(title, rows, icon="&#9661;", purple=False):
         value = float(row.get("value") or 0)
         height = max(3, int((value / max_value) * 190)) if value else 3
         label = escape(clean_value(row.get("label")))
-        label_html = "<br>".join(label.split(" "))
+        short_label = escape(clean_value(row.get("short")) or clean_value(row.get("label")))
+        label_html = "<br>".join(short_label.split(" "))
         value_text = format_kpi_number(value)
         bar_class = "bar-fill purple" if purple else "bar-fill"
         bars.append(
@@ -4477,7 +4500,6 @@ def render_kpi_bar_chart(title, rows, icon="&#9661;", purple=False):
     <div class="chart-card">
         <div class="chart-head">
             <div class="chart-title"><span>{icon}</span><span>{escape(title)}</span></div>
-            <div class="chart-action">...</div>
         </div>
         <div class="bar-stage">{''.join(bars)}</div>
     </div>
@@ -4510,7 +4532,7 @@ def render_actions_table(actions_df, key_prefix):
         st.success("No hay pendientes accionables con la regla actual.")
         return actions_df
 
-    control_left, control_mid, control_right = st.columns([2.0, 1.1, 0.8])
+    control_left, control_problem, control_brand, control_right = st.columns([1.8, 1.1, 1.0, 0.7])
     with control_left:
         search = st.text_input(
             "Buscar pendientes",
@@ -4518,13 +4540,21 @@ def render_actions_table(actions_df, key_prefix):
             label_visibility="collapsed",
             key=f"{key_prefix}_actions_search",
         )
-    with control_mid:
+    with control_problem:
         problems = ["Todos"] + sorted(actions_df["Problema"].dropna().map(clean_value).unique().tolist())
         selected_problem = st.selectbox(
             "Filtrar",
             problems,
             label_visibility="collapsed",
             key=f"{key_prefix}_actions_filter",
+        )
+    with control_brand:
+        brands = ["Todas"] + sorted(actions_df["Marca"].dropna().map(clean_value).unique().tolist())
+        selected_brand = st.selectbox(
+            "Marca",
+            brands,
+            label_visibility="collapsed",
+            key=f"{key_prefix}_actions_brand",
         )
     with control_right:
         page_size = st.selectbox(
@@ -4542,14 +4572,28 @@ def render_actions_table(actions_df, key_prefix):
         ].copy()
     if selected_problem != "Todos":
         filtered = filtered[filtered["Problema"].map(clean_value) == selected_problem].copy()
+    if selected_brand != "Todas":
+        filtered = filtered[filtered["Marca"].map(clean_value) == selected_brand].copy()
 
-    visible = filtered if page_size == "Todos" else filtered.head(int(page_size))
+    page_key = f"{key_prefix}_actions_page"
+    if page_key not in st.session_state:
+        st.session_state[page_key] = 1
+    if page_size == "Todos":
+        page_size_int = len(filtered) or 1
+        total_pages = 1
+        st.session_state[page_key] = 1
+    else:
+        page_size_int = int(page_size)
+        total_pages = max(1, (len(filtered) + page_size_int - 1) // page_size_int)
+        st.session_state[page_key] = min(max(1, int(st.session_state[page_key])), total_pages)
+    start = (st.session_state[page_key] - 1) * page_size_int
+    visible = filtered.iloc[start : start + page_size_int].copy()
     rows = []
     for index, row in visible.reset_index(drop=True).iterrows():
         rows.append(
             f"""
             <tr>
-                <td><span class="row-index">{index + 1}</span></td>
+                <td><span class="row-index">{start + index + 1}</span></td>
                 <td><strong>{escape(clean_value(row.get("Mod-Col")))}</strong></td>
                 <td>{escape(clean_value(row.get("Marca")))}</td>
                 <td><span class="problem-dot"></span>{escape(clean_value(row.get("Problema")))}</td>
@@ -4574,12 +4618,28 @@ def render_actions_table(actions_df, key_prefix):
                 </thead>
                 <tbody>{''.join(rows)}</tbody>
             </table>
-            <p style="color:#64748B;font-size:12px;font-weight:750;margin:14px 0 0;">
-                Mostrando {len(visible)} de {len(filtered)} resultados filtrados.
-            </p>
         </div>
         """
     )
+    pager_left, pager_mid, pager_right = st.columns([1.4, 1, 1.4])
+    with pager_left:
+        st.caption(f"Mostrando {len(visible)} de {len(filtered)} resultados filtrados.")
+    with pager_mid:
+        c1, c2, c3 = st.columns([1, 1.2, 1])
+        with c1:
+            if st.button("‹", key=f"{key_prefix}_actions_prev", disabled=st.session_state[page_key] <= 1):
+                st.session_state[page_key] -= 1
+                st.rerun()
+        with c2:
+            st.markdown(
+                f"<div style='text-align:center;color:#172554;font-weight:950;padding-top:8px;'>"
+                f"{st.session_state[page_key]} / {total_pages}</div>",
+                unsafe_allow_html=True,
+            )
+        with c3:
+            if st.button("›", key=f"{key_prefix}_actions_next", disabled=st.session_state[page_key] >= total_pages):
+                st.session_state[page_key] += 1
+                st.rerun()
     return filtered
 
 
@@ -4620,13 +4680,25 @@ def render_missing_variants_table(missing_variants_df, key_prefix):
     if selected_brand != "Todas":
         filtered = filtered[filtered["MARCA_MA"].map(clean_value) == selected_brand].copy()
 
-    visible = filtered if page_size == "Todas" else filtered.head(int(page_size))
+    page_key = f"{key_prefix}_variants_page"
+    if page_key not in st.session_state:
+        st.session_state[page_key] = 1
+    if page_size == "Todas":
+        page_size_int = len(filtered) or 1
+        total_pages = 1
+        st.session_state[page_key] = 1
+    else:
+        page_size_int = int(page_size)
+        total_pages = max(1, (len(filtered) + page_size_int - 1) // page_size_int)
+        st.session_state[page_key] = min(max(1, int(st.session_state[page_key])), total_pages)
+    start = (st.session_state[page_key] - 1) * page_size_int
+    visible = filtered.iloc[start : start + page_size_int].copy()
     rows = []
     for index, row in visible.reset_index(drop=True).iterrows():
         rows.append(
             f"""
             <tr>
-                <td><span class="row-index">{index + 1}</span></td>
+                <td><span class="row-index">{start + index + 1}</span></td>
                 <td><strong>{escape(clean_value(row.get("Mod-Col")))}</strong></td>
                 <td>{escape(clean_value(row.get("MARCA_MA")))}</td>
                 <td>{escape(clean_value(row.get("Talla")))}</td>
@@ -4654,12 +4726,28 @@ def render_missing_variants_table(missing_variants_df, key_prefix):
                 </thead>
                 <tbody>{''.join(rows)}</tbody>
             </table>
-            <p style="color:#64748B;font-size:12px;font-weight:750;margin:14px 0 0;">
-                Mostrando {len(visible)} de {len(filtered)} variantes filtradas. Este detalle no cuenta como KPI principal.
-            </p>
         </div>
         """
     )
+    pager_left, pager_mid, pager_right = st.columns([1.4, 1, 1.4])
+    with pager_left:
+        st.caption(f"Mostrando {len(visible)} de {len(filtered)} variantes filtradas. Este detalle no cuenta como KPI principal.")
+    with pager_mid:
+        c1, c2, c3 = st.columns([1, 1.2, 1])
+        with c1:
+            if st.button("‹", key=f"{key_prefix}_variants_prev", disabled=st.session_state[page_key] <= 1):
+                st.session_state[page_key] -= 1
+                st.rerun()
+        with c2:
+            st.markdown(
+                f"<div style='text-align:center;color:#172554;font-weight:950;padding-top:8px;'>"
+                f"{st.session_state[page_key]} / {total_pages}</div>",
+                unsafe_allow_html=True,
+            )
+        with c3:
+            if st.button("›", key=f"{key_prefix}_variants_next", disabled=st.session_state[page_key] >= total_pages):
+                st.session_state[page_key] += 1
+                st.rerun()
     return filtered
 
 
@@ -4717,18 +4805,19 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         else pd.DataFrame({"Problema": ["Sin observaciones"], "Casos": [0]})
     )
     funnel_rows = [
-        {"label": "Con stock", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
-        {"label": "Creados", "value": kpis["modelos_creados_shopify"], "icon": "&#9635;"},
-        {"label": "Creados sin stock", "value": kpis["productos_creados_sin_stock"], "icon": "&#9636;"},
-        {"label": "Productos visibles", "value": kpis["productos_visibles"], "icon": "&#9711;"},
-        {"label": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
-        {"label": "Sin precio", "value": kpis["modelos_sin_precio"], "icon": "$"},
-        {"label": "Sin foto", "value": kpis["modelos_sin_foto"], "icon": "&#9673;"},
-        {"label": "Visibles sin stock", "value": kpis["sin_stock_visibles"], "icon": "&#9888;"},
+        {"label": "Modelos con stock", "short": "Con stock", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
+        {"label": "Modelos creados en Shopify", "short": "Creados", "value": kpis["modelos_creados_shopify"], "icon": "&#9635;"},
+        {"label": "Creados sin stock", "short": "Sin stock", "value": kpis["productos_creados_sin_stock"], "icon": "&#9636;"},
+        {"label": "Productos visibles", "short": "Visibles", "value": kpis["productos_visibles"], "icon": "&#9711;"},
+        {"label": "Pendientes de creacion", "short": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
+        {"label": "Sin precio Shopify", "short": "Sin precio", "value": kpis["modelos_sin_precio"], "icon": "$"},
+        {"label": "Sin foto Shopify", "short": "Sin foto", "value": kpis["modelos_sin_foto"], "icon": "&#9673;"},
+        {"label": "Visibles sin stock", "short": "Visib. sin stock", "value": kpis["sin_stock_visibles"], "icon": "&#9888;"},
     ]
     pareto_rows = [
         {
             "label": clean_value(row.get("Problema")),
+            "short": short_problem_label(row.get("Problema")),
             "value": int(row.get("Casos") or 0),
             "icon": "&#9679;",
         }

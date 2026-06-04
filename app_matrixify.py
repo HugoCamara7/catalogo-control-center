@@ -1285,6 +1285,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     model_stock["Sin_precio_shopify"] = model_stock["Mod-Col KPI"].map(lambda value: clean_value(value) in no_price_keys)
     no_photo_keys = {clean_value(value) for value in no_photo_models.get("Mod-Col KPI", pd.Series(dtype=object))}
     model_stock["Sin_foto_shopify"] = model_stock["Mod-Col KPI"].map(lambda value: clean_value(value) in no_photo_keys)
+    model_stock["Con_foto_shopify"] = model_stock["Fotos_Shopify"] > 0
     model_stock["Listo_venta"] = (
         model_stock["Debe estar visible"]
         & model_stock["Producto_creado"]
@@ -1306,6 +1307,12 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "modelos_variantes_incompletas": int(model_stock["Variantes_stock_incompletas"].sum()),
         "productos_creados_sin_stock": created_without_stock,
         "productos_visibles": int((model_stock["Debe estar visible"] & model_stock["Visible_Shopify"]).sum()),
+        "modelos_con_stock_con_foto": int(
+            (model_stock["Debe estar visible"] & model_stock["Producto_creado"] & model_stock["Con_foto_shopify"]).sum()
+        ),
+        "modelos_visibles_con_foto": int(
+            (model_stock["Debe estar visible"] & model_stock["Visible_Shopify"] & model_stock["Con_foto_shopify"]).sum()
+        ),
         "modelos_listos_venta": int(model_stock["Listo_venta"].sum()),
         "modelos_sin_precio": int(len(no_price_models)),
         "modelos_sin_foto": int(len(no_photo_models)),
@@ -3340,6 +3347,17 @@ def inject_custom_css(config):
             gap:14px;
             margin:18px 0 22px;
         }}
+        .kpi-section-label {{
+            margin:26px 0 -4px;
+            color:#0B1B46;
+            font-weight:950;
+            font-size:1.02rem;
+            letter-spacing:0;
+        }}
+        .kpi-section-label.secondary {{
+            margin-top:8px;
+            color:#64748B;
+        }}
         .kpi-card {{
             display:flex;
             align-items:center;
@@ -4363,27 +4381,42 @@ def format_kpi_number(value):
 
 
 def render_kpi_cards(kpis):
-    cards = [
-        ("Modelos con stock", kpis["modelos_con_stock"], "blue", "&#9633;"),
-        ("Creados Shopify", kpis["modelos_creados_shopify"], "green", "&#9635;"),
-        ("Cobertura", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
-        ("Pendientes creacion", kpis["modelos_pendientes"], "orange", "!"),
-        ("Creados sin stock", kpis["productos_creados_sin_stock"], "cyan", "&#9636;"),
-        ("Sin foto Shopify", kpis["modelos_sin_foto"], "lime", "&#9673;"),
-        ("Productos visibles", kpis["productos_visibles"], "green", "&#9711;"),
-        ("Visibles sin stock", kpis["sin_stock_visibles"], "orange", "&#9888;"),
-        ("Sin precio Shopify", kpis["modelos_sin_precio"], "red", "$"),
+    primary_cards = [
+        ("Modelos con stock BQ", kpis["modelos_con_stock"], "blue", "&#9633;"),
+        ("Creados con stock", kpis["modelos_creados_con_stock"], "green", "&#9679;"),
+        ("Pendientes por crear", kpis["modelos_pendientes"], "orange", "!"),
+        ("Cobertura stock BQ", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
+        ("Visibles con stock", kpis["productos_visibles"], "green", "&#9711;"),
+        ("Con stock no visibles", kpis["con_stock_no_visibles"], "orange", "&#9676;"),
+        ("Con stock con foto", kpis["modelos_con_stock_con_foto"], "lime", "&#9673;"),
+        ("Con stock sin foto", kpis["modelos_sin_foto"], "orange", "&#9673;"),
+        ("Con stock sin precio", kpis["modelos_sin_precio"], "red", "$"),
     ]
-    html = "".join(
+    secondary_cards = [
+        ("Total creados Shopify", kpis["modelos_creados_shopify"], "green", "&#9635;"),
+        ("Creados sin stock BQ", kpis["productos_creados_sin_stock"], "cyan", "&#9636;"),
+        ("Visibles sin stock", kpis["sin_stock_visibles"], "orange", "&#9888;"),
+    ]
+
+    def cards_html(cards):
+        return "".join(
+            f"""
+            <div class="kpi-card {tone}">
+                <div class="kpi-icon">{icon}</div>
+                <div><span>{label}</span><strong>{format_kpi_number(value)}</strong></div>
+            </div>
+            """
+            for label, value, tone, icon in cards
+        )
+
+    render_html(
         f"""
-        <div class="kpi-card {tone}">
-            <div class="kpi-icon">{icon}</div>
-            <div><span>{label}</span><strong>{format_kpi_number(value)}</strong></div>
-        </div>
+        <div class="kpi-section-label">KPIs principales segun stock BigQuery</div>
+        <div class="kpi-card-grid">{cards_html(primary_cards)}</div>
+        <div class="kpi-section-label secondary">Datos Shopify adicionales</div>
+        <div class="kpi-card-grid">{cards_html(secondary_cards)}</div>
         """
-        for label, value, tone, icon in cards
     )
-    render_html(f'<div class="kpi-card-grid">{html}</div>')
 
 
 def short_problem_label(value):
@@ -4783,14 +4816,16 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         else pd.DataFrame({"Problema": ["Sin observaciones"], "Casos": [0]})
     )
     funnel_rows = [
-        {"label": "Modelos con stock", "short": "Con stock", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
-        {"label": "Modelos creados en Shopify", "short": "Creados", "value": kpis["modelos_creados_shopify"], "icon": "&#9635;"},
+        {"label": "Modelos con stock BigQuery", "short": "Stock BQ", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
         {"label": "Creados con stock", "short": "Creados stock", "value": kpis["modelos_creados_con_stock"], "icon": "&#9635;"},
-        {"label": "Creados sin stock", "short": "Sin stock", "value": kpis["productos_creados_sin_stock"], "icon": "&#9636;"},
-        {"label": "Productos visibles", "short": "Visibles", "value": kpis["productos_visibles"], "icon": "&#9711;"},
         {"label": "Pendientes de creacion", "short": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
+        {"label": "Visibles con stock", "short": "Visibles stock", "value": kpis["productos_visibles"], "icon": "&#9711;"},
+        {"label": "Con stock no visibles", "short": "No visibles", "value": kpis["con_stock_no_visibles"], "icon": "&#9676;"},
+        {"label": "Con stock con foto", "short": "Con foto", "value": kpis["modelos_con_stock_con_foto"], "icon": "&#9673;"},
+        {"label": "Con stock sin foto", "short": "Sin foto", "value": kpis["modelos_sin_foto"], "icon": "&#9673;"},
         {"label": "Sin precio Shopify", "short": "Sin precio", "value": kpis["modelos_sin_precio"], "icon": "$"},
-        {"label": "Sin foto Shopify", "short": "Sin foto", "value": kpis["modelos_sin_foto"], "icon": "&#9673;"},
+        {"label": "Modelos creados en Shopify", "short": "Total creados", "value": kpis["modelos_creados_shopify"], "icon": "&#9635;"},
+        {"label": "Creados sin stock", "short": "Creados sin stock", "value": kpis["productos_creados_sin_stock"], "icon": "&#9636;"},
         {"label": "Visibles sin stock", "short": "Visib. sin stock", "value": kpis["sin_stock_visibles"], "icon": "&#9888;"},
     ]
     pareto_rows = [

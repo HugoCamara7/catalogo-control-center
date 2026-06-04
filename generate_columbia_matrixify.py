@@ -702,7 +702,7 @@ def sial_short_features(value, max_length=45):
 def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None, brand_label=""):
     brand_config = brand_config or get_brand_config()
     brand_label = clean(brand_label) or brand_config["label"]
-    display_size = sial_size_value(variant["__SIZE"])
+    display_size = sial_size_value(variant.get("__SIAL_SIZE") or variant["__SIZE"])
     model, color = split_model_color(key)
     product_type = clean(product.get("Type"))
     color_web = clean(product.get("Color Web"))
@@ -1930,6 +1930,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             arti[optional_column] = ""
     arti = arti[arti["__KEY"].isin(wanted_keys)].copy()
     arti = arti[arti["CODINT_MA"].map(clean) != ""].copy()
+    arti["__SIAL_SIZE"] = arti["TALNUM_MA"].map(clean)
     arti["__SIZE"] = arti["TALNUM_MA"].map(normalize_size)
     arti = arti[arti["__SIZE"] != ""].copy()
     arti = arti.sort_values(by=["__KEY", "__SIZE"], key=lambda series: series.map(size_sort_key))

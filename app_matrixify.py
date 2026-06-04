@@ -1143,6 +1143,16 @@ def valid_kpi_price(value):
         return False
 
 
+def numeric_kpi_value(value):
+    text = clean_value(value).replace(",", ".")
+    if not text:
+        return 0
+    try:
+        return float(text)
+    except ValueError:
+        return 0
+
+
 def flatten_shopify_for_kpis(shopify_products):
     product_rows = []
     variant_rows = []
@@ -1173,6 +1183,7 @@ def flatten_shopify_for_kpis(shopify_products):
                     "Publicado": "SI" if online_url else "",
                     "Variant SKU": clean_value(variant.get("Variant SKU")),
                     "Variant Price": clean_value(variant.get("Variant Price")),
+                    "Variant Inventory Qty": numeric_kpi_value(variant.get("Variant Inventory Qty")),
                     "Tiene precio": valid_kpi_price(variant.get("Variant Price")),
                 }
             )
@@ -1270,6 +1281,21 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         if not variants_df.empty and "Mod-Col" in variants_df.columns
         else pd.DataFrame(columns=["Mod-Col", "Tiene precio"])
     )
+    shopify_stock_by_model = (
+        variants_df.groupby("Mod-Col", as_index=False)["Variant Inventory Qty"].sum()
+        if not variants_df.empty and "Mod-Col" in variants_df.columns and "Variant Inventory Qty" in variants_df.columns
+        else pd.DataFrame(columns=["Mod-Col", "Variant Inventory Qty"])
+    )
+    model_stock = model_stock.merge(
+        shopify_stock_by_model.rename(columns={"Variant Inventory Qty": "Stock_Shopify"}),
+        how="left",
+        left_on="Mod-Col KPI",
+        right_on="Mod-Col",
+    )
+    model_stock["Stock_Shopify"] = pd.to_numeric(model_stock["Stock_Shopify"], errors="coerce").fillna(0)
+    if "Mod-Col" in model_stock.columns:
+        model_stock = model_stock.drop(columns=["Mod-Col"])
+
     no_price_models = model_stock[model_stock["Producto_creado"] & model_stock["Debe estar visible"]].merge(
         price_by_model,
         how="left",
@@ -1281,15 +1307,26 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     no_photo_models = model_stock[
         model_stock["Debe estar visible"] & model_stock["Producto_creado"] & (model_stock["Fotos_Shopify"] <= 0)
     ].copy()
+    no_shopify_stock_models = model_stock[
+        model_stock["Debe estar visible"] & model_stock["Producto_creado"] & (model_stock["Stock_Shopify"] <= 0)
+    ].copy()
     no_price_keys = {clean_value(value) for value in no_price_models.get("Mod-Col KPI", pd.Series(dtype=object))}
     model_stock["Sin_precio_shopify"] = model_stock["Mod-Col KPI"].map(lambda value: clean_value(value) in no_price_keys)
     no_photo_keys = {clean_value(value) for value in no_photo_models.get("Mod-Col KPI", pd.Series(dtype=object))}
     model_stock["Sin_foto_shopify"] = model_stock["Mod-Col KPI"].map(lambda value: clean_value(value) in no_photo_keys)
+    no_shopify_stock_keys = {
+        clean_value(value) for value in no_shopify_stock_models.get("Mod-Col KPI", pd.Series(dtype=object))
+    }
+    model_stock["Sin_stock_shopify"] = model_stock["Mod-Col KPI"].map(
+        lambda value: clean_value(value) in no_shopify_stock_keys
+    )
     model_stock["Con_foto_shopify"] = model_stock["Fotos_Shopify"] > 0
+    model_stock["Con_stock_shopify"] = model_stock["Stock_Shopify"] > 0
     model_stock["Listo_venta"] = (
         model_stock["Debe estar visible"]
         & model_stock["Producto_creado"]
         & model_stock["Visible_Shopify"]
+        & model_stock["Con_stock_shopify"]
         & ~model_stock["Sin_precio_shopify"]
         & ~model_stock["Sin_foto_shopify"]
     )
@@ -1307,12 +1344,25 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "modelos_variantes_incompletas": int(model_stock["Variantes_stock_incompletas"].sum()),
         "productos_creados_sin_stock": created_without_stock,
         "productos_visibles": int((model_stock["Debe estar visible"] & model_stock["Visible_Shopify"]).sum()),
+        "modelos_listos_tienda": int(model_stock["Listo_venta"].sum()),
         "modelos_con_stock_con_foto": int(
             (model_stock["Debe estar visible"] & model_stock["Producto_creado"] & model_stock["Con_foto_shopify"]).sum()
         ),
         "modelos_visibles_con_foto": int(
             (model_stock["Debe estar visible"] & model_stock["Visible_Shopify"] & model_stock["Con_foto_shopify"]).sum()
         ),
+        "modelos_con_stock_shopify": int(
+            (model_stock["Debe estar visible"] & model_stock["Producto_creado"] & model_stock["Con_stock_shopify"]).sum()
+        ),
+        "modelos_sin_stock_shopify": int(len(no_shopify_stock_models)),
+        "sincronizacion_stock_shopify": float(
+            (
+                model_stock["Debe estar visible"]
+                & model_stock["Producto_creado"]
+                & model_stock["Con_stock_shopify"]
+            ).sum()
+            / created_with_stock
+        ) if created_with_stock else 0,
         "modelos_listos_venta": int(model_stock["Listo_venta"].sum()),
         "modelos_sin_precio": int(len(no_price_models)),
         "modelos_sin_foto": int(len(no_photo_models)),
@@ -1345,6 +1395,8 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Creado con stock sin precio", "Accion sugerida": "Cargar precio en Shopify", "Stock total": row["Stock_total"]})
     for _, row in no_photo_models.iterrows():
         action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock sin foto", "Accion sugerida": "Solicitar fotos al Brand Manager", "Stock total": row["Stock_total"]})
+    for _, row in no_shopify_stock_models.iterrows():
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock BQ sin stock Shopify", "Accion sugerida": "Revisar sincronizacion de stock hacia Shopify", "Stock total": row["Stock_total"]})
 
     actions_df = pd.DataFrame(action_rows)
     missing_stock_variants_export = (
@@ -1361,6 +1413,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "missing_stock_variants": missing_stock_variants_export,
         "no_price_models": no_price_models,
         "no_photo_models": no_photo_models,
+        "no_shopify_stock_models": no_shopify_stock_models,
         "stock_not_visible": stock_not_visible,
         "no_stock_visible": no_stock_visible,
     }
@@ -4386,13 +4439,17 @@ def render_kpi_cards(kpis):
         ("Creados con stock", kpis["modelos_creados_con_stock"], "green", "&#9679;"),
         ("Pendientes por crear", kpis["modelos_pendientes"], "orange", "!"),
         ("Cobertura stock BQ", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
-        ("Visibles con stock", kpis["productos_visibles"], "green", "&#9711;"),
+        ("Listos tienda", kpis["modelos_listos_tienda"], "green", "&#9711;"),
         ("Con stock no visibles", kpis["con_stock_no_visibles"], "orange", "&#9676;"),
-        ("Con stock con foto", kpis["modelos_con_stock_con_foto"], "lime", "&#9673;"),
         ("Con stock sin foto", kpis["modelos_sin_foto"], "orange", "&#9673;"),
         ("Con stock sin precio", kpis["modelos_sin_precio"], "red", "$"),
+        ("Sin stock Shopify", kpis["modelos_sin_stock_shopify"], "red", "S"),
+        ("Sync stock Shopify", f"{kpis['sincronizacion_stock_shopify']:.0%}", "purple", "%"),
     ]
     secondary_cards = [
+        ("Activos con stock", kpis["productos_visibles"], "green", "&#9711;"),
+        ("Con stock con foto", kpis["modelos_con_stock_con_foto"], "lime", "&#9673;"),
+        ("Con stock Shopify", kpis["modelos_con_stock_shopify"], "lime", "S"),
         ("Total creados Shopify", kpis["modelos_creados_shopify"], "green", "&#9635;"),
         ("Creados sin stock BQ", kpis["productos_creados_sin_stock"], "cyan", "&#9636;"),
         ("Visibles sin stock", kpis["sin_stock_visibles"], "orange", "&#9888;"),
@@ -4426,6 +4483,7 @@ def short_problem_label(value):
         "Modelo con stock no creado": "No creado",
         "Modelo con stock sin foto": "Sin foto",
         "Creado con stock sin precio": "Sin precio",
+        "Modelo con stock BQ sin stock Shopify": "Sin stock Shopify",
         "Sin stock visible": "Visible sin stock",
     }
     return mapping.get(text, text[:18])
@@ -4819,11 +4877,12 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         {"label": "Modelos con stock BigQuery", "short": "Stock BQ", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
         {"label": "Creados con stock", "short": "Creados stock", "value": kpis["modelos_creados_con_stock"], "icon": "&#9635;"},
         {"label": "Pendientes de creacion", "short": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
-        {"label": "Visibles con stock", "short": "Visibles stock", "value": kpis["productos_visibles"], "icon": "&#9711;"},
+        {"label": "Listos para tienda", "short": "Listos tienda", "value": kpis["modelos_listos_tienda"], "icon": "&#9711;"},
         {"label": "Con stock no visibles", "short": "No visibles", "value": kpis["con_stock_no_visibles"], "icon": "&#9676;"},
-        {"label": "Con stock con foto", "short": "Con foto", "value": kpis["modelos_con_stock_con_foto"], "icon": "&#9673;"},
         {"label": "Con stock sin foto", "short": "Sin foto", "value": kpis["modelos_sin_foto"], "icon": "&#9673;"},
         {"label": "Sin precio Shopify", "short": "Sin precio", "value": kpis["modelos_sin_precio"], "icon": "$"},
+        {"label": "Sin stock Shopify", "short": "Sin stock Shopify", "value": kpis["modelos_sin_stock_shopify"], "icon": "S"},
+        {"label": "Activos con stock", "short": "Activos stock", "value": kpis["productos_visibles"], "icon": "&#9711;"},
         {"label": "Modelos creados en Shopify", "short": "Total creados", "value": kpis["modelos_creados_shopify"], "icon": "&#9635;"},
         {"label": "Creados sin stock", "short": "Creados sin stock", "value": kpis["productos_creados_sin_stock"], "icon": "&#9636;"},
         {"label": "Visibles sin stock", "short": "Visib. sin stock", "value": kpis["sin_stock_visibles"], "icon": "&#9888;"},

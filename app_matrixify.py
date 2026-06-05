@@ -1075,7 +1075,7 @@ SELECT
   fecha_corte,
   id_producto,
   UPPER(TRIM(key_producto)) AS key_producto,
-  codigo_tienda,
+  codigo_tienda AS `cod tda`,
   COALESCE(stock_tiendas, 0) AS stock_tiendas,
   COALESCE(stock_bodega, 0) AS stock_bodega,
   COALESCE(stock_tiendas, 0) + COALESCE(stock_bodega, 0) AS stock_total
@@ -1103,6 +1103,20 @@ def read_current_stock_from_bigquery(bigquery_config):
     job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
     location = clean_value(config.get("location")) or None
     df = client.query(STOCK_QUERY_DEFAULT, job_config=job_config, location=location).to_dataframe()
+    store_column = first_existing_column(
+        df,
+        [
+            "cod tda",
+            "cod_tda",
+            "codtda",
+            "codigo_tienda",
+            "codigo tienda",
+            "codigo_tda",
+            "codigo tda",
+        ],
+    )
+    if store_column and store_column != "codigo_tienda":
+        df = df.rename(columns={store_column: "codigo_tienda"})
 
     for column in ("fecha_corte", "id_producto", "key_producto", "codigo_tienda", "stock_tiendas", "stock_bodega", "stock_total"):
         if column not in df.columns:
@@ -1223,9 +1237,32 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
     rules = load_ecomm_stock_rules(str(DEFAULT_ECOMM_WAREHOUSES_PATH))
     site_norm = normalize_site_for_stock(brand_config.get("site_label"))
     site_rules = rules[rules["site_norm"] == site_norm].copy() if not rules.empty else pd.DataFrame()
+    sample_codes = []
+    if isinstance(stock_df, pd.DataFrame) and not stock_df.empty and "codigo_tienda" in stock_df.columns:
+        sample_codes = (
+            stock_df["codigo_tienda"]
+            .map(clean_value)
+            .dropna()
+            .map(str)
+            .loc[lambda values: values != ""]
+            .drop_duplicates()
+            .head(12)
+            .tolist()
+        )
     if site_rules.empty:
         return pd.DataFrame(
-            columns=["Bodega", "Nombre", "Stock seguridad", "Aparece en query", "Filas query", "Stock bruto", "Stock efectivo"]
+            [
+                {
+                    "Bodega": "Sin reglas",
+                    "Nombre": f"Archivo existe: {'Si' if DEFAULT_ECOMM_WAREHOUSES_PATH.exists() else 'No'} | sitio: {brand_config.get('site_label')}",
+                    "Stock seguridad": 0,
+                    "Aparece en query": "No",
+                    "Filas query": 0,
+                    "Stock bruto": 0,
+                    "Stock efectivo": 0,
+                    "Codigos query muestra": ", ".join(sample_codes),
+                }
+            ]
         )
 
     stock = stock_df.copy() if isinstance(stock_df, pd.DataFrame) else pd.DataFrame()
@@ -1256,13 +1293,14 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
     summary["Stock bruto"] = pd.to_numeric(summary["Stock bruto"], errors="coerce").fillna(0)
     summary["Stock efectivo"] = (summary["Stock bruto"] - summary["stock_seguridad"]).clip(lower=0)
     summary["Aparece en query"] = summary["Filas query"].map(lambda value: "Si" if int(value or 0) > 0 else "No")
+    summary["Codigos query muestra"] = ", ".join(sample_codes)
     return summary.rename(
         columns={
             "bodega_code": "Bodega",
             "bodega_nombre": "Nombre",
             "stock_seguridad": "Stock seguridad",
         }
-    )[["Bodega", "Nombre", "Stock seguridad", "Aparece en query", "Filas query", "Stock bruto", "Stock efectivo"]]
+    )[["Bodega", "Nombre", "Stock seguridad", "Aparece en query", "Filas query", "Stock bruto", "Stock efectivo", "Codigos query muestra"]]
 
 
 def stock_key_from_parts(mod_col, size):
@@ -5577,12 +5615,16 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         f"{format_kpi_number(kpis.get('stock_ecomm_models', 0))} modelo-color con stock efectivo del sitio"
     )
     ecomm_match_df = result.get("ecomm_stock_match", pd.DataFrame())
-    if ecomm_match_df is not None and not ecomm_match_df.empty:
+    if ecomm_match_df is None or ecomm_match_df.empty:
+        st.caption("Bodegas eComm del sitio con match en query: 0/0 | No se genero auditoria de bodegas.")
+    else:
         matched_stores = int((ecomm_match_df["Aparece en query"] == "Si").sum())
         total_stores = len(ecomm_match_df)
         missing_stores = ecomm_match_df[ecomm_match_df["Aparece en query"] != "Si"]["Bodega"].astype(str).tolist()
         missing_text = f" | Sin match: {', '.join(missing_stores[:8])}" if missing_stores else ""
-        st.caption(f"Bodegas eComm del sitio con match en query: {matched_stores}/{total_stores}{missing_text}")
+        sample_codes = clean_value(ecomm_match_df.get("Codigos query muestra", pd.Series([""])).iloc[0])
+        sample_text = f" | Muestra query: {sample_codes}" if sample_codes else ""
+        st.caption(f"Bodegas eComm del sitio con match en query: {matched_stores}/{total_stores}{missing_text}{sample_text}")
     render_kpi_cards(kpis)
     combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
     render_non_visible_combo_table(combo_summary_df)

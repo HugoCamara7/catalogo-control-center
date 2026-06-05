@@ -1062,6 +1062,7 @@ WITH stock_base AS (
     id_producto,
     conca || '-' || talla AS key_producto,
     codigo_tienda,
+    CONCAT_TIENDA,
     stock_tiendas,
     stock_bodega
   FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
@@ -1075,7 +1076,8 @@ SELECT
   fecha_corte,
   id_producto,
   UPPER(TRIM(key_producto)) AS key_producto,
-  codigo_tienda AS `cod tda`,
+  codigo_tienda,
+  CONCAT_TIENDA,
   COALESCE(stock_tiendas, 0) AS stock_tiendas,
   COALESCE(stock_bodega, 0) AS stock_bodega,
   COALESCE(stock_tiendas, 0) + COALESCE(stock_bodega, 0) AS stock_total
@@ -1118,7 +1120,7 @@ def read_current_stock_from_bigquery(bigquery_config):
     if store_column and store_column != "codigo_tienda":
         df = df.rename(columns={store_column: "codigo_tienda"})
 
-    for column in ("fecha_corte", "id_producto", "key_producto", "codigo_tienda", "stock_tiendas", "stock_bodega", "stock_total"):
+    for column in ("fecha_corte", "id_producto", "key_producto", "codigo_tienda", "CONCAT_TIENDA", "stock_tiendas", "stock_bodega", "stock_total"):
         if column not in df.columns:
             df[column] = 0 if column.startswith("stock_") else ""
     df["key_producto"] = df["key_producto"].map(lambda value: clean_value(value).upper())
@@ -1146,6 +1148,20 @@ def normalize_warehouse_code(value):
     tokens = re.findall(r"\d+", text)
     valid_codes = [int(token) for token in tokens if token.isdigit() and 1 <= int(token) <= 400]
     return str(valid_codes[0]) if valid_codes else ""
+
+
+def stock_units_from_concat_tienda(value, store_code):
+    text = clean_value(value)
+    store = normalize_warehouse_code(store_code)
+    if not text or not store:
+        return 0
+    numbers = [int(token) for token in re.findall(r"\d+", text)]
+    if not numbers:
+        return 0
+    candidates = [number for number in numbers if str(number) != store]
+    if not candidates:
+        return 0
+    return max(candidates)
 
 
 @st.cache_data(show_spinner=False)
@@ -1215,6 +1231,14 @@ def apply_ecomm_stock_rules(stock_df, brand_config):
     stock.loc[stock["stock_bruto_ecomm"] <= 0, "stock_bruto_ecomm"] = stock.loc[
         stock["stock_bruto_ecomm"] <= 0, "stock_total"
     ]
+    if "CONCAT_TIENDA" in stock.columns:
+        concat_units = stock.apply(
+            lambda row: stock_units_from_concat_tienda(row.get("CONCAT_TIENDA"), row.get("codigo_tienda_norm")),
+            axis=1,
+        )
+        stock.loc[stock["stock_bruto_ecomm"] <= 0, "stock_bruto_ecomm"] = concat_units[
+            stock["stock_bruto_ecomm"] <= 0
+        ]
     stock["stock_total"] = (stock["stock_bruto_ecomm"] - stock["stock_seguridad"]).clip(lower=0)
     stock["stock_seguridad_aplicado"] = stock["stock_bruto_ecomm"] - stock["stock_total"]
 
@@ -1267,19 +1291,33 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
 
     stock = stock_df.copy() if isinstance(stock_df, pd.DataFrame) else pd.DataFrame()
     if stock.empty or "codigo_tienda" not in stock.columns:
-        stock_summary = pd.DataFrame(columns=["bodega_code", "Filas query", "Stock bruto"])
+        stock_summary = pd.DataFrame(columns=["bodega_code", "Filas query", "Stock bruto", "Stock efectivo"])
     else:
         stock["bodega_code"] = stock["codigo_tienda"].map(normalize_warehouse_code)
         for column in ("stock_tiendas", "stock_bodega", "stock_total"):
             stock[column] = pd.to_numeric(stock.get(column, 0), errors="coerce").fillna(0)
         stock["stock_bruto"] = stock["stock_tiendas"] + stock["stock_bodega"]
         stock.loc[stock["stock_bruto"] <= 0, "stock_bruto"] = stock.loc[stock["stock_bruto"] <= 0, "stock_total"]
+        if "CONCAT_TIENDA" in stock.columns:
+            concat_units = stock.apply(
+                lambda row: stock_units_from_concat_tienda(row.get("CONCAT_TIENDA"), row.get("bodega_code")),
+                axis=1,
+            )
+            stock.loc[stock["stock_bruto"] <= 0, "stock_bruto"] = concat_units[stock["stock_bruto"] <= 0]
+        stock = stock.merge(
+            site_rules[["bodega_code", "stock_seguridad"]],
+            how="left",
+            on="bodega_code",
+        )
+        stock["stock_seguridad"] = pd.to_numeric(stock["stock_seguridad"], errors="coerce").fillna(0)
+        stock["stock_efectivo"] = (stock["stock_bruto"] - stock["stock_seguridad"]).clip(lower=0)
         stock_summary = (
             stock.groupby("bodega_code", as_index=False)
             .agg(
                 **{
                     "Filas query": ("key_producto", "count"),
                     "Stock bruto": ("stock_bruto", "sum"),
+                    "Stock efectivo": ("stock_efectivo", "sum"),
                 }
             )
         )
@@ -1291,7 +1329,7 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
     )
     summary["Filas query"] = pd.to_numeric(summary["Filas query"], errors="coerce").fillna(0).astype(int)
     summary["Stock bruto"] = pd.to_numeric(summary["Stock bruto"], errors="coerce").fillna(0)
-    summary["Stock efectivo"] = (summary["Stock bruto"] - summary["stock_seguridad"]).clip(lower=0)
+    summary["Stock efectivo"] = pd.to_numeric(summary["Stock efectivo"], errors="coerce").fillna(0)
     summary["Aparece en query"] = summary["Filas query"].map(lambda value: "Si" if int(value or 0) > 0 else "No")
     summary["Codigos query muestra"] = ", ".join(sample_codes)
     return summary.rename(
@@ -1408,8 +1446,14 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     stock["key_producto"] = stock["key_producto"].map(lambda value: clean_value(value).upper())
     ecomm_stock_match = build_ecomm_stock_match_summary(stock, brand_config)
     stock = apply_ecomm_stock_rules(stock, brand_config)
-    stock_ecomm_rows = len(stock)
-    stock_ecomm_models = stock["key_producto"].map(lambda value: clean_value(value).rsplit("-", 1)[0]).nunique() if not stock.empty and "key_producto" in stock.columns else 0
+    stock_ecomm_rows = int((pd.to_numeric(stock.get("stock_total", 0), errors="coerce").fillna(0) > 0).sum()) if not stock.empty else 0
+    stock_ecomm_models = (
+        stock.loc[pd.to_numeric(stock.get("stock_total", 0), errors="coerce").fillna(0) > 0, "key_producto"]
+        .map(lambda value: clean_value(value).rsplit("-", 1)[0])
+        .nunique()
+        if not stock.empty and "key_producto" in stock.columns
+        else 0
+    )
     if stock.empty:
         stock = pd.DataFrame(columns=["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"])
     stock["key_producto"] = stock["key_producto"].map(lambda value: clean_value(value).upper())

@@ -1122,17 +1122,16 @@ def normalize_warehouse_code(value):
     text = clean_value(value)
     if not text:
         return ""
-    tokens = re.findall(r"\d+", text)
-    if "-" in text and tokens:
-        preferred = next((token for token in tokens if len(token) >= 2), tokens[-1])
-        return str(int(preferred)) if preferred.isdigit() else preferred
     try:
         numeric = float(text)
         if numeric.is_integer():
-            return str(int(numeric))
+            code = int(numeric)
+            return str(code) if 1 <= code <= 400 else ""
     except ValueError:
         pass
-    return re.sub(r"\.0$", "", text)
+    tokens = re.findall(r"\d+", text)
+    valid_codes = [int(token) for token in tokens if token.isdigit() and 1 <= int(token) <= 400]
+    return str(valid_codes[0]) if valid_codes else ""
 
 
 @st.cache_data(show_spinner=False)

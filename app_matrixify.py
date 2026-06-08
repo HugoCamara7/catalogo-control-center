@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from generate_columbia_matrixify import (
     SITE_CONFIGS,
@@ -64,6 +65,7 @@ DEFAULT_MATRIXIFY_PATH = "data/matrixify_modelo.xlsx"
 DEFAULT_ECOMM_WAREHOUSES_PATH = Path("data/bodegas_ecomm.xlsx")
 FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
+KPI_AUTO_REFRESH_SECONDS = 60 * 60
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -1360,18 +1362,6 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
     rules = load_ecomm_stock_rules(str(DEFAULT_ECOMM_WAREHOUSES_PATH))
     site_norm = normalize_site_for_stock(brand_config.get("site_label"))
     site_rules = rules[rules["site_norm"] == site_norm].copy() if not rules.empty else pd.DataFrame()
-    sample_codes = []
-    if isinstance(stock_df, pd.DataFrame) and not stock_df.empty and "codigo_tienda" in stock_df.columns:
-        sample_codes = (
-            stock_df["codigo_tienda"]
-            .map(clean_value)
-            .dropna()
-            .map(str)
-            .loc[lambda values: values != ""]
-            .drop_duplicates()
-            .head(12)
-            .tolist()
-        )
     if site_rules.empty:
         return pd.DataFrame(
             [
@@ -1383,7 +1373,6 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
                     "Filas query": 0,
                     "Stock bruto": 0,
                     "Stock efectivo": 0,
-                    "Codigos query muestra": ", ".join(sample_codes),
                 }
             ]
         )
@@ -1430,14 +1419,13 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
     summary["Stock bruto"] = pd.to_numeric(summary["Stock bruto"], errors="coerce").fillna(0)
     summary["Stock efectivo"] = pd.to_numeric(summary["Stock efectivo"], errors="coerce").fillna(0)
     summary["Aparece en query"] = summary["Filas query"].map(lambda value: "Si" if int(value or 0) > 0 else "No")
-    summary["Codigos query muestra"] = ", ".join(sample_codes)
     return summary.rename(
         columns={
             "bodega_code": "Bodega",
             "bodega_nombre": "Nombre",
             "stock_seguridad": "Stock seguridad",
         }
-    )[["Bodega", "Nombre", "Stock seguridad", "Aparece en query", "Filas query", "Stock bruto", "Stock efectivo", "Codigos query muestra"]]
+    )[["Bodega", "Nombre", "Stock seguridad", "Aparece en query", "Filas query", "Stock bruto", "Stock efectivo"]]
 
 
 def stock_key_from_parts(mod_col, size):
@@ -1833,6 +1821,21 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "stock_not_visible": stock_not_visible,
         "no_stock_visible": no_stock_visible,
     }
+
+
+def load_catalog_kpi_result(brand_config, shopify_config):
+    arti_df, arti_source = read_arti_for_app(brand_config)
+    stock_df = read_current_stock_from_bigquery(get_bigquery_config())
+    shopify_products = fetch_products(shopify_config)
+    result = build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config)
+    result["meta"] = {
+        "arti_source": arti_source,
+        "stock_rows": len(stock_df),
+        "shopify_products": len(shopify_products),
+        "fecha_corte": clean_value(stock_df["fecha_corte"].max()) if not stock_df.empty and "fecha_corte" in stock_df.columns else "",
+        "refreshed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return result
 
 
 def siblings_by_model_from_shopify(shopify_products):
@@ -5727,47 +5730,61 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         st.error("Shopify API no esta configurado para este sitio.")
         return
 
-    run_key = f"kpi_result_{brand_config['site_key']}"
-    if st.button("Actualizar diagnostico KPIs", type="primary"):
-        with st.spinner("Leyendo ARTI/BigQuery, stock actual y productos Shopify..."):
-            arti_df, arti_source = read_arti_for_app(brand_config)
-            stock_df = read_current_stock_from_bigquery(get_bigquery_config())
-            shopify_products = fetch_products(shopify_config)
-            result = build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config)
-            result["meta"] = {
-                "arti_source": arti_source,
-                "stock_rows": len(stock_df),
-                "shopify_products": len(shopify_products),
-                "fecha_corte": clean_value(stock_df["fecha_corte"].max()) if not stock_df.empty and "fecha_corte" in stock_df.columns else "",
-            }
-            st.session_state[run_key] = result
+    components.html(
+        f"""
+        <script>
+        window.setTimeout(function() {{
+            window.parent.location.reload();
+        }}, {KPI_AUTO_REFRESH_SECONDS * 1000});
+        </script>
+        """,
+        height=0,
+    )
 
+    run_key = f"kpi_result_{brand_config['site_key']}"
     result = st.session_state.get(run_key)
+    meta = result.get("meta", {}) if isinstance(result, dict) else {}
+    refreshed_at_text = clean_value(meta.get("refreshed_at"))
+    refreshed_at = None
+    if refreshed_at_text:
+        try:
+            refreshed_at = datetime.fromisoformat(refreshed_at_text)
+        except ValueError:
+            refreshed_at = None
+    needs_auto_refresh = result is None or refreshed_at is None or (
+        datetime.now(timezone.utc) - refreshed_at >= timedelta(seconds=KPI_AUTO_REFRESH_SECONDS)
+    )
+    manual_refresh = st.button("Actualizar dashboard", type="primary")
+    if manual_refresh or needs_auto_refresh:
+        spinner_text = (
+            "Actualizando dashboard..."
+            if manual_refresh
+            else "Cargando dashboard actualizado..."
+        )
+        with st.spinner(spinner_text):
+            try:
+                result = load_catalog_kpi_result(brand_config, shopify_config)
+                st.session_state[run_key] = result
+            except Exception as exc:
+                st.error(f"No se pudo actualizar el dashboard: {exc}")
+
     if not result:
-        st.info("Ejecuta el diagnostico para generar KPIs, graficos y descargables.")
+        st.info("Cargando dashboard...")
         return
 
-    meta = result.get("meta", {})
-    st.caption(
-        f"Fuente ARTI: {meta.get('arti_source', '')}  |  Stock file: {format_kpi_number(meta.get('stock_rows', 0))}  |  "
-        f"Productos Shopify: {format_kpi_number(meta.get('shopify_products', 0))}  |  Fecha corte: {meta.get('fecha_corte', '')}"
-    )
     kpis = result["kpis"]
-    st.caption(
-        f"Stock eComm filtrado: {format_kpi_number(kpis.get('stock_ecomm_rows', 0))} filas tienda-talla | "
-        f"{format_kpi_number(kpis.get('stock_ecomm_models', 0))} modelo-color con stock efectivo del sitio"
-    )
     ecomm_match_df = result.get("ecomm_stock_match", pd.DataFrame())
     if ecomm_match_df is None or ecomm_match_df.empty:
-        st.caption("Bodegas eComm del sitio con match en query: 0/0 | No se genero auditoria de bodegas.")
+        st.warning("No se genero auditoria de bodegas eComm para este sitio.")
     else:
         matched_stores = int((ecomm_match_df["Aparece en query"] == "Si").sum())
         total_stores = len(ecomm_match_df)
         missing_stores = ecomm_match_df[ecomm_match_df["Aparece en query"] != "Si"]["Bodega"].astype(str).tolist()
-        missing_text = f" | Sin match: {', '.join(missing_stores[:8])}" if missing_stores else ""
-        sample_codes = clean_value(ecomm_match_df.get("Codigos query muestra", pd.Series([""])).iloc[0])
-        sample_text = f" | Muestra query: {sample_codes}" if sample_codes else ""
-        st.caption(f"Bodegas eComm del sitio con match en query: {matched_stores}/{total_stores}{missing_text}{sample_text}")
+        if missing_stores:
+            st.warning(
+                f"Bodegas eComm configuradas sin stock en BigQuery: {matched_stores}/{total_stores} | "
+                f"Sin match: {', '.join(missing_stores[:8])}"
+            )
     render_kpi_cards(kpis)
     combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
     render_non_visible_combo_table(combo_summary_df)

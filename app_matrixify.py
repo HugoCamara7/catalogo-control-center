@@ -65,6 +65,19 @@ DEFAULT_ECOMM_WAREHOUSES_PATH = Path("data/bodegas_ecomm.xlsx")
 FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
 
+DEFAULT_ECOMM_SITE_WAREHOUSES = {
+    "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
+    "hushpuppiespe": ["320", "129", "111", "97", "96", "88", "46", "44", "43", "30", "23", "19", "18", "16", "8", "7"],
+    "rockfordpe": ["320", "145", "143", "142", "139", "130", "129", "122", "114", "113", "112", "111", "97", "96", "88", "84", "83", "59", "52", "44", "43", "30", "23", "19", "16", "8", "7", "2"],
+    "vanspe": ["320", "152", "151", "150", "149"],
+}
+DEFAULT_ECOMM_STOCK_SECURITY = {
+    "114": 0, "88": 1, "84": 0, "113": 0, "320": 0, "111": 1, "8": 0, "44": 0, "46": 0,
+    "97": 0, "43": 0, "112": 0, "59": 0, "52": 0, "2": 0, "83": 0, "16": 1, "122": 0,
+    "18": 0, "7": 0, "30": 0, "19": 0, "23": 0, "96": 1, "130": 0, "129": 0, "139": 0,
+    "142": 0, "143": 0, "145": 1, "149": 0, "150": 0, "152": 0, "151": 0,
+}
+
 MATRIXIFY_COLUMNS = [
     "Command",
     "Handle",
@@ -1233,15 +1246,32 @@ def standardize_stock_columns(df):
     return result
 
 
+def default_ecomm_stock_rules():
+    rows = []
+    for site_norm, codes in DEFAULT_ECOMM_SITE_WAREHOUSES.items():
+        for code in codes:
+            rows.append(
+                {
+                    "bodega_code": code,
+                    "site_norm": site_norm,
+                    "stock_seguridad": DEFAULT_ECOMM_STOCK_SECURITY.get(code, 0),
+                    "stock_activo": 1,
+                    "bodega_nombre": f"Bodega {code}",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 @st.cache_data(show_spinner=False)
 def load_ecomm_stock_rules(path_text):
     path = Path(path_text)
     if not path.exists():
-        return pd.DataFrame(
-            columns=["bodega_code", "site_norm", "stock_seguridad", "stock_activo", "bodega_nombre"]
-        )
-    assigned = pd.read_excel(path, sheet_name="Bodegas Asginadas", dtype=object).dropna(how="all")
-    warehouses = pd.read_excel(path, sheet_name="Bodegas", dtype=object).dropna(how="all")
+        return default_ecomm_stock_rules()
+    try:
+        assigned = pd.read_excel(path, sheet_name="Bodegas Asginadas", dtype=object).dropna(how="all")
+        warehouses = pd.read_excel(path, sheet_name="Bodegas", dtype=object).dropna(how="all")
+    except Exception:
+        return default_ecomm_stock_rules()
     assigned.columns = [clean_value(column).lower() for column in assigned.columns]
     warehouses.columns = [clean_value(column).lower() for column in warehouses.columns]
     assigned["bodega_code"] = assigned.get("bodega", pd.Series(dtype=object)).map(normalize_warehouse_code)

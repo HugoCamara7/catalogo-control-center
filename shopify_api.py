@@ -156,6 +156,8 @@ def _product_node_to_record(node):
     for variant in ((node.get("variants") or {}).get("nodes")) or []:
         inventory_item = variant.get("inventoryItem") or {}
         variant_image = variant.get("image") or {}
+        selected_options = variant.get("selectedOptions") or []
+        option_values = {clean(option.get("name")): clean(option.get("value")) for option in selected_options}
         variant_records.append(
             {
                 "Variant ID": clean(variant.get("legacyResourceId")),
@@ -168,6 +170,10 @@ def _product_node_to_record(node):
                 "Variant Price": clean(variant.get("price")),
                 "Variant Compare At Price": clean(variant.get("compareAtPrice")),
                 "Variant Inventory Qty": clean(variant.get("inventoryQuantity")),
+                "Option1 Name": clean(selected_options[0].get("name")) if len(selected_options) >= 1 else "",
+                "Option1 Value": clean(selected_options[0].get("value")) if len(selected_options) >= 1 else "",
+                "Option2 Name": clean(selected_options[1].get("name")) if len(selected_options) >= 2 else "",
+                "Option2 Value": clean(selected_options[1].get("value")) if len(selected_options) >= 2 else "",
             }
         )
     return {
@@ -246,6 +252,10 @@ def fetch_products(config, max_products=5000):
               price
               compareAtPrice
               inventoryQuantity
+              selectedOptions {
+                name
+                value
+              }
               image {
                 url
               }

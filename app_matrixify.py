@@ -5533,6 +5533,10 @@ def render_non_visible_combo_table(combo_df):
         .agg(Modelos=("Modelos", "sum"))
         .sort_values("Modelos", ascending=False)
     )
+    combo_view = combo_view[~(combo_view["Stock"] & combo_view["Precio"] & combo_view["Imagen"])].copy()
+    if combo_view.empty:
+        st.success("No hay bloqueos comerciales de stock, precio o imagen.")
+        return combo_df
     total_models = float(combo_view["Modelos"].sum() or 0)
     total_models_safe = total_models or 1
 
@@ -5927,6 +5931,12 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         st.warning("Dashboard pendiente de actualizar. Haz click en el icono de actualizar.")
 
     kpis = result["kpis"]
+    if int(kpis.get("modelos_sin_stock_shopify", 0) or 0) > 0:
+        st.warning(
+            "Stock web pendiente de revisar: "
+            f"{format_kpi_number(kpis.get('modelos_sin_stock_shopify', 0))} modelo-color tienen stock eComm "
+            "filtrado por bodega/seguridad, pero Shopify reporta inventario 0."
+        )
     ecomm_match_df = result.get("ecomm_stock_match", pd.DataFrame())
     if ecomm_match_df is None or ecomm_match_df.empty:
         st.warning("No se genero auditoria de bodegas eComm para este sitio.")

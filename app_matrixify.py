@@ -4130,6 +4130,56 @@ def inject_custom_css(config):
             background:#DC2626;
             color:#FFFFFF;
         }}
+        .commercial-summary-grid {{
+            display:grid;
+            grid-template-columns:repeat(3, minmax(160px, 1fr));
+            gap:14px;
+            padding:0 24px 18px;
+        }}
+        .commercial-summary-tile {{
+            min-height:72px;
+            border-radius:12px;
+            border:1px solid #DDE6F2;
+            display:grid;
+            grid-template-columns:1fr 38px;
+            grid-template-rows:auto auto;
+            align-items:center;
+            gap:5px 12px;
+            padding:14px 16px;
+            box-sizing:border-box;
+        }}
+        .commercial-summary-tile span {{
+            color:#334155;
+            font-size:13px;
+            font-weight:900;
+        }}
+        .commercial-summary-tile strong {{
+            color:#0B1B46;
+            font-size:18px;
+            font-weight:950;
+        }}
+        .commercial-summary-tile b {{
+            grid-row:1 / span 2;
+            grid-column:2;
+            width:38px;
+            height:38px;
+            border-radius:10px;
+            display:grid;
+            place-items:center;
+            color:#FFFFFF;
+            font-size:22px;
+            font-weight:950;
+        }}
+        .commercial-summary-tile.ok {{
+            background:#ECFDF3;
+            border-color:#BBF7D0;
+        }}
+        .commercial-summary-tile.ok b {{ background:#16A34A; }}
+        .commercial-summary-tile.bad {{
+            background:#FFF7ED;
+            border-color:#FED7AA;
+        }}
+        .commercial-summary-tile.bad b {{ background:#EA580C; }}
         .combo-model-metric {{
             text-align:left;
             min-width:180px;
@@ -5539,6 +5589,9 @@ def render_non_visible_combo_table(combo_df):
         return combo_df
     total_models = float(combo_view["Modelos"].sum() or 0)
     total_models_safe = total_models or 1
+    stock_missing = int(combo_view.loc[~combo_view["Stock"], "Modelos"].sum())
+    price_missing = int(combo_view.loc[~combo_view["Precio"], "Modelos"].sum())
+    image_missing = int(combo_view.loc[~combo_view["Imagen"], "Modelos"].sum())
 
     def percent(value):
         return max(0, min(100, (float(value or 0) / total_models_safe) * 100))
@@ -5552,6 +5605,19 @@ def render_non_visible_combo_table(combo_df):
             <span>{escape(label)}</span>
             <b>{icon}</b>
             <small>{text}</small>
+        </div>
+        """
+
+    def summary_tile(label, value, ok_label):
+        is_ok = int(value or 0) == 0
+        state_class = "ok" if is_ok else "bad"
+        icon = "&#10003;" if is_ok else "&#10005;"
+        value_text = ok_label if is_ok else f"{format_kpi_number(value)} falta"
+        return f"""
+        <div class="commercial-summary-tile {state_class}">
+            <span>{escape(label)}</span>
+            <b>{icon}</b>
+            <strong>{escape(value_text)}</strong>
         </div>
         """
 
@@ -5589,6 +5655,11 @@ def render_non_visible_combo_table(combo_df):
                     <p>Estado de las bases comerciales necesarias para que los modelos esten listos para venta.</p>
                 </div>
                 <div class="combo-chip">{format_kpi_number(int(total_models))} modelo-color</div>
+            </div>
+            <div class="commercial-summary-grid">
+                {summary_tile("Stock", stock_missing, "OK")}
+                {summary_tile("Precio", price_missing, "OK")}
+                {summary_tile("Imagen", image_missing, "OK")}
             </div>
             <div class="combo-table-wrap compact">
                 <table class="combo-table compact">
@@ -5931,10 +6002,24 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         st.warning("Dashboard pendiente de actualizar. Haz click en el icono de actualizar.")
 
     kpis = result["kpis"]
-    if int(kpis.get("modelos_sin_stock_shopify", 0) or 0) > 0:
+    combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
+    stock_missing_web = 0
+    if combo_summary_df is not None and not combo_summary_df.empty and "Bloqueos" in combo_summary_df.columns:
+        stock_missing_web = int(
+            pd.to_numeric(
+                combo_summary_df.loc[
+                    combo_summary_df["Bloqueos"].map(lambda value: "Sin stock Shopify" in clean_value(value)),
+                    "Modelos",
+                ],
+                errors="coerce",
+            )
+            .fillna(0)
+            .sum()
+        )
+    if stock_missing_web > 0:
         st.warning(
             "Stock web pendiente de revisar: "
-            f"{format_kpi_number(kpis.get('modelos_sin_stock_shopify', 0))} modelo-color tienen stock eComm "
+            f"{format_kpi_number(stock_missing_web)} modelo-color tienen stock eComm "
             "filtrado por bodega/seguridad, pero Shopify reporta inventario 0."
         )
     ecomm_match_df = result.get("ecomm_stock_match", pd.DataFrame())
@@ -5950,7 +6035,6 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 f"Sin match: {', '.join(missing_stores[:8])}"
             )
     render_kpi_cards(kpis)
-    combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
     render_non_visible_combo_table(combo_summary_df)
     render_kpi_context_cards(kpis)
 

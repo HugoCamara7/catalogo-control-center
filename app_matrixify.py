@@ -3847,7 +3847,7 @@ def inject_custom_css(config):
             align-items:flex-start;
             justify-content:space-between;
             gap:18px;
-            margin-bottom:20px;
+            margin-bottom:8px;
         }}
         .kpi-title h2 {{
             margin:0;
@@ -3856,7 +3856,7 @@ def inject_custom_css(config):
             font-weight:950;
         }}
         .kpi-title p {{
-            margin:8px 0 0;
+            margin:6px 0 0;
             color:#64748B;
             font-size:13px;
             font-weight:750;
@@ -3865,10 +3865,10 @@ def inject_custom_css(config):
             display:grid;
             grid-template-columns:repeat(4,minmax(0,1fr));
             gap:14px;
-            margin:18px 0 22px;
+            margin:14px 0 22px;
         }}
         .kpi-section-label {{
-            margin:26px 0 -4px;
+            margin:18px 0 -4px;
             color:#0B1B46;
             font-weight:950;
             font-size:1.02rem;
@@ -3922,12 +3922,12 @@ def inject_custom_css(config):
         .kpi-card.red .kpi-icon {{ background:#FEECEF; color:#DC2626; }}
         .kpi-card.slate .kpi-icon {{ background:#EEF2F7; color:#334155; }}
         div[class*="refresh_kpis"] .stButton button {{
-            width:42px;
-            min-width:42px;
-            height:42px;
+            width:38px;
+            min-width:38px;
+            height:38px;
             padding:0;
             border-radius:50%;
-            font-size:22px;
+            font-size:20px;
             line-height:1;
         }}
         .combo-card {{
@@ -4176,10 +4176,10 @@ def inject_custom_css(config):
         }}
         .commercial-summary-tile.ok b {{ background:#16A34A; }}
         .commercial-summary-tile.bad {{
-            background:#FFF7ED;
-            border-color:#FED7AA;
+            background:#FEF2F2;
+            border-color:#FECACA;
         }}
-        .commercial-summary-tile.bad b {{ background:#EA580C; }}
+        .commercial-summary-tile.bad b {{ background:#DC2626; }}
         .combo-model-metric {{
             text-align:left;
             min-width:180px;
@@ -5974,7 +5974,13 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         st.info("Cargando dashboard...")
         return
 
-    toolbar_left, toolbar_right = st.columns([0.94, 0.06])
+    meta = result.get("meta", {}) if isinstance(result, dict) else {}
+    refreshed_at = parse_iso_datetime(meta.get("refreshed_at"))
+    refreshed_label = format_datetime_lima(meta.get("refreshed_at"))
+    toolbar_left, toolbar_right = st.columns([0.9, 0.1], vertical_alignment="center")
+    with toolbar_left:
+        if refreshed_label:
+            st.caption(f"Ultima actualizacion: {refreshed_label}")
     with toolbar_right:
         manual_refresh = st.button("↻", type="primary", help="Actualizar dashboard", key=f"{brand_config['site_key']}_refresh_kpis")
     if manual_refresh:
@@ -5986,9 +5992,6 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
             except Exception as exc:
                 st.error(f"No se pudo actualizar el dashboard: {exc}")
 
-    meta = result.get("meta", {}) if isinstance(result, dict) else {}
-    refreshed_at = parse_iso_datetime(meta.get("refreshed_at"))
-    refreshed_label = format_datetime_lima(meta.get("refreshed_at"))
     if refreshed_at is not None:
         refresh_age = datetime.now(timezone.utc) - refreshed_at.astimezone(timezone.utc)
         if refresh_age >= timedelta(seconds=KPI_AUTO_REFRESH_SECONDS):
@@ -5996,32 +5999,11 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 f"Dashboard pendiente de actualizar. Ultima actualizacion: {refreshed_label}. "
                 "Haz click en el icono de actualizar."
             )
-        elif refreshed_label:
-            st.caption(f"Ultima actualizacion: {refreshed_label}")
     else:
         st.warning("Dashboard pendiente de actualizar. Haz click en el icono de actualizar.")
 
     kpis = result["kpis"]
     combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
-    stock_missing_web = 0
-    if combo_summary_df is not None and not combo_summary_df.empty and "Bloqueos" in combo_summary_df.columns:
-        stock_missing_web = int(
-            pd.to_numeric(
-                combo_summary_df.loc[
-                    combo_summary_df["Bloqueos"].map(lambda value: "Sin stock Shopify" in clean_value(value)),
-                    "Modelos",
-                ],
-                errors="coerce",
-            )
-            .fillna(0)
-            .sum()
-        )
-    if stock_missing_web > 0:
-        st.warning(
-            "Stock web pendiente de revisar: "
-            f"{format_kpi_number(stock_missing_web)} modelo-color tienen stock eComm "
-            "filtrado por bodega/seguridad, pero Shopify reporta inventario 0."
-        )
     ecomm_match_df = result.get("ecomm_stock_match", pd.DataFrame())
     if ecomm_match_df is None or ecomm_match_df.empty:
         st.warning("No se genero auditoria de bodegas eComm para este sitio.")

@@ -3526,6 +3526,167 @@ def inject_custom_css(config):
             font-size: 13px;
             margin: 0 0 14px;
         }}
+        section[data-testid="stSidebar"] {{
+            background:#F3F6FB !important;
+            border-right:1px solid #DDE6F2 !important;
+            min-width:340px !important;
+            width:340px !important;
+            max-width:340px !important;
+        }}
+        section[data-testid="stSidebar"] > div,
+        div[data-testid="stSidebarContent"] {{
+            width:340px !important;
+        }}
+        section[data-testid="stSidebar"] + div,
+        div[data-testid="stAppViewContainer"] > .main {{
+            margin-left:340px !important;
+        }}
+        section[data-testid="stSidebar"] > div {{
+            padding:28px 14px 18px !important;
+        }}
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] span {{
+            color:#172554 !important;
+        }}
+        .forus-sidebar {{
+            display:block !important;
+            margin:4px 0 24px !important;
+            padding:20px 18px !important;
+            border:1px solid #DDE6F2 !important;
+            border-radius:22px !important;
+            background:#FFFFFF !important;
+            box-shadow:0 12px 24px rgba(15,23,42,0.08) !important;
+        }}
+        .forus-logo {{
+            width:auto;
+            min-width:0;
+            height:auto;
+            border-radius:0;
+            display:block;
+            background:transparent;
+            color:#17269A !important;
+            font-size:30px !important;
+            letter-spacing:-0.06em;
+        }}
+        .forus-tagline {{
+            display:block;
+            color:#17269A !important;
+        }}
+        .forus-sidebar::after {{
+            content:none;
+        }}
+        section[data-testid="stSidebar"] hr,
+        section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] + div {{
+            border-color:#DDE6F2 !important;
+        }}
+        .st-key-logout_card {{
+            position:fixed;
+            left:0;
+            bottom:0;
+            width:340px;
+            padding:18px 14px 22px;
+            background:#F3F6FB;
+            border-top:1px solid #DDE6F2;
+            box-sizing:border-box;
+            z-index:1000;
+        }}
+        .st-key-logout_card div[data-testid="stCaptionContainer"] {{
+            display:none;
+        }}
+        .st-key-logout_card .stButton button {{
+            min-height:46px !important;
+            width:100%;
+            justify-content:flex-start;
+            padding-left:18px;
+            border:1px solid #005AA8 !important;
+            background:#FFFFFF !important;
+            color:#005AA8 !important;
+            box-shadow:none !important;
+            font-size:16px;
+            font-weight:900;
+        }}
+        .st-key-logout_card .stButton button::before {{
+            content:"↪";
+            margin-right:12px;
+            font-size:20px;
+            color:#005AA8;
+        }}
+        .st-key-site_picker_card,
+        .st-key-shopify_sidebar_card {{
+            display:block !important;
+        }}
+        .allowed-logo-grid {{
+            display:grid !important;
+            grid-template-columns:repeat(2, minmax(0, 1fr)) !important;
+            gap:10px !important;
+            margin:10px 0 18px !important;
+        }}
+        .allowed-logo-chip {{
+            min-height:68px !important;
+            padding:10px 8px !important;
+            border-radius:14px !important;
+            background:#FFFFFF !important;
+            border:1px solid #DDE6F2 !important;
+            box-shadow:0 10px 20px rgba(15,23,42,0.05) !important;
+        }}
+        .allowed-logo-chip.primary {{
+            border-color:#60A5FA !important;
+            box-shadow:0 0 0 1px #BFDBFE, 0 10px 20px rgba(23,38,154,0.08) !important;
+        }}
+        .allowed-logo-chip img {{
+            max-width:108px !important;
+            max-height:42px !important;
+            object-fit:contain !important;
+        }}
+        section[data-testid="stSidebar"] .sidebar-label {{
+            margin:14px 0 8px !important;
+            color:#0B1B46 !important;
+            font-size:13px !important;
+            font-weight:950 !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav {{
+            margin:10px 0;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[data-baseweb="select"] > div,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[data-baseweb="select"] > div {{
+            min-height:48px !important;
+            height:48px !important;
+            border-radius:14px !important;
+            border:1px solid #93C5FD !important;
+            background:#FFFFFF !important;
+            box-shadow:none !important;
+            padding:0 14px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[data-baseweb="select"] *,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[data-baseweb="select"] * {{
+            color:#172554 !important;
+            font-size:15px !important;
+            font-weight:900 !important;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label {{
+            border:0 !important;
+            box-shadow:none !important;
+            background:transparent !important;
+            min-height:46px !important;
+            border-radius:9px !important;
+            padding:0 14px !important;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {{
+            background:#FFFFFF !important;
+            border:1px solid #93C5FD !important;
+            box-shadow:0 0 0 1px #BFDBFE !important;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label [data-testid="stMarkdownContainer"] p {{
+            color:#172554 !important;
+            font-size:15px !important;
+            font-weight:900 !important;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label input,
+        section[data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child {{
+            display:none !important;
+        }}
         .top-header {{
             display: flex;
             align-items: center;
@@ -6357,18 +6518,42 @@ def main():
     ui_config = get_site_config(brand_config, shopify_config)
     inject_styles(ui_config)
     render_allowed_brands_card(brand_config)
-    operation_area = st.sidebar.radio(
-        "Tipo de operacion",
-        ["KPIs de catalogo", "Carga de catalogo"],
-        index=0,
-    )
+    nav_options = ["KPIs de catalogo", "Carga de catalogo"]
+    with st.sidebar.container(key="operation_nav"):
+        if hasattr(st, "pills"):
+            operation_area = st.pills(
+                "Tipo de operacion",
+                nav_options,
+                default=nav_options[0],
+                label_visibility="collapsed",
+            )
+        else:
+            operation_area = st.radio(
+                "Tipo de operacion",
+                nav_options,
+                index=0,
+                label_visibility="collapsed",
+            )
+    operation_area = operation_area or nav_options[0]
     operation_mode = "Carga completa"
     if operation_area == "Carga de catalogo":
-        operation_mode = st.sidebar.radio(
-            "Tipo de carga",
-            ["Carga completa", "Carga parcial"],
-            index=0,
-        )
+        load_options = ["Carga completa", "Carga parcial"]
+        with st.sidebar.container(key="load_mode_nav"):
+            if hasattr(st, "pills"):
+                operation_mode = st.pills(
+                    "Tipo de carga",
+                    load_options,
+                    default=load_options[0],
+                    label_visibility="collapsed",
+                )
+            else:
+                operation_mode = st.radio(
+                    "Tipo de carga",
+                    load_options,
+                    index=0,
+                    label_visibility="collapsed",
+                )
+        operation_mode = operation_mode or load_options[0]
     with st.sidebar.container(key="shopify_sidebar_card"):
         render_sidebar_shopify_card(ui_config, shopify_config)
         if is_shopify_configured(shopify_config):

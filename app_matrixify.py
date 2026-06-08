@@ -1105,26 +1105,13 @@ def read_current_stock_from_bigquery(bigquery_config):
     job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
     location = clean_value(config.get("location")) or None
     df = client.query(STOCK_QUERY_DEFAULT, job_config=job_config, location=location).to_dataframe()
-    store_column = first_existing_column(
-        df,
-        [
-            "cod tda",
-            "cod_tda",
-            "codtda",
-            "codigo_tienda",
-            "codigo tienda",
-            "codigo_tda",
-            "codigo tda",
-        ],
-    )
-    if store_column and store_column != "codigo_tienda":
-        df = df.rename(columns={store_column: "codigo_tienda"})
+    df = standardize_stock_columns(df)
 
     for column in ("fecha_corte", "id_producto", "key_producto", "codigo_tienda", "CONCAT_TIENDA", "stock_tiendas", "stock_bodega", "stock_total"):
         if column not in df.columns:
             df[column] = 0 if column.startswith("stock_") else ""
     df["key_producto"] = df["key_producto"].map(lambda value: clean_value(value).upper())
-    df["codigo_tienda"] = df["codigo_tienda"].map(clean_value)
+    df["codigo_tienda"] = df["codigo_tienda"].map(normalize_warehouse_code)
     for column in ("stock_tiendas", "stock_bodega", "stock_total"):
         df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0)
     return df
@@ -1150,18 +1137,67 @@ def normalize_warehouse_code(value):
     return str(valid_codes[0]) if valid_codes else ""
 
 
+def store_code_from_concat_tienda(value):
+    text = clean_value(value)
+    if not text:
+        return ""
+    numbers = [int(token) for token in re.findall(r"\d+", text)]
+    if len(numbers) >= 2:
+        store = numbers[-1]
+        return str(store) if 1 <= store <= 400 else ""
+    return normalize_warehouse_code(text)
+
+
 def stock_units_from_concat_tienda(value, store_code):
     text = clean_value(value)
     store = normalize_warehouse_code(store_code)
-    if not text or not store:
+    if not text:
         return 0
     numbers = [int(token) for token in re.findall(r"\d+", text)]
     if not numbers:
+        return 0
+    if len(numbers) >= 2:
+        if store and str(numbers[-1]) == store:
+            return numbers[0]
+        if store and str(numbers[0]) == store:
+            return numbers[-1]
+        if not store and 1 <= numbers[-1] <= 400:
+            return numbers[0]
+    if not store:
         return 0
     candidates = [number for number in numbers if str(number) != store]
     if not candidates:
         return 0
     return max(candidates)
+
+
+def standardize_stock_columns(df):
+    result = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    rename_map = {}
+    candidates_by_target = {
+        "key_producto": ["key_producto", "key producto"],
+        "codigo_tienda": ["codigo_tienda", "codigo tienda", "cod tda", "cod_tda", "codtda", "codigo_tda", "codigo tda"],
+        "CONCAT_TIENDA": ["CONCAT_TIENDA", "concat_tienda", "concat tienda", "CONCAT TIENDA"],
+        "stock_tiendas": ["stock_tiendas", "stock tiendas"],
+        "stock_bodega": ["stock_bodega", "stock bodega"],
+        "stock_total": ["stock_total", "stock total"],
+    }
+    for target, candidates in candidates_by_target.items():
+        found = first_existing_column(result, candidates)
+        if found and found != target:
+            rename_map[found] = target
+    if rename_map:
+        result = result.rename(columns=rename_map)
+    if "codigo_tienda" in result.columns:
+        result["codigo_tienda"] = result["codigo_tienda"].map(normalize_warehouse_code)
+    if "CONCAT_TIENDA" in result.columns:
+        if "codigo_tienda" not in result.columns:
+            result["codigo_tienda"] = ""
+        missing_store = result["codigo_tienda"].map(clean_value) == ""
+        result.loc[missing_store, "codigo_tienda"] = result.loc[missing_store, "CONCAT_TIENDA"].map(
+            store_code_from_concat_tienda
+        )
+    return result
 
 
 @st.cache_data(show_spinner=False)
@@ -1203,7 +1239,7 @@ def apply_ecomm_stock_rules(stock_df, brand_config):
     empty_filtered = pd.DataFrame(
         columns=["fecha_corte", "id_producto", "key_producto", "stock_tiendas", "stock_bodega", "stock_total"]
     )
-    stock = stock_df.copy() if isinstance(stock_df, pd.DataFrame) else pd.DataFrame()
+    stock = standardize_stock_columns(stock_df)
     if stock.empty:
         return stock
     if "codigo_tienda" not in stock.columns or not stock["codigo_tienda"].map(clean_value).any():
@@ -1289,7 +1325,7 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
             ]
         )
 
-    stock = stock_df.copy() if isinstance(stock_df, pd.DataFrame) else pd.DataFrame()
+    stock = standardize_stock_columns(stock_df)
     if stock.empty or "codigo_tienda" not in stock.columns:
         stock_summary = pd.DataFrame(columns=["bodega_code", "Filas query", "Stock bruto", "Stock efectivo"])
     else:

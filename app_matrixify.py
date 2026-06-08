@@ -1,5 +1,6 @@
 import io
 import base64
+import hmac
 import json
 import pickle
 import re
@@ -5250,12 +5251,13 @@ def format_kpi_number(value):
 def render_kpi_cards(kpis):
     primary_cards = [
         ("Modelos con stock eComm", kpis["modelos_con_stock"], "blue", "&#9633;"),
-        ("Creados con stock", kpis["modelos_creados_con_stock"], "green", "&#9679;"),
+        ("Creados en Shopify", kpis["modelos_creados_con_stock"], "green", "&#9679;"),
         ("Pendientes por crear", kpis["modelos_pendientes"], "orange", "!"),
-        ("Cobertura stock eComm", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
+        ("Cobertura creacion", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
+        ("Con inventario Shopify", kpis["modelos_con_stock_shopify"], "green", "&#9711;"),
+        ("Sin inventario Shopify", kpis["modelos_sin_stock_shopify"], "red", "&#9676;"),
         ("Visibles en web", kpis["modelos_visibles_web"], "green", "&#9711;"),
-        ("No visibles en web", kpis["modelos_no_visibles_web"], "orange", "&#9676;"),
-        ("Sync stock Shopify", f"{kpis['sincronizacion_stock_shopify']:.0%}", "purple", "%"),
+        ("No listos web", kpis["modelos_no_visibles_web"], "orange", "&#9676;"),
     ]
     def cards_html(cards):
         return "".join(
@@ -6029,7 +6031,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     )
     funnel_rows = [
         {"label": "Modelos con stock eComm", "short": "Stock eComm", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
-        {"label": "Creados con stock", "short": "Creados stock", "value": kpis["modelos_creados_con_stock"], "icon": "&#9635;"},
+        {"label": "Creados en Shopify", "short": "Creados Shopify", "value": kpis["modelos_creados_con_stock"], "icon": "&#9635;"},
         {"label": "Pendientes de creacion", "short": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
         {"label": "Visibles en web", "short": "Visibles web", "value": kpis["modelos_visibles_web"], "icon": "&#9711;"},
         {"label": "No visibles en web", "short": "No visibles web", "value": kpis["modelos_no_visibles_web"], "icon": "&#9676;"},
@@ -6096,12 +6098,250 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     )
 
 
+def get_auth_users():
+    try:
+        auth_config = dict(st.secrets.get("app_auth", {}))
+    except Exception:
+        auth_config = {}
+    users = auth_config.get("users", {})
+    if isinstance(users, dict) and users:
+        return {clean_value(user): clean_value(password) for user, password in users.items() if clean_value(user)}
+    username = clean_value(auth_config.get("username"))
+    password = clean_value(auth_config.get("password"))
+    if username and password:
+        return {username: password}
+    return {"admin": "forus2026", "hugo.camara@forus.pe": "forus2026"}
+
+
+def render_login_styles():
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] { display:none; }
+        [data-testid="stToolbar"], .stDeployButton { display:none !important; }
+        [data-testid="stAppViewContainer"] {
+            background:#152238;
+        }
+        .main .block-container {
+            padding-top:38px;
+            max-width:620px;
+        }
+        .st-key-login_card {
+            width:min(448px, calc(100vw - 32px));
+            margin:0 auto;
+            overflow:hidden;
+            border-radius:16px;
+            background:#FFFFFF;
+            box-shadow:0 28px 80px rgba(0,0,0,.28);
+        }
+        .login-head {
+            padding:32px 32px 34px;
+            text-align:center;
+            background:linear-gradient(180deg, #2367FF 0%, #1757EF 100%);
+            color:#FFFFFF;
+        }
+        .login-logo-row {
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            gap:22px;
+            margin-bottom:24px;
+        }
+        .login-forus-logo {
+            min-width:178px;
+            height:64px;
+            border-radius:10px;
+            background:#FFFFFF;
+            display:grid;
+            place-items:center;
+            padding:8px 14px;
+            box-sizing:border-box;
+        }
+        .login-forus-logo img {
+            max-width:100%;
+            max-height:48px;
+            object-fit:contain;
+        }
+        .login-forus-fallback {
+            color:#14306B;
+            font-size:34px;
+            line-height:1;
+            font-weight:950;
+            letter-spacing:.02em;
+        }
+        .login-forus-fallback small {
+            display:block;
+            margin-top:2px;
+            color:#14306B;
+            font-size:8px;
+            letter-spacing:.22em;
+            font-weight:900;
+        }
+        .login-divider {
+            width:1px;
+            height:48px;
+            background:rgba(255,255,255,.62);
+        }
+        .login-shopify-logo {
+            width:52px;
+            height:52px;
+            border-radius:10px;
+            background:#FFFFFF;
+            display:grid;
+            place-items:center;
+            box-shadow:0 10px 22px rgba(15,23,42,.12);
+        }
+        .login-shopify-logo img {
+            max-width:38px;
+            max-height:38px;
+            object-fit:contain;
+        }
+        .login-shopify-fallback {
+            color:#16A34A;
+            font-size:30px;
+            font-weight:950;
+        }
+        .login-head h1 {
+            margin:0;
+            font-size:30px;
+            line-height:1.12;
+            font-weight:950;
+        }
+        .login-head p {
+            margin:10px 0 0;
+            color:#EAF2FF;
+            font-size:16px;
+            font-weight:750;
+        }
+        .st-key-login_form_area {
+            padding:24px 32px 28px;
+        }
+        .st-key-login_form_area label {
+            color:#1E293B !important;
+            font-weight:850 !important;
+        }
+        .st-key-login_form_area .stTextInput input {
+            border-radius:12px;
+            min-height:48px;
+            background:#F8FAFC;
+            border:1px solid #CBD5E1;
+            font-size:15px;
+        }
+        .st-key-login_form_area .stButton button {
+            width:100%;
+            min-height:48px;
+            border-radius:12px;
+            background:#2367FF;
+            font-weight:950;
+        }
+        .login-note {
+            padding:0 32px 32px;
+            text-align:center;
+            color:#64748B;
+            font-size:13px;
+            font-weight:750;
+        }
+        .login-foot {
+            margin:26px auto 0;
+            width:min(448px, calc(100vw - 32px));
+            text-align:center;
+            color:#FFFFFF;
+            font-size:14px;
+            line-height:1.7;
+            font-weight:750;
+        }
+        .login-foot strong {
+            display:block;
+            margin-bottom:6px;
+            font-weight:850;
+        }
+        @media (max-width: 560px) {
+            .main .block-container { padding-top:20px; }
+            .login-head { padding:26px 20px 28px; }
+            .st-key-login_form_area { padding:22px 22px 26px; }
+            .login-forus-logo { min-width:152px; }
+            .login-head h1 { font-size:26px; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def require_login():
+    if st.session_state.get("authenticated"):
+        return True
+    render_login_styles()
+    forus_src = image_data_uri(FORUS_LOGO_PATH)
+    shopify_src = image_data_uri(SHOPIFY_LOGO_PATH)
+    forus_logo = (
+        f'<img src="{forus_src}" alt="FORUS">'
+        if forus_src
+        else '<div class="login-forus-fallback">FORUS<small>CONSUMER FANATIC</small></div>'
+    )
+    shopify_logo = (
+        f'<img src="{shopify_src}" alt="Shopify">'
+        if shopify_src
+        else '<div class="login-shopify-fallback">S</div>'
+    )
+    with st.container(key="login_card"):
+        render_html(
+            f"""
+            <div class="login-head">
+                <div class="login-logo-row">
+                    <div class="login-forus-logo">{forus_logo}</div>
+                    <div class="login-divider"></div>
+                    <div class="login-shopify-logo">{shopify_logo}</div>
+                </div>
+                <h1>Catalogo Control Center</h1>
+                <p>Sistema de gestion de productos</p>
+            </div>
+            """
+        )
+        with st.container(key="login_form_area"):
+            with st.form("login_form"):
+                username = st.text_input("Correo electronico", placeholder="hugo.camara@forus.pe")
+                password = st.text_input("Contrasena", type="password", placeholder="********")
+                submitted = st.form_submit_button("Ingresar", type="primary")
+        render_html(
+            """
+            <div class="login-note">Sistema exclusivo para personal autorizado</div>
+            """
+        )
+    render_html(
+        """
+        <div class="login-foot">
+            <strong>Gestion de catalogos para multiples marcas</strong>
+            Columbia &bull; Hush Puppies &bull; Vans &bull; Patagonia &bull; Mas
+        </div>
+        """
+    )
+    if submitted:
+        users = get_auth_users()
+        expected = users.get(clean_value(username))
+        if expected and hmac.compare_digest(clean_value(password), expected):
+            st.session_state["authenticated"] = True
+            st.session_state["auth_user"] = clean_value(username)
+            st.rerun()
+        st.error("Usuario o contrasena incorrectos.")
+    return False
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
+    if not require_login():
+        return
     bigquery_config = get_bigquery_config()
     bigquery_ready = is_bigquery_configured(bigquery_config)
 
     render_sidebar_brand()
+    with st.sidebar.container(key="logout_card"):
+        user_label = clean_value(st.session_state.get("auth_user")) or "Usuario"
+        st.caption(f"Sesion: {user_label}")
+        if st.button("Cerrar sesion"):
+            st.session_state.pop("authenticated", None)
+            st.session_state.pop("auth_user", None)
+            st.rerun()
     site_options = {config["site_label"]: key for key, config in SITE_CONFIGS.items()}
     with st.sidebar.container(key="site_picker_card"):
         selected_site_label = st.selectbox(

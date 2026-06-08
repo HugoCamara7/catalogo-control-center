@@ -5514,6 +5514,28 @@ def inject_custom_css(config):
             background: var(--brand-primary);
             border-color: var(--brand-primary);
         }}
+        section[data-testid="stSidebar"] .stButton button:disabled,
+        section[data-testid="stSidebar"] .stButton button[disabled],
+        section[data-testid="stSidebar"] button:disabled,
+        section[data-testid="stSidebar"] button[disabled] {{
+            display:none !important;
+            visibility:hidden !important;
+            min-height:0 !important;
+            height:0 !important;
+            padding:0 !important;
+            margin:0 !important;
+            border:0 !important;
+        }}
+        section[data-testid="stSidebar"] div:has(button:disabled),
+        section[data-testid="stSidebar"] div:has(button[disabled]) {{
+            min-height:0 !important;
+            height:auto !important;
+            padding:0 !important;
+            margin:0 !important;
+            border:0 !important;
+            box-shadow:none !important;
+            background:transparent !important;
+        }}
         @media (max-width: 900px) {{
             .top-header {{ align-items: flex-start; flex-direction: column; }}
             .matrix-stepper, .source-grid, .metric-grid {{ grid-template-columns: 1fr; }}

@@ -4082,6 +4082,85 @@ def inject_custom_css(config):
             line-height:1.1 !important;
             font-weight:950 !important;
         }}
+        section[data-testid="stSidebar"] {{
+            background:#F4F7FB !important;
+            border-right:1px solid #DCE6F2 !important;
+        }}
+        section[data-testid="stSidebar"] > div {{
+            padding:20px 14px 18px !important;
+        }}
+        .forus-sidebar {{
+            margin:0 0 18px !important;
+            padding:18px 16px !important;
+            border-radius:18px !important;
+            box-shadow:0 10px 22px rgba(15,23,42,0.06) !important;
+        }}
+        .st-key-logout_card {{
+            position:static !important;
+            width:auto !important;
+            padding:0 !important;
+            margin:12px 0 18px !important;
+            background:transparent !important;
+            border:0 !important;
+        }}
+        .st-key-logout_card .stButton button {{
+            min-height:40px !important;
+            width:auto !important;
+            padding:0 14px !important;
+            border-radius:14px !important;
+            font-size:13px !important;
+            font-weight:850 !important;
+        }}
+        .st-key-logout_card .stButton button::before {{
+            font-size:16px !important;
+            margin-right:8px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav {{
+            margin:10px 0 14px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"],
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] {{
+            gap:8px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label {{
+            min-height:44px !important;
+            padding:10px 12px !important;
+            border-radius:14px !important;
+            box-shadow:0 8px 16px rgba(15,23,42,0.045) !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label::before,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label::before {{
+            content:none !important;
+            display:none !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label p,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label p {{
+            font-size:14px !important;
+            font-weight:850 !important;
+        }}
+        .st-key-shopify_sidebar_card {{
+            margin:18px 0 0 !important;
+            padding:16px !important;
+            border-radius:18px !important;
+        }}
+        .st-key-shopify_sidebar_card .stButton button {{
+            min-height:40px !important;
+            width:100% !important;
+            border-radius:14px !important;
+            font-size:13px !important;
+            font-weight:850 !important;
+        }}
+        section[data-testid="stSidebar"] .stButton button:disabled {{
+            display:none !important;
+        }}
+        section[data-testid="stSidebar"] div:has(> .stButton button:disabled),
+        section[data-testid="stSidebar"] div:has(> div > .stButton button:disabled) {{
+            min-height:0 !important;
+            margin:0 !important;
+            padding:0 !important;
+        }}
         .top-header {{
             display: flex;
             align-items: center;

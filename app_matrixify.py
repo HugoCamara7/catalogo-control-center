@@ -4075,6 +4075,61 @@ def inject_custom_css(config):
             line-height:1.55;
             padding:14px 16px;
         }}
+        .commercial-status-grid {{
+            display:grid;
+            grid-template-columns:repeat(3, minmax(120px, 1fr));
+            gap:12px;
+            width:100%;
+        }}
+        .commercial-status-tile {{
+            min-height:70px;
+            border-radius:10px;
+            border:1px solid #DDE6F2;
+            display:grid;
+            grid-template-columns:1fr 34px;
+            grid-template-rows:auto auto;
+            align-items:center;
+            gap:4px 10px;
+            padding:12px 14px;
+            box-sizing:border-box;
+        }}
+        .commercial-status-tile span {{
+            color:#0B1B46;
+            font-size:14px;
+            font-weight:950;
+        }}
+        .commercial-status-tile b {{
+            grid-row:1 / span 2;
+            grid-column:2;
+            width:34px;
+            height:34px;
+            border-radius:8px;
+            display:grid;
+            place-items:center;
+            font-size:20px;
+            font-weight:950;
+        }}
+        .commercial-status-tile small {{
+            color:#475569;
+            font-size:12px;
+            font-weight:850;
+        }}
+        .commercial-status-tile.ok {{
+            background:#ECFDF3;
+            border-color:#BBF7D0;
+        }}
+        .commercial-status-tile.ok b {{
+            background:#16A34A;
+            color:#FFFFFF;
+        }}
+        .commercial-status-tile.bad {{
+            background:#FEF2F2;
+            border-color:#FECACA;
+        }}
+        .commercial-status-tile.bad b {{
+            background:#DC2626;
+            color:#FFFFFF;
+        }}
         .combo-model-metric {{
             text-align:left;
             min-width:180px;
@@ -5460,32 +5515,56 @@ def render_non_visible_combo_table(combo_df):
         st.success("No hay modelos creados con stock bloqueados para web.")
         return combo_df
 
-    total_models = float(combo_df["Modelos"].sum() or 0)
+    def commercial_status(row):
+        state = clean_value(row.get("Estado operativo"))
+        blockers = clean_value(row.get("Bloqueos"))
+        return pd.Series(
+            {
+                "Stock": "Sin stock Shopify" not in state and "Sin stock Shopify" not in blockers,
+                "Imagen": "Sin foto" not in state and "Sin foto" not in blockers,
+                "Precio": "Sin precio" not in state and "Sin precio" not in blockers,
+            }
+        )
+
+    status_df = combo_df.apply(commercial_status, axis=1)
+    commercial_df = pd.concat([combo_df, status_df], axis=1)
+    combo_view = (
+        commercial_df.groupby(["Stock", "Precio", "Imagen"], as_index=False)
+        .agg(Modelos=("Modelos", "sum"))
+        .sort_values("Modelos", ascending=False)
+    )
+    total_models = float(combo_view["Modelos"].sum() or 0)
     total_models_safe = total_models or 1
 
     def percent(value):
         return max(0, min(100, (float(value or 0) / total_models_safe) * 100))
 
-    def soft_class(text):
-        text = clean_value(text)
-        if "Sin stock Shopify" in text and "Sin foto" in text:
-            return "mint"
-        if "Sin stock Shopify" in text:
-            return "blue"
-        if "Sin foto" in text:
-            return "amber"
-        if "Sin precio" in text:
-            return "rose"
-        return "slate"
+    def status_tile(label, ok):
+        state_class = "ok" if ok else "bad"
+        icon = "&#10003;" if ok else "&#10005;"
+        text = "OK" if ok else "Falta"
+        return f"""
+        <div class="commercial-status-tile {state_class}">
+            <span>{escape(label)}</span>
+            <b>{icon}</b>
+            <small>{text}</small>
+        </div>
+        """
 
     rows = []
-    for _, row in combo_df.iterrows():
+    for _, row in combo_view.iterrows():
         models = int(row.get("Modelos") or 0)
         pct_value = percent(models)
         rows.append(
             f"""
             <tr>
-                <td><div class="combo-state {soft_class(row.get("Bloqueos"))}">{escape(clean_value(row.get("Estado operativo")))}</div></td>
+                <td>
+                    <div class="commercial-status-grid">
+                        {status_tile("Stock", bool(row.get("Stock")))}
+                        {status_tile("Precio", bool(row.get("Precio")))}
+                        {status_tile("Imagen", bool(row.get("Imagen")))}
+                    </div>
+                </td>
                 <td>
                     <div class="combo-model-metric">
                         <strong>{format_kpi_number(models)}</strong>
@@ -5502,8 +5581,8 @@ def render_non_visible_combo_table(combo_df):
         <div class="combo-card">
             <div class="combo-card-head">
                 <div>
-                    <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Cruce de bloqueos web</div>
-                    <p>Estados que explican por que los modelos con stock eComm no aparecen visibles en web.</p>
+                    <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Checklist comercial web</div>
+                    <p>Estado de las bases comerciales necesarias para que los modelos esten listos para venta.</p>
                 </div>
                 <div class="combo-chip">{format_kpi_number(int(total_models))} modelo-color</div>
             </div>
@@ -5515,14 +5594,14 @@ def render_non_visible_combo_table(combo_df):
                     </colgroup>
                     <thead>
                         <tr>
-                            <th>Estado actual</th>
+                            <th>Bases comerciales</th>
                             <th>Modelos</th>
                         </tr>
                     </thead>
                     <tbody>{''.join(rows)}</tbody>
                     <tfoot>
                         <tr>
-                            <td><b>Totales</b><span>{len(combo_df)} combinaciones</span></td>
+                            <td><b>Totales</b><span>{len(combo_view)} combinaciones comerciales</span></td>
                             <td>{format_kpi_number(int(total_models))}<small>100%</small></td>
                         </tr>
                     </tfoot>

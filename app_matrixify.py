@@ -3647,23 +3647,59 @@ def inject_custom_css(config):
         }}
         section[data-testid="stSidebar"] .st-key-operation_nav,
         section[data-testid="stSidebar"] .st-key-load_mode_nav {{
-            margin:10px 0;
+            margin:12px 0 16px;
         }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[data-baseweb="select"] > div {{
-            min-height:48px !important;
-            height:48px !important;
-            border-radius:14px !important;
-            border:1px solid #93C5FD !important;
-            background:#FFFFFF !important;
-            box-shadow:none !important;
-            padding:0 14px !important;
+        section[data-testid="stSidebar"] .sidebar-choice-preview {{
+            min-height:58px;
+            display:flex;
+            align-items:center;
+            gap:14px;
+            padding:12px 16px;
+            margin:9px 0 -58px;
+            border-radius:16px;
+            border:1px solid #DDE6F2;
+            background:#FFFFFF;
+            box-shadow:0 10px 20px rgba(15,23,42,0.05);
+            box-sizing:border-box;
+            pointer-events:none;
+            position:relative;
+            z-index:1;
         }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[data-baseweb="select"] *,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[data-baseweb="select"] * {{
-            color:#172554 !important;
-            font-size:15px !important;
-            font-weight:900 !important;
+        section[data-testid="stSidebar"] .sidebar-choice-preview.active {{
+            border-color:#60A5FA;
+            background:#EFF6FF;
+            box-shadow:0 0 0 1px #BFDBFE, 0 12px 24px rgba(37,99,235,0.10);
+        }}
+        section[data-testid="stSidebar"] .sidebar-choice-preview span {{
+            width:32px;
+            height:32px;
+            border-radius:10px;
+            display:grid;
+            place-items:center;
+            background:#EEF2FF;
+            color:#2563EB !important;
+            font-size:18px;
+            font-weight:950;
+        }}
+        section[data-testid="stSidebar"] .sidebar-choice-preview.active span {{
+            background:#2563EB;
+            color:#FFFFFF !important;
+        }}
+        section[data-testid="stSidebar"] .sidebar-choice-preview strong {{
+            color:#0B1B46;
+            font-size:15px;
+            line-height:1.1;
+            font-weight:950;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav .stButton button,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav .stButton button {{
+            min-height:58px !important;
+            width:100%;
+            margin:0 0 9px;
+            border-radius:16px !important;
+            opacity:0;
+            position:relative;
+            z-index:2;
         }}
         section[data-testid="stSidebar"] div[role="radiogroup"] label {{
             border:0 !important;
@@ -5412,13 +5448,12 @@ def format_kpi_number(value):
 def render_kpi_cards(kpis):
     primary_cards = [
         ("Modelos con stock eComm", kpis["modelos_con_stock"], "blue", "&#9633;"),
-        ("Creados en Shopify", kpis["modelos_creados_con_stock"], "green", "&#9679;"),
+        ("Creados con stock", kpis["modelos_creados_con_stock"], "green", "&#9679;"),
         ("Pendientes por crear", kpis["modelos_pendientes"], "orange", "!"),
-        ("Cobertura creacion", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
-        ("Con inventario Shopify", kpis["modelos_con_stock_shopify"], "green", "&#9711;"),
-        ("Sin inventario Shopify", kpis["modelos_sin_stock_shopify"], "red", "&#9676;"),
+        ("Cobertura stock eComm", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
         ("Visibles en web", kpis["modelos_visibles_web"], "green", "&#9711;"),
-        ("No listos web", kpis["modelos_no_visibles_web"], "orange", "&#9676;"),
+        ("No visibles en web", kpis["modelos_no_visibles_web"], "orange", "&#9676;"),
+        ("Sync stock Shopify", f"{kpis['sincronizacion_stock_shopify']:.0%}", "purple", "%"),
     ]
     def cards_html(cards):
         return "".join(
@@ -6192,7 +6227,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     )
     funnel_rows = [
         {"label": "Modelos con stock eComm", "short": "Stock eComm", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
-        {"label": "Creados en Shopify", "short": "Creados Shopify", "value": kpis["modelos_creados_con_stock"], "icon": "&#9635;"},
+        {"label": "Creados con stock", "short": "Creados stock", "value": kpis["modelos_creados_con_stock"], "icon": "&#9635;"},
         {"label": "Pendientes de creacion", "short": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
         {"label": "Visibles en web", "short": "Visibles web", "value": kpis["modelos_visibles_web"], "icon": "&#9711;"},
         {"label": "No visibles en web", "short": "No visibles web", "value": kpis["modelos_no_visibles_web"], "icon": "&#9676;"},
@@ -6488,6 +6523,29 @@ def require_login():
     return False
 
 
+def sidebar_card_choice(key, options, default, icons=None):
+    icons = icons or {}
+    if key not in st.session_state or st.session_state[key] not in options:
+        st.session_state[key] = default
+    selected = st.session_state[key]
+    for option in options:
+        active_class = " active" if option == selected else ""
+        icon = icons.get(option, "")
+        st.sidebar.markdown(
+            f"""
+            <div class="sidebar-choice-preview{active_class}">
+                <span>{escape(icon)}</span>
+                <strong>{escape(option)}</strong>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.sidebar.button(option, key=f"{key}_{slugify(option)}", help=option):
+            st.session_state[key] = option
+            st.rerun()
+    return st.session_state[key]
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
     if not require_login():
@@ -6520,40 +6578,24 @@ def main():
     render_allowed_brands_card(brand_config)
     nav_options = ["KPIs de catalogo", "Carga de catalogo"]
     with st.sidebar.container(key="operation_nav"):
-        if hasattr(st, "pills"):
-            operation_area = st.pills(
-                "Tipo de operacion",
-                nav_options,
-                default=nav_options[0],
-                label_visibility="collapsed",
-            )
-        else:
-            operation_area = st.radio(
-                "Tipo de operacion",
-                nav_options,
-                index=0,
-                label_visibility="collapsed",
-            )
-    operation_area = operation_area or nav_options[0]
+        st.markdown('<p class="sidebar-label">Tipo de operacion</p>', unsafe_allow_html=True)
+        operation_area = sidebar_card_choice(
+            "operation_area_choice",
+            nav_options,
+            nav_options[0],
+            icons={"KPIs de catalogo": "□", "Carga de catalogo": "▦"},
+        )
     operation_mode = "Carga completa"
     if operation_area == "Carga de catalogo":
         load_options = ["Carga completa", "Carga parcial"]
         with st.sidebar.container(key="load_mode_nav"):
-            if hasattr(st, "pills"):
-                operation_mode = st.pills(
-                    "Tipo de carga",
-                    load_options,
-                    default=load_options[0],
-                    label_visibility="collapsed",
-                )
-            else:
-                operation_mode = st.radio(
-                    "Tipo de carga",
-                    load_options,
-                    index=0,
-                    label_visibility="collapsed",
-                )
-        operation_mode = operation_mode or load_options[0]
+            st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
+            operation_mode = sidebar_card_choice(
+                "operation_mode_choice",
+                load_options,
+                load_options[0],
+                icons={"Carga completa": "＋", "Carga parcial": "◐"},
+            )
     with st.sidebar.container(key="shopify_sidebar_card"):
         render_sidebar_shopify_card(ui_config, shopify_config)
         if is_shopify_configured(shopify_config):

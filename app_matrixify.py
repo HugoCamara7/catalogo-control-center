@@ -1084,6 +1084,33 @@ SELECT
 FROM stock_base
 """
 
+STOCK_QUERY_SAFE = """
+WITH stock_base AS (
+  SELECT
+    fecha_corte,
+    id_producto,
+    conca || '-' || talla AS key_producto,
+    codigo_tienda,
+    stock_tiendas,
+    stock_bodega
+  FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
+  WHERE fecha_corte = (
+    SELECT MAX(fecha_corte)
+    FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
+    WHERE EXTRACT(YEAR FROM fecha_corte) = EXTRACT(YEAR FROM CURRENT_DATE())
+  )
+)
+SELECT
+  fecha_corte,
+  id_producto,
+  UPPER(TRIM(key_producto)) AS key_producto,
+  codigo_tienda,
+  COALESCE(stock_tiendas, 0) AS stock_tiendas,
+  COALESCE(stock_bodega, 0) AS stock_bodega,
+  COALESCE(stock_tiendas, 0) + COALESCE(stock_bodega, 0) AS stock_total
+FROM stock_base
+"""
+
 
 def read_current_stock_from_bigquery(bigquery_config):
     try:
@@ -1104,7 +1131,13 @@ def read_current_stock_from_bigquery(bigquery_config):
     client = bigquery.Client(project=job_project_id or None, credentials=credentials)
     job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
     location = clean_value(config.get("location")) or None
-    df = client.query(STOCK_QUERY_DEFAULT, job_config=job_config, location=location).to_dataframe()
+    query = clean_value(config.get("stock_query")) or STOCK_QUERY_DEFAULT
+    try:
+        df = client.query(query, job_config=job_config, location=location).to_dataframe()
+    except Exception:
+        if query.strip() == STOCK_QUERY_SAFE.strip():
+            raise
+        df = client.query(STOCK_QUERY_SAFE, job_config=job_config, location=location).to_dataframe()
     df = standardize_stock_columns(df)
 
     for column in ("fecha_corte", "id_producto", "key_producto", "codigo_tienda", "CONCAT_TIENDA", "stock_tiendas", "stock_bodega", "stock_total"):

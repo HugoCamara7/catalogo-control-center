@@ -1,6 +1,7 @@
 import io
 import base64
 import json
+import pickle
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -66,6 +67,7 @@ DEFAULT_ECOMM_WAREHOUSES_PATH = Path("data/bodegas_ecomm.xlsx")
 FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
 KPI_AUTO_REFRESH_SECONDS = 60 * 60
+KPI_CACHE_DIR = Path("outputs/kpi_cache")
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -273,6 +275,27 @@ def parse_publication_date(value):
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone(timedelta(hours=-5)))
     return parsed.isoformat()
+
+
+def parse_iso_datetime(value):
+    text = clean_value(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def format_datetime_lima(value):
+    parsed = parse_iso_datetime(value)
+    if parsed is None:
+        return ""
+    lima_time = parsed.astimezone(timezone(timedelta(hours=-5)))
+    return lima_time.strftime("%d/%m/%Y %H:%M")
 
 
 def publication_date_from_row(row):
@@ -1836,6 +1859,31 @@ def load_catalog_kpi_result(brand_config, shopify_config):
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
     }
     return result
+
+
+def kpi_cache_path(site_key):
+    safe_site = re.sub(r"[^a-zA-Z0-9_-]+", "_", clean_value(site_key) or "site")
+    return KPI_CACHE_DIR / f"{safe_site}.pkl"
+
+
+def load_cached_catalog_kpi_result(site_key):
+    path = kpi_cache_path(site_key)
+    if not path.exists():
+        return None
+    try:
+        with path.open("rb") as cache_file:
+            result = pickle.load(cache_file)
+        return result if isinstance(result, dict) and "kpis" in result else None
+    except Exception:
+        return None
+
+
+def save_cached_catalog_kpi_result(site_key, result):
+    if not isinstance(result, dict) or "kpis" not in result:
+        return
+    KPI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with kpi_cache_path(site_key).open("wb") as cache_file:
+        pickle.dump(result, cache_file)
 
 
 def siblings_by_model_from_shopify(shopify_products):
@@ -3873,6 +3921,15 @@ def inject_custom_css(config):
         .kpi-card.lime .kpi-icon {{ background:#ECFDF3; color:#15803D; }}
         .kpi-card.red .kpi-icon {{ background:#FEECEF; color:#DC2626; }}
         .kpi-card.slate .kpi-icon {{ background:#EEF2F7; color:#334155; }}
+        div[class*="refresh_kpis"] .stButton button {{
+            width:42px;
+            min-width:42px;
+            height:42px;
+            padding:0;
+            border-radius:50%;
+            font-size:22px;
+            line-height:1;
+        }}
         .combo-card {{
             width:100%;
             max-width:100%;
@@ -4870,7 +4927,7 @@ def render_top_header(config):
                 <div>
                     <p class="header-eyebrow">Catalogo Control Center</p>
                     <h1 class="header-title">{config["site_label"]} &rarr; Shopify</h1>
-                    <p class="header-subtitle">Convierte el input comercial en un Excel Matrixify validado usando BigQuery como fuente maestra.</p>
+                    <p class="header-subtitle">Gestiona el catalogo con datos de BigQuery y sincronizacion directa con Shopify.</p>
                 </div>
             </div>
             <div class="shopify-lockup">
@@ -5717,7 +5774,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         <div class="kpi-hero">
             <div class="kpi-title">
                 <h2>Dashboard Shopify</h2>
-                <p>Control por codigo modelo-color: stock eComm, creacion Shopify, visibilidad y precio.</p>
+                <p>Visibilidad ejecutiva del catalogo, stock disponible y estado comercial en Shopify.</p>
             </div>
         </div>
         """
@@ -5743,34 +5800,52 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
 
     run_key = f"kpi_result_{brand_config['site_key']}"
     result = st.session_state.get(run_key)
-    meta = result.get("meta", {}) if isinstance(result, dict) else {}
-    refreshed_at_text = clean_value(meta.get("refreshed_at"))
-    refreshed_at = None
-    if refreshed_at_text:
-        try:
-            refreshed_at = datetime.fromisoformat(refreshed_at_text)
-        except ValueError:
-            refreshed_at = None
-    needs_auto_refresh = result is None or refreshed_at is None or (
-        datetime.now(timezone.utc) - refreshed_at >= timedelta(seconds=KPI_AUTO_REFRESH_SECONDS)
-    )
-    manual_refresh = st.button("Actualizar dashboard", type="primary")
-    if manual_refresh or needs_auto_refresh:
+    if result is None:
+        result = load_cached_catalog_kpi_result(brand_config["site_key"])
+        if result is not None:
+            st.session_state[run_key] = result
+    if result is None:
         spinner_text = (
-            "Actualizando dashboard..."
-            if manual_refresh
-            else "Cargando dashboard actualizado..."
+            "Cargando dashboard actualizado..."
         )
         with st.spinner(spinner_text):
             try:
                 result = load_catalog_kpi_result(brand_config, shopify_config)
                 st.session_state[run_key] = result
+                save_cached_catalog_kpi_result(brand_config["site_key"], result)
             except Exception as exc:
                 st.error(f"No se pudo actualizar el dashboard: {exc}")
 
     if not result:
         st.info("Cargando dashboard...")
         return
+
+    toolbar_left, toolbar_right = st.columns([0.94, 0.06])
+    with toolbar_right:
+        manual_refresh = st.button("↻", type="primary", help="Actualizar dashboard", key=f"{brand_config['site_key']}_refresh_kpis")
+    if manual_refresh:
+        with st.spinner("Actualizando dashboard..."):
+            try:
+                result = load_catalog_kpi_result(brand_config, shopify_config)
+                st.session_state[run_key] = result
+                save_cached_catalog_kpi_result(brand_config["site_key"], result)
+            except Exception as exc:
+                st.error(f"No se pudo actualizar el dashboard: {exc}")
+
+    meta = result.get("meta", {}) if isinstance(result, dict) else {}
+    refreshed_at = parse_iso_datetime(meta.get("refreshed_at"))
+    refreshed_label = format_datetime_lima(meta.get("refreshed_at"))
+    if refreshed_at is not None:
+        refresh_age = datetime.now(timezone.utc) - refreshed_at.astimezone(timezone.utc)
+        if refresh_age >= timedelta(seconds=KPI_AUTO_REFRESH_SECONDS):
+            st.warning(
+                f"Dashboard pendiente de actualizar. Ultima actualizacion: {refreshed_label}. "
+                "Haz click en el icono de actualizar."
+            )
+        elif refreshed_label:
+            st.caption(f"Ultima actualizacion: {refreshed_label}")
+    else:
+        st.warning("Dashboard pendiente de actualizar. Haz click en el icono de actualizar.")
 
     kpis = result["kpis"]
     ecomm_match_df = result.get("ecomm_stock_match", pd.DataFrame())

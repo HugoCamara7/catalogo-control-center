@@ -22,8 +22,11 @@ from generate_columbia_matrixify import (
     build_matrixify_updates,
     get_brand_config,
     input_brand_report,
+    first_non_empty,
     is_internal_k_size,
     is_one_size,
+    split_model_color,
+    strip_html,
     is_zero_size,
     read_arti_source,
 )
@@ -629,13 +632,15 @@ def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
     return buffer
 
 
-def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_df=None, skipped_df=None, sial_df=None):
+def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_df=None, skipped_df=None, sial_df=None, centry_df=None, centry_issues_df=None):
     matrixify_df = coalesce_duplicate_columns(matrixify_df)
     summary_df = coalesce_duplicate_columns(summary_df)
     issues_df = coalesce_duplicate_columns(issues_df)
     type_warnings_df = coalesce_duplicate_columns(type_warnings_df)
     skipped_df = coalesce_duplicate_columns(skipped_df)
     sial_df = coalesce_duplicate_columns(sial_df)
+    centry_df = coalesce_duplicate_columns(centry_df)
+    centry_issues_df = coalesce_duplicate_columns(centry_issues_df)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         matrixify_df.to_excel(writer, index=False, sheet_name="Products")
@@ -643,6 +648,10 @@ def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_d
         issues_df.to_excel(writer, index=False, sheet_name="Revision")
         if sial_df is not None:
             sial_df.to_excel(writer, index=False, sheet_name="Carga Sial")
+        if centry_df is not None:
+            centry_df.to_excel(writer, index=False, sheet_name="Centry")
+            centry_review_df = centry_issues_df if centry_issues_df is not None else pd.DataFrame(columns=["Mod-Col", "Problema"])
+            centry_review_df.to_excel(writer, index=False, sheet_name="Revision Centry")
         if type_warnings_df is not None:
             type_warnings_df.to_excel(writer, index=False, sheet_name="Tipos nuevos")
         if skipped_df is not None:
@@ -682,6 +691,284 @@ def dataframe_to_excel_bytes(sheets):
                 sheet.column_dimensions[column_cells[0].column_letter].width = 22
     buffer.seek(0)
     return buffer
+
+
+CENTRY_BASE_COLUMNS = [
+    "Nombre del Producto",
+    "Marca",
+    "Descripcion",
+    "Listado de características",
+    "Garantía",
+    "Alto del paquete",
+    "Ancho del paquete",
+    "Largo del paquete",
+    "Peso del paquete",
+    "Categoría",
+    "Precio",
+    "SKU del producto",
+    "SKU de la variante",
+    "Código de barra variante (EAN/UPC/ISBN)",
+    "Color",
+    "Talla",
+    "Condición del Producto",
+    "Año de temporada",
+    "Temporada",
+    "Género",
+    "URL imagen principal",
+    "URL imagen 2",
+    "URL imagen 3",
+    "URL imagen 4",
+    "URL imagen 5",
+    "Estado",
+    "Incluir en Falabella Global Peru / FalabellaGlobalProduction",
+]
+CENTRY_FOOTWEAR_COLUMNS = [
+    "Material principal - Calzado (Falabella GSC Perú)",
+    "Género - Calzado (Falabella GSC Perú)",
+    "Tipo - Calzado (Falabella GSC Perú)",
+    "Altura de la plataforma - Calzado (Falabella GSC Perú)",
+    "Altura del taco - Calzado (Falabella GSC Perú)",
+    "Material de la plantilla - Calzado (Falabella GSC Perú)",
+    "Material de la suela - Calzado (Falabella GSC Perú)",
+    "Horma - Calzado (Falabella GSC Perú)",
+    "Tipo de caña - Calzado (Falabella GSC Perú)",
+    "Forma de la punta - Calzado (Falabella GSC Perú)",
+    "Material del forro - Calzado (Falabella GSC Perú)",
+]
+CENTRY_APPAREL_COLUMNS = [
+    "Género de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+    "Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de cierre - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de prenda para la parte superior - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de camisa/blusa/polo/camiseta - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de chaqueta/chaleco - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de pantalón largo/corto - Ropa y accesorios (Falabella GSC Perú)",
+    "Composición - Ropa y accesorios (Falabella GSC Perú)",
+    "Largo de mangas - Ropa y accesorios (Falabella GSC Perú)",
+    "Diseño - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de cuello - Tipo de cuello - Ropa y accesorios (Falabella GSC Perú)",
+]
+CENTRY_TAIL_COLUMNS = ["Clase", "Guía de tallas", "Base de categoría", "Cod Mod Col Talla", "Mod", "Col", "Tal"]
+CENTRY_COLUMNS = CENTRY_BASE_COLUMNS + CENTRY_FOOTWEAR_COLUMNS + CENTRY_APPAREL_COLUMNS + CENTRY_TAIL_COLUMNS
+
+
+def centry_value(value, fallback=""):
+    text = clean_value(value)
+    if not text or text.upper() in {"#N/D", "#ND", "#N/A", "NAN", "NONE", "NULL"}:
+        return fallback
+    return text
+
+
+def centry_is_footwear(row):
+    haystack = " ".join(
+        centry_value(row.get(column)).lower()
+        for column in ("Type", "Tags", "Title", "Categoría", "Categoria ")
+    )
+    return any(word in haystack for word in ("calzado", "zapatilla", "zapato", "botin", "bota", "sandalia"))
+
+
+def centry_gender(row):
+    text = " ".join(centry_value(row.get(column)).lower() for column in ("Title", "Tags", "Body HTML", "Type"))
+    if "mujer" in text or "femenino" in text:
+        return "Femenino"
+    if "hombre" in text or "masculino" in text:
+        return "Masculino"
+    if "niño" in text or "nino" in text or "kids" in text:
+        return "Niños"
+    return ""
+
+
+def centry_category(row):
+    product_type = centry_value(row.get("Type"))
+    gender = centry_gender(row)
+    if centry_is_footwear(row):
+        branch = "Calzados Masculinos" if gender == "Masculino" else "Calzados Femeninos" if gender == "Femenino" else "Calzados"
+        return f"Calzados / {branch} / {product_type or 'Zapatillas'}"
+    branch = "Ropa Masculina" if gender == "Masculino" else "Ropa Femenina" if gender == "Femenino" else "Ropa"
+    return f"Vestuario / {branch} / {product_type or 'Prendas'}"
+
+
+def centry_split_images(value):
+    parts = [centry_value(part) for part in re.split(r"[;\n]+", centry_value(value)) if centry_value(part)]
+    return parts[:5]
+
+
+def centry_mod_col_from_row(row):
+    mod_col = first_non_empty(
+        row.get("Metafield: custom.codigo_modelo_color [id]"),
+        row.get("Mod-Col"),
+        row.get("COD MOD COL"),
+    ).upper()
+    if mod_col:
+        return mod_col
+    sku = centry_value(row.get("Variant SKU"))
+    return sku.rsplit("-", 1)[0].upper() if "-" in sku else sku.upper()
+
+
+def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None):
+    if matrixify_df is None or matrixify_df.empty:
+        return pd.DataFrame(columns=CENTRY_COLUMNS), pd.DataFrame(columns=["Mod-Col", "Problema"])
+    brand_config = brand_config or {}
+    df = coalesce_duplicate_columns(matrixify_df).copy()
+    for column in MATRIXIFY_COLUMNS:
+        if column not in df.columns:
+            df[column] = ""
+    product_fields = [
+        "Title", "Body HTML", "Vendor", "Type", "Tags", "Status", "Published", "Image Src",
+        "Metafield: custom.codigo_modelo_color [id]", "Metafield: custom.estilo [single_line_text_field]",
+        "Metafield: custom.color [single_line_text_field]",
+    ]
+    for column in product_fields:
+        if column in df.columns:
+            df[column] = df[column].replace("", pd.NA).ffill().fillna("")
+    only_codes_set = {clean_value(code).upper() for code in (only_codes or []) if clean_value(code)}
+    rows = []
+    issues = []
+    current_mod_col = ""
+    for _, row in df.iterrows():
+        variant_sku = centry_value(row.get("Variant SKU"))
+        if not variant_sku:
+            continue
+        mod_col = centry_mod_col_from_row(row)
+        current_mod_col = mod_col or current_mod_col
+        model, color_code = split_model_color(current_mod_col)
+        if only_codes_set and current_mod_col not in only_codes_set and model not in only_codes_set:
+            continue
+        images = centry_split_images(row.get("Image Src"))
+        title = centry_value(row.get("Title"))
+        vendor = centry_value(row.get("Vendor"), brand_config.get("label", ""))
+        product_type = centry_value(row.get("Type"))
+        color = first_non_empty(row.get("Option2 Value"), row.get("Metafield: custom.color [single_line_text_field]"), color_code)
+        size = centry_value(row.get("Option1 Value"))
+        gender = centry_gender(row)
+        is_footwear = centry_is_footwear(row)
+        centry_row = {column: "" for column in CENTRY_COLUMNS}
+        centry_row.update(
+            {
+                "Nombre del Producto": title,
+                "Marca": vendor,
+                "Descripcion": strip_html(row.get("Body HTML")),
+                "Listado de características": centry_value(row.get("Tags")).replace(",", " |"),
+                "Garantía": "3 meses, Garantía del vendedor",
+                "Alto del paquete": 12 if is_footwear else 1,
+                "Ancho del paquete": 21 if is_footwear else 27,
+                "Largo del paquete": 35 if is_footwear else 29,
+                "Peso del paquete": 0.9 if is_footwear else 0.2,
+                "Categoría": centry_category(row),
+                "Precio": centry_value(row.get("Variant Price")),
+                "SKU del producto": current_mod_col,
+                "SKU de la variante": variant_sku,
+                "Código de barra variante (EAN/UPC/ISBN)": centry_value(row.get("Variant Barcode")),
+                "Color": color,
+                "Talla": size,
+                "Condición del Producto": "Nuevo",
+                "Año de temporada": datetime.now().year,
+                "Temporada": centry_value(row.get("Temporada"), "Verano"),
+                "Género": gender,
+                "Estado": "Activo",
+                "Incluir en Falabella Global Peru / FalabellaGlobalProduction": "SI",
+                "Mod": model,
+                "Col": color_code,
+                "Tal": size,
+                "Cod Mod Col Talla": f"{current_mod_col}-{size}" if current_mod_col and size else current_mod_col,
+                "Clase": "Calzado" if is_footwear else "Vestuario",
+                "Base de categoría": f"{product_type}{gender}{vendor}",
+            }
+        )
+        for index, image in enumerate(images, start=1):
+            centry_row["URL imagen principal" if index == 1 else f"URL imagen {index}"] = image
+        if is_footwear:
+            centry_row["Género - Calzado (Falabella GSC Perú)"] = "Hombre" if gender == "Masculino" else "Mujer" if gender == "Femenino" else gender
+            centry_row["Tipo - Calzado (Falabella GSC Perú)"] = product_type or "Zapatillas"
+            centry_row["Horma - Calzado (Falabella GSC Perú)"] = "Normal"
+        else:
+            centry_row["Género de vestuario - Ropa y accesorios (Falabella GSC Perú)"] = "Hombre" if gender == "Masculino" else "Mujer" if gender == "Femenino" else gender
+            centry_row["Tipo de prenda para la parte superior - Ropa y accesorios (Falabella GSC Perú)"] = product_type
+            centry_row["Tipo de camisa/blusa/polo/camiseta - Ropa y accesorios (Falabella GSC Perú)"] = product_type
+        if not title:
+            issues.append({"Mod-Col": current_mod_col, "Problema": "Sin nombre de producto"})
+        if not images:
+            issues.append({"Mod-Col": current_mod_col, "Problema": "Sin imagen principal"})
+        rows.append(centry_row)
+    centry_df = pd.DataFrame(rows, columns=CENTRY_COLUMNS).fillna("")
+    centry_df = centry_df.replace({"#N/D": "", "#ND": "", "#N/A": ""})
+    return centry_df, pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
+
+
+def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"):
+    if centry_df is None or centry_df.empty:
+        return
+    df = centry_df.copy()
+    total_rows = len(df)
+    total_products = df.get("SKU del producto", pd.Series(dtype=object)).map(clean_value).nunique()
+    no_barcode = int((df.get("Código de barra variante (EAN/UPC/ISBN)", pd.Series(dtype=object)).map(clean_value) == "").sum())
+    no_image = int((df.get("URL imagen principal", pd.Series(dtype=object)).map(clean_value) == "").sum())
+    no_price = int((df.get("Precio", pd.Series(dtype=object)).map(clean_value) == "").sum())
+    issue_count = 0 if issues_df is None or issues_df.empty else len(issues_df)
+    render_html(
+        f"""
+        <div class="combo-card">
+            <div class="combo-card-head">
+                <div>
+                    <div class="combo-title"><span class="combo-title-icon">C</span> {title}</div>
+                    <p>Revision rapida de completitud antes de enviar el archivo al canal.</p>
+                </div>
+                <div class="combo-chip">{format_kpi_number(total_rows)} filas</div>
+            </div>
+            <div class="commercial-summary-grid">
+                <div class="commercial-summary-tile ok"><span>Productos</span><b>&#10003;</b><strong>{format_kpi_number(total_products)}</strong></div>
+                <div class="commercial-summary-tile {'ok' if no_barcode == 0 else 'bad'}"><span>EAN faltante</span><b>{'&#10003;' if no_barcode == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_barcode)}</strong></div>
+                <div class="commercial-summary-tile {'ok' if no_image == 0 else 'bad'}"><span>Imagen faltante</span><b>{'&#10003;' if no_image == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_image)}</strong></div>
+                <div class="commercial-summary-tile {'ok' if no_price == 0 else 'bad'}"><span>Precio faltante</span><b>{'&#10003;' if no_price == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_price)}</strong></div>
+                <div class="commercial-summary-tile {'ok' if issue_count == 0 else 'bad'}"><span>Observaciones</span><b>{'&#10003;' if issue_count == 0 else '&#10005;'}</b><strong>{format_kpi_number(issue_count)}</strong></div>
+            </div>
+        </div>
+        """
+    )
+    st.dataframe(df.head(120), use_container_width=True, height=360)
+    if issues_df is not None and not issues_df.empty:
+        st.warning(f"Centry tiene {len(issues_df):,} observaciones.")
+        st.dataframe(issues_df, use_container_width=True)
+
+
+def model_codes_from_text(value):
+    return [part.strip().upper() for part in re.split(r"[\n,; ]+", clean_value(value)) if part.strip()]
+
+
+def model_codes_from_excel(df):
+    if df is None or df.empty:
+        return []
+    code_column = first_existing_column(
+        df,
+        [
+            "Mod-Col",
+            "Mod Col",
+            "Codigo Modelo Color",
+            "Codigo modelo-color",
+            "Codigo modelo color",
+            "Codigo modelo",
+            "Cod Mod Col",
+            "Modelo Color",
+            "Modelo-Color",
+            "modelo_color",
+            "sku",
+        ],
+    )
+    if code_column is None:
+        non_empty_columns = [col for col in df.columns if df[col].map(clean_value).ne("").any()]
+        if len(non_empty_columns) == 1:
+            code_column = non_empty_columns[0]
+    if code_column is None:
+        return []
+    values = df[code_column].dropna().map(clean_value).tolist()
+    codes = []
+    seen = set()
+    for value in values:
+        for code in model_codes_from_text(value):
+            if code not in seen:
+                codes.append(code)
+                seen.add(code)
+    return codes
 
 
 def _split_tags(value):
@@ -1072,9 +1359,14 @@ def shopify_products_to_matrixify_df(shopify_products):
                     "Image Src": product.get("Image Src") if index == 0 else "",
                     "Variant SKU": variant.get("Variant SKU", ""),
                     "Variant Barcode": variant.get("Variant Barcode", ""),
+                    "Variant Price": variant.get("Variant Price", ""),
                     "Variant Inventory Item ID": variant.get("Variant Inventory Item ID", ""),
                     "Variant ID": variant.get("Variant ID", ""),
                     "Variant Image": variant.get("Variant Image", ""),
+                    "Option1 Name": variant.get("Option1 Name", "") or "Talla",
+                    "Option1 Value": variant.get("Option1 Value", ""),
+                    "Option2 Name": variant.get("Option2 Name", ""),
+                    "Option2 Value": variant.get("Option2 Value", ""),
                     "Metafield: custom.codigo_modelo_color [id]": product.get("Mod-Col") if index == 0 else "",
                     "Metafield: theme.siblings [single_line_text_field]": product.get("Siblings") if index == 0 else "",
                     "Metafield: theme.siblings_color [single_line_text_field]": product.get("Siblings Color") if index == 0 else "",
@@ -3722,6 +4014,73 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] div[role="radiogroup"] label input,
         section[data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child {{
             display:none !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav .sidebar-choice-preview,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav .sidebar-choice-preview {{
+            display:none !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"],
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] {{
+            display:grid !important;
+            gap:10px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label {{
+            min-height:60px !important;
+            display:flex !important;
+            align-items:center !important;
+            gap:12px !important;
+            padding:12px 16px !important;
+            margin:0 !important;
+            border-radius:16px !important;
+            border:1px solid #DDE6F2 !important;
+            background:#FFFFFF !important;
+            box-shadow:0 10px 20px rgba(15,23,42,0.05) !important;
+            box-sizing:border-box !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:has(input:checked),
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:has(input:checked) {{
+            background:#EFF6FF !important;
+            border-color:#60A5FA !important;
+            box-shadow:0 0 0 1px #BFDBFE, 0 12px 24px rgba(37,99,235,0.10) !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label::before,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label::before {{
+            width:32px;
+            height:32px;
+            min-width:32px;
+            border-radius:10px;
+            display:grid;
+            place-items:center;
+            background:#EEF2FF;
+            color:#2563EB;
+            font-size:16px;
+            font-weight:950;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:nth-of-type(1)::before {{
+            content:"K";
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:nth-of-type(2)::before {{
+            content:"C";
+        }}
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:nth-of-type(1)::before {{
+            content:"T";
+        }}
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:nth-of-type(2)::before {{
+            content:"P";
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:has(input:checked)::before,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:has(input:checked)::before {{
+            background:#2563EB;
+            color:#FFFFFF;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label p,
+        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label p {{
+            margin:0 !important;
+            color:#0B1B46 !important;
+            font-size:15px !important;
+            line-height:1.1 !important;
+            font-weight:950 !important;
         }}
         .top-header {{
             display: flex;
@@ -6579,22 +6938,24 @@ def main():
     nav_options = ["KPIs de catalogo", "Carga de catalogo"]
     with st.sidebar.container(key="operation_nav"):
         st.markdown('<p class="sidebar-label">Tipo de operacion</p>', unsafe_allow_html=True)
-        operation_area = sidebar_card_choice(
-            "operation_area_choice",
+        operation_area = st.radio(
+            "Tipo de operacion",
             nav_options,
-            nav_options[0],
-            icons={"KPIs de catalogo": "□", "Carga de catalogo": "▦"},
+            index=0,
+            label_visibility="collapsed",
+            key="operation_area_choice",
         )
     operation_mode = "Carga completa"
     if operation_area == "Carga de catalogo":
         load_options = ["Carga completa", "Carga parcial"]
         with st.sidebar.container(key="load_mode_nav"):
             st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
-            operation_mode = sidebar_card_choice(
-                "operation_mode_choice",
+            operation_mode = st.radio(
+                "Tipo de carga",
                 load_options,
-                load_options[0],
-                icons={"Carga completa": "＋", "Carga parcial": "◐"},
+                index=0,
+                label_visibility="collapsed",
+                key="operation_mode_choice",
             )
     with st.sidebar.container(key="shopify_sidebar_card"):
         render_sidebar_shopify_card(ui_config, shopify_config)
@@ -6629,6 +6990,7 @@ api_version = "{DEFAULT_API_VERSION}"
 
     if operation_mode == "Carga parcial":
         operation_labels = {
+            "Centry": "centry",
             "Tags": "tags",
             "Fotos 10 vistas": "photos",
             "Siblings": "siblings",
@@ -6659,7 +7021,15 @@ api_version = "{DEFAULT_API_VERSION}"
         only_missing_images = True
         body_mode = "from_input"
 
-        if update_operation == "tags":
+        if update_operation == "centry":
+            update_file = st.file_uploader(
+                "2. Subir Excel con codigos modelo-color faltantes",
+                type=["xlsx", "xls"],
+                key="update_centry_codes",
+                help="Puede venir con columna Mod-Col, Codigo Modelo Color, Cod Mod Col, SKU, o una sola columna con los codigos.",
+            )
+            st.caption("La app toma esos codigos, cruza contra Shopify y devuelve el Excel Centry listo para enviar.")
+        elif update_operation == "tags":
             tag_mode = st.radio("Como aplicar tags", ["merge", "replace"], format_func=lambda v: "Agregar a los tags actuales" if v == "merge" else "Reemplazar todos los tags")
             update_file = st.file_uploader("2. Subir archivo con Mod-Col y Tags", type=["xlsx", "xls"], key="update_tags")
         elif update_operation == "photos":
@@ -6700,7 +7070,7 @@ api_version = "{DEFAULT_API_VERSION}"
         if update_source == "Shopify API" and update_ready:
             try:
                 update_df = read_excel(update_file) if update_file else None
-                if update_df is not None:
+                if update_df is not None and update_operation != "centry":
                     _, detected_brands, blocked_brands = input_brand_report(update_df, brand_config)
                     if blocked_brands:
                         st.error(
@@ -6708,6 +7078,46 @@ api_version = "{DEFAULT_API_VERSION}"
                             f"{', '.join(blocked_brands)}."
                         )
                         st.stop()
+
+                if update_operation == "centry":
+                    if st.button("Generar Centry", type="primary"):
+                        codes = model_codes_from_excel(update_df)
+                        if not codes:
+                            st.error("El Excel no tiene codigos modelo-color reconocibles. Usa una columna como Mod-Col, Codigo Modelo Color, Cod Mod Col, SKU, o una sola columna con los codigos.")
+                        else:
+                            with st.spinner("Leyendo Shopify y armando Centry..."):
+                                shopify_products = fetch_products(shopify_config)
+                                shopify_matrixify_df = shopify_products_to_matrixify_df(shopify_products)
+                                centry_df, centry_issues_df = build_centry_from_matrixify(
+                                    shopify_matrixify_df,
+                                    brand_config,
+                                    only_codes=codes,
+                                )
+                            st.session_state["centry_maintainer_df"] = centry_df
+                            st.session_state["centry_maintainer_issues_df"] = centry_issues_df
+                            st.session_state["centry_maintainer_codes"] = codes
+
+                    centry_df = st.session_state.get("centry_maintainer_df")
+                    centry_issues_df = st.session_state.get("centry_maintainer_issues_df", pd.DataFrame())
+                    codes = st.session_state.get("centry_maintainer_codes", [])
+                    if centry_df is not None:
+                        if centry_df.empty:
+                            st.warning("No se encontraron filas Centry para los codigos indicados.")
+                        else:
+                            st.success(f"Centry generado con {len(centry_df):,} filas para {len(codes):,} codigos consultados.")
+                            render_centry_preview(centry_df, centry_issues_df, "Centry generado")
+                            st.download_button(
+                                "Descargar Centry",
+                                data=dataframe_to_excel_bytes(
+                                    {
+                                        "Centry": centry_df,
+                                        "Revision Centry": centry_issues_df if centry_issues_df is not None else pd.DataFrame(),
+                                    }
+                                ),
+                                file_name=f"centry_{brand_config['site_key']}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
+                    return
 
                 if st.button(f"Analizar carga parcial: {update_label}", type="primary"):
                     with st.spinner("Leyendo productos actuales desde Shopify..."):
@@ -6990,12 +7400,15 @@ api_version = "{DEFAULT_API_VERSION}"
                         matrixify_df,
                         st.session_state.get("complete_shopify_products", []),
                     )
+                centry_df, centry_issues_df = build_centry_from_matrixify(matrixify_df, brand_config)
                 st.session_state["complete_matrixify_df"] = matrixify_df
                 st.session_state["complete_summary_df"] = summary_df
                 st.session_state["complete_issues_df"] = issues_df
                 st.session_state["complete_type_warnings_df"] = type_warnings_df
                 st.session_state["complete_skipped_df"] = skipped_df
                 st.session_state["complete_sial_df"] = sial_df
+                st.session_state["complete_centry_df"] = centry_df
+                st.session_state["complete_centry_issues_df"] = centry_issues_df
 
             matrixify_df = st.session_state.get("complete_matrixify_df")
             if matrixify_df is not None:
@@ -7004,12 +7417,16 @@ api_version = "{DEFAULT_API_VERSION}"
                 type_warnings_df = st.session_state.get("complete_type_warnings_df", pd.DataFrame())
                 skipped_df = st.session_state.get("complete_skipped_df", pd.DataFrame())
                 sial_df = st.session_state.get("complete_sial_df", pd.DataFrame())
+                centry_df = st.session_state.get("complete_centry_df", pd.DataFrame())
+                centry_issues_df = st.session_state.get("complete_centry_issues_df", pd.DataFrame())
                 matrixify_df = coalesce_duplicate_columns(matrixify_df)
                 summary_df = coalesce_duplicate_columns(summary_df)
                 issues_df = coalesce_duplicate_columns(issues_df)
                 type_warnings_df = coalesce_duplicate_columns(type_warnings_df)
                 skipped_df = coalesce_duplicate_columns(skipped_df)
                 sial_df = coalesce_duplicate_columns(sial_df)
+                centry_df = coalesce_duplicate_columns(centry_df)
+                centry_issues_df = coalesce_duplicate_columns(centry_issues_df)
 
                 render_matrixify_result_card(ready=not matrixify_df.empty)
                 if matrixify_df.empty:
@@ -7035,8 +7452,11 @@ api_version = "{DEFAULT_API_VERSION}"
                     st.write("Vista previa Carga Sial")
                     st.dataframe(sial_df.head(100), use_container_width=True, height=320)
 
+                if centry_df is not None and not centry_df.empty:
+                    render_centry_preview(centry_df, centry_issues_df)
+
                 excel_bytes = columbia_to_excel_bytes(
-                    matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df
+                    matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df
                 )
                 st.download_button(
                     "Descargar estructura Matrixify",

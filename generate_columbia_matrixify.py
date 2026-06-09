@@ -626,6 +626,12 @@ def is_internal_k_size(value):
     return bool(re.fullmatch(r"K\d+", size))
 
 
+def boolean_mask(series, predicate):
+    if series is None:
+        return pd.Series(dtype=bool)
+    return series.map(lambda value: bool(predicate(value))).astype(bool)
+
+
 def _row_blocks_zero_size(row):
     return category_blocks_zero_size(row)
 
@@ -1956,14 +1962,18 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     for input_index, product in input_df.iterrows():
         key = product["__KEY"]
         variants = arti[arti["__KEY"] == key].copy()
-        has_one_size = variants["__SIZE"].map(is_one_size).any() if "__SIZE" in variants.columns else False
-        one_size_zero_count = (
-            int(variants["__SIZE"].map(is_zero_size).sum())
-            if has_one_size and "__SIZE" in variants.columns
-            else 0
-        )
+        if "__SIZE" in variants.columns:
+            one_size_mask = boolean_mask(variants["__SIZE"], is_one_size)
+            zero_size_mask = boolean_mask(variants["__SIZE"], is_zero_size)
+            internal_k_size_mask = boolean_mask(variants["__SIZE"], is_internal_k_size)
+        else:
+            one_size_mask = pd.Series(False, index=variants.index)
+            zero_size_mask = pd.Series(False, index=variants.index)
+            internal_k_size_mask = pd.Series(False, index=variants.index)
+        has_one_size = bool(one_size_mask.any())
+        one_size_zero_count = int(zero_size_mask.sum()) if has_one_size else 0
         if one_size_zero_count:
-            variants = variants[~variants["__SIZE"].map(is_zero_size)].copy()
+            variants = variants[~zero_size_mask].copy()
             issues.append(
                 {
                     "Mod-Col": key,
@@ -1972,19 +1982,13 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     "Cantidad": one_size_zero_count,
                 }
             )
+            zero_size_mask = boolean_mask(variants["__SIZE"], is_zero_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
+            internal_k_size_mask = boolean_mask(variants["__SIZE"], is_internal_k_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
         should_block_zero_size = category_blocks_zero_size(product)
-        zero_size_count = (
-            int(variants["__SIZE"].map(is_zero_size).sum())
-            if "__SIZE" in variants.columns and should_block_zero_size
-            else 0
-        )
-        internal_k_size_count = (
-            int(variants["__SIZE"].map(is_internal_k_size).sum())
-            if "__SIZE" in variants.columns
-            else 0
-        )
+        zero_size_count = int(zero_size_mask.sum()) if should_block_zero_size else 0
+        internal_k_size_count = int(internal_k_size_mask.sum())
         if zero_size_count:
-            variants = variants[~variants["__SIZE"].map(is_zero_size)].copy()
+            variants = variants[~zero_size_mask].copy()
             issues.append(
                 {
                     "Mod-Col": key,
@@ -1993,8 +1997,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     "Cantidad": zero_size_count,
                 }
             )
+            internal_k_size_mask = boolean_mask(variants["__SIZE"], is_internal_k_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
         if internal_k_size_count:
-            variants = variants[~variants["__SIZE"].map(is_internal_k_size)].copy()
+            variants = variants[~internal_k_size_mask].copy()
             issues.append(
                 {
                     "Mod-Col": key,

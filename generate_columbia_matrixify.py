@@ -193,6 +193,18 @@ def brand_display_name(value, fallback=""):
     return _config_clean(value) or fallback
 
 
+def brand_from_variants(variants):
+    if variants is None or variants.empty or "MARCA_MA" not in variants.columns:
+        return "", []
+    brands_by_normalized = {}
+    for value in variants["MARCA_MA"].dropna():
+        raw = clean(value)
+        normalized = normalize_brand_name(raw)
+        if normalized and normalized not in brands_by_normalized:
+            brands_by_normalized[normalized] = raw
+    return next(iter(brands_by_normalized.values()), ""), sorted(brands_by_normalized)
+
+
 def get_brand_config(site="columbia", overrides=None):
     key = _config_clean(site).lower().replace(" ", "_") or "columbia"
     base = SITE_CONFIGS.get(key, SITE_CONFIGS["columbia"]).copy()
@@ -2004,8 +2016,18 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         variants = variants.drop_duplicates(subset=["CODINT_MA", "__SIZE", "CodBarras"])
         variants = variants.sort_values("__SIZE", key=lambda series: series.map(size_sort_key))
 
+        variant_brand_raw, variant_brand_names = brand_from_variants(variants)
+        if len(variant_brand_names) > 1:
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": f"BigQuery/ARTI tiene mas de una marca para el mismo modelo-color: {', '.join(variant_brand_names)}",
+                    "Fila input": input_index + 2,
+                }
+            )
+        product_brand_raw = variant_brand_raw or (product.get(brand_column) if brand_column else "")
         handle = product["__HANDLE"]
-        product_image_config = brand_image_config(product.get(brand_column) if brand_column else "", brand_config)
+        product_image_config = brand_image_config(product_brand_raw, brand_config)
         product_images = image_lookup.get((key, product_image_config["image_folder"]), [])
         if not product_images:
             issues.append(
@@ -2024,7 +2046,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             [tech_col, "METAFIELD TECNOLOGÍAS", "METAFIELD TECNOLOGIAS", "Tecnologias ", "Tecnologías"],
         )
         color_web = clean(product.get("Color Web"))
-        product_brand_label = brand_display_name(product.get(brand_column) if brand_column else "", brand_config["label"])
+        product_brand_label = brand_display_name(product_brand_raw, brand_config["label"])
         publication_date = product_publication_date(product)
         siblings_value = siblings_by_model.get(product["__MODEL"], handle)
         image_alt = f"{title} {color_web}".strip()

@@ -7534,27 +7534,30 @@ api_version = "{DEFAULT_API_VERSION}"
                     st.error("No se pudo generar ninguna fila Matrixify. Revisa la hoja Revision.")
                 else:
                     st.success(f"Vista previa generada con {len(matrixify_df):,} variantes.")
-                    st.dataframe(summary_df, use_container_width=True)
-                    st.dataframe(matrixify_df.head(100), use_container_width=True, height=360)
-
-                if issues_df is not None and not issues_df.empty:
-                    st.warning(f"Hay {len(issues_df):,} observaciones para revisar.")
-                    st.dataframe(issues_df, use_container_width=True)
-
-                if type_warnings_df is not None and not type_warnings_df.empty:
-                    st.warning("Revisa la hoja Tipos nuevos antes de cargar en Shopify.")
-                    st.dataframe(type_warnings_df, use_container_width=True)
-
-                if skipped_df is not None and not skipped_df.empty:
-                    st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
-                    st.dataframe(skipped_df, use_container_width=True)
-
-                if sial_df is not None and not sial_df.empty:
-                    st.write("Vista previa Carga Sial")
-                    st.dataframe(sial_df.head(100), use_container_width=True, height=320)
-
-                if centry_df is not None and not centry_df.empty:
-                    render_centry_preview(centry_df, centry_issues_df)
+                    matrixify_tab, centry_tab, revision_tab = st.tabs(["Matrixify", "Centry", "Revision"])
+                    with matrixify_tab:
+                        st.dataframe(summary_df, use_container_width=True)
+                        st.dataframe(matrixify_df.head(100), use_container_width=True, height=360)
+                    with centry_tab:
+                        if centry_df is not None and not centry_df.empty:
+                            render_centry_preview(centry_df, centry_issues_df)
+                        else:
+                            st.warning("No se genero vista previa Centry. Revisa si Matrixify tiene filas validas con SKU, Vendor y talla.")
+                    with revision_tab:
+                        if issues_df is not None and not issues_df.empty:
+                            st.warning(f"Hay {len(issues_df):,} observaciones para revisar.")
+                            st.dataframe(issues_df, use_container_width=True)
+                        else:
+                            st.success("Sin observaciones Matrixify.")
+                        if type_warnings_df is not None and not type_warnings_df.empty:
+                            st.warning("Revisa la hoja Tipos nuevos antes de cargar en Shopify.")
+                            st.dataframe(type_warnings_df, use_container_width=True)
+                        if skipped_df is not None and not skipped_df.empty:
+                            st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
+                            st.dataframe(skipped_df, use_container_width=True)
+                        if sial_df is not None and not sial_df.empty:
+                            st.write("Vista previa Carga Sial")
+                            st.dataframe(sial_df.head(100), use_container_width=True, height=320)
 
                 excel_bytes = columbia_to_excel_bytes(
                     matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df

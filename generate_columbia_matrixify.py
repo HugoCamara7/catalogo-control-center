@@ -243,6 +243,16 @@ def clean(value):
     return str(value).strip()
 
 
+def safe_int(value, default=0):
+    try:
+        text = clean(value)
+        if not text:
+            return default
+        return int(float(text.replace(",", ".")))
+    except (TypeError, ValueError):
+        return default
+
+
 def compare_clean(value):
     text = clean(value)
     if text.lower() in ("nan", "none", "nat"):
@@ -379,6 +389,8 @@ def normalize_size(value):
 
     text = clean(value).upper()
     if not text:
+        return ""
+    if text in {"NAN", "NONE", "NULL", "NA", "N/A", "#N/A", "#N/D", "#ND", "SIN TALLA"}:
         return ""
 
     text = re.sub(r"\b(TALLA|SIZE|TAL)\b", "", text).strip()
@@ -629,7 +641,13 @@ def is_internal_k_size(value):
 def boolean_mask(series, predicate):
     if series is None:
         return pd.Series(dtype=bool)
-    return series.map(lambda value: bool(predicate(value))).astype(bool)
+    def apply_predicate(value):
+        try:
+            return bool(predicate(value))
+        except (TypeError, ValueError, AttributeError):
+            return False
+
+    return series.map(apply_predicate).fillna(False).astype(bool)
 
 
 def _row_blocks_zero_size(row):
@@ -647,7 +665,7 @@ def final_variant_filter(output_df, sial_df, issues_df):
                     "Mod-Col": "Salida final",
                     "Problema": "Se eliminaron filas finales con talla interna K",
                     "Fila input": "",
-                    "Cantidad": int(k_mask.sum()),
+                    "Cantidad": safe_int(k_mask.sum()),
                 }
             )
             output_df = output_df[~k_mask].copy()
@@ -662,7 +680,7 @@ def final_variant_filter(output_df, sial_df, issues_df):
                     "Mod-Col": "Salida final",
                     "Problema": "Se eliminaron filas finales con talla 0/000 en vestuario/calzado",
                     "Fila input": "",
-                    "Cantidad": int(zero_mask.sum()),
+                    "Cantidad": safe_int(zero_mask.sum()),
                 }
             )
             output_df = output_df[~zero_mask].copy()
@@ -1950,6 +1968,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     arti = arti[arti["CODINT_MA"].map(clean) != ""].copy()
     arti["__SIAL_SIZE"] = arti["TALNUM_MA"].map(clean)
     arti["__SIZE"] = arti["TALNUM_MA"].map(normalize_size)
+    invalid_size_rows = arti[arti["__SIZE"].map(clean) == ""].copy()
     arti = arti[arti["__SIZE"] != ""].copy()
     arti = arti.sort_values(by=["__KEY", "__SIZE"], key=lambda series: series.map(size_sort_key))
 
@@ -1961,6 +1980,16 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
 
     for input_index, product in input_df.iterrows():
         key = product["__KEY"]
+        invalid_sizes_for_key = invalid_size_rows[invalid_size_rows["__KEY"] == key] if not invalid_size_rows.empty else pd.DataFrame()
+        if not invalid_sizes_for_key.empty:
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Se omitieron filas de BigQuery/ARTI con talla vacia o no reconocida",
+                    "Fila input": input_index + 2,
+                    "Cantidad": safe_int(len(invalid_sizes_for_key)),
+                }
+            )
         variants = arti[arti["__KEY"] == key].copy()
         if "__SIZE" in variants.columns:
             one_size_mask = boolean_mask(variants["__SIZE"], is_one_size)
@@ -1971,7 +2000,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             zero_size_mask = pd.Series(False, index=variants.index)
             internal_k_size_mask = pd.Series(False, index=variants.index)
         has_one_size = bool(one_size_mask.any())
-        one_size_zero_count = int(zero_size_mask.sum()) if has_one_size else 0
+        one_size_zero_count = safe_int(zero_size_mask.sum()) if has_one_size else 0
         if one_size_zero_count:
             variants = variants[~zero_size_mask].copy()
             issues.append(
@@ -1985,8 +2014,8 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             zero_size_mask = boolean_mask(variants["__SIZE"], is_zero_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
             internal_k_size_mask = boolean_mask(variants["__SIZE"], is_internal_k_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
         should_block_zero_size = category_blocks_zero_size(product)
-        zero_size_count = int(zero_size_mask.sum()) if should_block_zero_size else 0
-        internal_k_size_count = int(internal_k_size_mask.sum())
+        zero_size_count = safe_int(zero_size_mask.sum()) if should_block_zero_size else 0
+        internal_k_size_count = safe_int(internal_k_size_mask.sum())
         if zero_size_count:
             variants = variants[~zero_size_mask].copy()
             issues.append(
@@ -2238,7 +2267,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             {"Metrica": "Productos omitidos sin cambios", "Valor": len(skipped_df)},
             {
                 "Metrica": "Filas omitidas sin cambios",
-                "Valor": int(skipped_df["Filas omitidas"].sum()) if len(skipped_df) else 0,
+                "Valor": safe_int(skipped_df["Filas omitidas"].sum()) if len(skipped_df) else 0,
             },
             {
                 "Metrica": "Productos existentes con ID",
@@ -2248,7 +2277,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             },
             {
                 "Metrica": "Variantes existentes con Variant ID",
-                "Valor": int((output_df["Variant ID"].map(clean) != "").sum())
+                "Valor": safe_int((output_df["Variant ID"].map(clean) != "").sum())
                 if "Variant ID" in output_df.columns and len(output_df)
                 else 0,
             },

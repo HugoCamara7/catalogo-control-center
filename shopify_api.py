@@ -977,6 +977,7 @@ def fetch_product_options_and_variants(config, product_id):
             id
             legacyResourceId
             sku
+            barcode
             price
             compareAtPrice
             selectedOptions {

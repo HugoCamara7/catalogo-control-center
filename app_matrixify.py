@@ -183,6 +183,20 @@ def clean_value(value):
     return str(value).strip()
 
 
+def safe_float_value(value, default=0.0):
+    try:
+        text = clean_value(value)
+        if not text:
+            return default
+        return float(text.replace(",", "."))
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_int_value(value, default=0):
+    return int(safe_float_value(value, default))
+
+
 def looks_like_mod_col(value):
     text = clean_value(value).upper()
     if not text or text.startswith("UNNAMED:"):
@@ -323,6 +337,8 @@ def publication_date_from_row(row):
 
 def normalize_size(value):
     text = clean_value(value).upper()
+    if text in {"NAN", "NONE", "NULL", "NA", "N/A", "#N/A", "#N/D", "#ND", "SIN TALLA"}:
+        return ""
     text = text.replace("TALLA", "").replace("SIZE", "").strip()
     text = re.sub(r"\s+", " ", text)
     text = text.replace(",", ".")
@@ -901,9 +917,9 @@ def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"
     df = centry_df.copy()
     total_rows = len(df)
     total_products = df.get("SKU del producto", pd.Series(dtype=object)).map(clean_value).nunique()
-    no_barcode = int((df.get("Código de barra variante (EAN/UPC/ISBN)", pd.Series(dtype=object)).map(clean_value) == "").sum())
-    no_image = int((df.get("URL imagen principal", pd.Series(dtype=object)).map(clean_value) == "").sum())
-    no_price = int((df.get("Precio", pd.Series(dtype=object)).map(clean_value) == "").sum())
+    no_barcode = safe_int_value((df.get("Código de barra variante (EAN/UPC/ISBN)", pd.Series(dtype=object)).map(clean_value) == "").sum())
+    no_image = safe_int_value((df.get("URL imagen principal", pd.Series(dtype=object)).map(clean_value) == "").sum())
+    no_price = safe_int_value((df.get("Precio", pd.Series(dtype=object)).map(clean_value) == "").sum())
     issue_count = 0 if issues_df is None or issues_df.empty else len(issues_df)
     render_html(
         f"""
@@ -1734,7 +1750,7 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
     summary["Filas query"] = pd.to_numeric(summary["Filas query"], errors="coerce").fillna(0).astype(int)
     summary["Stock bruto"] = pd.to_numeric(summary["Stock bruto"], errors="coerce").fillna(0)
     summary["Stock efectivo"] = pd.to_numeric(summary["Stock efectivo"], errors="coerce").fillna(0)
-    summary["Aparece en query"] = summary["Filas query"].map(lambda value: "Si" if int(value or 0) > 0 else "No")
+    summary["Aparece en query"] = summary["Filas query"].map(lambda value: "Si" if safe_int_value(value) > 0 else "No")
     return summary.rename(
         columns={
             "bodega_code": "Bodega",
@@ -1849,7 +1865,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     stock["key_producto"] = stock["key_producto"].map(lambda value: clean_value(value).upper())
     ecomm_stock_match = build_ecomm_stock_match_summary(stock, brand_config)
     stock = apply_ecomm_stock_rules(stock, brand_config)
-    stock_ecomm_rows = int((pd.to_numeric(stock.get("stock_total", 0), errors="coerce").fillna(0) > 0).sum()) if not stock.empty else 0
+    stock_ecomm_rows = safe_int_value((pd.to_numeric(stock.get("stock_total", 0), errors="coerce").fillna(0) > 0).sum()) if not stock.empty else 0
     stock_ecomm_models = (
         stock.loc[pd.to_numeric(stock.get("stock_total", 0), errors="coerce").fillna(0) > 0, "key_producto"]
         .map(lambda value: clean_value(value).rsplit("-", 1)[0])
@@ -5982,7 +5998,7 @@ def render_brand_summary_table(brand_summary):
         brand = clean_value(row.get("Marca"))
         logo_src = image_data_uri(brand_logo_path_for_name(brand))
         logo_html = f'<img src="{logo_src}" alt="{escape(brand)}">' if logo_src else ""
-        coverage = float(row.get("Cobertura") or 0)
+        coverage = safe_float_value(row.get("Cobertura"))
         coverage_pct = max(0, min(100, coverage * 100))
         rows.append(
             f"""
@@ -6027,11 +6043,11 @@ def render_brand_summary_table(brand_summary):
 
 def render_kpi_bar_chart(title, rows, icon="&#9661;", purple=False):
     rows = list(rows or [])
-    max_value = max([float(row.get("value") or 0) for row in rows] or [1]) or 1
+    max_value = max([safe_float_value(row.get("value")) for row in rows] or [1]) or 1
     bars = []
     for row in rows:
-        value = float(row.get("value") or 0)
-        height = max(3, int((value / max_value) * 190)) if value else 3
+        value = safe_float_value(row.get("value"))
+        height = max(3, safe_int_value((value / max_value) * 190)) if value else 3
         label = escape(clean_value(row.get("label")))
         short_label = escape(clean_value(row.get("short")) or clean_value(row.get("label")))
         label_html = "<br>".join(short_label.split(" "))
@@ -6115,15 +6131,15 @@ def render_non_visible_combo_table(combo_df):
         st.success("No hay modelos creados con stock bloqueados para web.")
         return combo_df
 
-    total_models = float(combo_df["Modelos"].sum() or 0)
-    total_bq = float(combo_df.get("Stock_BigQuery", combo_df["Modelos"]).sum() or 0)
-    total_shopify_raw = float(combo_df.get("Stock_Shopify", pd.Series(dtype=float)).sum() or 0)
+    total_models = safe_float_value(combo_df["Modelos"].sum())
+    total_bq = safe_float_value(combo_df.get("Stock_BigQuery", combo_df["Modelos"]).sum())
+    total_shopify_raw = safe_float_value(combo_df.get("Stock_Shopify", pd.Series(dtype=float)).sum())
     total_models_safe = total_models or 1
     total_bq_safe = total_bq or 1
     total_shopify_safe = total_shopify_raw or 1
 
     def pct(value, total):
-        return max(0, min(100, (float(value or 0) / total) * 100))
+        return max(0, min(100, (safe_float_value(value) / total) * 100))
 
     def soft_class(text):
         text = clean_value(text)
@@ -6157,9 +6173,9 @@ def render_non_visible_combo_table(combo_df):
 
     rows = []
     for _, row in combo_df.iterrows():
-        models = int(row.get("Modelos") or 0)
-        bq = int(row.get("Stock_BigQuery") or models)
-        shopify = int(row.get("Stock_Shopify") or 0)
+        models = safe_int_value(row.get("Modelos"))
+        bq = safe_int_value(row.get("Stock_BigQuery"), models)
+        shopify = safe_int_value(row.get("Stock_Shopify"))
         rows.append(
             f"""
             <tr>
@@ -6180,7 +6196,7 @@ def render_non_visible_combo_table(combo_df):
                     <div class="combo-title"><span class="combo-title-icon">◎</span> Cruce de bloqueos web</div>
                     <p>Combinaciones de estados para explicar los modelos creados con stock BQ que no son visibles en web.</p>
                 </div>
-                <div class="combo-chip">{format_kpi_number(int(total_models))} modelo-color</div>
+                <div class="combo-chip">{format_kpi_number(safe_int_value(total_models))} modelo-color</div>
             </div>
             <div class="combo-table-wrap">
                 <table class="combo-table">
@@ -6204,9 +6220,9 @@ def render_non_visible_combo_table(combo_df):
                     <tfoot>
                         <tr>
                             <td colspan="2"><b>Totales</b><span>{len(combo_df)} combinaciones</span></td>
-                            <td>{format_kpi_number(int(total_models))}<small>100%</small></td>
-                            <td>{format_kpi_number(int(total_bq))}<small>100%</small></td>
-                            <td>{format_kpi_number(int(total_shopify_raw))}<small>100%</small></td>
+                            <td>{format_kpi_number(safe_int_value(total_models))}<small>100%</small></td>
+                            <td>{format_kpi_number(safe_int_value(total_bq))}<small>100%</small></td>
+                            <td>{format_kpi_number(safe_int_value(total_shopify_raw))}<small>100%</small></td>
                         </tr>
                     </tfoot>
                 </table>
@@ -6245,14 +6261,14 @@ def render_non_visible_combo_table(combo_df):
     if combo_view.empty:
         st.success("No hay bloqueos comerciales de stock, precio o imagen.")
         return combo_df
-    total_models = float(combo_view["Modelos"].sum() or 0)
+    total_models = safe_float_value(combo_view["Modelos"].sum())
     total_models_safe = total_models or 1
-    stock_missing = int(combo_view.loc[~combo_view["Stock"], "Modelos"].sum())
-    price_missing = int(combo_view.loc[~combo_view["Precio"], "Modelos"].sum())
-    image_missing = int(combo_view.loc[~combo_view["Imagen"], "Modelos"].sum())
+    stock_missing = safe_int_value(combo_view.loc[~combo_view["Stock"], "Modelos"].sum())
+    price_missing = safe_int_value(combo_view.loc[~combo_view["Precio"], "Modelos"].sum())
+    image_missing = safe_int_value(combo_view.loc[~combo_view["Imagen"], "Modelos"].sum())
 
     def percent(value):
-        return max(0, min(100, (float(value or 0) / total_models_safe) * 100))
+        return max(0, min(100, (safe_float_value(value) / total_models_safe) * 100))
 
     def status_tile(label, ok):
         state_class = "ok" if ok else "bad"
@@ -6267,7 +6283,7 @@ def render_non_visible_combo_table(combo_df):
         """
 
     def summary_tile(label, value, ok_label):
-        is_ok = int(value or 0) == 0
+        is_ok = safe_int_value(value) == 0
         state_class = "ok" if is_ok else "bad"
         icon = "&#10003;" if is_ok else "&#10005;"
         value_text = ok_label if is_ok else f"{format_kpi_number(value)} falta"
@@ -6281,7 +6297,7 @@ def render_non_visible_combo_table(combo_df):
 
     rows = []
     for _, row in combo_view.iterrows():
-        models = int(row.get("Modelos") or 0)
+        models = safe_int_value(row.get("Modelos"))
         pct_value = percent(models)
         rows.append(
             f"""
@@ -6312,7 +6328,7 @@ def render_non_visible_combo_table(combo_df):
                     <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Checklist comercial web</div>
                     <p>Estado de las bases comerciales necesarias para que los modelos esten listos para venta.</p>
                 </div>
-                <div class="combo-chip">{format_kpi_number(int(total_models))} modelo-color</div>
+                <div class="combo-chip">{format_kpi_number(safe_int_value(total_models))} modelo-color</div>
             </div>
             <div class="commercial-summary-grid">
                 {summary_tile("Stock", stock_missing, "OK")}
@@ -6335,7 +6351,7 @@ def render_non_visible_combo_table(combo_df):
                     <tfoot>
                         <tr>
                             <td><b>Totales</b><span>{len(combo_view)} combinaciones comerciales</span></td>
-                            <td>{format_kpi_number(int(total_models))}<small>100%</small></td>
+                            <td>{format_kpi_number(safe_int_value(total_models))}<small>100%</small></td>
                         </tr>
                     </tfoot>
                 </table>
@@ -6666,7 +6682,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     if ecomm_match_df is None or ecomm_match_df.empty:
         st.warning("No se genero auditoria de bodegas eComm para este sitio.")
     else:
-        matched_stores = int((ecomm_match_df["Aparece en query"] == "Si").sum())
+        matched_stores = safe_int_value((ecomm_match_df["Aparece en query"] == "Si").sum())
         total_stores = len(ecomm_match_df)
         missing_stores = ecomm_match_df[ecomm_match_df["Aparece en query"] != "Si"]["Bodega"].astype(str).tolist()
         if missing_stores:
@@ -6700,7 +6716,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         {
             "label": clean_value(row.get("Problema")),
             "short": short_problem_label(row.get("Problema")),
-            "value": int(row.get("Casos") or 0),
+            "value": safe_int_value(row.get("Casos")),
             "icon": "&#9679;",
         }
         for _, row in problem_counts.head(6).iterrows()

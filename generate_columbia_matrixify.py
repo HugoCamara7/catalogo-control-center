@@ -2028,7 +2028,10 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         product_brand_raw = variant_brand_raw or (product.get(brand_column) if brand_column else "")
         handle = product["__HANDLE"]
         product_image_config = brand_image_config(product_brand_raw, brand_config)
-        product_images = image_lookup.get((key, product_image_config["image_folder"]), [])
+        image_cache_key = (key, product_image_config["image_folder"])
+        if image_cache_key not in image_lookup:
+            image_lookup[image_cache_key] = build_image_lookup([key], brand_config=product_image_config).get(key, [])
+        product_images = image_lookup.get(image_cache_key, [])
         if not product_images:
             issues.append(
                 {

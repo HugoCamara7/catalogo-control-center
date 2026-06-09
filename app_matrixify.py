@@ -20,11 +20,17 @@ from generate_columbia_matrixify import (
     SITE_CONFIGS,
     build_columbia_matrixify,
     build_matrixify_updates,
+    brand_display_name,
+    brand_image_config,
+    display_size_for_site,
     get_brand_config,
+    image_candidates,
     input_brand_report,
     first_non_empty,
     is_internal_k_size,
     is_one_size,
+    normalize_size as normalize_master_size,
+    size_sort_key as master_size_sort_key,
     split_model_color,
     strip_html,
     is_zero_size,
@@ -985,6 +991,113 @@ def model_codes_from_excel(df):
                 codes.append(code)
                 seen.add(code)
     return codes
+
+
+def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, brand_config):
+    codes = [clean_value(code).upper() for code in codes if clean_value(code)]
+    if not codes:
+        return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(columns=["Mod-Col", "Problema"])
+
+    issues = []
+    code_set = set(codes)
+    model_only_set = {code for code in codes if "-" not in code}
+    shopify_df = coalesce_duplicate_columns(shopify_matrixify_df).copy() if shopify_matrixify_df is not None else pd.DataFrame()
+    if not shopify_df.empty:
+        for column in MATRIXIFY_COLUMNS:
+            if column not in shopify_df.columns:
+                shopify_df[column] = ""
+        for column in ("Title", "Body HTML", "Vendor", "Type", "Tags", "Image Src", "Metafield: custom.codigo_modelo_color [id]"):
+            if column in shopify_df.columns:
+                shopify_df[column] = shopify_df[column].replace("", pd.NA).ffill().fillna("")
+        shopify_df["__CENTRY_KEY"] = shopify_df.apply(centry_mod_col_from_row, axis=1)
+    else:
+        shopify_df["__CENTRY_KEY"] = pd.Series(dtype=object)
+
+    product_lookup = {}
+    if not shopify_df.empty and "__CENTRY_KEY" in shopify_df.columns:
+        for key, group in shopify_df.groupby("__CENTRY_KEY", sort=False):
+            key = clean_value(key).upper()
+            if key and key not in product_lookup:
+                product_lookup[key] = group.iloc[0]
+
+    arti = arti_df.copy() if arti_df is not None else pd.DataFrame()
+    for column in ("CODINT_MA", "COD MOD COL", "Mod-Col", "TALNUM_MA", "MARCA_MA", "Precio", "CodBarras"):
+        if column not in arti.columns:
+            arti[column] = ""
+    arti["__KEY"] = arti["Mod-Col"].where(arti["Mod-Col"].map(clean_value) != "", arti["COD MOD COL"]).map(lambda value: clean_value(value).upper())
+    arti["__MODEL"] = arti["__KEY"].map(lambda value: value.rsplit("-", 1)[0] if "-" in value else value)
+    allowed = {clean_value(value).upper() for value in brand_config.get("allowed_arti_brands", [])}
+    if allowed and "MARCA_MA" in arti.columns:
+        arti = arti[arti["MARCA_MA"].map(lambda value: clean_value(value).upper()).isin(allowed)].copy()
+    arti = arti[(arti["__KEY"].isin(code_set)) | (arti["__MODEL"].isin(model_only_set))].copy()
+    if arti.empty:
+        return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(
+            [{"Mod-Col": code, "Problema": "Codigo no encontrado en BigQuery/ARTI"} for code in codes],
+            columns=["Mod-Col", "Problema"],
+        )
+
+    arti["__SIZE"] = arti["TALNUM_MA"].map(normalize_master_size)
+    invalid_size = arti[arti["__SIZE"].map(clean_value) == ""].copy()
+    for key, group in invalid_size.groupby("__KEY"):
+        issues.append({"Mod-Col": key, "Problema": f"{len(group):,} filas BigQuery/ARTI omitidas por talla vacia o no reconocida"})
+    arti = arti[arti["__SIZE"].map(clean_value) != ""].copy()
+    if arti.empty:
+        return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
+
+    rows = []
+    for key, variants in arti.groupby("__KEY", sort=False):
+        variants = variants.copy()
+        variants = variants[variants["CODINT_MA"].map(clean_value) != ""].copy()
+        if variants.empty:
+            issues.append({"Mod-Col": key, "Problema": "Sin SKU valido en BigQuery/ARTI"})
+            continue
+        variants = variants.drop_duplicates(subset=["CODINT_MA", "__SIZE", "CodBarras"])
+        variants = variants.sort_values("__SIZE", key=lambda series: series.map(master_size_sort_key))
+        product_row = product_lookup.get(key)
+        raw_brand = first_non_empty(variants.iloc[0].get("MARCA_MA"), product_row.get("Vendor") if product_row is not None else "", brand_config.get("label", ""))
+        vendor = brand_display_name(raw_brand, brand_config.get("label", ""))
+        image_config = brand_image_config(raw_brand, brand_config)
+        image_urls = image_candidates(key, image_config)
+        title = first_non_empty(product_row.get("Title") if product_row is not None else "", key)
+        body_html = first_non_empty(product_row.get("Body HTML") if product_row is not None else "", "")
+        product_type = first_non_empty(product_row.get("Type") if product_row is not None else "", "")
+        tags = first_non_empty(product_row.get("Tags") if product_row is not None else "", vendor)
+        color = first_non_empty(product_row.get("Metafield: custom.color [single_line_text_field]") if product_row is not None else "", split_model_color(key)[1])
+        if product_row is None:
+            issues.append({"Mod-Col": key, "Problema": "No existe en Shopify; se completo Centry con BigQuery/ARTI y fotos S3"})
+
+        for position, (_, variant) in enumerate(variants.iterrows(), start=1):
+            size = display_size_for_site(variant.get("__SIZE"), brand_config)
+            rows.append(
+                {
+                    "Handle": clean_value(product_row.get("Handle")) if product_row is not None else key.lower(),
+                    "Title": title,
+                    "Body HTML": body_html,
+                    "Vendor": vendor,
+                    "Type": product_type,
+                    "Tags": tags,
+                    "Image Src": "; ".join(image_urls),
+                    "Variant SKU": clean_value(variant.get("CODINT_MA")),
+                    "Option1 Name": "Talla",
+                    "Option1 Value": size,
+                    "Option2 Name": "Color",
+                    "Option2 Value": color,
+                    "Variant Barcode": clean_value(variant.get("CodBarras")),
+                    "Variant Price": clean_value(variant.get("Precio")),
+                    "Metafield: custom.codigo_modelo_color [id]": key,
+                    "Metafield: custom.marca [single_line_text_field]": vendor,
+                    "Metafield: custom.color [single_line_text_field]": color,
+                    "Status": clean_value(product_row.get("Status")) if product_row is not None else "",
+                    "Published": clean_value(product_row.get("Published")) if product_row is not None else "",
+                    "Variant Position": position,
+                }
+            )
+
+    matrixify_like = pd.DataFrame(rows)
+    for column in MATRIXIFY_COLUMNS:
+        if column not in matrixify_like.columns:
+            matrixify_like[column] = ""
+    return matrixify_like, pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
 
 
 def _split_tags(value):
@@ -2793,7 +2906,9 @@ def _valid_price(value):
 
 def _variant_bulk_input_from_row(row, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
     size = clean_value(row.get("Option1 Value"))
-    if not size:
+    sku = clean_value(row.get("Variant SKU"))
+    price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
+    if not size or not sku or not price:
         return None
 
     option_name = clean_value(option_name) or clean_value(row.get("Option1 Name")) or "Talla"
@@ -2805,19 +2920,41 @@ def _variant_bulk_input_from_row(row, option_id=None, option_name=None, fallback
     variant = {
         "optionValues": [option_value]
     }
-    price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
     compare_at_price = _valid_price(row.get("Variant Compare At Price")) or _valid_price(fallback_compare_at_price)
     barcode = clean_value(row.get("Variant Barcode"))
-    sku = clean_value(row.get("Variant SKU"))
-    if price:
-        variant["price"] = price
+    variant["price"] = price
     if compare_at_price:
         variant["compareAtPrice"] = compare_at_price
     if barcode:
         variant["barcode"] = barcode
-    if sku:
-        variant["inventoryItem"] = {"sku": sku, "tracked": True}
+    variant["inventoryItem"] = {"sku": sku, "tracked": True}
     return variant
+
+
+def _variant_validation_issues(product_variant_rows):
+    issues = []
+    seen_skus = set()
+    for _, row in product_variant_rows.iterrows():
+        sku = clean_value(row.get("Variant SKU"))
+        size = clean_value(row.get("Option1 Value"))
+        price = _valid_price(row.get("Variant Price"))
+        barcode = clean_value(row.get("Variant Barcode"))
+        row_issues = []
+        if not sku:
+            row_issues.append("sin SKU")
+        elif sku.upper() in seen_skus:
+            row_issues.append("SKU duplicado")
+        if sku:
+            seen_skus.add(sku.upper())
+        if not size:
+            row_issues.append("sin talla")
+        if not price:
+            row_issues.append("sin precio")
+        if not barcode:
+            row_issues.append("sin barcode")
+        if row_issues:
+            issues.append(f"{sku or '(sin SKU)'}: {', '.join(row_issues)}")
+    return issues
 
 
 def _missing_variant_inputs(product_variant_rows, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
@@ -2988,6 +3125,57 @@ def _selected_option_value(variant, option_name):
     return ""
 
 
+def _verify_shopify_variants(product_variant_rows, product_data):
+    expected = {}
+    for _, row in product_variant_rows.iterrows():
+        sku = clean_value(row.get("Variant SKU")).upper()
+        if not sku:
+            continue
+        expected[sku] = {
+            "size": clean_value(row.get("Option1 Value")),
+            "price": _valid_price(row.get("Variant Price")),
+            "barcode": clean_value(row.get("Variant Barcode")),
+        }
+    if not expected:
+        return ["No hay SKUs esperados para verificar."]
+
+    actual = {}
+    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
+        sku = clean_value(variant.get("sku")).upper()
+        if sku:
+            actual[sku] = variant
+
+    problems = []
+
+    def normalize_price(value):
+        text = _valid_price(value)
+        if not text:
+            return ""
+        try:
+            return f"{float(text.replace(',', '.')):.2f}"
+        except ValueError:
+            return text
+
+    for sku, expected_values in expected.items():
+        variant = actual.get(sku)
+        if not variant:
+            problems.append(f"{sku}: no existe en Shopify")
+            continue
+        price = _valid_price(variant.get("price"))
+        barcode = clean_value(variant.get("barcode"))
+        expected_price = normalize_price(expected_values["price"])
+        actual_price = normalize_price(price)
+        if expected_values["price"] and not price:
+            problems.append(f"{sku}: creado sin precio")
+        elif expected_price and actual_price and expected_price != actual_price:
+            problems.append(f"{sku}: precio Shopify {actual_price}, esperado {expected_price}")
+        if expected_values["barcode"] and not barcode:
+            problems.append(f"{sku}: creado sin barcode")
+        elif expected_values["barcode"] and barcode and barcode != expected_values["barcode"]:
+            problems.append(f"{sku}: barcode Shopify {barcode}, esperado {expected_values['barcode']}")
+    return problems
+
+
 def _reorder_product_sizes(shopify_config, product_gid, product_variant_rows):
     ordered_sizes = _ordered_sizes_from_rows(product_variant_rows)
     if not product_gid or len(ordered_sizes) < 2:
@@ -3070,8 +3258,14 @@ def apply_full_product_updates(shopify_config, matrixify_df):
         product_messages = []
         product_status = "OK"
         product_variant_rows = _variant_rows_for_handle(matrixify_df, handle)
+        variant_input_issues = _variant_validation_issues(product_variant_rows)
+        was_new_product = not bool(product_gid)
 
         try:
+            if variant_input_issues:
+                product_status = "PARCIAL"
+                product_messages.append("Variantes incompletas no se enviaran completas: " + " | ".join(variant_input_issues[:8]))
+
             status = clean_value(row.get("Status")).upper()
             if status == "ACTIVE":
                 shopify_status = "ACTIVE"
@@ -3221,7 +3415,7 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                         shopify_config,
                         product_gid,
                         missing_variants,
-                        strategy=None,
+                        strategy="REMOVE_STANDALONE_VARIANT" if was_new_product else None,
                     )
                     if created_variants:
                         product_messages.append(
@@ -3235,6 +3429,12 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 except Exception as exc:
                     product_status = "PARCIAL"
                     product_messages.append(f"Error variantes: {exc}")
+
+            verified_product_data = fetch_product_options_and_variants(shopify_config, product_gid)
+            variant_sync_problems = _verify_shopify_variants(product_variant_rows, verified_product_data)
+            if variant_sync_problems:
+                product_status = "PARCIAL"
+                product_messages.append("Verificacion variantes: " + " | ".join(variant_sync_problems[:8]))
 
             try:
                 reorder_message = _reorder_product_sizes(shopify_config, product_gid, product_variant_rows)
@@ -7202,14 +7402,26 @@ api_version = "{DEFAULT_API_VERSION}"
                         if not codes:
                             st.error("El Excel no tiene codigos modelo-color reconocibles. Usa una columna como Mod-Col, Codigo Modelo Color, Cod Mod Col, SKU, o una sola columna con los codigos.")
                         else:
-                            with st.spinner("Leyendo Shopify y armando Centry..."):
+                            with st.spinner("Leyendo Shopify, BigQuery y armando Centry..."):
                                 shopify_products = fetch_products(shopify_config)
                                 shopify_matrixify_df = shopify_products_to_matrixify_df(shopify_products)
-                                centry_df, centry_issues_df = build_centry_from_matrixify(
+                                arti_df, arti_source = read_arti_for_app(brand_config)
+                                centry_matrixify_df, master_issues_df = build_centry_matrixify_from_master(
+                                    codes,
                                     shopify_matrixify_df,
+                                    arti_df,
+                                    brand_config,
+                                )
+                                centry_df, centry_issues_df = build_centry_from_matrixify(
+                                    centry_matrixify_df,
                                     brand_config,
                                     only_codes=codes,
                                 )
+                                centry_issues_df = pd.concat(
+                                    [master_issues_df, centry_issues_df],
+                                    ignore_index=True,
+                                ).drop_duplicates()
+                            st.caption(f"Base maestra usada: {arti_source}")
                             st.session_state["centry_maintainer_df"] = centry_df
                             st.session_state["centry_maintainer_issues_df"] = centry_issues_df
                             st.session_state["centry_maintainer_codes"] = codes

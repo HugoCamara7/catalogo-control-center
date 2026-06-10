@@ -279,9 +279,12 @@ ARTI_COLUMN_ALIASES_APP = {
         "CodBarras", "codbarras", "CODBARRAS", "cod_barras", "codigo_barras", "codigo_barra",
         "codigo de barras", "codigo de barra", "ean", "EAN", "upc", "UPC", "barcode", "bar_code",
         "cod_ean", "codigo_ean", "gtin", "ean13", "ean_13", "barra", "barras", "codbarra",
-        "cod_barra", "codbar", "cod_bar", "cod_barr", "codbarr", "cod_barras_ma",
-        "codbarra_ma", "codbarras_ma", "barra_ma", "ean_ma", "gtin_ma", "codigo_barras_ma",
-        "codigo_de_barras", "codigo_de_barra", "codigo_ean13", "cod_ean13",
+        "cod_barra", "codbar", "cod_bar", "codbar_ma", "cod_bar_ma", "CODBAR_MA",
+        "COD_BAR_MA", "cod_barr", "codbarr", "cod_barras_ma", "codbarra_ma",
+        "codbarras_ma", "barra_ma", "ean_ma", "ean_producto", "ean_prod", "ean_sku",
+        "ean13_ma", "gtin_ma", "upc_ma", "upc_producto", "codigo_barras_ma",
+        "codigo_barra_producto", "codigo_barras_producto", "codigo_de_barras",
+        "codigo_de_barra", "codigo_ean13", "cod_ean13",
     ],
 }
 

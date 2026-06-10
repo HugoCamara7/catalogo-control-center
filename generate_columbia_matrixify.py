@@ -1216,6 +1216,10 @@ BIGQUERY_ARTI_COLUMN_CANDIDATES = {
         "cod_barra",
         "codbar",
         "cod_bar",
+        "codbar_ma",
+        "cod_bar_ma",
+        "CODBAR_MA",
+        "COD_BAR_MA",
         "cod_barr",
         "codbarr",
         "cod_barras_ma",
@@ -1223,7 +1227,15 @@ BIGQUERY_ARTI_COLUMN_CANDIDATES = {
         "codbarras_ma",
         "barra_ma",
         "ean_ma",
+        "ean_producto",
+        "ean_prod",
+        "ean_sku",
+        "ean13_ma",
+        "codigo_barra_producto",
+        "codigo_barras_producto",
         "gtin_ma",
+        "upc_ma",
+        "upc_producto",
         "codigo_barras_ma",
         "codigo_de_barras",
         "codigo_de_barra",
@@ -1310,6 +1322,17 @@ def _find_bigquery_column(available_columns, candidates):
     return ""
 
 
+def _find_bigquery_barcode_columns(available_columns):
+    exact = _find_bigquery_column(available_columns, BIGQUERY_ARTI_COLUMN_CANDIDATES["CodBarras"])
+    candidates = [exact] if exact else []
+    tokens = ("ean", "barra", "barras", "barcode", "barcod", "upc", "gtin")
+    for column in available_columns:
+        normalized = _normalize_bigquery_name(column)
+        if any(token in normalized for token in tokens):
+            candidates.append(column)
+    return list(dict.fromkeys([column for column in candidates if column]))
+
+
 def normalize_arti_required_columns(df):
     if df is None or df.empty:
         return df
@@ -1324,6 +1347,13 @@ def normalize_arti_required_columns(df):
             fill_mask = result[output_column].map(clean).eq("") & result[found].map(clean).ne("")
             if fill_mask.any():
                 result.loc[fill_mask, output_column] = result.loc[fill_mask, found]
+    barcode_candidates = _find_bigquery_barcode_columns(result.columns)
+    for found in barcode_candidates:
+        if found == "CodBarras":
+            continue
+        fill_mask = result["CodBarras"].map(clean).eq("") & result[found].map(clean).ne("")
+        if fill_mask.any():
+            result.loc[fill_mask, "CodBarras"] = result.loc[fill_mask, found]
     if ("Mod-Col" not in result.columns or not (result["Mod-Col"].map(clean) != "").any()) and "COD MOD COL" in result.columns:
         result["Mod-Col"] = result["COD MOD COL"]
     for column in ARTI_REQUIRED_COLUMNS:
@@ -1381,6 +1411,9 @@ def _read_arti_from_bigquery(config, brand_config=None):
             output_column: _find_bigquery_column(available_columns, candidates)
             for output_column, candidates in BIGQUERY_ARTI_COLUMN_CANDIDATES.items()
         }
+        barcode_columns = _find_bigquery_barcode_columns(available_columns)
+        if barcode_columns:
+            column_map["CodBarras"] = barcode_columns[0]
         model_column = _find_bigquery_column(available_columns, BIGQUERY_MODEL_COLUMN_CANDIDATES)
         color_column = _find_bigquery_column(available_columns, BIGQUERY_COLOR_COLUMN_CANDIDATES)
         model_color_expression = _bigquery_model_color_expression(column_map, model_column, color_column)
@@ -1411,6 +1444,8 @@ def _read_arti_from_bigquery(config, brand_config=None):
             )
             for output_column in ARTI_REQUIRED_COLUMNS
         ]
+        for index, barcode_column in enumerate(barcode_columns[1:20], start=2):
+            select_lines.append(f"CAST(`{barcode_column}` AS STRING) AS `CodBarras_alt_{index}`")
         where_lines = [f"`{column_map['CODINT_MA']}` IS NOT NULL"]
         if model_color_expression:
             where_lines.extend([f"`{model_column}` IS NOT NULL", f"`{color_column}` IS NOT NULL"])

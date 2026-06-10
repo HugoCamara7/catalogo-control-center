@@ -1300,7 +1300,16 @@ def normalize_arti_required_columns(df):
             if existing != output_column:
                 result[output_column] = result[existing]
             continue
-        source = _find_bigquery_column(result.columns, candidates)
+        source = ""
+        for candidate in candidates:
+            found = _find_bigquery_column(result.columns, [candidate])
+            if not found:
+                continue
+            if found == output_column and output_column in result.columns and not (result[output_column].map(clean) != "").any():
+                continue
+            if (result[found].map(clean) != "").any():
+                source = found
+                break
         if source:
             result[output_column] = result[source]
     if ("Mod-Col" not in result.columns or not (result["Mod-Col"].map(clean) != "").any()) and "COD MOD COL" in result.columns:

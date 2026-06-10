@@ -96,6 +96,7 @@ DEFAULT_CENTRY_DIMENSIONS_PATHS = [
 DEFAULT_CENTRY_CODEX_CATEGORY_PATHS = [
     Path("data/centry_codex_categorias.xlsx"),
 ]
+DEFAULT_PRODUCT_MASTER_TABLE = "forus-analitica-prod-datalake.bronze.stg_pe_central_arti"
 FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
 KPI_AUTO_REFRESH_SECONDS = 60 * 60
@@ -544,6 +545,101 @@ def _bigquery_table_id_from_config(config):
     return ""
 
 
+def _bigquery_product_master_table_id(config):
+    config = dict(config or {})
+    table = clean_value(
+        config.get("product_master_table")
+        or config.get("maestro_productos_table")
+        or config.get("ean_table")
+        or config.get("barcode_table")
+        or DEFAULT_PRODUCT_MASTER_TABLE
+    )
+    if not table:
+        return ""
+    if table.count(".") == 2:
+        return table
+    project_id = clean_value(config.get("product_master_project_id") or config.get("project_id"))
+    dataset = clean_value(config.get("product_master_dataset") or config.get("dataset"))
+    if project_id and dataset:
+        return f"{project_id}.{dataset}.{table}"
+    return ""
+
+
+def _bigquery_schema_columns(client, table_id):
+    if not table_id:
+        return []
+    return [field.name for field in client.get_table(table_id).schema]
+
+
+def _bigquery_barcode_candidate_columns(columns):
+    schema_df = pd.DataFrame(columns=list(columns or []))
+    exact = first_existing_column(schema_df, ARTI_COLUMN_ALIASES_APP["CodBarras"])
+    candidates = [exact] if exact else []
+    tokens = ("ean", "barra", "barras", "barcode", "bar_code", "upc", "gtin")
+    for column in columns or []:
+        normalized = normalize_header(column)
+        if any(token in normalized for token in tokens):
+            candidates.append(column)
+    return list(dict.fromkeys([column for column in candidates if column]))
+
+
+def _bigquery_sku_candidate_column(columns):
+    schema_df = pd.DataFrame(columns=list(columns or []))
+    exact = first_existing_column(schema_df, ARTI_COLUMN_ALIASES_APP["CODINT_MA"])
+    if exact:
+        return exact
+    tokens = ("codint", "sku", "id_producto", "idproducto")
+    for column in columns or []:
+        normalized = normalize_header(column)
+        if any(token in normalized for token in tokens):
+            return column
+    return ""
+
+
+def _coalesce_barcode_candidates(df, candidate_columns):
+    if df is None or df.empty:
+        return df
+    result = normalize_arti_columns_for_app(df).copy()
+    if "CodBarras" not in result.columns:
+        result["CodBarras"] = ""
+    for column in candidate_columns or []:
+        if column not in result.columns:
+            continue
+        fill_mask = result["CodBarras"].map(clean_value).eq("") & result[column].map(clean_value).ne("")
+        if fill_mask.any():
+            result.loc[fill_mask, "CodBarras"] = result.loc[fill_mask, column]
+    return result
+
+
+def bigquery_barcode_schema_diagnostics(bigquery_config):
+    table_id = _bigquery_product_master_table_id(bigquery_config) or _bigquery_table_id_from_config(bigquery_config)
+    if not table_id:
+        return "Maestro Productos BigQuery no configurado"
+    try:
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+    except ImportError:
+        return "No pude inspeccionar schema BigQuery: falta google-cloud-bigquery"
+
+    try:
+        config = dict(bigquery_config or {})
+        project_id = clean_value(config.get("project_id"))
+        credentials_info = config.get("service_account_info")
+        credentials = None
+        if credentials_info:
+            credentials = service_account.Credentials.from_service_account_info(dict(credentials_info))
+            project_id = project_id or credentials.project_id
+        job_project_id = clean_value(config.get("job_project_id")) or project_id
+        client = bigquery.Client(project=job_project_id or None, credentials=credentials)
+        schema_columns = _bigquery_schema_columns(client, table_id)
+        sku_col = _bigquery_sku_candidate_column(schema_columns)
+        barcode_candidates = _bigquery_barcode_candidate_columns(schema_columns)
+        preview = ", ".join(barcode_candidates[:12]) or "ninguna"
+        return f"Schema {table_id}: sku={sku_col or 'NO detectado'}; columnas EAN/barra={preview}"
+    except Exception as exc:
+        return f"No pude inspeccionar schema Maestro Productos: {type(exc).__name__}: {exc}"
+
+
 def enrich_arti_barcodes_from_bigquery_table(arti_df, bigquery_config):
     if arti_df is None or arti_df.empty or "CODINT_MA" not in arti_df.columns:
         return arti_df, ""
@@ -553,8 +649,14 @@ def enrich_arti_barcodes_from_bigquery_table(arti_df, bigquery_config):
     if not missing_skus:
         return result, ""
 
-    table_id = _bigquery_table_id_from_config(bigquery_config)
-    if not table_id:
+    table_id = _bigquery_product_master_table_id(bigquery_config) or _bigquery_table_id_from_config(bigquery_config)
+    product_master_query = clean_value(
+        (bigquery_config or {}).get("product_master_query")
+        or (bigquery_config or {}).get("maestro_productos_query")
+        or (bigquery_config or {}).get("ean_query")
+        or (bigquery_config or {}).get("barcode_query")
+    )
+    if not table_id and not product_master_query:
         return result, ""
 
     try:
@@ -573,24 +675,37 @@ def enrich_arti_barcodes_from_bigquery_table(arti_df, bigquery_config):
             project_id = project_id or credentials.project_id
         job_project_id = clean_value(config.get("job_project_id")) or project_id
         client = bigquery.Client(project=job_project_id or None, credentials=credentials)
-        schema_columns = [field.name for field in client.get_table(table_id).schema]
-        sku_col = first_existing_column(pd.DataFrame(columns=schema_columns), ARTI_COLUMN_ALIASES_APP["CODINT_MA"])
-        barcode_col = first_existing_column(pd.DataFrame(columns=schema_columns), ARTI_COLUMN_ALIASES_APP["CodBarras"])
-        if not sku_col or not barcode_col:
-            return result, ""
-        query = f"""
-        SELECT
-          CAST(`{sku_col}` AS STRING) AS CODINT_MA,
-          CAST(`{barcode_col}` AS STRING) AS CodBarras
-        FROM `{table_id}`
-        WHERE CAST(`{sku_col}` AS STRING) IN UNNEST(@skus)
-          AND `{barcode_col}` IS NOT NULL
-        """
+        if product_master_query:
+            wrapped_query = product_master_query.rstrip().rstrip(";")
+            query = f"""
+            SELECT *
+            FROM ({wrapped_query})
+            WHERE CAST(CODINT_MA AS STRING) IN UNNEST(@skus)
+            """
+        else:
+            schema_columns = _bigquery_schema_columns(client, table_id)
+            sku_col = _bigquery_sku_candidate_column(schema_columns)
+            barcode_cols = _bigquery_barcode_candidate_columns(schema_columns)[:20]
+            if not sku_col or not barcode_cols:
+                return result, ""
+            barcode_selects = [
+                f"CAST(`{column}` AS STRING) AS `__EAN_CAND_{index}`"
+                for index, column in enumerate(barcode_cols)
+            ]
+            query = f"""
+            SELECT
+              CAST(`{sku_col}` AS STRING) AS CODINT_MA,
+              {", ".join(barcode_selects)}
+            FROM `{table_id}`
+            WHERE CAST(`{sku_col}` AS STRING) IN UNNEST(@skus)
+            """
         job_config = bigquery.QueryJobConfig(
             use_legacy_sql=False,
             query_parameters=[bigquery.ArrayQueryParameter("skus", "STRING", missing_skus)],
         )
         lookup_df = client.query(query, job_config=job_config, location=clean_value(config.get("location")) or None).to_dataframe()
+        ean_alias_columns = [column for column in lookup_df.columns if str(column).startswith("__EAN_CAND_")]
+        lookup_df = _coalesce_barcode_candidates(lookup_df, ean_alias_columns)
         lookup = {
             clean_value(row.get("CODINT_MA")): clean_value(row.get("CodBarras"))
             for _, row in lookup_df.iterrows()
@@ -601,9 +716,26 @@ def enrich_arti_barcodes_from_bigquery_table(arti_df, bigquery_config):
         fill_mask = result["CodBarras"].map(clean_value) == ""
         result.loc[fill_mask, "CodBarras"] = result.loc[fill_mask, "CODINT_MA"].map(lambda sku: lookup.get(clean_value(sku), ""))
         filled = safe_int_value((result.loc[fill_mask, "CodBarras"].map(clean_value) != "").sum())
-        return result, f"EAN tabla BigQuery ({filled:,})" if filled else ""
+        source_label = "Maestro Productos BigQuery" if product_master_query or _bigquery_product_master_table_id(bigquery_config) else "EAN tabla BigQuery"
+        return result, f"{source_label} ({filled:,})" if filled else ""
     except Exception:
         return result, ""
+
+
+def arti_barcode_diagnostics(arti_df):
+    if arti_df is None or arti_df.empty:
+        return "ARTI vacio"
+    df = coalesce_duplicate_columns(arti_df).copy()
+    pieces = []
+    for alias in ARTI_COLUMN_ALIASES_APP["CodBarras"]:
+        column = first_existing_column(df, [alias])
+        if column is None:
+            continue
+        non_empty = safe_int_value(df[column].map(clean_value).ne("").sum())
+        pieces.append(f"{column}: {non_empty:,}")
+    if not pieces:
+        return "No llego ninguna columna tipo EAN/barcode en el query"
+    return "Columnas EAN detectadas - " + " | ".join(dict.fromkeys(pieces))
 
 
 def detect_input_columns(df):
@@ -1833,10 +1965,13 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             if key and key not in product_lookup:
                 product_lookup[key] = group.iloc[0]
 
-    arti = arti_df.copy() if arti_df is not None else pd.DataFrame()
+    arti = normalize_arti_columns_for_app(arti_df).copy() if arti_df is not None else pd.DataFrame()
     for column in ("CODINT_MA", "COD MOD COL", "Mod-Col", "TALNUM_MA", "MARCA_MA", "Precio", "CodBarras"):
         if column not in arti.columns:
             arti[column] = ""
+    issues.append({"Mod-Col": "Diagnostico EAN", "Problema": arti_barcode_diagnostics(arti)})
+    if arti["CodBarras"].map(clean_value).eq("").all():
+        issues.append({"Mod-Col": "Diagnostico BigQuery", "Problema": bigquery_barcode_schema_diagnostics(get_bigquery_config())})
     arti["__KEY"] = arti["Mod-Col"].where(arti["Mod-Col"].map(clean_value) != "", arti["COD MOD COL"]).map(lambda value: clean_value(value).upper())
     arti["__MODEL"] = arti["__KEY"].map(lambda value: value.rsplit("-", 1)[0] if "-" in value else value)
     allowed = {clean_value(value).upper() for value in brand_config.get("allowed_arti_brands", [])}
@@ -8216,6 +8351,13 @@ api_version = "{DEFAULT_API_VERSION}"
 
                 if update_operation == "centry":
                     if st.button("Generar Centry", type="primary"):
+                        for state_key in (
+                            "centry_maintainer_df",
+                            "centry_maintainer_sial_df",
+                            "centry_maintainer_issues_df",
+                            "centry_maintainer_codes",
+                        ):
+                            st.session_state.pop(state_key, None)
                         codes = model_codes_from_excel(update_df)
                         if not codes:
                             st.error("El Excel no tiene codigos modelo-color reconocibles. Usa una columna como Mod-Col, Codigo Modelo Color, Cod Mod Col, SKU, o una sola columna con los codigos.")
@@ -8260,18 +8402,27 @@ api_version = "{DEFAULT_API_VERSION}"
                             if centry_sial_df is not None and not centry_sial_df.empty:
                                 st.write("Vista previa Carga Sial Centry")
                                 st.dataframe(centry_sial_df.head(100), use_container_width=True, height=320)
-                            st.download_button(
-                                "Descargar Centry",
-                                data=dataframe_to_excel_bytes(
-                                    {
-                                        "Centry": centry_df,
-                                        "Carga Sial": centry_sial_df if centry_sial_df is not None else pd.DataFrame(),
-                                        "Revision Centry": centry_issues_df if centry_issues_df is not None else pd.DataFrame(),
-                                    }
-                                ),
-                                file_name=f"centry_{brand_config['site_key']}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            missing_ean_count = safe_int_value(
+                                centry_df.get("Código de barra variante (EAN/UPC/ISBN)", pd.Series(dtype=object)).map(clean_value).eq("").sum()
                             )
+                            if missing_ean_count:
+                                st.error(
+                                    f"No se habilita descarga: faltan {missing_ean_count:,} EAN. "
+                                    "Revisa la hoja Revision Centry para ver columnas EAN detectadas desde BigQuery."
+                                )
+                            else:
+                                st.download_button(
+                                    "Descargar Centry",
+                                    data=dataframe_to_excel_bytes(
+                                        {
+                                            "Centry": centry_df,
+                                            "Carga Sial": centry_sial_df if centry_sial_df is not None else pd.DataFrame(),
+                                            "Revision Centry": centry_issues_df if centry_issues_df is not None else pd.DataFrame(),
+                                        }
+                                    ),
+                                    file_name=f"centry_{brand_config['site_key']}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                )
                     return
 
                 if st.button(f"Analizar carga parcial: {update_label}", type="primary"):

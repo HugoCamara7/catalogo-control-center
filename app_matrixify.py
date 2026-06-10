@@ -290,19 +290,15 @@ def normalize_arti_columns_for_app(df):
         return df
     result = coalesce_duplicate_columns(df).copy()
     for target, aliases in ARTI_COLUMN_ALIASES_APP.items():
-        if target not in result.columns or result[target].map(clean_value).eq("").all():
-            source = None
-            for alias in aliases:
-                candidate = first_existing_column(result, [alias])
-                if candidate is None:
-                    continue
-                if candidate == target and target in result.columns and result[target].map(clean_value).eq("").all():
-                    continue
-                if result[candidate].map(clean_value).ne("").any():
-                    source = candidate
-                    break
-            if source is not None:
-                result[target] = result[source]
+        if target not in result.columns:
+            result[target] = ""
+        for alias in aliases:
+            candidate = first_existing_column(result, [alias])
+            if candidate is None or candidate == target:
+                continue
+            fill_mask = result[target].map(clean_value).eq("") & result[candidate].map(clean_value).ne("")
+            if fill_mask.any():
+                result.loc[fill_mask, target] = result.loc[fill_mask, candidate]
     if "Mod-Col" not in result.columns or result["Mod-Col"].map(clean_value).eq("").all():
         source = first_existing_column(result, ["COD MOD COL"])
         if source is not None:

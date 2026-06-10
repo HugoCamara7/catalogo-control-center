@@ -67,6 +67,19 @@ except ImportError:
     fetch_metaobjects_for_definition = None
     fetch_metafield_definition = None
 
+try:
+    from centry_static_masters import (
+        CENTRY_CATEGORY_FULL,
+        CENTRY_CATEGORY_GENDER_TYPE,
+        CENTRY_CODEX_CATEGORIES,
+        CENTRY_DIMENSIONS,
+    )
+except ImportError:
+    CENTRY_CATEGORY_FULL = []
+    CENTRY_CATEGORY_GENDER_TYPE = []
+    CENTRY_CODEX_CATEGORIES = []
+    CENTRY_DIMENSIONS = []
+
 
 APP_TITLE = "Catalogo Control Center"
 DEFAULT_ARTI_PATH = "data/arti.xlsx"
@@ -74,6 +87,15 @@ DEFAULT_ARTI_CSV_PATH = "data/arti.csv"
 DEFAULT_ARTI_ZIP_PATH = "data/arti.zip"
 DEFAULT_MATRIXIFY_PATH = "data/matrixify_modelo.xlsx"
 DEFAULT_ECOMM_WAREHOUSES_PATH = Path("data/bodegas_ecomm.xlsx")
+DEFAULT_CENTRY_CATEGORY_PATHS = [
+    Path("data/base_categorias_centry.xlsx"),
+]
+DEFAULT_CENTRY_DIMENSIONS_PATHS = [
+    Path("data/dimensiones_productos.xlsx"),
+]
+DEFAULT_CENTRY_CODEX_CATEGORY_PATHS = [
+    Path("data/centry_codex_categorias.xlsx"),
+]
 FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
 KPI_AUTO_REFRESH_SECONDS = 60 * 60
@@ -770,8 +792,50 @@ CENTRY_APPAREL_COLUMNS = [
     "Diseño - Ropa y accesorios (Falabella GSC Perú)",
     "Tipo de cuello - Tipo de cuello - Ropa y accesorios (Falabella GSC Perú)",
 ]
+CENTRY_MARKETPLACE_EXTRA_COLUMNS = [
+    "cccc",
+    "Incluir en MercadoLibrePe / MercadoLibrePe",
+    "Es inflamable (MercadoLibre Perú)",
+    "Material del accesorio - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de ropa para la cabeza - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de ropa para el cuello - Ropa y accesorios (Falabella GSC Perú)",
+    "Composición (MercadoLibre Perú)",
+    "Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+    "Contenido del paquete - Package content - Almacenamiento (Falabella GSC Perú)",
+    "Diseño de la tela (MercadoLibre Perú)",
+    "Tamaño del bolso maleta - Ropa y accesorios (Falabella GSC Perú)",
+    "Cantidad de bolsillos interiores - Cantidad de bolsillos interiores - Ropa y accesorios (Falabella GSC Perú)",
+    "Material de la maleta - Material de la maleta - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de maleta - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de bolso mochila funda - Ropa y accesorios (Falabella GSC Perú)",
+    "Con monedero (MercadoLibre Perú)",
+    "Tipo de sombrero (MercadoLibre Perú)",
+    "Con cierre ajustable (MercadoLibre Perú)",
+    "Es reversible (MercadoLibre Perú)",
+    "Uso de la cartera/mochila/bolsa - Uso de la cartera mochila bolsa - Ropa y accesorios (Falabella GSC Perú)",
+    "Tipo de cartera (MercadoLibre Perú)",
+    "Con cierre (MercadoLibre Perú)",
+    "INFORMACIÓN ADICIONAL",
+    "Unnamed: 52",
+    "Unnamed: 53",
+    "Unnamed: 54",
+    "Unnamed: 55",
+    "Unnamed: 56",
+]
 CENTRY_TAIL_COLUMNS = ["Clase", "Guía de tallas", "Base de categoría", "Cod Mod Col Talla", "Mod", "Col", "Tal"]
-CENTRY_COLUMNS = CENTRY_BASE_COLUMNS + CENTRY_FOOTWEAR_COLUMNS + CENTRY_APPAREL_COLUMNS + CENTRY_TAIL_COLUMNS
+CENTRY_COLUMNS = list(dict.fromkeys(CENTRY_BASE_COLUMNS + CENTRY_MARKETPLACE_EXTRA_COLUMNS + CENTRY_FOOTWEAR_COLUMNS + CENTRY_APPAREL_COLUMNS + CENTRY_TAIL_COLUMNS))
+CENTRY_SIAL_COLUMNS = [
+    "Mod", "Col", "Tal", "Product Name ", "Product Bullets", "Product Description", "Image URL",
+    "Product Weight", "Product Length", "Product Width", "Product Height",
+    "Package Weight", "Package Length", "Package Width", "Package Height",
+    "Boost ", "Talla Web ", "Color Web", "Categoria ", "Sub Categoria", "Genero",
+    "Estilo ", "Colecciones ", "Temporada ", "Modelo", "Marca", "Tecnologias ",
+    "Caracteristicas", "Tipo de Boardshort", "Tipo de Bikini", "Iniciativas",
+    "Tipo de Material", "1", "Tipo de Prenda", "Adicional 2 ", "Adicional 3 ",
+    "Adicional 4 ", "Adicional 5 ", "Adicional 6 ", "Adicional 7 ", "Adicional 8 ",
+    "Adicional 9 ", "Adicional 10", "Mod-Col", "Sku - Sial",
+    "Nuevo o Actualizar (Rockford.pe)", "Sku - Supermall.pe", "Porduct Id - Supermall.pe",
+]
 
 
 def centry_value(value, fallback=""):
@@ -810,6 +874,187 @@ def centry_category(row):
     return f"Vestuario / {branch} / {product_type or 'Prendas'}"
 
 
+def centry_master_key(*values):
+    return normalize_header(" ".join(clean_value(value) for value in values if clean_value(value)))
+
+
+def centry_master_gender(value):
+    text = centry_value(value).lower()
+    if text in ("masculino", "hombre", "men"):
+        return "Hombre"
+    if text in ("femenino", "mujer", "women"):
+        return "Mujer"
+    if "ni" in text or "kid" in text:
+        return "Niños"
+    return centry_value(value)
+
+
+def first_existing_path(paths):
+    for path in paths:
+        if Path(path).exists():
+            return Path(path)
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def load_centry_category_lookup():
+    path = first_existing_path(DEFAULT_CENTRY_CATEGORY_PATHS)
+    by_full_key = {}
+    by_gender_type = {}
+    for item in CENTRY_CATEGORY_FULL:
+        product_type = clean_value(item.get("product_type"))
+        gender = centry_master_gender(item.get("gender"))
+        brand = clean_value(item.get("brand"))
+        if product_type and gender and brand:
+            by_full_key[centry_master_key(product_type, gender, brand)] = {
+                "category": clean_value(item.get("category")),
+                "class": clean_value(item.get("class")),
+                "base": clean_value(item.get("base")) or f"{product_type}{gender}{brand}",
+            }
+    for item in CENTRY_CATEGORY_GENDER_TYPE:
+        gender = centry_master_gender(item.get("gender"))
+        product_type = clean_value(item.get("product_type"))
+        category = clean_value(item.get("category"))
+        if gender and product_type and category:
+            by_gender_type[centry_master_key(product_type, gender)] = {
+                "category": category,
+                "class": "Vestuario" if category.lower().startswith("vestuario") else "",
+                "base": clean_value(item.get("base")) or f"{gender}{product_type}",
+            }
+    if path is None:
+        return {"path": "", "by_full_key": by_full_key, "by_gender_type": by_gender_type}
+    try:
+        categories = pd.read_excel(path, sheet_name="Categorías", dtype=object).dropna(how="all")
+        for _, row in categories.iterrows():
+            product_type = clean_value(row.get("Tipo de Producto"))
+            gender = centry_master_gender(row.get("Género"))
+            brand = clean_value(row.get("Marca"))
+            record = {
+                "category": clean_value(row.get("Categoría")),
+                "class": clean_value(row.get("Clase")),
+                "base": clean_value(row.get("Unnamed: 5")) or f"{product_type}{gender}{brand}",
+            }
+            if product_type and gender and brand:
+                by_full_key[centry_master_key(product_type, gender, brand)] = record
+        all_sheet = pd.read_excel(path, sheet_name="all", dtype=object).dropna(how="all")
+        for _, row in all_sheet.iterrows():
+            gender = centry_master_gender(row.get("Género"))
+            product_type = clean_value(row.get("Unnamed: 2"))
+            category = clean_value(row.get("Categoría"))
+            if gender and product_type and category:
+                by_gender_type[centry_master_key(product_type, gender)] = {
+                    "category": category,
+                    "class": "Vestuario" if category.lower().startswith("vestuario") else "",
+                    "base": clean_value(row.get("Unnamed: 3")) or f"{gender}{product_type}",
+                }
+    except Exception:
+        return {"path": str(path), "by_full_key": {}, "by_gender_type": {}}
+    return {"path": str(path), "by_full_key": by_full_key, "by_gender_type": by_gender_type}
+
+
+@st.cache_data(show_spinner=False)
+def load_centry_codex_category_lookup():
+    path = first_existing_path(DEFAULT_CENTRY_CODEX_CATEGORY_PATHS)
+    by_type = {}
+    by_class_type = {}
+    for item in CENTRY_CODEX_CATEGORIES:
+        product_type = clean_value(item.get("product_type"))
+        class_name = clean_value(item.get("class"))
+        category_name = clean_value(item.get("category"))
+        base = clean_value(item.get("base")) or f"{class_name}{product_type}"
+        if not product_type or not class_name:
+            continue
+        category = f"{class_name} / {category_name}" if category_name and category_name != class_name else class_name
+        record = {"category": category, "class": class_name, "base": base}
+        by_type.setdefault(centry_master_key(product_type), record)
+        by_class_type.setdefault(centry_master_key(class_name, product_type), record)
+    if path is None:
+        return {"path": "", "by_type": by_type, "by_class_type": by_class_type}
+    try:
+        df = pd.read_excel(path, dtype=object).dropna(how="all")
+        for _, row in df.iterrows():
+            product_type = clean_value(row.get("Tipo de Producto"))
+            class_name = clean_value(row.get("Clase"))
+            category_name = clean_value(row.get("Categoría"))
+            base = clean_value(row.get("Llave")) or f"{class_name}{product_type}"
+            if not product_type or not class_name:
+                continue
+            category = f"{class_name} / {category_name}" if category_name and category_name != class_name else class_name
+            record = {"category": category, "class": class_name, "base": base}
+            by_type.setdefault(centry_master_key(product_type), record)
+            by_class_type.setdefault(centry_master_key(class_name, product_type), record)
+    except Exception:
+        return {"path": str(path), "by_type": {}, "by_class_type": {}}
+    return {"path": str(path), "by_type": by_type, "by_class_type": by_class_type}
+
+
+@st.cache_data(show_spinner=False)
+def load_centry_dimension_lookup():
+    path = first_existing_path(DEFAULT_CENTRY_DIMENSIONS_PATHS)
+    lookup = {}
+    for item in CENTRY_DIMENSIONS:
+        product_type = clean_value(item.get("product_type"))
+        if product_type:
+            lookup.setdefault(
+                centry_master_key(product_type),
+                {
+                    "height": clean_value(item.get("height")),
+                    "width": clean_value(item.get("width")),
+                    "length": clean_value(item.get("length")),
+                    "weight": clean_value(item.get("weight")),
+                },
+            )
+    if path is None:
+        return {"path": "", "lookup": lookup}
+    try:
+        xl = pd.ExcelFile(path)
+        for sheet in xl.sheet_names:
+            df = pd.read_excel(path, sheet_name=sheet, dtype=object).dropna(how="all")
+            if "Tipo de Producto" not in df.columns:
+                continue
+            for _, row in df.iterrows():
+                product_type = clean_value(row.get("Tipo de Producto"))
+                if not product_type:
+                    continue
+                height = first_non_empty(row.get("Product Height"), row.get("Unnamed: 5"), row.get("Alto (cm)"))
+                width = first_non_empty(row.get("Product Width"), row.get("Unnamed: 6"), row.get("Ancho (cm)"))
+                length = first_non_empty(row.get("Product Length"), row.get("Unnamed: 7"), row.get("Largo (cm)"))
+                weight = first_non_empty(row.get("Product Weight (gr)"), row.get("Unnamed: 8"), row.get("Peso (gr)"))
+                lookup.setdefault(
+                    centry_master_key(product_type),
+                    {"height": height, "width": width, "length": length, "weight": weight},
+                )
+    except Exception:
+        return {"path": str(path), "lookup": {}}
+    return {"path": str(path), "lookup": lookup}
+
+
+def centry_lookup_category(product_type, gender, vendor, fallback_category):
+    lookup = load_centry_category_lookup()
+    gender_master = centry_master_gender(gender)
+    type_gender_key = centry_master_key(product_type, gender_master)
+    record = lookup["by_full_key"].get(centry_master_key(product_type, gender_master, vendor))
+    if record is None:
+        record = lookup["by_gender_type"].get(type_gender_key)
+    elif not clean_value(record.get("category")):
+        type_record = lookup["by_gender_type"].get(type_gender_key)
+        if type_record and clean_value(type_record.get("category")):
+            record = {**record, "category": type_record.get("category")}
+    if record is None:
+        codex_lookup = load_centry_codex_category_lookup()
+        fallback_class = clean_value(fallback_category).split("/", 1)[0].strip()
+        record = codex_lookup["by_class_type"].get(centry_master_key(fallback_class, product_type))
+        if record is None:
+            record = codex_lookup["by_type"].get(centry_master_key(product_type))
+    return record or {"category": fallback_category, "class": "", "base": f"{product_type}{gender_master}{vendor}"}
+
+
+def centry_lookup_dimensions(product_type, fallback):
+    lookup = load_centry_dimension_lookup()["lookup"]
+    record = lookup.get(centry_master_key(product_type))
+    return record or fallback
+
+
 def centry_split_images(value):
     parts = [centry_value(part) for part in re.split(r"[;\n]+", centry_value(value)) if centry_value(part)]
     return parts[:5]
@@ -839,6 +1084,8 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         "Title", "Body HTML", "Vendor", "Type", "Tags", "Status", "Published", "Image Src",
         "Metafield: custom.codigo_modelo_color [id]", "Metafield: custom.estilo [single_line_text_field]",
         "Metafield: custom.color [single_line_text_field]",
+        "Metafield: custom.materialidad [single_line_text_field]",
+        "Metafield: custom.tecnologia [list.single_line_text_field]",
     ]
     for column in product_fields:
         if column in df.columns:
@@ -864,6 +1111,9 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         size = centry_value(row.get("Option1 Value"))
         gender = centry_gender(row)
         is_footwear = centry_is_footwear(row)
+        fallback_package = centry_package_values(row)
+        dimensions = centry_lookup_dimensions(product_type, fallback_package)
+        category_record = centry_lookup_category(product_type, gender, vendor, centry_category(row))
         centry_row = {column: "" for column in CENTRY_COLUMNS}
         centry_row.update(
             {
@@ -872,11 +1122,11 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                 "Descripcion": strip_html(row.get("Body HTML")),
                 "Listado de características": centry_value(row.get("Tags")).replace(",", " |"),
                 "Garantía": "3 meses, Garantía del vendedor",
-                "Alto del paquete": 12 if is_footwear else 1,
-                "Ancho del paquete": 21 if is_footwear else 27,
-                "Largo del paquete": 35 if is_footwear else 29,
-                "Peso del paquete": 0.9 if is_footwear else 0.2,
-                "Categoría": centry_category(row),
+                "Alto del paquete": first_non_empty(dimensions.get("height"), fallback_package["height"]),
+                "Ancho del paquete": first_non_empty(dimensions.get("width"), fallback_package["width"]),
+                "Largo del paquete": first_non_empty(dimensions.get("length"), fallback_package["length"]),
+                "Peso del paquete": first_non_empty(dimensions.get("weight"), fallback_package["weight"]),
+                "Categoría": category_record.get("category") or centry_category(row),
                 "Precio": centry_value(row.get("Variant Price")),
                 "SKU del producto": current_mod_col,
                 "SKU de la variante": variant_sku,
@@ -888,13 +1138,29 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                 "Temporada": centry_value(row.get("Temporada"), "Verano"),
                 "Género": gender,
                 "Estado": "Activo",
+                "cccc": current_mod_col,
+                "Incluir en MercadoLibrePe / MercadoLibrePe": "SI",
                 "Incluir en Falabella Global Peru / FalabellaGlobalProduction": "SI",
+                "Es inflamable (MercadoLibre Perú)": "No",
+                "Composición (MercadoLibre Perú)": first_non_empty(row.get("Metafield: custom.materialidad [single_line_text_field]"), ""),
+                "Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC Perú)": first_non_empty(row.get("Metafield: custom.materialidad [single_line_text_field]"), "Otros"),
+                "Diseño - Ropa y accesorios (Falabella GSC Perú)": "-",
+                "Contenido del paquete - Package content - Almacenamiento (Falabella GSC Perú)": "1",
+                "Diseño de la tela (MercadoLibre Perú)": "-",
+                "Con monedero (MercadoLibre Perú)": "No",
+                "Con cierre ajustable (MercadoLibre Perú)": "No",
+                "Es reversible (MercadoLibre Perú)": "No",
+                "Con cierre (MercadoLibre Perú)": "No",
+                "INFORMACIÓN ADICIONAL": "",
+                "Unnamed: 52": "",
+                "Unnamed: 53": product_type,
+                "Unnamed: 54": f"{product_type}{gender}{vendor}",
                 "Mod": model,
                 "Col": color_code,
                 "Tal": size,
                 "Cod Mod Col Talla": f"{current_mod_col}-{size}" if current_mod_col and size else current_mod_col,
-                "Clase": "Calzado" if is_footwear else "Vestuario",
-                "Base de categoría": f"{product_type}{gender}{vendor}",
+                "Clase": category_record.get("class") or ("Calzado" if is_footwear else "Vestuario"),
+                "Base de categoría": category_record.get("base") or f"{product_type}{gender}{vendor}",
             }
         )
         for index, image in enumerate(images, start=1):
@@ -915,6 +1181,123 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
     centry_df = pd.DataFrame(rows, columns=CENTRY_COLUMNS).fillna("")
     centry_df = centry_df.replace({"#N/D": "", "#ND": "", "#N/A": ""})
     return centry_df, pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
+
+
+def centry_package_values(row):
+    is_footwear = centry_is_footwear(row)
+    return {
+        "weight": 900 if is_footwear else 200,
+        "length": 35 if is_footwear else 29,
+        "width": 21 if is_footwear else 27,
+        "height": 12 if is_footwear else 1,
+    }
+
+
+def centry_bullets(row, vendor, product_type, color, gender):
+    tags = [part.strip() for part in centry_value(row.get("Tags")).split(",") if part.strip()]
+    items = [
+        ("Tipo Producto", product_type),
+        ("Género", gender),
+        ("Color Comercial", color),
+        ("Marca", vendor),
+    ]
+    for tag in tags[:8]:
+        if "|" in tag:
+            continue
+        items.append(("Característica", tag))
+    return ", ".join(f"{label} | {value}" for label, value in items if centry_value(value))
+
+
+def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
+    if matrixify_df is None or matrixify_df.empty:
+        return pd.DataFrame(columns=CENTRY_SIAL_COLUMNS)
+    brand_config = brand_config or {}
+    df = coalesce_duplicate_columns(matrixify_df).copy()
+    for column in MATRIXIFY_COLUMNS:
+        if column not in df.columns:
+            df[column] = ""
+    product_fields = [
+        "Title", "Body HTML", "Vendor", "Type", "Tags", "Image Src",
+        "Metafield: custom.codigo_modelo_color [id]", "Metafield: custom.color [single_line_text_field]",
+        "Metafield: custom.materialidad [single_line_text_field]",
+        "Metafield: custom.tecnologia [list.single_line_text_field]",
+    ]
+    for column in product_fields:
+        if column not in df.columns:
+            df[column] = ""
+        df[column] = df[column].replace("", pd.NA).ffill().fillna("")
+
+    rows = []
+    for _, row in df.iterrows():
+        sku = centry_value(row.get("Variant SKU"))
+        if not sku:
+            continue
+        mod_col = centry_mod_col_from_row(row)
+        model, color_code = split_model_color(mod_col)
+        vendor = centry_value(row.get("Vendor"), brand_config.get("label", ""))
+        product_type = centry_value(row.get("Type"))
+        color = first_non_empty(row.get("Option2 Value"), row.get("Metafield: custom.color [single_line_text_field]"), color_code)
+        size = centry_value(row.get("Option1 Value"))
+        gender = centry_gender(row)
+        images = centry_split_images(row.get("Image Src"))
+        image = images[0] if images else ""
+        fallback_package = centry_package_values(row)
+        package = centry_lookup_dimensions(product_type, fallback_package)
+        category_record = centry_lookup_category(product_type, gender, vendor, centry_category(row))
+        category = category_record.get("class") or ("CALZADO" if centry_is_footwear(row) else ("ACCESORIOS" if "accesorio" in centry_category(row).lower() else "VESTUARIO"))
+        rows.append(
+            {
+                "Mod": model,
+                "Col": color_code,
+                "Tal": size,
+                "Product Name ": centry_value(row.get("Title")) or mod_col,
+                "Product Bullets": centry_bullets(row, vendor, product_type, color, gender),
+                "Product Description": strip_html(row.get("Body HTML")),
+                "Image URL": image,
+                "Product Weight": first_non_empty(package.get("weight"), fallback_package["weight"]),
+                "Product Length": first_non_empty(package.get("length"), fallback_package["length"]),
+                "Product Width": first_non_empty(package.get("width"), fallback_package["width"]),
+                "Product Height": first_non_empty(package.get("height"), fallback_package["height"]),
+                "Package Weight": first_non_empty(package.get("weight"), fallback_package["weight"]),
+                "Package Length": first_non_empty(package.get("length"), fallback_package["length"]),
+                "Package Width": first_non_empty(package.get("width"), fallback_package["width"]),
+                "Package Height": first_non_empty(package.get("height"), fallback_package["height"]),
+                "Boost ": "",
+                "Talla Web ": size,
+                "Color Web": color,
+                "Categoria ": category,
+                "Sub Categoria": product_type,
+                "Genero": gender,
+                "Estilo ": model,
+                "Colecciones ": "",
+                "Temporada ": centry_value(row.get("Temporada"), "Verano"),
+                "Modelo": model,
+                "Marca": vendor,
+                "Tecnologias ": first_non_empty(row.get("Metafield: custom.tecnologia [list.single_line_text_field]"), ""),
+                "Caracteristicas": centry_value(row.get("Tags")).replace(",", " |"),
+                "Tipo de Boardshort": "",
+                "Tipo de Bikini": "",
+                "Iniciativas": "",
+                "Tipo de Material": first_non_empty(row.get("Metafield: custom.materialidad [single_line_text_field]"), ""),
+                "1": "",
+                "Tipo de Prenda": product_type,
+                "Adicional 2 ": "",
+                "Adicional 3 ": "",
+                "Adicional 4 ": "",
+                "Adicional 5 ": "",
+                "Adicional 6 ": "",
+                "Adicional 7 ": "",
+                "Adicional 8 ": "",
+                "Adicional 9 ": "",
+                "Adicional 10": "",
+                "Mod-Col": mod_col,
+                "Sku - Sial": sku,
+                "Nuevo o Actualizar (Rockford.pe)": "Crear",
+                "Sku - Supermall.pe": sku,
+                "Porduct Id - Supermall.pe": "",
+            }
+        )
+    return pd.DataFrame(rows, columns=CENTRY_SIAL_COLUMNS).fillna("")
 
 
 def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"):
@@ -1062,6 +1445,8 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         body_html = first_non_empty(product_row.get("Body HTML") if product_row is not None else "", "")
         product_type = first_non_empty(product_row.get("Type") if product_row is not None else "", "")
         tags = first_non_empty(product_row.get("Tags") if product_row is not None else "", vendor)
+        materiality = first_non_empty(product_row.get("Metafield: custom.materialidad [single_line_text_field]") if product_row is not None else "", "")
+        technology = first_non_empty(product_row.get("Metafield: custom.tecnologia [list.single_line_text_field]") if product_row is not None else "", "")
         color = first_non_empty(product_row.get("Metafield: custom.color [single_line_text_field]") if product_row is not None else "", split_model_color(key)[1])
         if product_row is None:
             issues.append({"Mod-Col": key, "Problema": "No existe en Shopify; se completo Centry con BigQuery/ARTI y fotos S3"})
@@ -1087,6 +1472,8 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                     "Metafield: custom.codigo_modelo_color [id]": key,
                     "Metafield: custom.marca [single_line_text_field]": vendor,
                     "Metafield: custom.color [single_line_text_field]": color,
+                    "Metafield: custom.materialidad [single_line_text_field]": materiality,
+                    "Metafield: custom.tecnologia [list.single_line_text_field]": technology,
                     "Status": clean_value(product_row.get("Status")) if product_row is not None else "",
                     "Published": clean_value(product_row.get("Published")) if product_row is not None else "",
                     "Variant Position": position,
@@ -7417,16 +7804,19 @@ api_version = "{DEFAULT_API_VERSION}"
                                     brand_config,
                                     only_codes=codes,
                                 )
+                                centry_sial_df = build_centry_sial_from_matrixify(centry_matrixify_df, brand_config)
                                 centry_issues_df = pd.concat(
                                     [master_issues_df, centry_issues_df],
                                     ignore_index=True,
                                 ).drop_duplicates()
                             st.caption(f"Base maestra usada: {arti_source}")
                             st.session_state["centry_maintainer_df"] = centry_df
+                            st.session_state["centry_maintainer_sial_df"] = centry_sial_df
                             st.session_state["centry_maintainer_issues_df"] = centry_issues_df
                             st.session_state["centry_maintainer_codes"] = codes
 
                     centry_df = st.session_state.get("centry_maintainer_df")
+                    centry_sial_df = st.session_state.get("centry_maintainer_sial_df", pd.DataFrame())
                     centry_issues_df = st.session_state.get("centry_maintainer_issues_df", pd.DataFrame())
                     codes = st.session_state.get("centry_maintainer_codes", [])
                     if centry_df is not None:
@@ -7435,11 +7825,15 @@ api_version = "{DEFAULT_API_VERSION}"
                         else:
                             st.success(f"Centry generado con {len(centry_df):,} filas para {len(codes):,} codigos consultados.")
                             render_centry_preview(centry_df, centry_issues_df, "Centry generado")
+                            if centry_sial_df is not None and not centry_sial_df.empty:
+                                st.write("Vista previa Carga Sial Centry")
+                                st.dataframe(centry_sial_df.head(100), use_container_width=True, height=320)
                             st.download_button(
                                 "Descargar Centry",
                                 data=dataframe_to_excel_bytes(
                                     {
                                         "Centry": centry_df,
+                                        "Carga Sial": centry_sial_df if centry_sial_df is not None else pd.DataFrame(),
                                         "Revision Centry": centry_issues_df if centry_issues_df is not None else pd.DataFrame(),
                                     }
                                 ),

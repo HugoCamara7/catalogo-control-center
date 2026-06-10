@@ -288,7 +288,16 @@ def normalize_arti_columns_for_app(df):
     result = coalesce_duplicate_columns(df).copy()
     for target, aliases in ARTI_COLUMN_ALIASES_APP.items():
         if target not in result.columns or result[target].map(clean_value).eq("").all():
-            source = first_existing_column(result, aliases)
+            source = None
+            for alias in aliases:
+                candidate = first_existing_column(result, [alias])
+                if candidate is None:
+                    continue
+                if candidate == target and target in result.columns and result[target].map(clean_value).eq("").all():
+                    continue
+                if result[candidate].map(clean_value).ne("").any():
+                    source = candidate
+                    break
             if source is not None:
                 result[target] = result[source]
     if "Mod-Col" not in result.columns or result["Mod-Col"].map(clean_value).eq("").all():
@@ -1501,12 +1510,20 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             issues.append({"Mod-Col": current_mod_col, "Problema": "Sin nombre de producto"})
         if not images:
             issues.append({"Mod-Col": current_mod_col, "Problema": "Sin imagen principal"})
-        if not barcode:
-            issues.append({"Mod-Col": current_mod_col, "Problema": f"Sin codigo de barras en SKU {variant_sku}"})
         rows.append(centry_row)
     centry_df = pd.DataFrame(rows, columns=CENTRY_COLUMNS).fillna("")
     centry_df = centry_df.replace({"#N/D": "", "#ND": "", "#N/A": ""})
     centry_df, issues = filter_centry_size_rows(centry_df, issues, "Talla", key_column="SKU del producto", output_label="Centry")
+    if not centry_df.empty:
+        barcode_column = "Código de barra variante (EAN/UPC/ISBN)"
+        missing_barcode = centry_df[centry_df[barcode_column].map(clean_value) == ""].copy()
+        for _, missing_row in missing_barcode.iterrows():
+            issues.append(
+                {
+                    "Mod-Col": clean_value(missing_row.get("SKU del producto")) or "Centry",
+                    "Problema": f"Sin codigo de barras en SKU {clean_value(missing_row.get('SKU de la variante'))}",
+                }
+            )
     return centry_df, pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
 
 

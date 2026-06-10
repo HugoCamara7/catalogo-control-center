@@ -277,7 +277,10 @@ ARTI_COLUMN_ALIASES_APP = {
     "CodBarras": [
         "CodBarras", "codbarras", "CODBARRAS", "cod_barras", "codigo_barras", "codigo_barra",
         "codigo de barras", "codigo de barra", "ean", "EAN", "upc", "UPC", "barcode", "bar_code",
-        "cod_ean", "codigo_ean", "gtin",
+        "cod_ean", "codigo_ean", "gtin", "ean13", "ean_13", "barra", "barras", "codbarra",
+        "cod_barra", "codbar", "cod_bar", "cod_barr", "codbarr", "cod_barras_ma",
+        "codbarra_ma", "codbarras_ma", "barra_ma", "ean_ma", "gtin_ma", "codigo_barras_ma",
+        "codigo_de_barras", "codigo_de_barra", "codigo_ean13", "cod_ean13",
     ],
 }
 
@@ -524,7 +527,87 @@ def read_arti_for_app(brand_config):
         allow_local_fallback=False,
         brand_config=brand_config,
     )
-    return normalize_arti_columns_for_app(arti_df).dropna(how="all"), source
+    arti_df = normalize_arti_columns_for_app(arti_df).dropna(how="all")
+    arti_df, ean_source = enrich_arti_barcodes_from_bigquery_table(arti_df, get_bigquery_config())
+    if ean_source:
+        source = f"{source} + {ean_source}"
+    return arti_df, source
+
+
+def _bigquery_table_id_from_config(config):
+    config = dict(config or {})
+    table = clean_value(config.get("table"))
+    if not table:
+        return ""
+    if table.count(".") == 2:
+        return table
+    project_id = clean_value(config.get("project_id"))
+    dataset = clean_value(config.get("dataset"))
+    if project_id and dataset:
+        return f"{project_id}.{dataset}.{table}"
+    return ""
+
+
+def enrich_arti_barcodes_from_bigquery_table(arti_df, bigquery_config):
+    if arti_df is None or arti_df.empty or "CODINT_MA" not in arti_df.columns:
+        return arti_df, ""
+    result = normalize_arti_columns_for_app(arti_df).copy()
+    missing_mask = result["CodBarras"].map(clean_value) == ""
+    missing_skus = sorted({clean_value(value) for value in result.loc[missing_mask, "CODINT_MA"] if clean_value(value)})
+    if not missing_skus:
+        return result, ""
+
+    table_id = _bigquery_table_id_from_config(bigquery_config)
+    if not table_id:
+        return result, ""
+
+    try:
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+    except ImportError:
+        return result, ""
+
+    try:
+        config = dict(bigquery_config or {})
+        project_id = clean_value(config.get("project_id"))
+        credentials_info = config.get("service_account_info")
+        credentials = None
+        if credentials_info:
+            credentials = service_account.Credentials.from_service_account_info(dict(credentials_info))
+            project_id = project_id or credentials.project_id
+        job_project_id = clean_value(config.get("job_project_id")) or project_id
+        client = bigquery.Client(project=job_project_id or None, credentials=credentials)
+        schema_columns = [field.name for field in client.get_table(table_id).schema]
+        sku_col = first_existing_column(pd.DataFrame(columns=schema_columns), ARTI_COLUMN_ALIASES_APP["CODINT_MA"])
+        barcode_col = first_existing_column(pd.DataFrame(columns=schema_columns), ARTI_COLUMN_ALIASES_APP["CodBarras"])
+        if not sku_col or not barcode_col:
+            return result, ""
+        query = f"""
+        SELECT
+          CAST(`{sku_col}` AS STRING) AS CODINT_MA,
+          CAST(`{barcode_col}` AS STRING) AS CodBarras
+        FROM `{table_id}`
+        WHERE CAST(`{sku_col}` AS STRING) IN UNNEST(@skus)
+          AND `{barcode_col}` IS NOT NULL
+        """
+        job_config = bigquery.QueryJobConfig(
+            use_legacy_sql=False,
+            query_parameters=[bigquery.ArrayQueryParameter("skus", "STRING", missing_skus)],
+        )
+        lookup_df = client.query(query, job_config=job_config, location=clean_value(config.get("location")) or None).to_dataframe()
+        lookup = {
+            clean_value(row.get("CODINT_MA")): clean_value(row.get("CodBarras"))
+            for _, row in lookup_df.iterrows()
+            if clean_value(row.get("CODINT_MA")) and clean_value(row.get("CodBarras"))
+        }
+        if not lookup:
+            return result, ""
+        fill_mask = result["CodBarras"].map(clean_value) == ""
+        result.loc[fill_mask, "CodBarras"] = result.loc[fill_mask, "CODINT_MA"].map(lambda sku: lookup.get(clean_value(sku), ""))
+        filled = safe_int_value((result.loc[fill_mask, "CodBarras"].map(clean_value) != "").sum())
+        return result, f"EAN tabla BigQuery ({filled:,})" if filled else ""
+    except Exception:
+        return result, ""
 
 
 def detect_input_columns(df):

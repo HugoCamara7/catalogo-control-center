@@ -1193,12 +1193,21 @@ BIGQUERY_ARTI_COLUMN_CANDIDATES = {
     "CodBarras": [
         "CodBarras",
         "codbarras",
+        "CODBARRAS",
         "cod_barras",
         "codigo_barras",
         "codigo_barra",
+        "codigo de barras",
+        "codigo de barra",
         "barcode",
+        "bar_code",
         "ean",
+        "EAN",
+        "cod_ean",
+        "codigo_ean",
         "upc",
+        "UPC",
+        "gtin",
     ],
 }
 
@@ -1278,6 +1287,28 @@ def _find_bigquery_column(available_columns, candidates):
         if found:
             return found
     return ""
+
+
+def normalize_arti_required_columns(df):
+    if df is None or df.empty:
+        return df
+    result = coalesce_duplicate_columns(df).copy()
+    for output_column, candidates in BIGQUERY_ARTI_COLUMN_CANDIDATES.items():
+        existing = _find_bigquery_column(result.columns, [output_column])
+        existing_has_values = bool(existing) and (result[existing].map(clean) != "").any()
+        if existing_has_values:
+            if existing != output_column:
+                result[output_column] = result[existing]
+            continue
+        source = _find_bigquery_column(result.columns, candidates)
+        if source:
+            result[output_column] = result[source]
+    if ("Mod-Col" not in result.columns or not (result["Mod-Col"].map(clean) != "").any()) and "COD MOD COL" in result.columns:
+        result["Mod-Col"] = result["COD MOD COL"]
+    for column in ARTI_REQUIRED_COLUMNS:
+        if column not in result.columns:
+            result[column] = ""
+    return result
 
 
 def _bigquery_select_expression(output_column, source_column, composite_expression=""):
@@ -1378,9 +1409,7 @@ def _read_arti_from_bigquery(config, brand_config=None):
     job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
     query_job = client.query(query, job_config=job_config, location=clean(config.get("location")) or None)
     df = query_job.to_dataframe()
-    for column in ARTI_REQUIRED_COLUMNS:
-        if column not in df.columns:
-            df[column] = ""
+    df = normalize_arti_required_columns(df)
     source = clean(config.get("table")) or "query configurada"
     return df[ARTI_REQUIRED_COLUMNS].astype(object), f"BigQuery: {source}"
 

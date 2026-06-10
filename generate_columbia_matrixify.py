@@ -1315,24 +1315,15 @@ def normalize_arti_required_columns(df):
         return df
     result = coalesce_duplicate_columns(df).copy()
     for output_column, candidates in BIGQUERY_ARTI_COLUMN_CANDIDATES.items():
-        existing = _find_bigquery_column(result.columns, [output_column])
-        existing_has_values = bool(existing) and (result[existing].map(clean) != "").any()
-        if existing_has_values:
-            if existing != output_column:
-                result[output_column] = result[existing]
-            continue
-        source = ""
+        if output_column not in result.columns:
+            result[output_column] = ""
         for candidate in candidates:
             found = _find_bigquery_column(result.columns, [candidate])
-            if not found:
+            if not found or found == output_column:
                 continue
-            if found == output_column and output_column in result.columns and not (result[output_column].map(clean) != "").any():
-                continue
-            if (result[found].map(clean) != "").any():
-                source = found
-                break
-        if source:
-            result[output_column] = result[source]
+            fill_mask = result[output_column].map(clean).eq("") & result[found].map(clean).ne("")
+            if fill_mask.any():
+                result.loc[fill_mask, output_column] = result.loc[fill_mask, found]
     if ("Mod-Col" not in result.columns or not (result["Mod-Col"].map(clean) != "").any()) and "COD MOD COL" in result.columns:
         result["Mod-Col"] = result["COD MOD COL"]
     for column in ARTI_REQUIRED_COLUMNS:

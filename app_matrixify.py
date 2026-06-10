@@ -267,6 +267,40 @@ def coalesce_duplicate_columns(df):
     return result
 
 
+ARTI_COLUMN_ALIASES_APP = {
+    "CODINT_MA": ["CODINT_MA", "codint_ma", "codint", "sku", "sku_producto", "id_producto", "idproducto"],
+    "COD MOD COL": ["COD MOD COL", "COD_MOD_COL", "cod_mod_col", "codmod_codcol", "mod_col", "modelo_color", "codigo_modelo_color"],
+    "Mod-Col": ["Mod-Col", "MOD_COL", "mod_col", "codmod_codcol", "modelo_color", "codigo_modelo_color"],
+    "TALNUM_MA": ["TALNUM_MA", "talnum_ma", "talla_numero", "talla", "size"],
+    "MARCA_MA": ["MARCA_MA", "marca_ma", "marca", "brand", "vendor"],
+    "Precio": ["Precio", "precio_ma", "precio", "price", "precio_venta", "pvp"],
+    "CodBarras": [
+        "CodBarras", "codbarras", "CODBARRAS", "cod_barras", "codigo_barras", "codigo_barra",
+        "codigo de barras", "codigo de barra", "ean", "EAN", "upc", "UPC", "barcode", "bar_code",
+        "cod_ean", "codigo_ean", "gtin",
+    ],
+}
+
+
+def normalize_arti_columns_for_app(df):
+    if df is None or df.empty:
+        return df
+    result = coalesce_duplicate_columns(df).copy()
+    for target, aliases in ARTI_COLUMN_ALIASES_APP.items():
+        if target not in result.columns or result[target].map(clean_value).eq("").all():
+            source = first_existing_column(result, aliases)
+            if source is not None:
+                result[target] = result[source]
+    if "Mod-Col" not in result.columns or result["Mod-Col"].map(clean_value).eq("").all():
+        source = first_existing_column(result, ["COD MOD COL"])
+        if source is not None:
+            result["Mod-Col"] = result[source]
+    for target in ARTI_COLUMN_ALIASES_APP:
+        if target not in result.columns:
+            result[target] = ""
+    return result
+
+
 def expected_catalog_vendors(brand_config):
     values = {
         clean_value(brand_config.get("vendor")).lower(),
@@ -481,7 +515,7 @@ def read_arti_for_app(brand_config):
         allow_local_fallback=False,
         brand_config=brand_config,
     )
-    return arti_df.dropna(how="all"), source
+    return normalize_arti_columns_for_app(arti_df).dropna(how="all"), source
 
 
 def detect_input_columns(df):
@@ -1123,7 +1157,7 @@ def build_centry_arti_lookup(arti_df):
     lookup = {"by_sku": {}, "by_mod_size": {}}
     if arti_df is None or arti_df.empty:
         return lookup
-    df = coalesce_duplicate_columns(arti_df).copy()
+    df = normalize_arti_columns_for_app(arti_df).copy()
     for column in ("CODINT_MA", "COD MOD COL", "Mod-Col", "TALNUM_MA", "CodBarras"):
         if column not in df.columns:
             df[column] = ""
@@ -1362,7 +1396,10 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
     only_codes_set = {clean_value(code).upper() for code in (only_codes or []) if clean_value(code)}
     rows = []
     issues = []
-    arti_lookup = build_centry_arti_lookup(arti_df)
+    normalized_arti_df = normalize_arti_columns_for_app(arti_df) if arti_df is not None else arti_df
+    if normalized_arti_df is not None and not normalized_arti_df.empty and normalized_arti_df["CodBarras"].map(clean_value).eq("").all():
+        issues.append({"Mod-Col": "BigQuery/ARTI", "Problema": "La fuente maestra no trajo CodBarras/EAN/barcode reconocible"})
+    arti_lookup = build_centry_arti_lookup(normalized_arti_df)
     current_mod_col = ""
     for _, row in df.iterrows():
         variant_sku = centry_value(row.get("Variant SKU"))

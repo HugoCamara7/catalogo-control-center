@@ -44,6 +44,7 @@ from shopify_api import (
     fetch_product_options_and_variants,
     fetch_products,
     file_create,
+    inventory_item_update,
     metafields_set,
     normalize_shop_domain,
     product_create,
@@ -4138,14 +4139,12 @@ def _variant_update_payload_from_row(row, variant_id, fallback_price=None, fallb
     variant_id = clean_value(variant_id)
     if not variant_id:
         return None
-    sku = clean_value(row.get("Variant SKU"))
     price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
-    if not sku or not price:
+    if not price:
         return None
     payload = {
         "id": variant_id,
         "price": price,
-        "inventoryItem": {"sku": sku, "tracked": True},
     }
     compare_at_price = _valid_price(row.get("Variant Compare At Price")) or _valid_price(fallback_compare_at_price)
     barcode = clean_value(row.get("Variant Barcode"))
@@ -4154,6 +4153,18 @@ def _variant_update_payload_from_row(row, variant_id, fallback_price=None, fallb
     if barcode:
         payload["barcode"] = barcode
     return payload
+
+
+def _inventory_item_update_payload_from_row(row, inventory_item_id):
+    inventory_item_id = clean_value(inventory_item_id)
+    sku = clean_value(row.get("Variant SKU"))
+    if not inventory_item_id or not sku:
+        return None
+    return {
+        "id": inventory_item_id,
+        "input": {"sku": sku, "tracked": True},
+        "sku": sku,
+    }
 
 
 def _existing_variant_updates_from_shopify(product_variant_rows, product_data):
@@ -4170,21 +4181,17 @@ def _existing_variant_updates_from_shopify(product_variant_rows, product_data):
             expected_by_size[size] = row
 
     updates = []
-    updated_skus = set()
     for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
         size = _selected_option_value(variant, option_name).upper()
         row = expected_by_size.get(size)
         if row is None:
             continue
-        expected_sku = clean_value(row.get("Variant SKU")).upper()
         expected_price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
         expected_barcode = clean_value(row.get("Variant Barcode"))
-        current_sku = clean_value(variant.get("sku")).upper()
         current_price = _valid_price(variant.get("price"))
         current_barcode = clean_value(variant.get("barcode"))
         needs_update = (
-            (expected_sku and current_sku != expected_sku)
-            or (expected_price and current_price != expected_price)
+            (expected_price and current_price != expected_price)
             or (expected_barcode and current_barcode != expected_barcode)
         )
         if not needs_update:
@@ -4197,8 +4204,38 @@ def _existing_variant_updates_from_shopify(product_variant_rows, product_data):
         )
         if payload:
             updates.append(payload)
-            if expected_sku:
-                updated_skus.add(expected_sku)
+    return updates
+
+
+def _existing_inventory_item_updates_from_shopify(product_variant_rows, product_data):
+    if product_variant_rows.empty:
+        return []
+    requested_option_name = clean_value(product_variant_rows.iloc[0].get("Option1 Name")) or "Talla"
+    size_option = _size_option_from_product_data(product_data, requested_option_name)
+    option_name = clean_value(size_option.get("name")) or requested_option_name
+    expected_by_size = {}
+    for _, row in product_variant_rows.iterrows():
+        size = clean_value(row.get("Option1 Value")).upper()
+        if size and size not in expected_by_size:
+            expected_by_size[size] = row
+
+    updates = []
+    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
+        size = _selected_option_value(variant, option_name).upper()
+        row = expected_by_size.get(size)
+        if row is None:
+            continue
+        expected_sku = clean_value(row.get("Variant SKU")).upper()
+        if not expected_sku:
+            continue
+        inventory_item = variant.get("inventoryItem") or {}
+        current_sku = clean_value(inventory_item.get("sku") or variant.get("sku")).upper()
+        tracked = bool(inventory_item.get("tracked"))
+        if current_sku == expected_sku and tracked:
+            continue
+        payload = _inventory_item_update_payload_from_row(row, inventory_item.get("id"))
+        if payload:
+            updates.append(payload)
     return updates
 
 
@@ -4248,7 +4285,8 @@ def _verify_shopify_variants(product_variant_rows, product_data):
 
     actual = {}
     for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
-        sku = clean_value(variant.get("sku")).upper()
+        inventory_item = variant.get("inventoryItem") or {}
+        sku = clean_value(variant.get("sku") or inventory_item.get("sku")).upper()
         if sku:
             actual[sku] = variant
 
@@ -4534,6 +4572,30 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 except Exception as exc:
                     product_status = "PARCIAL"
                     product_messages.append(f"Error actualizando variantes existentes: {exc}")
+
+            inventory_item_updates = _existing_inventory_item_updates_from_shopify(
+                product_variant_rows,
+                product_data_for_variants,
+            )
+            if inventory_item_updates:
+                inventory_ok = 0
+                inventory_errors = []
+                for inventory_update in inventory_item_updates:
+                    try:
+                        inventory_item_update(
+                            shopify_config,
+                            inventory_update["id"],
+                            inventory_update["input"],
+                        )
+                        inventory_ok += 1
+                    except Exception as exc:
+                        inventory_errors.append(f"{inventory_update.get('sku')}: {exc}")
+                if inventory_ok:
+                    product_messages.append(f"{inventory_ok} SKUs/tracking actualizados en inventory item")
+                    product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
+                if inventory_errors:
+                    product_status = "PARCIAL"
+                    product_messages.append("Error SKU inventory item: " + " | ".join(inventory_errors[:5]))
 
             missing_variants = _missing_variant_inputs_from_shopify(
                 product_variant_rows,

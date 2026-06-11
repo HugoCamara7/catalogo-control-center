@@ -1708,6 +1708,7 @@ def variant_payload_from_existing_row(row):
     return {
         "Variant Inventory Item ID": clean(row.get("Variant Inventory Item ID")),
         "Variant ID": clean(row.get("Variant ID")),
+        "Variant SKU": clean(row.get("Variant SKU")),
         "Variant Image": row.get("Variant Image", ""),
         "Variant Price": valid_price(row.get("Variant Price")),
         "Variant Compare At Price": valid_price(row.get("Variant Compare At Price")),
@@ -1741,10 +1742,10 @@ def build_product_variant_lookup(existing_rows):
     return variant_by_product_sku, variant_by_product_size
 
 
-def first_existing_variant_for_size(variant_by_product_size, value):
+def variant_without_sku_by_size(variant_by_product_size, value):
     for size_key in variant_size_lookup_keys(value):
         variant = variant_by_product_size.get(size_key)
-        if variant:
+        if variant and not clean(variant.get("Variant SKU")):
             return variant
     return {}
 
@@ -2382,7 +2383,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             variant_sku = clean(variant.get("CODINT_MA"))
             existing_variant = (
                 existing_variant_by_sku.get(variant_sku, {})
-                or first_existing_variant_for_size(existing_variant_by_size, display_size)
+                or variant_without_sku_by_size(existing_variant_by_size, display_size)
                 or variant_by_sku.get(variant_sku, {})
             )
             variant_price = (

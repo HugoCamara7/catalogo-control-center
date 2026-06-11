@@ -4160,19 +4160,23 @@ def _variant_update_payload_from_row(row, variant_id, fallback_price=None, fallb
     variant_id = clean_value(variant_id)
     if not variant_id:
         return None
+    sku = clean_value(row.get("Variant SKU"))
     price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
-    if not price:
+    barcode = clean_value(row.get("Variant Barcode"))
+    if not price and not sku and not barcode:
         return None
     payload = {
         "id": variant_id,
-        "price": price,
     }
+    if price:
+        payload["price"] = price
     compare_at_price = _valid_price(row.get("Variant Compare At Price")) or _valid_price(fallback_compare_at_price)
-    barcode = clean_value(row.get("Variant Barcode"))
     if compare_at_price:
         payload["compareAtPrice"] = compare_at_price
     if barcode:
         payload["barcode"] = barcode
+    if sku:
+        payload["inventoryItem"] = {"sku": sku, "tracked": True}
     return payload
 
 
@@ -4209,11 +4213,15 @@ def _existing_variant_updates_from_shopify(product_variant_rows, product_data):
             continue
         expected_price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
         expected_barcode = clean_value(row.get("Variant Barcode"))
+        expected_sku = clean_value(row.get("Variant SKU")).upper()
         current_price = _valid_price(variant.get("price"))
         current_barcode = clean_value(variant.get("barcode"))
+        inventory_item = variant.get("inventoryItem") or {}
+        current_inventory_sku = clean_value(inventory_item.get("sku")).upper()
         needs_update = (
             (expected_price and current_price != expected_price)
             or (expected_barcode and current_barcode != expected_barcode)
+            or (expected_sku and current_inventory_sku != expected_sku)
         )
         if not needs_update:
             continue
@@ -4250,7 +4258,7 @@ def _existing_inventory_item_updates_from_shopify(product_variant_rows, product_
         if not expected_sku:
             continue
         inventory_item = variant.get("inventoryItem") or {}
-        current_sku = clean_value(inventory_item.get("sku") or variant.get("sku")).upper()
+        current_sku = clean_value(inventory_item.get("sku")).upper()
         tracked = bool(inventory_item.get("tracked"))
         if current_sku == expected_sku and tracked:
             continue
@@ -4307,7 +4315,7 @@ def _verify_shopify_variants(product_variant_rows, product_data):
     actual = {}
     for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
         inventory_item = variant.get("inventoryItem") or {}
-        sku = clean_value(variant.get("sku") or inventory_item.get("sku")).upper()
+        sku = clean_value(inventory_item.get("sku") or variant.get("sku")).upper()
         if sku:
             actual[sku] = variant
 
@@ -4327,6 +4335,10 @@ def _verify_shopify_variants(product_variant_rows, product_data):
         if not variant:
             problems.append(f"{sku}: no existe en Shopify")
             continue
+        inventory_item = variant.get("inventoryItem") or {}
+        inventory_sku = clean_value(inventory_item.get("sku")).upper()
+        if inventory_sku != sku:
+            problems.append(f"{sku}: inventory item SKU '{inventory_sku or 'vacio'}', esperado {sku}")
         price = _valid_price(variant.get("price"))
         barcode = clean_value(variant.get("barcode"))
         expected_price = normalize_price(expected_values["price"])

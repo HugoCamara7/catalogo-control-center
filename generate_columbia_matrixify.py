@@ -731,6 +731,40 @@ def final_variant_filter(output_df, sial_df, issues_df):
             )
             output_df = output_df[~zero_mask].copy()
 
+        if "Variant SKU" in output_df.columns:
+            missing_sku_mask = output_df["Variant SKU"].map(clean).eq("")
+            if missing_sku_mask.any():
+                issues.append(
+                    {
+                        "Mod-Col": "Salida final",
+                        "Problema": "Se eliminaron filas finales sin Variant SKU",
+                        "Fila input": "",
+                        "Cantidad": safe_int(missing_sku_mask.sum()),
+                    }
+                )
+                output_df = output_df[~missing_sku_mask].copy()
+
+        if {"Handle", "Option1 Value"}.issubset(output_df.columns):
+            drop_accessory_zero = pd.Series(False, index=output_df.index)
+            handle_key = output_df["Handle"].map(clean).str.upper()
+            for _, group in output_df.groupby(handle_key, sort=False):
+                zero_group_mask = group["Option1 Value"].map(is_zero_size)
+                if not zero_group_mask.any():
+                    continue
+                real_size_mask = group["Option1 Value"].map(clean).ne("") & ~group["Option1 Value"].map(is_zero_size)
+                if real_size_mask.any():
+                    drop_accessory_zero.loc[group.index[zero_group_mask]] = True
+            if drop_accessory_zero.any():
+                issues.append(
+                    {
+                        "Mod-Col": "Salida final",
+                        "Problema": "Se eliminaron filas finales talla 0/000 porque el producto tiene una talla real",
+                        "Fila input": "",
+                        "Cantidad": safe_int(drop_accessory_zero.sum()),
+                    }
+                )
+                output_df = output_df[~drop_accessory_zero].copy()
+
         if {"Handle", "Variant SKU"}.issubset(output_df.columns):
             sku_key = output_df["Variant SKU"].map(clean).str.upper()
             handle_key = output_df["Handle"].map(clean).str.upper()
@@ -2270,6 +2304,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             if not matrixify_df.empty and "Handle" in matrixify_df.columns
             else pd.DataFrame()
         )
+        existing_variant_by_size = {}
+        if not existing_rows.empty and {"Option1 Value", "Variant ID"}.issubset(existing_rows.columns):
+            for _, existing_row in existing_rows.iterrows():
+                existing_size = clean(existing_row.get("Option1 Value")).upper()
+                if existing_size and existing_size not in existing_variant_by_size:
+                    existing_variant_by_size[existing_size] = existing_row
         product_price_fallback = first_valid_product_price(existing_rows)
         product_rows = []
         product_sial_rows = []
@@ -2286,7 +2326,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             display_size = display_size_for_site(variant["__SIZE"], brand_config)
             output = {column: "" for column in matrixify_columns}
             variant_sku = clean(variant.get("CODINT_MA"))
-            existing_variant = variant_by_sku.get(variant_sku, {})
+            existing_variant = variant_by_sku.get(variant_sku, {}) or existing_variant_by_size.get(clean(display_size).upper(), {})
             variant_price = (
                 valid_price(variant.get("Precio"))
                 or valid_price(existing_variant.get("Variant Price"))

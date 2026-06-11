@@ -1686,6 +1686,69 @@ def build_existing_lookup(matrixify_df):
     return product_by_key, product_by_handle, variant_by_sku
 
 
+def matrixify_rows_for_handle(matrixify_df, handle):
+    if matrixify_df is None or matrixify_df.empty or "Handle" not in matrixify_df.columns:
+        return pd.DataFrame()
+    target_handle = clean(handle)
+    if not target_handle:
+        return pd.DataFrame()
+
+    current_handle = ""
+    matching_indexes = []
+    for index, row in matrixify_df.iterrows():
+        row_handle = clean(row.get("Handle"))
+        if row_handle:
+            current_handle = row_handle
+        if current_handle == target_handle:
+            matching_indexes.append(index)
+    return matrixify_df.loc[matching_indexes].copy() if matching_indexes else pd.DataFrame()
+
+
+def variant_payload_from_existing_row(row):
+    return {
+        "Variant Inventory Item ID": clean(row.get("Variant Inventory Item ID")),
+        "Variant ID": clean(row.get("Variant ID")),
+        "Variant Image": row.get("Variant Image", ""),
+        "Variant Price": valid_price(row.get("Variant Price")),
+        "Variant Compare At Price": valid_price(row.get("Variant Compare At Price")),
+    }
+
+
+def variant_size_lookup_keys(value):
+    keys = []
+    raw = clean(value).upper()
+    normalized = clean(normalize_size(value)).upper()
+    for key in (raw, normalized):
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def build_product_variant_lookup(existing_rows):
+    variant_by_product_sku = {}
+    variant_by_product_size = {}
+    if existing_rows is None or existing_rows.empty:
+        return variant_by_product_sku, variant_by_product_size
+
+    for _, existing_row in existing_rows.iterrows():
+        payload = variant_payload_from_existing_row(existing_row)
+        sku = clean(existing_row.get("Variant SKU"))
+        if sku and sku not in variant_by_product_sku:
+            variant_by_product_sku[sku] = payload
+        for size_key in variant_size_lookup_keys(existing_row.get("Option1 Value")):
+            if size_key not in variant_by_product_size:
+                variant_by_product_size[size_key] = payload
+    return variant_by_product_sku, variant_by_product_size
+
+
+def first_existing_variant_for_size(variant_by_product_size, value):
+    for size_key in variant_size_lookup_keys(value):
+        variant = variant_by_product_size.get(size_key)
+        if variant:
+            return variant
+    return {}
+
+
 def first_valid_product_price(existing_rows):
     if existing_rows is None or existing_rows.empty or "Variant Price" not in existing_rows.columns:
         return ""
@@ -2299,17 +2362,8 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         image_alt = f"{title} {color_web}".strip()
         existing_product = product_by_key.get(key) or product_by_handle.get(handle) or {}
         existing_handle = existing_product.get("Handle") or handle
-        existing_rows = (
-            matrixify_df[matrixify_df["Handle"].map(clean) == existing_handle].copy()
-            if not matrixify_df.empty and "Handle" in matrixify_df.columns
-            else pd.DataFrame()
-        )
-        existing_variant_by_size = {}
-        if not existing_rows.empty and {"Option1 Value", "Variant ID"}.issubset(existing_rows.columns):
-            for _, existing_row in existing_rows.iterrows():
-                existing_size = clean(existing_row.get("Option1 Value")).upper()
-                if existing_size and existing_size not in existing_variant_by_size:
-                    existing_variant_by_size[existing_size] = existing_row
+        existing_rows = matrixify_rows_for_handle(matrixify_df, existing_handle)
+        existing_variant_by_sku, existing_variant_by_size = build_product_variant_lookup(existing_rows)
         product_price_fallback = first_valid_product_price(existing_rows)
         product_rows = []
         product_sial_rows = []
@@ -2326,7 +2380,11 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             display_size = display_size_for_site(variant["__SIZE"], brand_config)
             output = {column: "" for column in matrixify_columns}
             variant_sku = clean(variant.get("CODINT_MA"))
-            existing_variant = variant_by_sku.get(variant_sku, {}) or existing_variant_by_size.get(clean(display_size).upper(), {})
+            existing_variant = (
+                existing_variant_by_sku.get(variant_sku, {})
+                or first_existing_variant_for_size(existing_variant_by_size, display_size)
+                or variant_by_sku.get(variant_sku, {})
+            )
             variant_price = (
                 valid_price(variant.get("Precio"))
                 or valid_price(existing_variant.get("Variant Price"))

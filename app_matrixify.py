@@ -44,7 +44,6 @@ from shopify_api import (
     fetch_product_options_and_variants,
     fetch_products,
     file_create,
-    inventory_item_update,
     metafields_set,
     normalize_shop_domain,
     product_create,
@@ -55,13 +54,18 @@ from shopify_api import (
     product_set_files,
     product_update,
     product_variants_bulk_create,
-    product_variants_bulk_update,
     product_variants_bulk_reorder,
     staged_upload_image,
     test_connection,
     wait_file_statuses,
     wait_media_statuses,
 )
+
+try:
+    from shopify_api import inventory_item_update, product_variants_bulk_update
+except ImportError:
+    inventory_item_update = None
+    product_variants_bulk_update = None
 
 try:
     from shopify_api import fetch_metaobjects_for_definition, fetch_metafield_definition
@@ -4560,6 +4564,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             )
             if existing_variant_updates:
                 try:
+                    if product_variants_bulk_update is None:
+                        raise RuntimeError("Falta actualizar shopify_api.py: no existe product_variants_bulk_update.")
                     updated_variants = product_variants_bulk_update(
                         shopify_config,
                         product_gid,
@@ -4582,6 +4588,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 inventory_errors = []
                 for inventory_update in inventory_item_updates:
                     try:
+                        if inventory_item_update is None:
+                            raise RuntimeError("Falta actualizar shopify_api.py: no existe inventory_item_update.")
                         inventory_item_update(
                             shopify_config,
                             inventory_update["id"],

@@ -54,6 +54,7 @@ from shopify_api import (
     product_set_files,
     product_update,
     product_variants_bulk_create,
+    product_variants_bulk_update,
     product_variants_bulk_reorder,
     staged_upload_image,
     test_connection,
@@ -2002,7 +2003,33 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         if variants.empty:
             issues.append({"Mod-Col": key, "Problema": "Sin SKU valido en BigQuery/ARTI"})
             continue
-        variants = variants.drop_duplicates(subset=["CODINT_MA", "__SIZE", "CodBarras"])
+        kept_indexes = []
+        seen_skus = set()
+        seen_sizes = set()
+        duplicate_skus = []
+        duplicate_sizes = []
+        for variant_index, variant_row in variants.iterrows():
+            sku_key = clean_value(variant_row.get("CODINT_MA")).upper()
+            size_key = clean_value(display_size_for_site(variant_row.get("__SIZE"), brand_config)).upper()
+            if sku_key and sku_key in seen_skus:
+                duplicate_skus.append(f"{sku_key} ({size_key or 'sin talla'})")
+                continue
+            if size_key and size_key in seen_sizes:
+                duplicate_sizes.append(f"{size_key} ({sku_key or 'sin SKU'})")
+                continue
+            if sku_key:
+                seen_skus.add(sku_key)
+            if size_key:
+                seen_sizes.add(size_key)
+            kept_indexes.append(variant_index)
+        variants = variants.loc[kept_indexes].copy()
+        if duplicate_skus:
+            issues.append({"Mod-Col": key, "Problema": f"Se omitieron {len(duplicate_skus):,} variantes duplicadas por SKU: {', '.join(duplicate_skus[:10])}"})
+        if duplicate_sizes:
+            issues.append({"Mod-Col": key, "Problema": f"Se omitieron {len(duplicate_sizes):,} variantes duplicadas por talla visible: {', '.join(duplicate_sizes[:10])}"})
+        if variants.empty:
+            issues.append({"Mod-Col": key, "Problema": "Todas las variantes fueron omitidas por duplicidad de SKU/talla"})
+            continue
         variants = variants.sort_values("__SIZE", key=lambda series: series.map(master_size_sort_key))
         product_row = product_lookup.get(key)
         raw_brand = first_non_empty(variants.iloc[0].get("MARCA_MA"), product_row.get("Vendor") if product_row is not None else "", brand_config.get("label", ""))
@@ -3890,6 +3917,7 @@ def _variant_bulk_input_from_row(row, option_id=None, option_name=None, fallback
 def _variant_validation_issues(product_variant_rows):
     issues = []
     seen_skus = set()
+    seen_sizes = set()
     for _, row in product_variant_rows.iterrows():
         sku = clean_value(row.get("Variant SKU"))
         size = clean_value(row.get("Option1 Value"))
@@ -3904,6 +3932,10 @@ def _variant_validation_issues(product_variant_rows):
             seen_skus.add(sku.upper())
         if not size:
             row_issues.append("sin talla")
+        elif size.upper() in seen_sizes:
+            row_issues.append("talla duplicada")
+        if size:
+            seen_sizes.add(size.upper())
         if not price:
             row_issues.append("sin precio")
         if not barcode:
@@ -3911,6 +3943,42 @@ def _variant_validation_issues(product_variant_rows):
         if row_issues:
             issues.append(f"{sku or '(sin SKU)'}: {', '.join(row_issues)}")
     return issues
+
+
+def _dedupe_product_variant_rows(product_variant_rows):
+    if product_variant_rows is None or product_variant_rows.empty:
+        return product_variant_rows, []
+    kept_indexes = []
+    seen_skus = set()
+    seen_sizes = set()
+    duplicate_skus = []
+    duplicate_sizes = []
+    for index, row in product_variant_rows.iterrows():
+        sku = clean_value(row.get("Variant SKU")).upper()
+        size = clean_value(row.get("Option1 Value")).upper()
+        if sku and sku in seen_skus:
+            duplicate_skus.append(f"{sku} ({size or 'sin talla'})")
+            continue
+        if size and size in seen_sizes:
+            duplicate_sizes.append(f"{size} ({sku or 'sin SKU'})")
+            continue
+        if sku:
+            seen_skus.add(sku)
+        if size:
+            seen_sizes.add(size)
+        kept_indexes.append(index)
+    messages = []
+    if duplicate_skus:
+        messages.append(
+            f"Se omitieron {len(duplicate_skus)} variantes duplicadas por SKU: "
+            + ", ".join(duplicate_skus[:10])
+        )
+    if duplicate_sizes:
+        messages.append(
+            f"Se omitieron {len(duplicate_sizes)} variantes duplicadas por talla: "
+            + ", ".join(duplicate_sizes[:10])
+        )
+    return product_variant_rows.loc[kept_indexes].copy(), messages
 
 
 def _missing_variant_inputs(product_variant_rows, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
@@ -4027,15 +4095,24 @@ def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
     option_id = clean_value(size_option.get("id"))
     option_name = clean_value(size_option.get("name")) or requested_option_name
     existing_sizes = _existing_sizes_from_product_data(product_data, option_name)
+    existing_skus = {
+        clean_value(variant.get("sku")).upper()
+        for variant in ((product_data.get("variants") or {}).get("nodes")) or []
+        if clean_value(variant.get("sku"))
+    }
     fallback_price, fallback_compare_at_price = _price_fallback_from_product_data(product_data)
 
     variants = []
     seen_sizes = set()
+    seen_skus = set()
     for _, variant_row in product_variant_rows.iterrows():
+        sku = clean_value(variant_row.get("Variant SKU")).upper()
         size = clean_value(variant_row.get("Option1 Value"))
         if not size:
             continue
         size_key = size.upper()
+        if sku and (sku in existing_skus or sku in seen_skus):
+            continue
         if size_key in existing_sizes or size_key in seen_sizes:
             continue
         payload = _variant_bulk_input_from_row(
@@ -4048,7 +4125,77 @@ def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
         if payload:
             variants.append(payload)
             seen_sizes.add(size_key)
+            if sku:
+                seen_skus.add(sku)
     return variants
+
+
+def _variant_update_payload_from_row(row, variant_id, fallback_price=None, fallback_compare_at_price=None):
+    variant_id = clean_value(variant_id)
+    if not variant_id:
+        return None
+    sku = clean_value(row.get("Variant SKU"))
+    price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
+    if not sku or not price:
+        return None
+    payload = {
+        "id": variant_id,
+        "price": price,
+        "inventoryItem": {"sku": sku, "tracked": True},
+    }
+    compare_at_price = _valid_price(row.get("Variant Compare At Price")) or _valid_price(fallback_compare_at_price)
+    barcode = clean_value(row.get("Variant Barcode"))
+    if compare_at_price:
+        payload["compareAtPrice"] = compare_at_price
+    if barcode:
+        payload["barcode"] = barcode
+    return payload
+
+
+def _existing_variant_updates_from_shopify(product_variant_rows, product_data):
+    if product_variant_rows.empty:
+        return []
+    requested_option_name = clean_value(product_variant_rows.iloc[0].get("Option1 Name")) or "Talla"
+    size_option = _size_option_from_product_data(product_data, requested_option_name)
+    option_name = clean_value(size_option.get("name")) or requested_option_name
+    fallback_price, fallback_compare_at_price = _price_fallback_from_rows(product_variant_rows)
+    expected_by_size = {}
+    for _, row in product_variant_rows.iterrows():
+        size = clean_value(row.get("Option1 Value")).upper()
+        if size and size not in expected_by_size:
+            expected_by_size[size] = row
+
+    updates = []
+    updated_skus = set()
+    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
+        size = _selected_option_value(variant, option_name).upper()
+        row = expected_by_size.get(size)
+        if row is None:
+            continue
+        expected_sku = clean_value(row.get("Variant SKU")).upper()
+        expected_price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
+        expected_barcode = clean_value(row.get("Variant Barcode"))
+        current_sku = clean_value(variant.get("sku")).upper()
+        current_price = _valid_price(variant.get("price"))
+        current_barcode = clean_value(variant.get("barcode"))
+        needs_update = (
+            (expected_sku and current_sku != expected_sku)
+            or (expected_price and current_price != expected_price)
+            or (expected_barcode and current_barcode != expected_barcode)
+        )
+        if not needs_update:
+            continue
+        payload = _variant_update_payload_from_row(
+            row,
+            variant.get("id"),
+            fallback_price=fallback_price,
+            fallback_compare_at_price=fallback_compare_at_price,
+        )
+        if payload:
+            updates.append(payload)
+            if expected_sku:
+                updated_skus.add(expected_sku)
+    return updates
 
 
 def _variant_option_values(product_variant_rows):
@@ -4214,6 +4361,10 @@ def apply_full_product_updates(shopify_config, matrixify_df):
         product_messages = []
         product_status = "OK"
         product_variant_rows = _variant_rows_for_handle(matrixify_df, handle)
+        product_variant_rows, dedupe_messages = _dedupe_product_variant_rows(product_variant_rows)
+        if dedupe_messages:
+            product_status = "PARCIAL"
+            product_messages.extend(dedupe_messages)
         variant_input_issues = _variant_validation_issues(product_variant_rows)
         was_new_product = not bool(product_gid)
 
@@ -4361,6 +4512,25 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     product_messages.append(f"Error fotos: {exc}")
 
             product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
+            existing_variant_updates = _existing_variant_updates_from_shopify(
+                product_variant_rows,
+                product_data_for_variants,
+            )
+            if existing_variant_updates:
+                try:
+                    updated_variants = product_variants_bulk_update(
+                        shopify_config,
+                        product_gid,
+                        existing_variant_updates,
+                    )
+                    product_messages.append(
+                        f"{len(updated_variants)} variantes existentes actualizadas con SKU/precio/barcode"
+                    )
+                    product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
+                except Exception as exc:
+                    product_status = "PARCIAL"
+                    product_messages.append(f"Error actualizando variantes existentes: {exc}")
+
             missing_variants = _missing_variant_inputs_from_shopify(
                 product_variant_rows,
                 product_data_for_variants,

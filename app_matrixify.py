@@ -36,42 +36,59 @@ from generate_columbia_matrixify import (
     is_zero_size,
     read_arti_source,
 )
-from shopify_api import (
-    DEFAULT_API_VERSION,
-    ShopifyApiError,
-    fetch_metaobject_definitions,
-    fetch_metaobjects,
-    fetch_product_options_and_variants,
-    fetch_products,
-    file_create,
-    metafields_set,
-    normalize_shop_domain,
-    product_create,
-    product_create_media,
-    product_delete_media,
-    product_options_reorder,
-    publishable_publish,
-    product_set_files,
-    product_update,
-    product_variants_bulk_create,
-    product_variants_bulk_reorder,
-    staged_upload_image,
-    test_connection,
-    wait_file_statuses,
-    wait_media_statuses,
-)
-
 try:
-    from shopify_api import inventory_item_update, product_variants_bulk_update
-except ImportError:
-    inventory_item_update = None
-    product_variants_bulk_update = None
+    import shopify_api as _shopify_api
+except Exception as exc:
+    _shopify_api = None
+    _shopify_api_import_error = exc
+else:
+    _shopify_api_import_error = None
 
-try:
-    from shopify_api import fetch_metaobjects_for_definition, fetch_metafield_definition
-except ImportError:
-    fetch_metaobjects_for_definition = None
-    fetch_metafield_definition = None
+
+class _FallbackShopifyApiError(Exception):
+    pass
+
+
+def _missing_shopify_api_function(name):
+    def _raise_missing(*args, **kwargs):
+        detail = f" Detalle import: {_shopify_api_import_error}" if _shopify_api_import_error else ""
+        raise RuntimeError(f"Falta actualizar shopify_api.py: no existe {name}.{detail}")
+
+    return _raise_missing
+
+
+def _shopify_attr(name, default=None):
+    if _shopify_api is None:
+        return default if default is not None else _missing_shopify_api_function(name)
+    return getattr(_shopify_api, name, default if default is not None else _missing_shopify_api_function(name))
+
+
+DEFAULT_API_VERSION = _shopify_attr("DEFAULT_API_VERSION", "2026-04")
+ShopifyApiError = _shopify_attr("ShopifyApiError", _FallbackShopifyApiError)
+fetch_metaobject_definitions = _shopify_attr("fetch_metaobject_definitions")
+fetch_metaobjects = _shopify_attr("fetch_metaobjects")
+fetch_product_options_and_variants = _shopify_attr("fetch_product_options_and_variants")
+fetch_products = _shopify_attr("fetch_products")
+file_create = _shopify_attr("file_create")
+inventory_item_update = _shopify_attr("inventory_item_update", None)
+metafields_set = _shopify_attr("metafields_set")
+normalize_shop_domain = _shopify_attr("normalize_shop_domain")
+product_create = _shopify_attr("product_create")
+product_create_media = _shopify_attr("product_create_media")
+product_delete_media = _shopify_attr("product_delete_media")
+product_options_reorder = _shopify_attr("product_options_reorder")
+publishable_publish = _shopify_attr("publishable_publish")
+product_set_files = _shopify_attr("product_set_files")
+product_update = _shopify_attr("product_update")
+product_variants_bulk_create = _shopify_attr("product_variants_bulk_create")
+product_variants_bulk_update = _shopify_attr("product_variants_bulk_update", None)
+product_variants_bulk_reorder = _shopify_attr("product_variants_bulk_reorder")
+staged_upload_image = _shopify_attr("staged_upload_image")
+test_connection = _shopify_attr("test_connection")
+wait_file_statuses = _shopify_attr("wait_file_statuses")
+wait_media_statuses = _shopify_attr("wait_media_statuses")
+fetch_metaobjects_for_definition = _shopify_attr("fetch_metaobjects_for_definition", None)
+fetch_metafield_definition = _shopify_attr("fetch_metafield_definition", None)
 
 try:
     from centry_static_masters import (

@@ -955,6 +955,48 @@ def product_variants_bulk_create(config, product_id, variants, strategy=None):
     return payload.get("productVariants") or []
 
 
+def product_variants_bulk_update(config, product_id, variants):
+    variants = [variant for variant in variants if variant]
+    if not variants:
+        return []
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation ProductVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+        productVariants {
+          id
+          legacyResourceId
+          sku
+          price
+          compareAtPrice
+          barcode
+          selectedOptions {
+            name
+            value
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"productId": product_id, "variants": variants},
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("productVariantsBulkUpdate") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("productVariants") or []
+
+
 def fetch_product_options_and_variants(config, product_id):
     shop_domain, api_version, token = _client(config)
     query = """

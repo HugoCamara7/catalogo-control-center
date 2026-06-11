@@ -1585,12 +1585,16 @@ def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_la
         accessory_group = group.apply(centry_output_is_accessory, axis=1)
         if not accessory_group.any():
             continue
-        has_one_size = group.loc[accessory_group, size_column].map(is_one_size).any()
-        if has_one_size:
-            group_zero = group.loc[accessory_group, size_column].map(is_zero_size)
-            drop_accessory_zero.loc[group.loc[accessory_group].index[group_zero]] = True
+        accessory_rows = group.loc[accessory_group]
+        has_real_size = (
+            accessory_rows[size_column].map(clean_value).ne("")
+            & ~accessory_rows[size_column].map(is_zero_size)
+        ).any()
+        if has_real_size:
+            group_zero = accessory_rows[size_column].map(is_zero_size)
+            drop_accessory_zero.loc[accessory_rows.index[group_zero]] = True
     if drop_accessory_zero.any():
-        issues.append({"Mod-Col": output_label, "Problema": f"Se eliminaron {safe_int_value(drop_accessory_zero.sum())} filas accesorio talla 0/000 porque existe O/S"})
+        issues.append({"Mod-Col": output_label, "Problema": f"Se eliminaron {safe_int_value(drop_accessory_zero.sum())} filas accesorio talla 0/000 porque existe una talla real"})
         result = result[~drop_accessory_zero].copy()
 
     one_size_mask = result[size_column].map(is_one_size)

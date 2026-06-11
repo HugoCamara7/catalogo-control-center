@@ -629,6 +629,52 @@ def display_size_for_site(value, brand_config=None):
     return normalize_size(value)
 
 
+def dedupe_variants_for_shopify(variants, brand_config=None, issues=None, key="", input_index=None):
+    if variants is None or variants.empty:
+        return variants
+    kept_indexes = []
+    seen_skus = set()
+    seen_sizes = set()
+    duplicate_skus = []
+    duplicate_sizes = []
+    for index, row in variants.iterrows():
+        sku = clean(row.get("CODINT_MA")).upper()
+        size = clean(display_size_for_site(row.get("__SIZE"), brand_config)).upper()
+        if sku and sku in seen_skus:
+            duplicate_skus.append(f"{sku} ({size or 'sin talla'})")
+            continue
+        if size and size in seen_sizes:
+            duplicate_sizes.append(f"{size} ({sku or 'sin SKU'})")
+            continue
+        if sku:
+            seen_skus.add(sku)
+        if size:
+            seen_sizes.add(size)
+        kept_indexes.append(index)
+    if issues is not None:
+        if duplicate_skus:
+            issue = {
+                "Mod-Col": key,
+                "Problema": "Se omitieron variantes duplicadas por SKU antes de enviar a Shopify",
+                "Cantidad": safe_int(len(duplicate_skus)),
+                "Detalle": ", ".join(duplicate_skus[:12]),
+            }
+            if input_index is not None:
+                issue["Fila input"] = input_index + 2
+            issues.append(issue)
+        if duplicate_sizes:
+            issue = {
+                "Mod-Col": key,
+                "Problema": "Se omitieron variantes duplicadas por talla visible antes de enviar a Shopify",
+                "Cantidad": safe_int(len(duplicate_sizes)),
+                "Detalle": ", ".join(duplicate_sizes[:12]),
+            }
+            if input_index is not None:
+                issue["Fila input"] = input_index + 2
+            issues.append(issue)
+    return variants.loc[kept_indexes].copy()
+
+
 def sial_size_value(value):
     return clean(value)
 
@@ -684,6 +730,36 @@ def final_variant_filter(output_df, sial_df, issues_df):
                 }
             )
             output_df = output_df[~zero_mask].copy()
+
+        if {"Handle", "Variant SKU"}.issubset(output_df.columns):
+            sku_key = output_df["Variant SKU"].map(clean).str.upper()
+            handle_key = output_df["Handle"].map(clean).str.upper()
+            duplicate_sku_mask = sku_key.ne("") & pd.DataFrame({"Handle": handle_key, "SKU": sku_key}).duplicated(keep="first")
+            if duplicate_sku_mask.any():
+                issues.append(
+                    {
+                        "Mod-Col": "Salida final",
+                        "Problema": "Se eliminaron filas finales con SKU duplicado dentro del mismo producto",
+                        "Fila input": "",
+                        "Cantidad": safe_int(duplicate_sku_mask.sum()),
+                    }
+                )
+                output_df = output_df[~duplicate_sku_mask].copy()
+
+        if {"Handle", "Option1 Value"}.issubset(output_df.columns):
+            size_key = output_df["Option1 Value"].map(clean).str.upper()
+            handle_key = output_df["Handle"].map(clean).str.upper()
+            duplicate_size_mask = size_key.ne("") & pd.DataFrame({"Handle": handle_key, "Size": size_key}).duplicated(keep="first")
+            if duplicate_size_mask.any():
+                issues.append(
+                    {
+                        "Mod-Col": "Salida final",
+                        "Problema": "Se eliminaron filas finales con talla visible duplicada dentro del mismo producto",
+                        "Fila input": "",
+                        "Cantidad": safe_int(duplicate_size_mask.sum()),
+                    }
+                )
+                output_df = output_df[~duplicate_size_mask].copy()
 
     if sial_df is not None and not sial_df.empty and "Talla" in sial_df.columns:
         k_mask = sial_df["Talla"].map(is_internal_k_size)
@@ -2132,7 +2208,22 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             )
             continue
 
-        variants = variants.drop_duplicates(subset=["CODINT_MA", "__SIZE", "CodBarras"])
+        variants = dedupe_variants_for_shopify(
+            variants,
+            brand_config=brand_config,
+            issues=issues,
+            key=key,
+            input_index=input_index,
+        )
+        if variants.empty:
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Todas las variantes fueron omitidas por duplicidad de SKU/talla",
+                    "Fila input": input_index + 2,
+                }
+            )
+            continue
         variants = variants.sort_values("__SIZE", key=lambda series: series.map(size_sort_key))
 
         variant_brand_raw, variant_brand_names = brand_from_variants(variants)

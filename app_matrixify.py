@@ -248,6 +248,65 @@ def clean_value(value):
     return str(value).strip()
 
 
+def repair_mojibake_text(value):
+    text = clean_value(value)
+    if not text:
+        return text
+    markers = ("Ã", "Â", "â")
+    if not any(marker in text for marker in markers):
+        return text
+
+    def score(candidate):
+        return sum(candidate.count(marker) for marker in markers)
+
+    repaired = text
+    for _ in range(3):
+        candidates = [repaired]
+        for source_encoding in ("latin1", "cp1252"):
+            try:
+                candidate = repaired.encode(source_encoding).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+            candidates.append(candidate)
+        best = min(candidates, key=score)
+        if best == repaired:
+            break
+        repaired = best
+
+    replacements = {
+        "â€“": "-",
+        "â€”": "-",
+        "â€˜": "'",
+        "â€™": "'",
+        "â€œ": '"',
+        "â€�": '"',
+        "â€¢": "-",
+        "Â·": "-",
+    }
+    for bad, good in replacements.items():
+        repaired = repaired.replace(bad, good)
+    accent_lower = {"Á": "á", "É": "é", "Í": "í", "Ó": "ó", "Ú": "ú", "Ñ": "ñ"}
+    for upper, lower in accent_lower.items():
+        repaired = re.sub(rf"(?<=[a-z]){upper}(?=[a-z])", lower, repaired)
+    return repaired
+
+
+def repair_mojibake_dataframe(df):
+    if df is None:
+        return df
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    repaired = df.copy()
+    repaired.columns = [repair_mojibake_text(column) for column in repaired.columns]
+    for column in repaired.columns:
+        repaired[column] = repaired[column].map(
+            lambda value: repair_mojibake_text(value)
+            if isinstance(value, str) and any(marker in value for marker in ("Ã", "Â", "â"))
+            else value
+        )
+    return repaired
+
+
 def safe_float_value(value, default=0.0):
     try:
         text = clean_value(value)
@@ -986,11 +1045,13 @@ def build_matrixify(input_df, arti_df, default_sizes_text):
 
 
 def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
+    matrixify_df = repair_mojibake_dataframe(matrixify_df)
+    issues_df = repair_mojibake_dataframe(issues_df)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         matrixify_df.to_excel(writer, index=False, sheet_name="Matrixify")
         issues_df.to_excel(writer, index=False, sheet_name="Revision")
-        pd.DataFrame(
+        repair_mojibake_dataframe(pd.DataFrame(
             [
                 {"Archivo": "Input", "Campo": key, "Columna detectada": value or ""}
                 for key, value in input_cols.items()
@@ -999,7 +1060,7 @@ def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
                 {"Archivo": "Arti", "Campo": key, "Columna detectada": value or ""}
                 for key, value in arti_cols.items()
             ]
-        ).to_excel(writer, index=False, sheet_name="Mapeo detectado")
+        )).to_excel(writer, index=False, sheet_name="Mapeo detectado")
 
         for sheet_name, width in {"Matrixify": 24, "Revision": 38, "Mapeo detectado": 28}.items():
             ws = writer.book[sheet_name]
@@ -1012,14 +1073,14 @@ def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
 
 
 def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_df=None, skipped_df=None, sial_df=None, centry_df=None, centry_issues_df=None):
-    matrixify_df = coalesce_duplicate_columns(matrixify_df)
-    summary_df = coalesce_duplicate_columns(summary_df)
-    issues_df = coalesce_duplicate_columns(issues_df)
-    type_warnings_df = coalesce_duplicate_columns(type_warnings_df)
-    skipped_df = coalesce_duplicate_columns(skipped_df)
-    sial_df = coalesce_duplicate_columns(sial_df)
-    centry_df = coalesce_duplicate_columns(centry_df)
-    centry_issues_df = coalesce_duplicate_columns(centry_issues_df)
+    matrixify_df = repair_mojibake_dataframe(coalesce_duplicate_columns(matrixify_df))
+    summary_df = repair_mojibake_dataframe(coalesce_duplicate_columns(summary_df))
+    issues_df = repair_mojibake_dataframe(coalesce_duplicate_columns(issues_df))
+    type_warnings_df = repair_mojibake_dataframe(coalesce_duplicate_columns(type_warnings_df))
+    skipped_df = repair_mojibake_dataframe(coalesce_duplicate_columns(skipped_df))
+    sial_df = repair_mojibake_dataframe(coalesce_duplicate_columns(sial_df))
+    centry_df = repair_mojibake_dataframe(coalesce_duplicate_columns(centry_df))
+    centry_issues_df = repair_mojibake_dataframe(coalesce_duplicate_columns(centry_issues_df))
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         matrixify_df.to_excel(writer, index=False, sheet_name="Products")
@@ -1046,6 +1107,8 @@ def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_d
 
 
 def update_to_excel_bytes(matrixify_df, issues_df):
+    matrixify_df = repair_mojibake_dataframe(matrixify_df)
+    issues_df = repair_mojibake_dataframe(issues_df)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         matrixify_df.to_excel(writer, index=False, sheet_name="Products")
@@ -1063,6 +1126,7 @@ def dataframe_to_excel_bytes(sheets):
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         for sheet_name, df in sheets.items():
             safe_name = sheet_name[:31]
+            df = repair_mojibake_dataframe(df)
             df.to_excel(writer, index=False, sheet_name=safe_name)
         for sheet in writer.book.worksheets:
             sheet.freeze_panes = "A2"

@@ -34,7 +34,7 @@ BRAND_IMAGE_FOLDERS = {
     "HUSH PUPPIES": "HUSH PUPPIES",
     "HUSH PUPPIES KIDS": "HUSH PUPPIES",
     "KEDS": "KEDS",
-    "MOUNTAIN HARDWEAR": "MOUNTAIN HARDWEAR",
+    "MOUNTAIN HARDWEAR": "MOUNTAINHARDWEAR",
     "PATAGONIA": "PATAGONIA",
     "ROCKFORD": "ROCKFORD",
     "SOREL": "SOREL",
@@ -414,6 +414,7 @@ def normalize_size(value):
         "UNICA": "O/S",
         "ÚNICA": "O/S",
         "TALLA UNICA": "O/S",
+        "SX": "XS",
         "LXL": "L/XL",
         "SM": "S/M",
         "ML": "M/L",
@@ -1719,7 +1720,8 @@ def variant_size_lookup_keys(value):
     keys = []
     raw = clean(value).upper()
     normalized = clean(normalize_size(value)).upper()
-    for key in (raw, normalized):
+    aliases = {"SX": "XS", "XS": "SX"}
+    for key in (raw, normalized, aliases.get(raw, ""), aliases.get(normalized, "")):
         if key and key not in keys:
             keys.append(key)
     return keys

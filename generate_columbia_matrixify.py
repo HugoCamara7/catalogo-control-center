@@ -205,6 +205,12 @@ def brand_from_variants(variants):
     return next(iter(brands_by_normalized.values()), ""), sorted(brands_by_normalized)
 
 
+def variants_are_mountain_hardwear(variants):
+    if variants is None or variants.empty or "MARCA_MA" not in variants.columns:
+        return False
+    return variants["MARCA_MA"].map(normalize_brand_name).eq("MOUNTAIN HARDWEAR").any()
+
+
 def get_brand_config(site="columbia", overrides=None):
     key = _config_clean(site).lower().replace(" ", "_") or "columbia"
     base = SITE_CONFIGS.get(key, SITE_CONFIGS["columbia"]).copy()
@@ -541,6 +547,16 @@ def first_non_empty(*values):
     return ""
 
 
+def limit_words(value, max_words=45):
+    text = re.sub(r"\s+", " ", clean(strip_html(value))).strip(" -:;,.")
+    if not text:
+        return ""
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    return " ".join(words[:max_words]).strip(" -:;,.")
+
+
 def product_category(product):
     return first_non_empty(
         product.get("Metafield: custom.categoria [single_line_text_field]"),
@@ -561,6 +577,36 @@ def product_gender(product):
 
 def product_technology(product, tech_col):
     return clean(product.get(tech_col)) if tech_col else ""
+
+
+def sial_dimension_defaults(product):
+    text = normalize_text(
+        " ".join(
+            clean(value)
+            for value in (
+                product.get("Type"),
+                product_category(product),
+                product.get("Categoria "),
+                product.get("Tags"),
+                product.get("Title"),
+            )
+            if clean(value)
+        )
+    )
+    is_footwear = any(term in text for term in ("calzado", "zapatilla", "zapato", "botin", "bota", "sandalia"))
+    if is_footwear:
+        return {"weight": 900, "length": 35, "width": 21, "height": 12}
+    return {"weight": 200, "length": 29, "width": 27, "height": 1}
+
+
+def sial_dimension_value(product, key, fallback):
+    aliases = {
+        "weight": ("Product Weight", "Package Weight", "Peso del paquete", "Peso (gr)", "Product Weight (gr)"),
+        "length": ("Product Length", "Package Length", "Largo del paquete", "Largo (cm)"),
+        "width": ("Product Width", "Package Width", "Ancho del paquete", "Ancho (cm)"),
+        "height": ("Product Height", "Package Height", "Alto del paquete", "Alto (cm)"),
+    }
+    return first_non_empty(*(product.get(column) for column in aliases.get(key, ())), fallback)
 
 
 def category_blocks_zero_size(product):
@@ -640,13 +686,14 @@ def dedupe_variants_for_shopify(variants, brand_config=None, issues=None, key=""
     seen_sizes = set()
     duplicate_skus = []
     duplicate_sizes = []
+    keep_duplicate_visible_sizes = variants_are_mountain_hardwear(variants)
     for index, row in variants.iterrows():
         sku = clean(row.get("CODINT_MA")).upper()
         size = clean(display_size_for_site(row.get("__SIZE"), brand_config)).upper()
         if sku and sku in seen_skus:
             duplicate_skus.append(f"{sku} ({size or 'sin talla'})")
             continue
-        if size and size in seen_sizes:
+        if size and size in seen_sizes and not keep_duplicate_visible_sizes:
             duplicate_sizes.append(f"{size} ({sku or 'sin SKU'})")
             continue
         if sku:
@@ -701,6 +748,16 @@ def boolean_mask(series, predicate):
 
 def _row_blocks_zero_size(row):
     return category_blocks_zero_size(row)
+
+
+def row_is_mountain_hardwear(row):
+    values = [
+        row.get("Vendor"),
+        row.get("Metafield: custom.marca [single_line_text_field]"),
+        row.get("Marca"),
+        row.get("Brand"),
+    ]
+    return any(normalize_brand_name(value) == "MOUNTAIN HARDWEAR" for value in values if clean(value))
 
 
 def final_variant_filter(output_df, sial_df, issues_df):
@@ -787,6 +844,8 @@ def final_variant_filter(output_df, sial_df, issues_df):
             size_key = output_df["Option1 Value"].map(clean).str.upper()
             handle_key = output_df["Handle"].map(clean).str.upper()
             duplicate_size_mask = size_key.ne("") & pd.DataFrame({"Handle": handle_key, "Size": size_key}).duplicated(keep="first")
+            mountain_mask = output_df.apply(row_is_mountain_hardwear, axis=1)
+            duplicate_size_mask = duplicate_size_mask & ~mountain_mask
             if duplicate_size_mask.any():
                 issues.append(
                     {
@@ -836,16 +895,8 @@ def sial_product_bullets(product, product_type, color_web, tech_col, brand_confi
     return ", ".join(f"{label} | {value}" for label, value in pieces if clean(value))
 
 
-def sial_short_features(value, max_length=45):
-    text = clean(strip_html(value))
-    text = re.sub(r"\s+", " ", text).strip(" -:;,.")
-    if len(text) <= max_length:
-        return text
-
-    clipped = text[: max_length + 1].strip()
-    if " " in clipped:
-        clipped = clipped.rsplit(" ", 1)[0].strip()
-    return clipped[:max_length].strip(" -:;,.")
+def sial_short_features(value, max_words=45):
+    return limit_words(value, max_words)
 
 
 def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None, brand_label=""):
@@ -858,6 +909,8 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
     title = clean(product.get("Title"))
     body_html = build_body_html(product)
     existing_id = clean(existing_product.get("ID"))
+    dimension_defaults = sial_dimension_defaults(product)
+    technology = limit_words(product_technology(product, tech_col), 45)
     row = {
         "Cod. Modelo": model,
         "Cod. Color": color,
@@ -869,14 +922,14 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         ),
         "Product Description": first_non_empty(product.get("Product Description"), strip_html(body_html)),
         "Image URL": "",
-        "Product Weight": first_non_empty(product.get("Product Weight"), 300),
-        "Product Length": first_non_empty(product.get("Product Length"), 35),
-        "Product Width": first_non_empty(product.get("Product Width"), 27),
-        "Product Height": first_non_empty(product.get("Product Height"), 2),
-        "Package Weight": first_non_empty(product.get("Package Weight"), 300),
-        "Package Length": first_non_empty(product.get("Package Length"), 35),
-        "Package Width": first_non_empty(product.get("Package Width"), 27),
-        "Package Height": first_non_empty(product.get("Package Height"), 2),
+        "Product Weight": sial_dimension_value(product, "weight", dimension_defaults["weight"]),
+        "Product Length": sial_dimension_value(product, "length", dimension_defaults["length"]),
+        "Product Width": sial_dimension_value(product, "width", dimension_defaults["width"]),
+        "Product Height": sial_dimension_value(product, "height", dimension_defaults["height"]),
+        "Package Weight": sial_dimension_value(product, "weight", dimension_defaults["weight"]),
+        "Package Length": sial_dimension_value(product, "length", dimension_defaults["length"]),
+        "Package Width": sial_dimension_value(product, "width", dimension_defaults["width"]),
+        "Package Height": sial_dimension_value(product, "height", dimension_defaults["height"]),
         "Boost ": clean(product.get("Boost ")),
         "Talla Web ": display_size,
         "Color Web": color_web,
@@ -888,7 +941,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Temporada ": clean(product.get("Temporada ")) or clean(product.get("Temporada")),
         "Modelo": clean(product.get("Modelo")),
         "Marca": brand_label,
-        "Tecnologias ": product_technology(product, tech_col),
+        "Tecnologias ": technology,
         "Caracteristicas": sial_short_features(product.get("Caracteristicas")),
         "Tipo de Boardshort": clean(product.get("Tipo de Boardshort")),
         "Tipo de Bikini": clean(product.get("Tipo de Bikini")),

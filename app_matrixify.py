@@ -441,6 +441,7 @@ def normalize_size(value):
     text = text.replace(",", ".")
     aliases = {
         "EXTRA SMALL": "XS",
+        "SX": "XS",
         "SMALL": "S",
         "MEDIUM": "M",
         "LARGE": "L",
@@ -451,6 +452,30 @@ def normalize_size(value):
         "3 EXTRA LARGE": "XXXL",
     }
     return aliases.get(text, text)
+
+
+def _size_lookup_keys(value):
+    keys = []
+    raw = clean_value(value).upper()
+    normalized = clean_value(normalize_size(value)).upper()
+    aliases = {"SX": "XS", "XS": "SX"}
+    for key in (raw, normalized, aliases.get(raw, ""), aliases.get(normalized, "")):
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _set_row_by_size_keys(mapping, size, row):
+    for key in _size_lookup_keys(size):
+        mapping.setdefault(key, row)
+
+
+def _row_by_size_keys(mapping, size):
+    for key in _size_lookup_keys(size):
+        row = mapping.get(key)
+        if row is not None:
+            return row
+    return None
 
 
 def size_sort_key(size):
@@ -3625,7 +3650,7 @@ def _normalize_legacy_image_url(value):
         "KEDS%20SHOPIFY": "KEDS",
         "PATAGONIA%20SHOPIFY": "PATAGONIA",
         "SOREL%20SHOPIFY": "SOREL",
-        "MOUNTAIN%20HARDWEAR%20SHOPIFY": "MOUNTAIN%20HARDWEAR",
+        "MOUNTAIN%20HARDWEAR%20SHOPIFY": "MOUNTAINHARDWEAR",
         "COLUMBIA SHOPIFY": "COLUMBIA",
         "ROCKFORD SHOPIFY": "ROCKFORD",
         "HUSH PUPPIES SHOPIFY": "HUSH PUPPIES",
@@ -3633,7 +3658,7 @@ def _normalize_legacy_image_url(value):
         "KEDS SHOPIFY": "KEDS",
         "PATAGONIA SHOPIFY": "PATAGONIA",
         "SOREL SHOPIFY": "SOREL",
-        "MOUNTAIN HARDWEAR SHOPIFY": "MOUNTAIN HARDWEAR",
+        "MOUNTAIN HARDWEAR SHOPIFY": "MOUNTAINHARDWEAR",
     }
     for old, new in replacements.items():
         url = url.replace(f"/{old}/", f"/{new}/")
@@ -4093,7 +4118,7 @@ def _existing_sizes_from_product_data(product_data, option_name):
     for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
         size = _selected_option_value(variant, option_name)
         if size:
-            sizes.add(size.upper())
+            sizes.update(_size_lookup_keys(size))
     return sizes
 
 
@@ -4122,9 +4147,9 @@ def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
     option_name = clean_value(size_option.get("name")) or requested_option_name
     existing_sizes = _existing_sizes_from_product_data(product_data, option_name)
     existing_skus = {
-        clean_value(variant.get("sku")).upper()
+        clean_value(variant.get("sku") or (variant.get("inventoryItem") or {}).get("sku")).upper()
         for variant in ((product_data.get("variants") or {}).get("nodes")) or []
-        if clean_value(variant.get("sku"))
+        if clean_value(variant.get("sku") or (variant.get("inventoryItem") or {}).get("sku"))
     }
     fallback_price, fallback_compare_at_price = _price_fallback_from_product_data(product_data)
 
@@ -4134,12 +4159,12 @@ def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
     for _, variant_row in product_variant_rows.iterrows():
         sku = clean_value(variant_row.get("Variant SKU")).upper()
         size = clean_value(variant_row.get("Option1 Value"))
-        if not size:
+        if not size or not sku:
             continue
-        size_key = size.upper()
+        size_keys = _size_lookup_keys(size)
         if sku and (sku in existing_skus or sku in seen_skus):
             continue
-        if size_key in existing_sizes or size_key in seen_sizes:
+        if any(size_key in existing_sizes or size_key in seen_sizes for size_key in size_keys):
             continue
         payload = _variant_bulk_input_from_row(
             variant_row,
@@ -4150,7 +4175,7 @@ def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
         )
         if payload:
             variants.append(payload)
-            seen_sizes.add(size_key)
+            seen_sizes.update(size_keys)
             if sku:
                 seen_skus.add(sku)
     return variants
@@ -4202,13 +4227,13 @@ def _existing_variant_updates_from_shopify(product_variant_rows, product_data):
     expected_by_size = {}
     for _, row in product_variant_rows.iterrows():
         size = clean_value(row.get("Option1 Value")).upper()
-        if size and size not in expected_by_size:
-            expected_by_size[size] = row
+        if size:
+            _set_row_by_size_keys(expected_by_size, size, row)
 
     updates = []
     for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
         size = _selected_option_value(variant, option_name).upper()
-        row = expected_by_size.get(size)
+        row = _row_by_size_keys(expected_by_size, size)
         if row is None:
             continue
         expected_price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
@@ -4245,13 +4270,13 @@ def _existing_inventory_item_updates_from_shopify(product_variant_rows, product_
     expected_by_size = {}
     for _, row in product_variant_rows.iterrows():
         size = clean_value(row.get("Option1 Value")).upper()
-        if size and size not in expected_by_size:
-            expected_by_size[size] = row
+        if size:
+            _set_row_by_size_keys(expected_by_size, size, row)
 
     updates = []
     for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
         size = _selected_option_value(variant, option_name).upper()
-        row = expected_by_size.get(size)
+        row = _row_by_size_keys(expected_by_size, size)
         if row is None:
             continue
         expected_sku = clean_value(row.get("Variant SKU")).upper()
@@ -4266,6 +4291,24 @@ def _existing_inventory_item_updates_from_shopify(product_variant_rows, product_
         if payload:
             updates.append(payload)
     return updates
+
+
+def _apply_inventory_item_updates(shopify_config, inventory_item_updates):
+    inventory_ok = 0
+    inventory_errors = []
+    for inventory_update in inventory_item_updates or []:
+        try:
+            if inventory_item_update is None:
+                raise RuntimeError("Falta actualizar shopify_api.py: no existe inventory_item_update.")
+            inventory_item_update(
+                shopify_config,
+                inventory_update["id"],
+                inventory_update["input"],
+            )
+            inventory_ok += 1
+        except Exception as exc:
+            inventory_errors.append(f"{inventory_update.get('sku')}: {exc}")
+    return inventory_ok, inventory_errors
 
 
 def _variant_option_values(product_variant_rows):
@@ -4613,20 +4656,10 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 product_data_for_variants,
             )
             if inventory_item_updates:
-                inventory_ok = 0
-                inventory_errors = []
-                for inventory_update in inventory_item_updates:
-                    try:
-                        if inventory_item_update is None:
-                            raise RuntimeError("Falta actualizar shopify_api.py: no existe inventory_item_update.")
-                        inventory_item_update(
-                            shopify_config,
-                            inventory_update["id"],
-                            inventory_update["input"],
-                        )
-                        inventory_ok += 1
-                    except Exception as exc:
-                        inventory_errors.append(f"{inventory_update.get('sku')}: {exc}")
+                inventory_ok, inventory_errors = _apply_inventory_item_updates(
+                    shopify_config,
+                    inventory_item_updates,
+                )
                 if inventory_ok:
                     product_messages.append(f"{inventory_ok} SKUs/tracking actualizados en inventory item")
                     product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
@@ -4658,6 +4691,23 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 except Exception as exc:
                     product_status = "PARCIAL"
                     product_messages.append(f"Error variantes: {exc}")
+
+            product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
+            post_create_inventory_updates = _existing_inventory_item_updates_from_shopify(
+                product_variant_rows,
+                product_data_for_variants,
+            )
+            if post_create_inventory_updates:
+                inventory_ok, inventory_errors = _apply_inventory_item_updates(
+                    shopify_config,
+                    post_create_inventory_updates,
+                )
+                if inventory_ok:
+                    product_messages.append(f"{inventory_ok} SKUs/tracking reforzados despues de crear variantes")
+                    product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
+                if inventory_errors:
+                    product_status = "PARCIAL"
+                    product_messages.append("Error SKU post-creacion: " + " | ".join(inventory_errors[:5]))
 
             verified_product_data = fetch_product_options_and_variants(shopify_config, product_gid)
             variant_sync_problems = _verify_shopify_variants(product_variant_rows, verified_product_data)
@@ -7189,6 +7239,56 @@ def current_flow_step():
     return 1
 
 
+def clear_complete_load_state():
+    for key in (
+        "complete_matrixify_df",
+        "complete_summary_df",
+        "complete_issues_df",
+        "complete_type_warnings_df",
+        "complete_skipped_df",
+        "complete_sial_df",
+        "complete_centry_df",
+        "complete_centry_issues_df",
+        "complete_apply_result_df",
+        "complete_analysis_message",
+    ):
+        st.session_state.pop(key, None)
+
+
+def reset_load_workspace():
+    clear_complete_load_state()
+    for key in (
+        "input_loaded",
+        "input_row_count",
+        "shopify_product_count",
+        "complete_shopify_products",
+        "complete_context",
+        "shopify_preview_df",
+        "shopify_apply_result_df",
+        "template_update",
+        "update_centry_codes",
+        "update_tags",
+        "update_photos",
+        "update_title",
+        "update_body",
+    ):
+        st.session_state.pop(key, None)
+    st.session_state["load_reset_nonce"] = int(st.session_state.get("load_reset_nonce") or 0) + 1
+    st.session_state["load_reset_message"] = "Listo. La pantalla quedo limpia para una nueva carga."
+
+
+def uploaded_file_fingerprint(uploaded_file):
+    if not uploaded_file:
+        return ""
+    return "|".join(
+        clean_value(value)
+        for value in (
+            getattr(uploaded_file, "name", ""),
+            getattr(uploaded_file, "size", ""),
+        )
+    )
+
+
 def render_sources_card(config, bigquery_ready, arti_source="", template_source="Shopify API", input_count=0, shopify_count=0, arti_count=0):
     bigquery_config = get_bigquery_config()
     project = clean_value(bigquery_config.get("project_id"))
@@ -8503,6 +8603,10 @@ def main():
                 label_visibility="collapsed",
                 key="operation_mode_choice",
             )
+    with st.sidebar.container(key="load_refresh_card"):
+        if st.button("Nueva carga / refrescar", key="reset_load_workspace", help="Limpia archivos cargados, previews y resultados para empezar otra carga."):
+            reset_load_workspace()
+            st.rerun()
     with st.sidebar.container(key="shopify_sidebar_card"):
         render_sidebar_shopify_card(ui_config, shopify_config)
         if is_shopify_configured(shopify_config):
@@ -8528,6 +8632,9 @@ api_version = "{DEFAULT_API_VERSION}"
             )
 
     render_top_header(ui_config)
+    load_reset_message = st.session_state.pop("load_reset_message", "")
+    if load_reset_message:
+        st.success(load_reset_message)
     if operation_area == "KPIs de catalogo":
         render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready)
         return
@@ -8847,8 +8954,11 @@ api_version = "{DEFAULT_API_VERSION}"
             help="Shopify API es la referencia operativa. El respaldo Excel solo se usa si la API no esta disponible.",
         )
         template_file = None
+        upload_nonce = int(st.session_state.get("load_reset_nonce") or 0)
+        input_upload_key = f"input_{upload_nonce}"
+        template_upload_key = f"template_{upload_nonce}"
         upload_left, upload_right = st.columns([3.5, 1.5], gap="large")
-        input_file = st.session_state.get("input")
+        input_file = st.session_state.get(input_upload_key)
         with upload_left:
             if complete_source == "Respaldo Excel" and input_file:
                 st.caption("Input cargado. Ahora sube el Catalogo Matrixify para conservar IDs.")
@@ -8860,14 +8970,25 @@ api_version = "{DEFAULT_API_VERSION}"
                     template_file = st.file_uploader(
                         "Subir Catalogo Matrixify",
                         type=["xlsx", "xls"],
-                        key="template",
+                        key=template_upload_key,
                         label_visibility="collapsed",
                         help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
                     )
             else:
                 with st.container(key="input_upload_slot"):
-                    input_file = st.file_uploader("Cargar input", type=["xlsx", "xls"], key="input", label_visibility="collapsed")
+                    input_file = st.file_uploader("Cargar input", type=["xlsx", "xls"], key=input_upload_key, label_visibility="collapsed")
         st.session_state["input_loaded"] = bool(input_file)
+        complete_context = "|".join(
+            [
+                clean_value(brand_config.get("site_key")),
+                clean_value(complete_source),
+                uploaded_file_fingerprint(input_file),
+                uploaded_file_fingerprint(template_file),
+            ]
+        )
+        if st.session_state.get("complete_context") != complete_context:
+            clear_complete_load_state()
+            st.session_state["complete_context"] = complete_context
 
     setup_rows = [
         {
@@ -8954,7 +9075,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 render_preview_table(input_df)
                 with st.container(key="action_panel"):
                     render_analyze_card(ui_config)
-                    analyze_clicked = st.button("Analizar input", type="primary")
+                    analyze_clicked = st.button("Analizar input", type="primary", key=f"analyze_input_{brand_config['site_key']}")
                 render_validations_card()
             with right_col:
                 render_summary_metrics(
@@ -8968,9 +9089,10 @@ api_version = "{DEFAULT_API_VERSION}"
                 render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
 
             if analyze_clicked:
-                matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
-                    input_df, arti_df, template_df, brand_config=brand_config
-                )
+                with st.spinner("Analizando input y cruzando contra Shopify/BigQuery..."):
+                    matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
+                        input_df, arti_df, template_df, brand_config=brand_config
+                    )
                 matrixify_df = coalesce_duplicate_columns(matrixify_df)
                 summary_df = coalesce_duplicate_columns(summary_df)
                 issues_df = coalesce_duplicate_columns(issues_df)
@@ -8991,6 +9113,10 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.session_state["complete_sial_df"] = sial_df
                 st.session_state["complete_centry_df"] = centry_df
                 st.session_state["complete_centry_issues_df"] = centry_issues_df
+                st.session_state["complete_analysis_message"] = (
+                    f"Analisis terminado: {len(matrixify_df):,} filas Matrixify, "
+                    f"{len(issues_df):,} observaciones, {len(skipped_df):,} omitidos sin cambios."
+                )
 
             matrixify_df = st.session_state.get("complete_matrixify_df")
             if matrixify_df is not None:
@@ -9010,9 +9136,18 @@ api_version = "{DEFAULT_API_VERSION}"
                 centry_df = coalesce_duplicate_columns(centry_df)
                 centry_issues_df = coalesce_duplicate_columns(centry_issues_df)
 
+                analysis_message = st.session_state.get("complete_analysis_message")
+                if analysis_message:
+                    st.info(analysis_message)
                 render_matrixify_result_card(ready=not matrixify_df.empty)
                 if matrixify_df.empty:
-                    st.error("No se pudo generar ninguna fila Matrixify. Revisa la hoja Revision.")
+                    st.error("No se pudo generar ninguna fila Matrixify.")
+                    if issues_df is not None and not issues_df.empty:
+                        st.warning(f"Hay {len(issues_df):,} observaciones para revisar.")
+                        st.dataframe(issues_df, use_container_width=True)
+                    if skipped_df is not None and not skipped_df.empty:
+                        st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
+                        st.dataframe(skipped_df, use_container_width=True)
                 else:
                     st.success(f"Vista previa generada con {len(matrixify_df):,} variantes.")
                     matrixify_tab, centry_tab, revision_tab = st.tabs(["Matrixify", "Centry", "Revision"])
@@ -9052,8 +9187,8 @@ api_version = "{DEFAULT_API_VERSION}"
 
                 if complete_source == "Shopify API" and is_shopify_configured(shopify_config) and not matrixify_df.empty:
                     st.info(
-                        "Sincronizacion directa habilitada para productos existentes: titulo, descripcion, vendor, tipo, tags, metafields y fotos."
-                        " Productos nuevos, variantes, precios e inventario quedan para importacion Matrixify."
+                        "Sincronizacion directa habilitada: titulo, descripcion, vendor, tipo, tags, metafields, fotos, variantes, precios y SKUs de inventory item."
+                        " Ninguna variante se envia por API sin SKU."
                     )
                     confirm_complete = st.checkbox("Confirmo que revise la vista previa y quiero sincronizar productos existentes en Shopify")
                     if confirm_complete and st.button("Sincronizar Shopify", type="primary"):

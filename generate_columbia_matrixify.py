@@ -817,7 +817,7 @@ def final_variant_filter(output_df, sial_df, issues_df):
 
         if {"Handle", "Option1 Value"}.issubset(output_df.columns):
             drop_accessory_zero = pd.Series(False, index=output_df.index)
-            handle_key = output_df["Handle"].map(clean).str.upper()
+            handle_key = output_df["Handle"].map(clean).replace("", pd.NA).ffill().fillna("").str.upper()
             for _, group in output_df.groupby(handle_key, sort=False):
                 zero_group_mask = group["Option1 Value"].map(is_zero_size)
                 if not zero_group_mask.any():
@@ -838,7 +838,7 @@ def final_variant_filter(output_df, sial_df, issues_df):
 
         if {"Handle", "Variant SKU"}.issubset(output_df.columns):
             sku_key = output_df["Variant SKU"].map(clean).str.upper()
-            handle_key = output_df["Handle"].map(clean).str.upper()
+            handle_key = output_df["Handle"].map(clean).replace("", pd.NA).ffill().fillna("").str.upper()
             duplicate_sku_mask = sku_key.ne("") & pd.DataFrame({"Handle": handle_key, "SKU": sku_key}).duplicated(keep="first")
             if duplicate_sku_mask.any():
                 issues.append(
@@ -853,7 +853,7 @@ def final_variant_filter(output_df, sial_df, issues_df):
 
         if {"Handle", "Option1 Value"}.issubset(output_df.columns):
             size_key = output_df["Option1 Value"].map(clean).str.upper()
-            handle_key = output_df["Handle"].map(clean).str.upper()
+            handle_key = output_df["Handle"].map(clean).replace("", pd.NA).ffill().fillna("").str.upper()
             duplicate_size_mask = size_key.ne("") & pd.DataFrame({"Handle": handle_key, "Size": size_key}).duplicated(keep="first")
             mountain_mask = output_df.apply(row_is_mountain_hardwear, axis=1)
             duplicate_size_mask = duplicate_size_mask & ~mountain_mask
@@ -2353,7 +2353,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             )
             zero_size_mask = boolean_mask(variants["__SIZE"], is_zero_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
             internal_k_size_mask = boolean_mask(variants["__SIZE"], is_internal_k_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
-        should_block_zero_size = category_blocks_zero_size(product)
+        should_block_zero_size = category_blocks_zero_size(product) and clean(brand_config.get("site_label")) != "Rockford.pe"
         zero_size_count = safe_int(zero_size_mask.sum()) if should_block_zero_size else 0
         internal_k_size_count = safe_int(internal_k_size_mask.sum())
         if zero_size_count:

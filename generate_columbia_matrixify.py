@@ -1,241 +1,255 @@
-import io
-import base64
-import hmac
 import json
-import pickle
+import os
 import re
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from html import escape
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
 import pandas as pd
-import streamlit as st
-import streamlit.components.v1 as components
-
-from generate_columbia_matrixify import (
-    SITE_CONFIGS,
-    build_columbia_matrixify,
-    build_matrixify_updates,
-    brand_display_name,
-    brand_image_config,
-    display_size_for_site,
-    get_brand_config,
-    image_candidates,
-    input_brand_report,
-    first_non_empty,
-    is_internal_k_size,
-    is_one_size,
-    limit_words,
-    normalize_brand_name,
-    normalize_size as normalize_master_size,
-    size_sort_key as master_size_sort_key,
-    split_model_color,
-    strip_html,
-    is_zero_size,
-    read_arti_source,
-)
-try:
-    import shopify_api as _shopify_api
-except Exception as exc:
-    _shopify_api = None
-    _shopify_api_import_error = exc
-else:
-    _shopify_api_import_error = None
 
 
-class _FallbackShopifyApiError(Exception):
-    pass
+TEMPLATE_PATH = Path(r"C:\Users\hcamara\Downloads\Export_2026-05-21_113908.xlsx")
+INPUT_PATH = Path(r"C:\Users\hcamara\Documents\Version Input prueba.xlsx")
+ARTI_PATH = Path(r"C:\Users\hcamara\Documents\ARTI ACTUALIZADO 10-05-2026.xlsx")
+DEFAULT_ARTI_CSV_PATH = Path("data/arti.csv")
+DEFAULT_ARTI_ZIP_PATH = Path("data/arti.zip")
+DEFAULT_ARTI_XLSX_PATH = Path("data/arti.xlsx")
+OUTPUT_DIR = Path("outputs")
+OUTPUT_PATH = OUTPUT_DIR / "matrixify_columbia_generado.xlsx"
+KNOWN_TYPES_PATH = Path("data/tipos_shopify.xlsx")
 
+INVENTORY_PREFIX = "Inventory Available:"
+DEFAULT_IMAGE_HOST = "https://ecom-imagenes.forus-digital.xyz.peru.s3.amazonaws.com"
+DEFAULT_IMAGE_VALIDATION_HOST = "https://s3.amazonaws.com/ecom-imagenes.forus-digital.xyz.peru"
+IMAGE_BASE_URL = f"{DEFAULT_IMAGE_HOST}/COLUMBIA"
+IMAGE_VALIDATION_BASE_URL = f"{DEFAULT_IMAGE_VALIDATION_HOST}/COLUMBIA"
+MAX_IMAGES_PER_PRODUCT = 10
+VALIDATE_IMAGES = False
 
-def _missing_shopify_api_function(name):
-    def _raise_missing(*args, **kwargs):
-        detail = f" Detalle import: {_shopify_api_import_error}" if _shopify_api_import_error else ""
-        raise RuntimeError(f"Falta actualizar shopify_api.py: no existe {name}.{detail}")
-
-    return _raise_missing
-
-
-def _shopify_attr(name, default=None):
-    if _shopify_api is None:
-        return default if default is not None else _missing_shopify_api_function(name)
-    return getattr(_shopify_api, name, default if default is not None else _missing_shopify_api_function(name))
-
-
-DEFAULT_API_VERSION = _shopify_attr("DEFAULT_API_VERSION", "2026-04")
-ShopifyApiError = _shopify_attr("ShopifyApiError", _FallbackShopifyApiError)
-fetch_metaobject_definitions = _shopify_attr("fetch_metaobject_definitions")
-fetch_metaobjects = _shopify_attr("fetch_metaobjects")
-fetch_product_options_and_variants = _shopify_attr("fetch_product_options_and_variants")
-fetch_products = _shopify_attr("fetch_products")
-file_create = _shopify_attr("file_create")
-inventory_item_update = _shopify_attr("inventory_item_update", None)
-metafields_set = _shopify_attr("metafields_set")
-normalize_shop_domain = _shopify_attr("normalize_shop_domain")
-product_create = _shopify_attr("product_create")
-product_create_media = _shopify_attr("product_create_media")
-product_delete_media = _shopify_attr("product_delete_media")
-product_options_reorder = _shopify_attr("product_options_reorder")
-publishable_publish = _shopify_attr("publishable_publish")
-product_set_files = _shopify_attr("product_set_files")
-product_update = _shopify_attr("product_update")
-product_variants_bulk_create = _shopify_attr("product_variants_bulk_create")
-product_variants_bulk_update = _shopify_attr("product_variants_bulk_update", None)
-product_variants_bulk_reorder = _shopify_attr("product_variants_bulk_reorder")
-staged_upload_image = _shopify_attr("staged_upload_image")
-test_connection = _shopify_attr("test_connection")
-wait_file_statuses = _shopify_attr("wait_file_statuses")
-wait_media_statuses = _shopify_attr("wait_media_statuses")
-fetch_metaobjects_for_definition = _shopify_attr("fetch_metaobjects_for_definition", None)
-fetch_metafield_definition = _shopify_attr("fetch_metafield_definition", None)
-
-try:
-    from centry_static_masters import (
-        CENTRY_CATEGORY_FULL,
-        CENTRY_CATEGORY_GENDER_TYPE,
-        CENTRY_CODEX_CATEGORIES,
-        CENTRY_DIMENSIONS,
-    )
-except ImportError:
-    CENTRY_CATEGORY_FULL = []
-    CENTRY_CATEGORY_GENDER_TYPE = []
-    CENTRY_CODEX_CATEGORIES = []
-    CENTRY_DIMENSIONS = []
-
-
-APP_TITLE = "Catalogo Control Center"
-DEFAULT_ARTI_PATH = "data/arti.xlsx"
-DEFAULT_ARTI_CSV_PATH = "data/arti.csv"
-DEFAULT_ARTI_ZIP_PATH = "data/arti.zip"
-DEFAULT_MATRIXIFY_PATH = "data/matrixify_modelo.xlsx"
-DEFAULT_ECOMM_WAREHOUSES_PATH = Path("data/bodegas_ecomm.xlsx")
-DEFAULT_CENTRY_CATEGORY_PATHS = [
-    Path("data/base_categorias_centry.xlsx"),
-]
-DEFAULT_CENTRY_DIMENSIONS_PATHS = [
-    Path("data/dimensiones_productos.xlsx"),
-]
-DEFAULT_CENTRY_CODEX_CATEGORY_PATHS = [
-    Path("data/centry_codex_categorias.xlsx"),
-]
-DEFAULT_PRODUCT_MASTER_TABLE = "forus-analitica-prod-datalake.bronze.stg_pe_central_arti"
-FORUS_LOGO_PATH = Path("assets/forus_logo.png")
-SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
-KPI_AUTO_REFRESH_SECONDS = 60 * 60
-KPI_CACHE_DIR = Path("outputs/kpi_cache")
-
-DEFAULT_ECOMM_SITE_WAREHOUSES = {
-    "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
-    "hushpuppiespe": ["320", "129", "111", "97", "96", "88", "46", "44", "43", "30", "23", "19", "18", "16", "8", "7"],
-    "rockfordpe": ["320", "145", "143", "142", "139", "130", "129", "122", "114", "113", "112", "111", "97", "96", "88", "84", "83", "59", "52", "44", "43", "30", "23", "19", "16", "8", "7", "2"],
-    "vanspe": ["320", "152", "151", "150", "149"],
-}
-DEFAULT_ECOMM_STOCK_SECURITY = {
-    "114": 0, "88": 1, "84": 0, "113": 0, "320": 0, "111": 1, "8": 0, "44": 0, "46": 0,
-    "97": 0, "43": 0, "112": 0, "59": 0, "52": 0, "2": 0, "83": 0, "16": 1, "122": 0,
-    "18": 0, "7": 0, "30": 0, "19": 0, "23": 0, "96": 1, "130": 0, "129": 0, "139": 0,
-    "142": 0, "143": 0, "145": 1, "149": 0, "150": 0, "152": 0, "151": 0,
+BRAND_IMAGE_FOLDERS = {
+    "ACCESORIOS HP": "HUSH PUPPIES",
+    "COLUMBIA": "COLUMBIA",
+    "HUSH PUPPIES": "HUSH PUPPIES",
+    "HUSH PUPPIES KIDS": "HUSH PUPPIES",
+    "KEDS": "KEDS",
+    "MOUNTAIN HARDWEAR": "MOUNTAINHARDWEAR",
+    "PATAGONIA": "PATAGONIA",
+    "ROCKFORD": "ROCKFORD",
+    "SOREL": "SOREL",
+    "VANS": "VANS",
 }
 
-MATRIXIFY_COLUMNS = [
-    "Command",
-    "Handle",
-    "Title",
-    "Body HTML",
-    "Vendor",
-    "Type",
-    "Tags",
-    "Status",
-    "Published",
-    "Option1 Name",
-    "Option1 Value",
-    "Option2 Name",
-    "Option2 Value",
-    "Variant SKU",
-    "Variant Barcode",
-    "Variant Price",
-    "Variant Compare At Price",
-    "Variant Inventory Qty",
-    "Variant Inventory Tracker",
-    "Variant Inventory Policy",
-    "Variant Fulfillment Service",
-    "Variant Requires Shipping",
-    "Variant Taxable",
-    "Variant Weight",
-    "Variant Weight Unit",
-    "Image Src",
-    "Image Position",
-    "Metafield: custom.estilo [single_line_text_field]",
-    "Metafield: custom.color [single_line_text_field]",
+BRAND_DISPLAY_NAMES = {
+    "ACCESORIOS HP": "Hush Puppies",
+    "COLUMBIA": "Columbia",
+    "HUSH PUPPIES": "Hush Puppies",
+    "HUSH PUPPIES KIDS": "Hush Puppies",
+    "KEDS": "Keds",
+    "MOUNTAIN HARDWEAR": "Mountain Hardwear",
+    "PATAGONIA": "Patagonia",
+    "ROCKFORD": "Rockford",
+    "SOREL": "Sorel",
+    "VANS": "Vans",
+}
+
+SIAL_TAIL_COLUMBIA = [
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "Nuevo o Actualizar (Supermall.pe).1",
+    "Porduct Id - Rockford.pe",
+    "4",
+    "13",
+    "6",
 ]
 
-SIZE_ORDER_GROUPS = [
-    ["XXXS", "3XS"],
-    ["XXS", "2XS"],
-    ["XS"],
-    ["S"],
-    ["M"],
-    ["L"],
-    ["XL"],
-    ["XXL", "2XL"],
-    ["XXXL", "3XL"],
-    ["XXXXL", "4XL"],
+SIAL_TAIL_HUSH = [
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Sku - Supermall.pe",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "2",
+    "13",
 ]
 
-SIZE_ORDER = {}
-for idx, group in enumerate(SIZE_ORDER_GROUPS, start=1):
-    for value in group:
-        SIZE_ORDER[value] = idx
+SIAL_TAIL_ROCKFORD = [
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Sku - Supermall.pe",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "6",
+    "13",
+]
 
-for idx, value in enumerate(["28", "29", "30", "31", "32", "33", "34", "36", "38", "40", "42", "44"], start=100):
-    SIZE_ORDER[value] = idx
-
-for idx, value in enumerate(
-    ["35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46", "47"],
-    start=200,
-):
-    SIZE_ORDER[value] = idx
-
-for idx, value in enumerate(
-    ["5", "5.5", "6", "6.5", "7", "7.5", "8", "8.5", "9", "9.5", "10", "10.5", "11", "11.5", "12", "13"],
-    start=300,
-):
-    SIZE_ORDER[value] = idx
-
-
-def normalize_header(value):
-    text = str(value or "").strip().lower()
-    text = re.sub(r"[\s_\-./]+", "", text)
-    text = (
-        text.replace("Ã¡", "a")
-        .replace("Ã©", "e")
-        .replace("Ã­", "i")
-        .replace("Ã³", "o")
-        .replace("Ãº", "u")
-        .replace("Ã±", "n")
-    )
-    return text
+SIAL_TAIL_VANS = [
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Sku - Supermall.pe",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "103",
+]
 
 
-def first_existing_column(df, candidates):
-    normalized = {normalize_header(col): col for col in df.columns}
-    for candidate in candidates:
-        found = normalized.get(normalize_header(candidate))
-        if found is not None:
-            return found
-    return None
+def _config_clean(value):
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
-def clean_value(value):
+SITE_CONFIGS = {
+    "columbia": {
+        "label": "Columbia",
+        "site_label": "Columbia.pe",
+        "allowed_arti_brands": ["COLUMBIA"],
+        "vendor": "columbiape",
+        "legacy_vendors": ["columbiape"],
+        "store_domain": "Columbia.pe",
+        "image_folder": "COLUMBIA",
+        "output_filename": "matrixify_columbia_generado.xlsx",
+        "sial_tail_columns": SIAL_TAIL_COLUMBIA,
+        "sial_active_columns": ["4", "13", "6"],
+    },
+    "rockford": {
+        "label": "Rockford",
+        "site_label": "Rockford.pe",
+        "allowed_arti_brands": ["COLUMBIA", "ROCKFORD", "PATAGONIA", "SOREL", "MOUNTAIN HARDWEAR"],
+        "vendor": "rockfordpe",
+        "legacy_vendors": ["rockfordpe"],
+        "store_domain": "Rockford.pe",
+        "image_folder": "ROCKFORD",
+        "output_filename": "matrixify_rockford_generado.xlsx",
+        "sial_tail_columns": SIAL_TAIL_ROCKFORD,
+        "sial_active_columns": ["6", "13"],
+    },
+    "hush_puppies": {
+        "label": "Hush Puppies",
+        "site_label": "HushPuppies.pe",
+        "allowed_arti_brands": ["HUSH PUPPIES", "HUSH PUPPIES KIDS", "ACCESORIOS HP", "KEDS", "ROCKFORD"],
+        "vendor": "hushpuppiespe",
+        "legacy_vendors": ["hushpuppiespe"],
+        "store_domain": "HushPuppies.pe",
+        "image_folder": "HUSH PUPPIES",
+        "output_filename": "matrixify_hush_puppies_generado.xlsx",
+        "sial_tail_columns": SIAL_TAIL_HUSH,
+        "sial_active_columns": ["2", "13"],
+    },
+    "vans": {
+        "label": "Vans",
+        "site_label": "Vans.pe",
+        "allowed_arti_brands": ["VANS"],
+        "vendor": "Vans",
+        "legacy_vendors": ["vanspe", "Vans"],
+        "store_domain": "Vans.pe",
+        "image_folder": "VANS",
+        "output_filename": "matrixify_vans_generado.xlsx",
+        "sial_tail_columns": SIAL_TAIL_VANS,
+        "sial_active_columns": ["103"],
+    },
+}
+
+BRAND_CONFIGS = SITE_CONFIGS
+
+
+def normalize_brand_name(value):
+    text = _config_clean(value).upper()
+    replacements = {
+        "á": "a",
+        "é": "e",
+        "í": "i",
+        "ó": "o",
+        "ú": "u",
+        "ñ": "n",
+        "™": "",
+        "®": "",
+        "Ã": "A",
+        "Ã‰": "E",
+        "Ã": "I",
+        "Ã“": "O",
+        "Ãš": "U",
+        "Ã‘": "N",
+        "Á": "A",
+        "É": "E",
+        "Í": "I",
+        "Ó": "O",
+        "Ú": "U",
+        "Ñ": "N",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def brand_display_name(value, fallback=""):
+    normalized = normalize_brand_name(value)
+    if normalized in BRAND_DISPLAY_NAMES:
+        return BRAND_DISPLAY_NAMES[normalized]
+    return _config_clean(value) or fallback
+
+
+def brand_from_variants(variants):
+    if variants is None or variants.empty or "MARCA_MA" not in variants.columns:
+        return "", []
+    brands_by_normalized = {}
+    for value in variants["MARCA_MA"].dropna():
+        raw = clean(value)
+        normalized = normalize_brand_name(raw)
+        if normalized and normalized not in brands_by_normalized:
+            brands_by_normalized[normalized] = raw
+    return next(iter(brands_by_normalized.values()), ""), sorted(brands_by_normalized)
+
+
+def variants_are_mountain_hardwear(variants):
+    if variants is None or variants.empty or "MARCA_MA" not in variants.columns:
+        return False
+    return variants["MARCA_MA"].map(normalize_brand_name).eq("MOUNTAIN HARDWEAR").any()
+
+
+def get_brand_config(site="columbia", overrides=None):
+    key = _config_clean(site).lower().replace(" ", "_") or "columbia"
+    base = SITE_CONFIGS.get(key, SITE_CONFIGS["columbia"]).copy()
+    base["site_key"] = key
+    base["allowed_arti_brands"] = [normalize_brand_name(value) for value in base.get("allowed_arti_brands", [])]
+    base["arti_brand"] = ", ".join(base["allowed_arti_brands"])
+    base["legacy_vendors"] = [_config_clean(value).lower() for value in base.get("legacy_vendors", [])]
+    if overrides:
+        for field, value in overrides.items():
+            if _config_clean(value):
+                base[field] = _config_clean(value)
+    folder = _config_clean(base.get("image_folder")) or base["label"].upper()
+    encoded_folder = folder.replace(" ", "%20")
+    base["image_base_url"] = f"{DEFAULT_IMAGE_HOST}/{encoded_folder}"
+    base["image_validation_base_url"] = f"{DEFAULT_IMAGE_VALIDATION_HOST}/{encoded_folder}"
+    return base
+
+
+def brand_image_config(brand_name, fallback_config):
+    config = fallback_config.copy()
+    folder = BRAND_IMAGE_FOLDERS.get(normalize_brand_name(brand_name), fallback_config.get("image_folder", ""))
+    if not folder:
+        return config
+    encoded_folder = folder.replace(" ", "%20")
+    config["image_folder"] = folder
+    config["image_base_url"] = f"{DEFAULT_IMAGE_HOST}/{encoded_folder}"
+    config["image_validation_base_url"] = f"{DEFAULT_IMAGE_VALIDATION_HOST}/{encoded_folder}"
+    return config
+
+
+def clean(value):
     if value is None:
         return ""
     if isinstance(value, (list, tuple, set)):
-        return " | ".join(clean_value(item) for item in value if clean_value(item))
+        parts = [clean(item) for item in value]
+        return " | ".join(part for part in parts if part)
     if isinstance(value, dict):
-        return " | ".join(clean_value(item) for item in value.values() if clean_value(item))
+        parts = [clean(item) for item in value.values()]
+        return " | ".join(part for part in parts if part)
     try:
         if pd.isna(value):
             return ""
@@ -246,3897 +260,447 @@ def clean_value(value):
     return str(value).strip()
 
 
-def safe_float_value(value, default=0.0):
+def safe_int(value, default=0):
     try:
-        text = clean_value(value)
+        text = clean(value)
         if not text:
             return default
-        return float(text.replace(",", "."))
+        return int(float(text.replace(",", ".")))
     except (TypeError, ValueError):
         return default
 
 
-def safe_int_value(value, default=0):
-    return int(safe_float_value(value, default))
+def compare_clean(value):
+    text = clean(value)
+    if text.lower() in ("nan", "none", "nat"):
+        return ""
+    if text.upper() in ("TRUE", "FALSE"):
+        return text.upper()
+    if re.fullmatch(r"\d+\.0", text):
+        return text[:-2]
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def looks_like_mod_col(value):
-    text = clean_value(value).upper()
-    if not text or text.startswith("UNNAMED:"):
-        return False
-    if normalize_header(text) in {"modcol", "codmodcol", "codigomodelocolor", "codigomodelo"}:
-        return False
-    return bool(re.fullmatch(r"[A-Z0-9]+(?:[-_ ][A-Z0-9]+)+", text))
-
-
-def product_lookup_key(value):
-    return re.sub(r"[^A-Z0-9]+", "", clean_value(value).upper())
-
-
-def variant_mod_col_candidates(variant):
-    sku = clean_value((variant or {}).get("Variant SKU")).upper()
-    if not sku:
-        return []
-    candidates = [sku]
-    parts = [part for part in re.split(r"[-_ ]+", sku) if part]
-    if len(parts) >= 2:
-        candidates.append(f"{parts[0]}-{parts[1]}")
-    return list(dict.fromkeys(candidate for candidate in candidates if looks_like_mod_col(candidate)))
-
-
-def coalesce_duplicate_columns(df):
-    if df is None or not isinstance(df, pd.DataFrame) or not df.columns.duplicated().any():
-        return df
-    result = pd.DataFrame(index=df.index)
-    for column in dict.fromkeys(df.columns):
-        same_name = df.loc[:, df.columns == column]
-        if same_name.shape[1] == 1:
-            result[column] = same_name.iloc[:, 0]
-            continue
-        merged = same_name.iloc[:, 0].copy()
-        for index in range(1, same_name.shape[1]):
-            candidate = same_name.iloc[:, index]
-            empty_mask = merged.map(clean_value) == ""
-            merged.loc[empty_mask] = candidate.loc[empty_mask]
-        result[column] = merged
-    return result
-
-
-ARTI_COLUMN_ALIASES_APP = {
-    "CODINT_MA": ["CODINT_MA", "codint_ma", "codint", "sku", "sku_producto", "id_producto", "idproducto"],
-    "COD MOD COL": ["COD MOD COL", "COD_MOD_COL", "cod_mod_col", "codmod_codcol", "mod_col", "modelo_color", "codigo_modelo_color"],
-    "Mod-Col": ["Mod-Col", "MOD_COL", "mod_col", "codmod_codcol", "modelo_color", "codigo_modelo_color"],
-    "TALNUM_MA": ["TALNUM_MA", "talnum_ma", "talla_numero", "talla", "size"],
-    "MARCA_MA": ["MARCA_MA", "marca_ma", "marca", "brand", "vendor"],
-    "Precio": ["Precio", "precio_ma", "precio", "price", "precio_venta", "pvp"],
-    "CodBarras": [
-        "CodBarras", "codbarras", "CODBARRAS", "cod_barras", "codigo_barras", "codigo_barra",
-        "codigo de barras", "codigo de barra", "ean", "EAN", "upc", "UPC", "barcode", "bar_code",
-        "cod_ean", "codigo_ean", "gtin", "ean13", "ean_13", "barra", "barras", "codbarra",
-        "cod_barra", "codbar", "cod_bar", "codbar_ma", "cod_bar_ma", "CODBAR_MA",
-        "COD_BAR_MA", "cod_barr", "codbarr", "cod_barras_ma", "codbarra_ma",
-        "codbarras_ma", "barra_ma", "ean_ma", "ean_producto", "ean_prod", "ean_sku",
-        "ean13_ma", "gtin_ma", "upc_ma", "upc_producto", "codigo_barras_ma",
-        "codigo_barra_producto", "codigo_barras_producto", "codigo_de_barras",
-        "codigo_de_barra", "codigo_ean13", "cod_ean13",
-    ],
-}
-
-
-def normalize_arti_columns_for_app(df):
-    if df is None or df.empty:
-        return df
-    result = coalesce_duplicate_columns(df).copy()
-    for target, aliases in ARTI_COLUMN_ALIASES_APP.items():
-        if target not in result.columns:
-            result[target] = ""
-        for alias in aliases:
-            candidate = first_existing_column(result, [alias])
-            if candidate is None or candidate == target:
-                continue
-            fill_mask = result[target].map(clean_value).eq("") & result[candidate].map(clean_value).ne("")
-            if fill_mask.any():
-                result.loc[fill_mask, target] = result.loc[fill_mask, candidate]
-    if "Mod-Col" not in result.columns or result["Mod-Col"].map(clean_value).eq("").all():
-        source = first_existing_column(result, ["COD MOD COL"])
-        if source is not None:
-            result["Mod-Col"] = result[source]
-    for target in ARTI_COLUMN_ALIASES_APP:
-        if target not in result.columns:
-            result[target] = ""
-    return result
-
-
-def expected_catalog_vendors(brand_config):
-    values = {
-        clean_value(brand_config.get("vendor")).lower(),
-        *[clean_value(value).lower() for value in brand_config.get("legacy_vendors", [])],
-        *[clean_value(value).lower() for value in brand_config.get("allowed_arti_brands", [])],
+def normalize_text(value):
+    text = clean(value).lower()
+    replacements = {
+        "á": "a",
+        "é": "e",
+        "í": "i",
+        "ó": "o",
+        "ú": "u",
+        "ñ": "n",
+        "™": "",
+        "®": "",
     }
-    return {value for value in values if value}
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return re.sub(r"-+", "-", text).strip("-")
 
 
-def first_row_value(row, columns):
-    for column in columns:
-        value = clean_value(row.get(column))
-        if value:
-            return value
-    return ""
+def normalize_handle(handle, mod_col):
+    base = normalize_text(handle)
+    code = normalize_text(mod_col)
+    if not base:
+        return code
+    if code and code not in base:
+        return f"{base}-{code}"
+    return base
 
 
-def parse_publication_date(value):
-    text = clean_value(value)
-    if not text:
-        return ""
-    if re.fullmatch(r"\d+(\.0)?", text):
-        # Excel serial date fallback.
-        try:
-            base = datetime(1899, 12, 30, tzinfo=timezone(timedelta(hours=-5)))
-            return (base + timedelta(days=float(text))).isoformat()
-        except Exception:
-            return text
-    normalized = text.replace("Z", "+00:00")
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?", normalized):
-        normalized = normalized.replace(" ", "T")
-    formats = [
-        "%d/%m/%Y %H:%M",
-        "%d/%m/%Y %H:%M:%S",
-        "%d-%m-%Y %H:%M",
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%d",
-        "%d/%m/%Y",
-    ]
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        parsed = None
-        for fmt in formats:
-            try:
-                parsed = datetime.strptime(text, fmt)
-                break
-            except ValueError:
-                continue
-    if parsed is None:
+def model_code(mod_col):
+    text = clean(mod_col).upper()
+    if "-" not in text:
         return text
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=-5)))
-    return parsed.isoformat()
+    return text.rsplit("-", 1)[0]
 
 
-def parse_iso_datetime(value):
-    text = clean_value(value)
-    if not text:
-        return None
+def split_model_color(mod_col):
+    text = clean(mod_col).upper()
+    if "-" not in text:
+        return text, ""
+    return tuple(text.rsplit("-", 1))
+
+
+def image_candidates(mod_col, brand_config=None):
+    brand_config = brand_config or get_brand_config()
+    model, color = split_model_color(mod_col)
+    if not model or not color:
+        return []
+    image_key = f"{model}_{color}"
+    return [f"{brand_config['image_base_url']}/{image_key}_{position}.jpg" for position in range(1, MAX_IMAGES_PER_PRODUCT + 1)]
+
+
+def validation_url(url, brand_config=None):
+    brand_config = brand_config or get_brand_config()
+    return url.replace(brand_config["image_base_url"], brand_config["image_validation_base_url"])
+
+
+def url_is_image(url, timeout=4, brand_config=None):
+    request = Request(validation_url(url, brand_config), method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+        with urlopen(request, timeout=timeout) as response:
+            content_type = response.headers.get("Content-Type", "")
+            return response.status < 400 and content_type.lower().startswith("image/")
+    except HTTPError as exc:
+        if exc.code in (403, 405):
+            try:
+                request = Request(
+                    validation_url(url, brand_config),
+                    method="GET",
+                    headers={"User-Agent": "Mozilla/5.0", "Range": "bytes=0-32"},
+                )
+                with urlopen(request, timeout=timeout) as response:
+                    content_type = response.headers.get("Content-Type", "")
+                    return response.status < 400 and content_type.lower().startswith("image/")
+            except (HTTPError, URLError, TimeoutError, OSError):
+                return False
+        return False
+    except (URLError, TimeoutError, OSError):
+        return False
 
 
-def format_datetime_lima(value):
-    parsed = parse_iso_datetime(value)
-    if parsed is None:
-        return ""
-    lima_time = parsed.astimezone(timezone(timedelta(hours=-5)))
-    return lima_time.strftime("%d/%m/%Y %H:%M")
+def build_image_lookup(mod_cols, validate=VALIDATE_IMAGES, brand_config=None):
+    brand_config = brand_config or get_brand_config()
+    lookup = {}
+    for mod_col in sorted({clean(value).upper() for value in mod_cols if clean(value)}):
+        urls = image_candidates(mod_col, brand_config)
+        if not validate:
+            lookup[mod_col] = list(dict.fromkeys(urls))
+            continue
+
+        valid_urls = []
+        misses_after_found = 0
+        for url in urls:
+            if url_is_image(url, timeout=2, brand_config=brand_config):
+                valid_urls.append(url)
+                misses_after_found = 0
+            elif valid_urls:
+                misses_after_found += 1
+                if misses_after_found >= 2:
+                    break
+        lookup[mod_col] = list(dict.fromkeys(valid_urls))
+    return lookup
 
 
-def publication_date_from_row(row):
-    if "Publication Publish Date" in row.index:
-        return parse_publication_date(row.get("Publication Publish Date"))
-    return parse_publication_date(
-        first_row_value(
-            row,
-            [
-                "Fecha publicaciÃ³n",
-                "Fecha publicacion",
-                "Fecha de publicaciÃ³n",
-                "Fecha de publicacion",
-                "Publish Date",
-                "Publication Date",
-                "Published At",
-            ],
-        )
-    )
+def build_image_lookup_by_brand(input_df, brand_column, brand_config):
+    lookup = {}
+    for _, row in input_df.iterrows():
+        mod_col = clean(row.get("Mod-Col")).upper()
+        if not mod_col:
+            continue
+        row_brand_config = brand_image_config(row.get(brand_column) if brand_column else "", brand_config)
+        cache_key = (mod_col, row_brand_config["image_folder"])
+        if cache_key not in lookup:
+            lookup[cache_key] = build_image_lookup([mod_col], brand_config=row_brand_config).get(mod_col, [])
+    return lookup
 
 
 def normalize_size(value):
-    text = clean_value(value).upper()
+    if value is None or pd.isna(value):
+        return ""
+
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return f"{value.day}/{value.month}"
+
+    text = clean(value).upper()
+    if not text:
+        return ""
     if text in {"NAN", "NONE", "NULL", "NA", "N/A", "#N/A", "#N/D", "#ND", "SIN TALLA"}:
         return ""
-    text = text.replace("TALLA", "").replace("SIZE", "").strip()
+
+    text = re.sub(r"\b(TALLA|SIZE|TAL)\b", "", text).strip()
     text = re.sub(r"\s+", " ", text)
-    text = text.replace(",", ".")
+
+    if re.fullmatch(r"\d+\.0", text):
+        text = text[:-2]
+
+    if re.fullmatch(r"\d+", text):
+        number = int(text)
+        if 50 <= number <= 130 and number % 5 == 0:
+            converted = number / 10
+            return str(int(converted)) if converted.is_integer() else str(converted)
+        if 140 <= number <= 490 and number % 5 == 0:
+            converted = number / 10
+            return str(int(converted)) if converted.is_integer() else str(converted)
+        return text
+
     aliases = {
         "OS": "O/S",
         "UNICA": "O/S",
-        "ÃšNICA": "O/S",
-        "ÃƒÅ¡NICA": "O/S",
-        "EXTRA SMALL": "XS",
+        "ÚNICA": "O/S",
+        "ÚNICA": "O/S",
+        "TALLA UNICA": "O/S",
+        "TALLA ÚNICA": "O/S",
         "SX": "XS",
-        "SMALL": "S",
-        "MEDIUM": "M",
-        "LARGE": "L",
-        "EXTRA LARGE": "XL",
-        "X SMALL": "XS",
-        "X LARGE": "XL",
-        "2 EXTRA LARGE": "XXL",
-        "3 EXTRA LARGE": "XXXL",
+        "LXL": "L/XL",
+        "SM": "S/M",
+        "ML": "M/L",
     }
     return aliases.get(text, text)
 
 
-def _size_lookup_keys(value):
-    keys = []
-    raw = clean_value(value).upper()
-    normalized = clean_value(normalize_size(value)).upper()
-    aliases = {
-        "SX": "XS",
-        "XS": "SX",
-        "OS": "O/S",
-        "O/S": "OS",
-        "UNICA": "O/S",
-        "ÃšNICA": "O/S",
-        "ÃƒÅ¡NICA": "O/S",
-        "TALLA UNICA": "O/S",
-        "TALLA ÃšNICA": "O/S",
-        "TALLA ÃƒÅ¡NICA": "O/S",
-        "0": "O/S",
-        "000": "O/S",
+def size_sort_key(value):
+    size = normalize_size(value)
+    alpha_order = {
+        "XXXS": 1,
+        "XXS": 2,
+        "XS": 3,
+        "S": 4,
+        "S/M": 5,
+        "M": 6,
+        "M/L": 7,
+        "L": 8,
+        "L/XL": 9,
+        "XL": 10,
+        "XXL": 11,
+        "XXXL": 12,
+        "O/S": 99,
     }
-    for key in (raw, normalized, aliases.get(raw, ""), aliases.get(normalized, "")):
-        if key and key not in keys:
-            keys.append(key)
-    return keys
+    if size in alpha_order:
+        return (0, alpha_order[size], size)
+    if re.fullmatch(r"\d+(\.\d+)?", size):
+        return (1, float(size), size)
+    match = re.fullmatch(r"(\d+(\.\d+)?)/(\d+(\.\d+)?)", size)
+    if match:
+        return (2, float(match.group(1)), float(match.group(3)), size)
+    return (9, 9999, size)
 
 
-def _set_row_by_size_keys(mapping, size, row):
-    for key in _size_lookup_keys(size):
-        mapping.setdefault(key, row)
-
-
-def _row_by_size_keys(mapping, size):
-    for key in _size_lookup_keys(size):
-        row = mapping.get(key)
-        if row is not None:
-            return row
-    return None
-
-
-def size_sort_key(size):
-    normalized = normalize_size(size)
-    if normalized in SIZE_ORDER:
-        return (0, SIZE_ORDER[normalized], normalized)
-    if re.fullmatch(r"\d+(\.\d+)?", normalized):
-        return (1, float(normalized), normalized)
-    return (9, 9999, normalized)
-
-
-def slugify(value):
-    text = clean_value(value).lower()
-    text = (
-        text.replace("Ã¡", "a")
-        .replace("Ã©", "e")
-        .replace("Ã­", "i")
-        .replace("Ã³", "o")
-        .replace("Ãº", "u")
-        .replace("Ã±", "n")
-    )
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    return text.strip("-") or "producto"
-
-
-def read_excel(uploaded_file):
-    return pd.read_excel(uploaded_file, dtype=object).dropna(how="all")
-
-
-def read_excel_path(path):
-    return pd.read_excel(path, dtype=object).dropna(how="all")
-
-
-def get_bigquery_config():
-    config = {}
-    try:
-        if "bigquery" in st.secrets:
-            config.update(dict(st.secrets["bigquery"]))
-        if "gcp_service_account" in st.secrets:
-            config["service_account_info"] = dict(st.secrets["gcp_service_account"])
-    except Exception:
-        return {}
-
-    service_account_json = config.pop("service_account_json", None)
-    if service_account_json and "service_account_info" not in config:
-        config["service_account_info"] = json.loads(service_account_json)
-    return config
-
-
-def is_bigquery_configured(config):
-    if not config:
-        return False
-    enabled = str(config.get("enabled", "true")).strip().lower()
-    if enabled in ("0", "false", "no", "off"):
-        return False
-    has_query = bool(str(config.get("query", "")).strip())
-    service_project = ""
-    if isinstance(config.get("service_account_info"), dict):
-        service_project = str(config["service_account_info"].get("project_id", "")).strip()
-    has_project = bool(str(config.get("project_id", "")).strip() or service_project)
-    table = str(config.get("table", "")).strip()
-    has_full_table = table.count(".") == 2
-    has_split_table = has_project and bool(str(config.get("dataset", "")).strip() and table)
-    has_table = has_full_table or has_split_table
-    return has_query or has_table
-
-
-def get_shopify_config(site_key):
-    config = {}
-    try:
-        shopify_sites = st.secrets.get("shopify_sites", {})
-        if site_key in shopify_sites:
-            config.update(dict(shopify_sites[site_key]))
-    except Exception:
-        return {}
-
-    return {
-        "shop_domain": normalize_shop_domain(config.get("shop_domain") or config.get("domain")),
-        "client_id": clean_value(config.get("client_id")),
-        "client_secret": clean_value(config.get("client_secret")),
-        "admin_access_token": clean_value(
-            config.get("admin_access_token") or config.get("access_token") or config.get("token")
-        ),
-        "api_version": clean_value(config.get("api_version")) or DEFAULT_API_VERSION,
-    }
-
-
-def is_shopify_configured(config):
-    has_token = bool(config.get("admin_access_token"))
-    has_client_credentials = bool(config.get("client_id") and config.get("client_secret"))
-    return bool(config.get("shop_domain") and (has_token or has_client_credentials))
-
-
-def read_arti_for_app(brand_config):
-    arti_df, source = read_arti_source(
-        bigquery_config=get_bigquery_config(),
-        allow_local_fallback=False,
-        brand_config=brand_config,
-    )
-    arti_df = normalize_arti_columns_for_app(arti_df).dropna(how="all")
-    arti_df, ean_source = enrich_arti_barcodes_from_bigquery_table(arti_df, get_bigquery_config())
-    if ean_source:
-        source = f"{source} + {ean_source}"
-    return arti_df, source
-
-
-def _bigquery_table_id_from_config(config):
-    config = dict(config or {})
-    table = clean_value(config.get("table"))
-    if not table:
-        return ""
-    if table.count(".") == 2:
-        return table
-    project_id = clean_value(config.get("project_id"))
-    dataset = clean_value(config.get("dataset"))
-    if project_id and dataset:
-        return f"{project_id}.{dataset}.{table}"
-    return ""
-
-
-def _bigquery_product_master_table_id(config):
-    config = dict(config or {})
-    table = clean_value(
-        config.get("product_master_table")
-        or config.get("maestro_productos_table")
-        or config.get("ean_table")
-        or config.get("barcode_table")
-        or DEFAULT_PRODUCT_MASTER_TABLE
-    )
-    if not table:
-        return ""
-    if table.count(".") == 2:
-        return table
-    project_id = clean_value(config.get("product_master_project_id") or config.get("project_id"))
-    dataset = clean_value(config.get("product_master_dataset") or config.get("dataset"))
-    if project_id and dataset:
-        return f"{project_id}.{dataset}.{table}"
-    return ""
-
-
-def _bigquery_schema_columns(client, table_id):
-    if not table_id:
-        return []
-    return [field.name for field in client.get_table(table_id).schema]
-
-
-def _bigquery_barcode_candidate_columns(columns):
-    schema_df = pd.DataFrame(columns=list(columns or []))
-    exact = first_existing_column(schema_df, ARTI_COLUMN_ALIASES_APP["CodBarras"])
-    candidates = [exact] if exact else []
-    tokens = ("ean", "barra", "barras", "barcode", "bar_code", "upc", "gtin")
-    for column in columns or []:
-        normalized = normalize_header(column)
-        if any(token in normalized for token in tokens):
-            candidates.append(column)
-    return list(dict.fromkeys([column for column in candidates if column]))
-
-
-def _bigquery_sku_candidate_column(columns):
-    schema_df = pd.DataFrame(columns=list(columns or []))
-    exact = first_existing_column(schema_df, ARTI_COLUMN_ALIASES_APP["CODINT_MA"])
-    if exact:
-        return exact
-    tokens = ("codint", "sku", "id_producto", "idproducto")
-    for column in columns or []:
-        normalized = normalize_header(column)
-        if any(token in normalized for token in tokens):
-            return column
-    return ""
-
-
-def _coalesce_barcode_candidates(df, candidate_columns):
-    if df is None or df.empty:
-        return df
-    result = normalize_arti_columns_for_app(df).copy()
-    if "CodBarras" not in result.columns:
-        result["CodBarras"] = ""
-    for column in candidate_columns or []:
-        if column not in result.columns:
-            continue
-        fill_mask = result["CodBarras"].map(clean_value).eq("") & result[column].map(clean_value).ne("")
-        if fill_mask.any():
-            result.loc[fill_mask, "CodBarras"] = result.loc[fill_mask, column]
-    return result
-
-
-def bigquery_barcode_schema_diagnostics(bigquery_config):
-    table_id = _bigquery_product_master_table_id(bigquery_config) or _bigquery_table_id_from_config(bigquery_config)
-    if not table_id:
-        return "Maestro Productos BigQuery no configurado"
-    try:
-        from google.cloud import bigquery
-        from google.oauth2 import service_account
-    except ImportError:
-        return "No pude inspeccionar schema BigQuery: falta google-cloud-bigquery"
-
-    try:
-        config = dict(bigquery_config or {})
-        project_id = clean_value(config.get("project_id"))
-        credentials_info = config.get("service_account_info")
-        credentials = None
-        if credentials_info:
-            credentials = service_account.Credentials.from_service_account_info(dict(credentials_info))
-            project_id = project_id or credentials.project_id
-        job_project_id = clean_value(config.get("job_project_id")) or project_id
-        client = bigquery.Client(project=job_project_id or None, credentials=credentials)
-        schema_columns = _bigquery_schema_columns(client, table_id)
-        sku_col = _bigquery_sku_candidate_column(schema_columns)
-        barcode_candidates = _bigquery_barcode_candidate_columns(schema_columns)
-        preview = ", ".join(barcode_candidates[:12]) or "ninguna"
-        return f"Schema {table_id}: sku={sku_col or 'NO detectado'}; columnas EAN/barra={preview}"
-    except Exception as exc:
-        return f"No pude inspeccionar schema Maestro Productos: {type(exc).__name__}: {exc}"
-
-
-def enrich_arti_barcodes_from_bigquery_table(arti_df, bigquery_config):
-    if arti_df is None or arti_df.empty or "CODINT_MA" not in arti_df.columns:
-        return arti_df, ""
-    result = normalize_arti_columns_for_app(arti_df).copy()
-    missing_mask = result["CodBarras"].map(clean_value) == ""
-    missing_skus = sorted({clean_value(value) for value in result.loc[missing_mask, "CODINT_MA"] if clean_value(value)})
-    if not missing_skus:
-        return result, ""
-
-    table_id = _bigquery_product_master_table_id(bigquery_config) or _bigquery_table_id_from_config(bigquery_config)
-    product_master_query = clean_value(
-        (bigquery_config or {}).get("product_master_query")
-        or (bigquery_config or {}).get("maestro_productos_query")
-        or (bigquery_config or {}).get("ean_query")
-        or (bigquery_config or {}).get("barcode_query")
-    )
-    if not table_id and not product_master_query:
-        return result, ""
-
-    try:
-        from google.cloud import bigquery
-        from google.oauth2 import service_account
-    except ImportError:
-        return result, ""
-
-    try:
-        config = dict(bigquery_config or {})
-        project_id = clean_value(config.get("project_id"))
-        credentials_info = config.get("service_account_info")
-        credentials = None
-        if credentials_info:
-            credentials = service_account.Credentials.from_service_account_info(dict(credentials_info))
-            project_id = project_id or credentials.project_id
-        job_project_id = clean_value(config.get("job_project_id")) or project_id
-        client = bigquery.Client(project=job_project_id or None, credentials=credentials)
-        if product_master_query:
-            wrapped_query = product_master_query.rstrip().rstrip(";")
-            query = f"""
-            SELECT *
-            FROM ({wrapped_query})
-            WHERE CAST(CODINT_MA AS STRING) IN UNNEST(@skus)
-            """
-        else:
-            schema_columns = _bigquery_schema_columns(client, table_id)
-            sku_col = _bigquery_sku_candidate_column(schema_columns)
-            barcode_cols = _bigquery_barcode_candidate_columns(schema_columns)[:20]
-            if not sku_col or not barcode_cols:
-                return result, ""
-            barcode_selects = [
-                f"CAST(`{column}` AS STRING) AS `__EAN_CAND_{index}`"
-                for index, column in enumerate(barcode_cols)
-            ]
-            query = f"""
-            SELECT
-              CAST(`{sku_col}` AS STRING) AS CODINT_MA,
-              {", ".join(barcode_selects)}
-            FROM `{table_id}`
-            WHERE CAST(`{sku_col}` AS STRING) IN UNNEST(@skus)
-            """
-        job_config = bigquery.QueryJobConfig(
-            use_legacy_sql=False,
-            query_parameters=[bigquery.ArrayQueryParameter("skus", "STRING", missing_skus)],
-        )
-        lookup_df = client.query(query, job_config=job_config, location=clean_value(config.get("location")) or None).to_dataframe()
-        ean_alias_columns = [column for column in lookup_df.columns if str(column).startswith("__EAN_CAND_")]
-        lookup_df = _coalesce_barcode_candidates(lookup_df, ean_alias_columns)
-        lookup = {
-            clean_value(row.get("CODINT_MA")): clean_value(row.get("CodBarras"))
-            for _, row in lookup_df.iterrows()
-            if clean_value(row.get("CODINT_MA")) and clean_value(row.get("CodBarras"))
-        }
-        if not lookup:
-            return result, ""
-        fill_mask = result["CodBarras"].map(clean_value) == ""
-        result.loc[fill_mask, "CodBarras"] = result.loc[fill_mask, "CODINT_MA"].map(lambda sku: lookup.get(clean_value(sku), ""))
-        filled = safe_int_value((result.loc[fill_mask, "CodBarras"].map(clean_value) != "").sum())
-        source_label = "Maestro Productos BigQuery" if product_master_query or _bigquery_product_master_table_id(bigquery_config) else "EAN tabla BigQuery"
-        return result, f"{source_label} ({filled:,})" if filled else ""
-    except Exception:
-        return result, ""
-
-
-def arti_barcode_diagnostics(arti_df):
-    if arti_df is None or arti_df.empty:
-        return "ARTI vacio"
-    df = coalesce_duplicate_columns(arti_df).copy()
-    pieces = []
-    for alias in ARTI_COLUMN_ALIASES_APP["CodBarras"]:
-        column = first_existing_column(df, [alias])
-        if column is None:
-            continue
-        non_empty = safe_int_value(df[column].map(clean_value).ne("").sum())
-        pieces.append(f"{column}: {non_empty:,}")
-    if not pieces:
-        return "No llego ninguna columna tipo EAN/barcode en el query"
-    return "Columnas EAN detectadas - " + " | ".join(dict.fromkeys(pieces))
-
-
-def detect_input_columns(df):
-    return {
-        "style": first_existing_column(df, ["style", "estilo", "modelo", "codigo", "sku padre", "parent sku", "item"]),
-        "title": first_existing_column(df, ["title", "titulo", "producto", "descripcion", "description", "nombre"]),
-        "vendor": first_existing_column(df, ["vendor", "marca", "brand"]),
-        "type": first_existing_column(df, ["type", "tipo", "categoria", "category"]),
-        "color": first_existing_column(df, ["color", "colour"]),
-        "price": first_existing_column(df, ["price", "precio", "precio venta", "variant price", "pvp"]),
-        "barcode": first_existing_column(df, ["barcode", "ean", "upc", "codigo barra", "codigo de barra"]),
-        "sku": first_existing_column(df, ["sku", "variant sku", "codigo sku"]),
-        "image": first_existing_column(df, ["image src", "imagen", "image", "url imagen", "foto"]),
-        "tags": first_existing_column(df, ["tags", "etiquetas"]),
-        "body": first_existing_column(df, ["body html", "descripcion larga", "body", "detalle"]),
-    }
-
-
-def detect_arti_columns(df):
-    return {
-        "style": first_existing_column(df, ["style", "estilo", "modelo", "codigo", "sku padre", "parent sku", "item"]),
-        "size": first_existing_column(df, ["size", "talla", "tallas"]),
-        "sku": first_existing_column(df, ["sku", "variant sku", "codigo sku", "codigo"]),
-        "barcode": first_existing_column(df, ["barcode", "ean", "upc", "codigo barra", "codigo de barra"]),
-        "color": first_existing_column(df, ["color", "colour"]),
-    }
-
-
-def build_arti_lookup(arti_df, arti_cols):
-    if not arti_cols["style"] or not arti_cols["size"]:
-        return {}
-
-    lookup = defaultdict(list)
-    for _, row in arti_df.iterrows():
-        style = clean_value(row.get(arti_cols["style"]))
-        size = normalize_size(row.get(arti_cols["size"]))
-        if not style or not size:
-            continue
-
-        item = {
-            "size": size,
-            "sku": clean_value(row.get(arti_cols["sku"])) if arti_cols["sku"] else "",
-            "barcode": clean_value(row.get(arti_cols["barcode"])) if arti_cols["barcode"] else "",
-            "color": clean_value(row.get(arti_cols["color"])) if arti_cols["color"] else "",
-        }
-        lookup[style.upper()].append(item)
-
-    for style, rows in lookup.items():
-        seen = set()
-        unique_rows = []
-        for item in sorted(rows, key=lambda value: size_sort_key(value["size"])):
-            key = item["size"]
-            if key in seen:
-                continue
-            seen.add(key)
-            unique_rows.append(item)
-        lookup[style] = unique_rows
-
-    return lookup
-
-
-def manual_sizes_from_text(value):
-    text = clean_value(value)
+def format_technology(value):
+    text = clean(value)
     if not text:
-        return []
-    parts = re.split(r"[,;/|]+", text)
-    return sorted({normalize_size(part) for part in parts if normalize_size(part)}, key=size_sort_key)
-
-
-def row_value(row, column_name):
-    if not column_name:
         return ""
-    return clean_value(row.get(column_name))
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                items = [clean(item) for item in parsed if clean(item)]
+                return json.dumps(items, ensure_ascii=False)
+        except Exception:
+            pass
+    items = [item.strip() for item in text.split(",") if item.strip()]
+    return json.dumps(items, ensure_ascii=False)
 
 
-def build_matrixify(input_df, arti_df, default_sizes_text):
-    input_cols = detect_input_columns(input_df)
-    arti_cols = detect_arti_columns(arti_df)
-    arti_lookup = build_arti_lookup(arti_df, arti_cols)
-    default_sizes = manual_sizes_from_text(default_sizes_text)
-
-    output_rows = []
-    issues = []
-
-    if not input_cols["style"]:
-        raise ValueError("No pude detectar la columna de estilo/modelo/codigo en el input.")
-
-    for row_number, (_, row) in enumerate(input_df.iterrows(), start=2):
-        style = row_value(row, input_cols["style"])
-        if not style:
-            issues.append({"Fila input": row_number, "Problema": "Sin estilo/modelo/codigo", "Valor": ""})
-            continue
-
-        title = row_value(row, input_cols["title"]) or style
-        vendor = row_value(row, input_cols["vendor"])
-        product_type = row_value(row, input_cols["type"])
-        color = row_value(row, input_cols["color"])
-        price = row_value(row, input_cols["price"])
-        image = row_value(row, input_cols["image"])
-        tags = row_value(row, input_cols["tags"])
-        body = row_value(row, input_cols["body"])
-        base_sku = row_value(row, input_cols["sku"]) or style
-        base_barcode = row_value(row, input_cols["barcode"])
-
-        matched_variants = arti_lookup.get(style.upper(), [])
-        if matched_variants:
-            variants = matched_variants
-        else:
-            variants = [
-                {"size": size, "sku": f"{base_sku}-{size}", "barcode": base_barcode, "color": color}
-                for size in default_sizes
-            ]
-            issues.append(
-                {
-                    "Fila input": row_number,
-                    "Problema": "No hubo match en arti; se usaron tallas manuales",
-                    "Valor": style,
-                }
-            )
-
-        if not variants:
-            issues.append({"Fila input": row_number, "Problema": "Sin tallas para expandir", "Valor": style})
-            continue
-
-        handle_parts = [vendor, title, style, color]
-        handle = slugify("-".join(part for part in handle_parts if part))
-
-        for variant_index, variant in enumerate(sorted(variants, key=lambda value: size_sort_key(value["size"])), start=1):
-            variant_color = variant.get("color") or color
-            output_rows.append(
-                {
-                    "Command": "MERGE",
-                    "Handle": handle,
-                    "Title": title if variant_index == 1 else "",
-                    "Body HTML": body if variant_index == 1 else "",
-                    "Vendor": vendor if variant_index == 1 else "",
-                    "Type": product_type if variant_index == 1 else "",
-                    "Tags": tags if variant_index == 1 else "",
-                    "Status": "Active" if variant_index == 1 else "",
-                    "Published": "TRUE" if variant_index == 1 else "",
-                    "Option1 Name": "Talla",
-                    "Option1 Value": variant["size"],
-                    "Option2 Name": "Color" if variant_color else "",
-                    "Option2 Value": variant_color,
-                    "Variant SKU": variant.get("sku") or f"{base_sku}-{variant['size']}",
-                    "Variant Barcode": variant.get("barcode") or base_barcode,
-                    "Variant Price": price,
-                    "Variant Compare At Price": "",
-                    "Variant Inventory Qty": 0,
-                    "Variant Inventory Tracker": "shopify",
-                    "Variant Inventory Policy": "deny",
-                    "Variant Fulfillment Service": "manual",
-                    "Variant Requires Shipping": "TRUE",
-                    "Variant Taxable": "TRUE",
-                    "Variant Weight": "",
-                    "Variant Weight Unit": "kg",
-                    "Image Src": image if variant_index == 1 else "",
-                    "Image Position": 1 if image and variant_index == 1 else "",
-                    "Metafield: custom.estilo [single_line_text_field]": style if variant_index == 1 else "",
-                    "Metafield: custom.color [single_line_text_field]": color if variant_index == 1 else "",
-                }
-            )
-
-    output_df = pd.DataFrame(output_rows).reindex(columns=MATRIXIFY_COLUMNS)
-    issues_df = pd.DataFrame(issues, columns=["Fila input", "Problema", "Valor"])
-    return output_df, issues_df, input_cols, arti_cols
+def technology_logo_slug(value):
+    text = clean(value).lower()
+    compound_replacements = {
+        "techlite": "tech-lite",
+        "outdry": "out-dry",
+        "omnimax": "omni-max",
+        "omni max": "omni-max",
+        "adapttrax": "adapt-trax",
+        "adapt trax": "adapt-trax",
+        "navicfit": "navic-fit",
+        "navic fit": "navic-fit",
+    }
+    for old, new in compound_replacements.items():
+        text = text.replace(old, new)
+    replacements = {
+        "á": "a",
+        "é": "e",
+        "í": "i",
+        "ó": "o",
+        "ú": "u",
+        "ñ": "n",
+        "™": "",
+        "®": "",
+        "&": "and",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    text = re.sub(r"-+", "-", text).strip("-")
+    return f"logo.{text}-clb" if text else ""
 
 
-def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        matrixify_df.to_excel(writer, index=False, sheet_name="Matrixify")
-        issues_df.to_excel(writer, index=False, sheet_name="Revision")
-        pd.DataFrame(
-            [
-                {"Archivo": "Input", "Campo": key, "Columna detectada": value or ""}
-                for key, value in input_cols.items()
-            ]
-            + [
-                {"Archivo": "Arti", "Campo": key, "Columna detectada": value or ""}
-                for key, value in arti_cols.items()
-            ]
-        ).to_excel(writer, index=False, sheet_name="Mapeo detectado")
-
-        for sheet_name, width in {"Matrixify": 24, "Revision": 38, "Mapeo detectado": 28}.items():
-            ws = writer.book[sheet_name]
-            ws.freeze_panes = "A2"
-            for column_cells in ws.columns:
-                ws.column_dimensions[column_cells[0].column_letter].width = width
-
-    buffer.seek(0)
-    return buffer
+def format_technology_logos(value):
+    text = clean(value)
+    if not text:
+        return ""
+    logos = []
+    seen = set()
+    for item in [part.strip() for part in text.split(",") if part.strip()]:
+        logo = technology_logo_slug(item)
+        if logo and logo not in seen:
+            logos.append(logo)
+            seen.add(logo)
+    return ", ".join(logos)
 
 
-def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_df=None, skipped_df=None, sial_df=None, centry_df=None, centry_issues_df=None):
-    matrixify_df = coalesce_duplicate_columns(matrixify_df)
-    summary_df = coalesce_duplicate_columns(summary_df)
-    issues_df = coalesce_duplicate_columns(issues_df)
-    type_warnings_df = coalesce_duplicate_columns(type_warnings_df)
-    skipped_df = coalesce_duplicate_columns(skipped_df)
-    sial_df = coalesce_duplicate_columns(sial_df)
-    centry_df = coalesce_duplicate_columns(centry_df)
-    centry_issues_df = coalesce_duplicate_columns(centry_issues_df)
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        matrixify_df.to_excel(writer, index=False, sheet_name="Products")
-        summary_df.to_excel(writer, index=False, sheet_name="Resumen")
-        issues_df.to_excel(writer, index=False, sheet_name="Revision")
-        if sial_df is not None:
-            sial_df.to_excel(writer, index=False, sheet_name="Carga Sial")
-        if centry_df is not None:
-            centry_df.to_excel(writer, index=False, sheet_name="Centry")
-            centry_review_df = centry_issues_df if centry_issues_df is not None else pd.DataFrame(columns=["Mod-Col", "Problema"])
-            centry_review_df.to_excel(writer, index=False, sheet_name="Revision Centry")
-        if type_warnings_df is not None:
-            type_warnings_df.to_excel(writer, index=False, sheet_name="Tipos nuevos")
-        if skipped_df is not None:
-            skipped_df.to_excel(writer, index=False, sheet_name="Omitidos sin cambios")
-
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for column_cells in sheet.columns:
-                sheet.column_dimensions[column_cells[0].column_letter].width = 18
-
-    buffer.seek(0)
-    return buffer
-
-
-def update_to_excel_bytes(matrixify_df, issues_df):
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        matrixify_df.to_excel(writer, index=False, sheet_name="Products")
-        issues_df.to_excel(writer, index=False, sheet_name="Revision")
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for column_cells in sheet.columns:
-                sheet.column_dimensions[column_cells[0].column_letter].width = 22
-    buffer.seek(0)
-    return buffer
-
-
-def dataframe_to_excel_bytes(sheets):
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for sheet_name, df in sheets.items():
-            safe_name = sheet_name[:31]
-            df.to_excel(writer, index=False, sheet_name=safe_name)
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for column_cells in sheet.columns:
-                sheet.column_dimensions[column_cells[0].column_letter].width = 22
-    buffer.seek(0)
-    return buffer
-
-
-CENTRY_BASE_COLUMNS = [
-    "Nombre del Producto",
-    "Marca",
-    "Descripcion",
-    "Listado de caracterÃ­sticas",
-    "GarantÃ­a",
-    "Alto del paquete",
-    "Ancho del paquete",
-    "Largo del paquete",
-    "Peso del paquete",
-    "CategorÃ­a",
-    "Precio",
-    "SKU del producto",
-    "SKU de la variante",
-    "CÃ³digo de barra variante (EAN/UPC/ISBN)",
-    "Color",
-    "Talla",
-    "CondiciÃ³n del Producto",
-    "AÃ±o de temporada",
-    "Temporada",
-    "GÃ©nero",
-    "URL imagen principal",
-    "URL imagen 2",
-    "URL imagen 3",
-    "URL imagen 4",
-    "URL imagen 5",
-    "Estado",
-    "Incluir en Falabella Global Peru / FalabellaGlobalProduction",
-]
-CENTRY_FOOTWEAR_COLUMNS = [
-    "Material principal - Calzado (Falabella GSC PerÃº)",
-    "GÃ©nero - Calzado (Falabella GSC PerÃº)",
-    "Tipo - Calzado (Falabella GSC PerÃº)",
-    "Altura de la plataforma - Calzado (Falabella GSC PerÃº)",
-    "Altura del taco - Calzado (Falabella GSC PerÃº)",
-    "Material de la plantilla - Calzado (Falabella GSC PerÃº)",
-    "Material de la suela - Calzado (Falabella GSC PerÃº)",
-    "Horma - Calzado (Falabella GSC PerÃº)",
-    "Tipo de caÃ±a - Calzado (Falabella GSC PerÃº)",
-    "Forma de la punta - Calzado (Falabella GSC PerÃº)",
-    "Material del forro - Calzado (Falabella GSC PerÃº)",
-    "Material de la suela (MercadoLibre PerÃº)",
-    "Con suela antideslizante (MercadoLibre PerÃº)",
-    "Tipo de caÃ±a (MercadoLibre PerÃº)",
-    "Tipo de calzado (MercadoLibre PerÃº)",
-    "Edad (MercadoLibre PerÃº)",
-    "Forma de la punta (MercadoLibre PerÃº)",
-    "Material del calzado (MercadoLibre PerÃº)",
-    "Materiales del exterior (MercadoLibre PerÃº)",
-    "Materiales del interior(MercadoLibre PerÃº)",
-    "Tipo de taco (MercadoLibre PerÃº)",
-]
-CENTRY_APPAREL_COLUMNS = [
-    "GÃ©nero de vestuario - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Material de vestuario - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de cierre - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de prenda para la parte superior - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de camisa/blusa/polo/camiseta - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de chaqueta/chaleco - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de pantalÃ³n largo/corto - Ropa y accesorios (Falabella GSC PerÃº)",
-    "ComposiciÃ³n - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Largo de mangas - Ropa y accesorios (Falabella GSC PerÃº)",
-    "DiseÃ±o - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de cuello - Tipo de cuello - Ropa y accesorios (Falabella GSC PerÃº)",
-]
-CENTRY_MARKETPLACE_EXTRA_COLUMNS = [
-    "cccc",
-    "Incluir en MercadoLibrePe / MercadoLibrePe",
-    "Es inflamable (MercadoLibre PerÃº)",
-    "Material del accesorio - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de ropa para la cabeza - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de ropa para el cuello - Ropa y accesorios (Falabella GSC PerÃº)",
-    "ComposiciÃ³n (MercadoLibre PerÃº)",
-    "Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Contenido del paquete - Package content - Almacenamiento (Falabella GSC PerÃº)",
-    "DiseÃ±o de la tela (MercadoLibre PerÃº)",
-    "TamaÃ±o del bolso maleta - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Cantidad de bolsillos interiores - Cantidad de bolsillos interiores - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Material de la maleta - Material de la maleta - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de maleta - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de bolso mochila funda - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Con monedero (MercadoLibre PerÃº)",
-    "Tipo de sombrero (MercadoLibre PerÃº)",
-    "Con cierre ajustable (MercadoLibre PerÃº)",
-    "Es reversible (MercadoLibre PerÃº)",
-    "Uso de la cartera/mochila/bolsa - Uso de la cartera mochila bolsa - Ropa y accesorios (Falabella GSC PerÃº)",
-    "Tipo de cartera (MercadoLibre PerÃº)",
-    "Con cierre (MercadoLibre PerÃº)",
-    "INFORMACIÃ“N ADICIONAL",
-    "Unnamed: 52",
-    "Unnamed: 53",
-    "Unnamed: 54",
-    "Unnamed: 55",
-    "Unnamed: 56",
-]
-CENTRY_TAIL_COLUMNS = ["Clase", "GuÃ­a de tallas", "Base de categorÃ­a", "Cod Mod Col Talla", "Mod", "Col", "Tal"]
-CENTRY_COLUMNS = list(dict.fromkeys(CENTRY_BASE_COLUMNS + CENTRY_MARKETPLACE_EXTRA_COLUMNS + CENTRY_FOOTWEAR_COLUMNS + CENTRY_APPAREL_COLUMNS + CENTRY_TAIL_COLUMNS))
-CENTRY_SIAL_COLUMNS = [
-    "Mod", "Col", "Tal", "Product Name ", "Product Bullets", "Product Description", "Image URL",
-    "Product Weight", "Product Length", "Product Width", "Product Height",
-    "Package Weight", "Package Length", "Package Width", "Package Height",
-    "Boost ", "Talla Web ", "Color Web", "Categoria ", "Sub Categoria", "Genero",
-    "Estilo ", "Colecciones ", "Temporada ", "Modelo", "Marca", "Tecnologias ",
-    "Caracteristicas", "Tipo de Boardshort", "Tipo de Bikini", "Iniciativas",
-    "Tipo de Material", "1", "Tipo de Prenda", "Adicional 2 ", "Adicional 3 ",
-    "Adicional 4 ", "Adicional 5 ", "Adicional 6 ", "Adicional 7 ", "Adicional 8 ",
-    "Adicional 9 ", "Adicional 10", "Mod-Col", "Sku - Sial",
-    "Nuevo o Actualizar (Rockford.pe)", "Sku - Supermall.pe", "Porduct Id - Supermall.pe",
-]
-
-
-def centry_value(value, fallback=""):
-    text = clean_value(value)
-    if not text or text.upper() in {"#N/D", "#ND", "#N/A", "NAN", "NONE", "NULL"}:
-        return fallback
+def valid_price(value):
+    text = clean(value).replace(",", ".")
+    if not text:
+        return ""
+    try:
+        number = float(text)
+    except ValueError:
+        return clean(value)
+    if number <= 0:
+        return ""
+    if number.is_integer():
+        return str(int(number))
     return text
 
 
-def centry_is_footwear(row):
-    haystack = " ".join(
-        centry_value(row.get(column)).lower()
-        for column in ("Type", "Tags", "Title", "CategorÃ­a", "Categoria ")
-    )
-    return any(word in haystack for word in ("calzado", "zapatilla", "zapato", "botin", "bota", "sandalia"))
+def strip_html(value):
+    text = re.sub(r"<[^>]+>", " ", clean(value))
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def centry_gender(row):
-    text = " ".join(centry_value(row.get(column)).lower() for column in ("Title", "Tags", "Body HTML", "Type"))
-    if "unisex" in text:
-        return "Unisex"
-    if "mujer" in text or "femenino" in text:
-        return "Femenino"
-    if "hombre" in text or "masculino" in text:
-        return "Masculino"
-    if "niÃ±o" in text or "nino" in text or "kids" in text:
-        return "NiÃ±os"
+def first_non_empty(*values):
+    for value in values:
+        text = clean(value)
+        if text:
+            return text
     return ""
 
 
-def centry_category(row):
-    product_type = centry_value(row.get("Type"))
-    gender = centry_gender(row)
-    if centry_is_footwear(row):
-        branch = "Calzados Masculinos" if gender == "Masculino" else "Calzados Femeninos" if gender == "Femenino" else "Calzados"
-        return f"Calzados / {branch} / {product_type or 'Zapatillas'}"
-    branch = "Ropa Masculina" if gender == "Masculino" else "Ropa Femenina" if gender == "Femenino" else "Ropa"
-    return f"Vestuario / {branch} / {product_type or 'Prendas'}"
+def limit_words(value, max_words=45):
+    text = re.sub(r"\s+", " ", clean(strip_html(value))).strip(" -:;,.")
+    if not text:
+        return ""
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    return " ".join(words[:max_words]).strip(" -:;,.")
 
 
-def centry_master_key(*values):
-    return normalize_header(" ".join(clean_value(value) for value in values if clean_value(value)))
+def product_category(product):
+    return first_non_empty(
+        product.get("Metafield: custom.categoria [single_line_text_field]"),
+        product.get("Categoria "),
+        product.get("Categoria"),
+        product.get("Category"),
+    )
 
 
-def centry_master_gender(value):
-    text = centry_value(value).lower()
-    if text == "unisex":
-        return "Unisex"
-    if text in ("masculino", "hombre", "men"):
-        return "Hombre"
-    if text in ("femenino", "mujer", "women"):
-        return "Mujer"
-    if "ni" in text or "kid" in text:
-        return "NiÃ±os"
-    return centry_value(value)
+def product_gender(product):
+    return first_non_empty(
+        product.get("Metafield: custom.genero [single_line_text_field]"),
+        product.get("Genero"),
+        product.get("Género"),
+        product.get("Gender"),
+    )
 
 
-def first_existing_path(paths):
-    for path in paths:
-        if Path(path).exists():
-            return Path(path)
-    return None
+def product_technology(product, tech_col):
+    return clean(product.get(tech_col)) if tech_col else ""
 
 
-@st.cache_data(show_spinner=False)
-def load_centry_category_lookup():
-    path = first_existing_path(DEFAULT_CENTRY_CATEGORY_PATHS)
-    by_full_key = {}
-    by_gender_type = {}
-    for item in CENTRY_CATEGORY_FULL:
-        product_type = clean_value(item.get("product_type"))
-        gender = centry_master_gender(item.get("gender"))
-        brand = clean_value(item.get("brand"))
-        if product_type and gender and brand:
-            key = centry_master_key(product_type, gender, brand)
-            record = {
-                "category": clean_value(item.get("category")),
-                "class": clean_value(item.get("class")),
-                "base": clean_value(item.get("base")) or f"{product_type}{gender}{brand}",
-            }
-            if key not in by_full_key or clean_value(record.get("category")):
-                by_full_key[key] = record
-    for item in CENTRY_CATEGORY_GENDER_TYPE:
-        gender = centry_master_gender(item.get("gender"))
-        product_type = clean_value(item.get("product_type"))
-        category = clean_value(item.get("category"))
-        if gender and product_type and category:
-            by_gender_type[centry_master_key(product_type, gender)] = {
-                "category": category,
-                "class": "Vestuario" if category.lower().startswith("vestuario") else "",
-                "base": clean_value(item.get("base")) or f"{gender}{product_type}",
-            }
-    if path is None:
-        return {"path": "", "by_full_key": by_full_key, "by_gender_type": by_gender_type}
-    try:
-        categories = pd.read_excel(path, sheet_name="CategorÃ­as", dtype=object).dropna(how="all")
-        for _, row in categories.iterrows():
-            product_type = clean_value(row.get("Tipo de Producto"))
-            gender = centry_master_gender(row.get("GÃ©nero"))
-            brand = clean_value(row.get("Marca"))
-            record = {
-                "category": clean_value(row.get("CategorÃ­a")),
-                "class": clean_value(row.get("Clase")),
-                "base": clean_value(row.get("Unnamed: 5")) or f"{product_type}{gender}{brand}",
-            }
-            if product_type and gender and brand:
-                key = centry_master_key(product_type, gender, brand)
-                if key not in by_full_key or clean_value(record.get("category")):
-                    by_full_key[key] = record
-        all_sheet = pd.read_excel(path, sheet_name="all", dtype=object).dropna(how="all")
-        for _, row in all_sheet.iterrows():
-            gender = centry_master_gender(row.get("GÃ©nero"))
-            product_type = clean_value(row.get("Unnamed: 2"))
-            category = clean_value(row.get("CategorÃ­a"))
-            if gender and product_type and category:
-                by_gender_type[centry_master_key(product_type, gender)] = {
-                    "category": category,
-                    "class": "Vestuario" if category.lower().startswith("vestuario") else "",
-                    "base": clean_value(row.get("Unnamed: 3")) or f"{gender}{product_type}",
-                }
-    except Exception:
-        return {"path": str(path), "by_full_key": {}, "by_gender_type": {}}
-    return {"path": str(path), "by_full_key": by_full_key, "by_gender_type": by_gender_type}
-
-
-@st.cache_data(show_spinner=False)
-def load_centry_codex_category_lookup():
-    path = first_existing_path(DEFAULT_CENTRY_CODEX_CATEGORY_PATHS)
-    by_type = {}
-    by_class_type = {}
-    for item in CENTRY_CODEX_CATEGORIES:
-        product_type = clean_value(item.get("product_type"))
-        class_name = clean_value(item.get("class"))
-        category_name = clean_value(item.get("category"))
-        base = clean_value(item.get("base")) or f"{class_name}{product_type}"
-        if not product_type or not class_name:
-            continue
-        category = f"{class_name} / {category_name}" if category_name and category_name != class_name else class_name
-        record = {"category": category, "class": class_name, "base": base}
-        by_type.setdefault(centry_master_key(product_type), record)
-        by_class_type.setdefault(centry_master_key(class_name, product_type), record)
-    if path is None:
-        return {"path": "", "by_type": by_type, "by_class_type": by_class_type}
-    try:
-        df = pd.read_excel(path, dtype=object).dropna(how="all")
-        for _, row in df.iterrows():
-            product_type = clean_value(row.get("Tipo de Producto"))
-            class_name = clean_value(row.get("Clase"))
-            category_name = clean_value(row.get("CategorÃ­a"))
-            base = clean_value(row.get("Llave")) or f"{class_name}{product_type}"
-            if not product_type or not class_name:
-                continue
-            category = f"{class_name} / {category_name}" if category_name and category_name != class_name else class_name
-            record = {"category": category, "class": class_name, "base": base}
-            by_type.setdefault(centry_master_key(product_type), record)
-            by_class_type.setdefault(centry_master_key(class_name, product_type), record)
-    except Exception:
-        return {"path": str(path), "by_type": {}, "by_class_type": {}}
-    return {"path": str(path), "by_type": by_type, "by_class_type": by_class_type}
-
-
-@st.cache_data(show_spinner=False)
-def load_centry_dimension_lookup():
-    path = first_existing_path(DEFAULT_CENTRY_DIMENSIONS_PATHS)
-    lookup = {}
-    for item in CENTRY_DIMENSIONS:
-        product_type = clean_value(item.get("product_type"))
-        if product_type:
-            lookup.setdefault(
-                centry_master_key(product_type),
-                {
-                    "height": clean_value(item.get("height")),
-                    "width": clean_value(item.get("width")),
-                    "length": clean_value(item.get("length")),
-                    "weight": clean_value(item.get("weight")),
-                },
+def sial_dimension_defaults(product):
+    text = normalize_text(
+        " ".join(
+            clean(value)
+            for value in (
+                product.get("Type"),
+                product_category(product),
+                product.get("Categoria "),
+                product.get("Tags"),
+                product.get("Title"),
             )
-    if path is None:
-        return {"path": "", "lookup": lookup}
-    try:
-        xl = pd.ExcelFile(path)
-        for sheet in xl.sheet_names:
-            df = pd.read_excel(path, sheet_name=sheet, dtype=object).dropna(how="all")
-            if "Tipo de Producto" not in df.columns:
-                continue
-            for _, row in df.iterrows():
-                product_type = clean_value(row.get("Tipo de Producto"))
-                if not product_type:
-                    continue
-                height = first_non_empty(row.get("Product Height"), row.get("Unnamed: 5"), row.get("Alto (cm)"))
-                width = first_non_empty(row.get("Product Width"), row.get("Unnamed: 6"), row.get("Ancho (cm)"))
-                length = first_non_empty(row.get("Product Length"), row.get("Unnamed: 7"), row.get("Largo (cm)"))
-                weight = first_non_empty(row.get("Product Weight (gr)"), row.get("Unnamed: 8"), row.get("Peso (gr)"))
-                lookup.setdefault(
-                    centry_master_key(product_type),
-                    {"height": height, "width": width, "length": length, "weight": weight},
-                )
-    except Exception:
-        return {"path": str(path), "lookup": {}}
-    return {"path": str(path), "lookup": lookup}
+            if clean(value)
+        )
+    )
+    is_footwear = any(term in text for term in ("calzado", "zapatilla", "zapato", "botin", "bota", "sandalia"))
+    if is_footwear:
+        return {"weight": 900, "length": 35, "width": 21, "height": 12}
+    return {"weight": 200, "length": 29, "width": 27, "height": 1}
 
 
-def centry_lookup_category(product_type, gender, vendor, fallback_category):
-    lookup = load_centry_category_lookup()
-    gender_master = centry_master_gender(gender)
-    type_gender_key = centry_master_key(product_type, gender_master)
-    record = lookup["by_full_key"].get(centry_master_key(product_type, gender_master, vendor))
-    if record is None:
-        record = lookup["by_gender_type"].get(type_gender_key)
-    elif not clean_value(record.get("category")):
-        type_record = lookup["by_gender_type"].get(type_gender_key)
-        if type_record and clean_value(type_record.get("category")):
-            record = {**record, "category": type_record.get("category")}
-    if record is None:
-        codex_lookup = load_centry_codex_category_lookup()
-        fallback_class = clean_value(fallback_category).split("/", 1)[0].strip()
-        record = codex_lookup["by_class_type"].get(centry_master_key(fallback_class, product_type))
-        if record is None:
-            record = codex_lookup["by_type"].get(centry_master_key(product_type))
-    return record or {"category": fallback_category, "class": "", "base": f"{product_type}{gender_master}{vendor}"}
-
-
-def centry_lookup_dimensions(product_type, fallback):
-    lookup = load_centry_dimension_lookup()["lookup"]
-    record = lookup.get(centry_master_key(product_type))
-    return record or fallback
-
-
-def centry_sial_dimension_package(row, product_type, fallback):
-    dimensions = centry_lookup_dimensions(product_type, fallback)
+def sial_dimension_value(product, key, fallback):
     aliases = {
         "weight": ("Product Weight", "Package Weight", "Peso del paquete", "Peso (gr)", "Product Weight (gr)"),
         "length": ("Product Length", "Package Length", "Largo del paquete", "Largo (cm)"),
         "width": ("Product Width", "Package Width", "Ancho del paquete", "Ancho (cm)"),
         "height": ("Product Height", "Package Height", "Alto del paquete", "Alto (cm)"),
     }
-    package = {}
-    for key, columns in aliases.items():
-        package[key] = first_non_empty(*(row.get(column) for column in columns), dimensions.get(key), fallback[key])
-    return package
+    return first_non_empty(*(product.get(column) for column in aliases.get(key, ())), fallback)
 
 
-def centry_split_images(value):
-    parts = [centry_value(part) for part in re.split(r"[;\n]+", centry_value(value)) if centry_value(part)]
-    return parts[:5]
-
-
-def centry_mod_col_from_row(row):
-    mod_col = first_non_empty(
-        row.get("Metafield: custom.codigo_modelo_color [id]"),
-        row.get("Mod-Col"),
-        row.get("COD MOD COL"),
-    ).upper()
-    if mod_col:
-        return mod_col
-    sku = centry_value(row.get("Variant SKU"))
-    return sku.rsplit("-", 1)[0].upper() if "-" in sku else sku.upper()
-
-
-def centry_output_is_accessory(row):
-    text = normalize_header(
-        " ".join(
-            clean_value(row.get(column))
-            for column in ("Clase", "CategorÃ­a", "Categoria ", "Type", "Sub Categoria")
-            if column in row.index
-        )
-    )
-    return "accesorio" in text or "accesorios" in text
-
-
-def centry_output_blocks_zero_size(row):
-    text = normalize_header(
-        " ".join(
-            clean_value(row.get(column))
-            for column in ("Clase", "CategorÃ­a", "Categoria ", "Type", "Sub Categoria")
-            if column in row.index
-        )
-    )
-    return "calzado" in text or "vestuario" in text
-
-
-def centry_display_size(value, force_one_size=False):
-    if force_one_size or is_one_size(value):
-        return "O/S"
-    return first_non_empty(normalize_master_size(value), centry_value(value))
-
-
-def build_centry_arti_lookup(arti_df):
-    lookup = {"by_sku": {}, "by_mod_size": {}}
-    if arti_df is None or arti_df.empty:
-        return lookup
-    df = normalize_arti_columns_for_app(arti_df).copy()
-    for column in ("CODINT_MA", "COD MOD COL", "Mod-Col", "TALNUM_MA", "CodBarras"):
-        if column not in df.columns:
-            df[column] = ""
-    for _, row in df.iterrows():
-        sku = clean_value(row.get("CODINT_MA"))
-        mod_col = first_non_empty(row.get("COD MOD COL"), row.get("Mod-Col"))
-        raw_size = clean_value(row.get("TALNUM_MA"))
-        display_size = normalize_master_size(raw_size)
-        barcode = clean_value(row.get("CodBarras"))
-        if not barcode and not raw_size:
-            continue
-        item = {"barcode": barcode, "raw_size": raw_size, "display_size": display_size}
-        if sku:
-            lookup["by_sku"].setdefault(sku.upper(), item)
-        if mod_col:
-            for size_key in {raw_size, display_size}:
-                size_key = clean_value(size_key)
-                if size_key:
-                    lookup["by_mod_size"].setdefault((mod_col.upper(), size_key.upper()), item)
-    return lookup
-
-
-def centry_arti_item_for_row(row, arti_lookup, current_mod_col, raw_size):
-    if not arti_lookup:
-        return {}
-    sku = centry_value(row.get("Variant SKU")).upper()
-    if sku and sku in arti_lookup.get("by_sku", {}):
-        return arti_lookup["by_sku"][sku]
-    mod_col = clean_value(current_mod_col).upper()
-    for size_key in (raw_size, normalize_master_size(raw_size), row.get("Option1 Value")):
-        size_key = clean_value(size_key).upper()
-        if mod_col and size_key and (mod_col, size_key) in arti_lookup.get("by_mod_size", {}):
-            return arti_lookup["by_mod_size"][(mod_col, size_key)]
-    return {}
-
-
-def centry_size_guide(gender, class_name, vendor):
-    gender_map = {
-        "Masculino": "Hombre",
-        "Femenino": "Mujer",
-        "NiÃ±os": "Ninos",
-        "NiÃ±as": "Ninas",
-        "Unisex": "Unisex",
-    }
-    class_map = {"Calzado": "calzado", "Vestuario": "vestuario", "Accesorios": "accesorios"}
-    gender_text = gender_map.get(centry_value(gender), centry_value(gender))
-    class_text = class_map.get(centry_value(class_name), centry_value(class_name).lower())
-    vendor_text = centry_value(vendor).replace(" ", "")
-    return f"{gender_text}{class_text}{vendor_text}" if gender_text and class_text and vendor_text else ""
-
-
-def centry_tag_value(row, *labels):
-    text = " | ".join(
-        centry_value(row.get(column))
-        for column in ("Tags", "Listado de caracterÃ­sticas", "Product Bullets")
-        if column in row.index
-    )
-    if not text:
-        return ""
-    for label in labels:
-        pattern = rf"{re.escape(label)}\s*[:|]\s*(.*?)(?:\s*\|\s*|,\s{{2,}}|$)"
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            value = clean_value(match.group(1)).strip(" ,;")
-            if value:
-                return value
-    return ""
-
-
-def centry_material_from_row(row):
-    return first_non_empty(
-        centry_tag_value(row, "Material principal", "Material"),
-        row.get("Metafield: custom.materialidad [single_line_text_field]"),
-        row.get("Material"),
-        row.get("ComposiciÃ³n"),
-    )
-
-
-def centry_composition_from_row(row):
-    return first_non_empty(
-        centry_tag_value(row, "ComposiciÃ³n", "Composicion"),
-        row.get("Metafield: custom.materialidad [single_line_text_field]"),
-        row.get("ComposiciÃ³n"),
-    )
-
-
-def centry_age_from_gender(gender):
-    normalized = centry_master_gender(gender)
-    if normalized in ("NiÃ±os", "NiÃ±o", "NiÃ±a", "Ninos", "Ninas"):
-        return "NiÃ±os"
-    if normalized in ("Hombre", "Mujer", "Unisex"):
-        return "Adultos"
-    return ""
-
-
-def centry_footwear_cane_from_row(row):
-    return first_non_empty(
-        centry_tag_value(row, "Altura De Taco", "Altura de Taco", "Tipo de taco", "Tipo de caÃ±a"),
-        row.get("Altura De Taco"),
-        row.get("Tipo de taco"),
-    )
-
-
-def centry_tag_or_column_value(row, *labels):
-    candidates = [centry_tag_value(row, *labels)]
-    for label in labels:
-        candidates.append(row.get(label))
-    return first_non_empty(*candidates)
-
-
-def centry_labeled_characteristics(row, vendor, product_type, color, gender, material, composition, footwear_cane):
-    items = [
-        ("Tipo De Producto", product_type),
-        ("GÃ©nero", gender),
-        ("Color", color),
-        ("Marca", vendor),
-        ("OcasiÃ³n", centry_tag_or_column_value(row, "OcasiÃ³n", "Ocasion")),
-        ("ColecciÃ³n", centry_tag_or_column_value(row, "ColecciÃ³n", "Coleccion")),
-        ("Material", material),
-        ("ComposiciÃ³n", composition),
-        ("Altura De Taco", footwear_cane),
+def category_blocks_zero_size(product):
+    values = [
+        product_category(product),
+        product.get("Categoria "),
+        product.get("Categoria"),
+        product.get("Type"),
+        product.get("Metafield: custom.tipo [single_line_text_field]"),
+        product.get("Metafield: custom.categoria [single_line_text_field]"),
+        product.get("Tags"),
     ]
-    return " |".join(
-        f"{label} : {centry_value(value).strip()}"
-        for label, value in items
-        if centry_value(value)
+    text = normalize_text(" ".join(clean(value) for value in values if clean(value)))
+    blocked_terms = (
+        "vestuario",
+        "calzado",
+        "ropa",
+        "zapatilla",
+        "zapato",
+        "bota",
+        "botin",
+        "sandalia",
+        "camisa",
+        "camiseta",
+        "polera",
+        "pantalon",
+        "short",
+        "casaca",
+        "chaqueta",
+        "parka",
+        "polar",
+        "poleron",
+        "vestido",
+        "falda",
+        "media",
+        "medias",
+        "calcetin",
+        "calcetines",
     )
-
-
-def centry_color_name_from_row(row, color_code=""):
-    color = first_non_empty(
-        row.get("Color Web"),
-        row.get("Color"),
-        row.get("COLOR"),
-        row.get("Nombre Color"),
-        row.get("Color Nombre"),
-        row.get("Metafield: custom.color_forus [single_line_text_field]"),
-        row.get("Metafield: theme.siblings_color [single_line_text_field]"),
-        row.get("Metafield: custom.siblings_color [single_line_text_field]"),
-        row.get("Metafield: custom.color [single_line_text_field]"),
-        row.get("Option2 Value"),
-        centry_tag_value(row, "Color", "Color Comercial", "Color Web"),
-    )
-    if color and color_code and clean_value(color).upper() == clean_value(color_code).upper():
-        return ""
-    return color
-
-
-def centry_gender_marketplace(gender):
-    if gender == "Masculino":
-        return "Hombre"
-    if gender == "Femenino":
-        return "Mujer"
-    return centry_value(gender)
-
-
-def centry_product_type_lower(product_type):
-    return normalize_header(product_type)
-
-
-def centry_is_accessory_type(product_type, category_record=None):
-    text = centry_product_type_lower(product_type)
-    category_text = centry_product_type_lower((category_record or {}).get("class")) + " " + centry_product_type_lower((category_record or {}).get("category"))
-    return "accesorio" in category_text or any(
-        word in text
-        for word in (
-            "bolso", "mochila", "billetera", "cartera", "canguro", "maleta", "gorro",
-            "jockey", "sombrero", "beanie", "cuello", "botella", "calcetin", "calcetines",
-            "cinturon", "banano", "lentes",
-        )
-    )
-
-
-def centry_apparel_top_bottom_column(product_type):
-    text = centry_product_type_lower(product_type)
-    if any(word in text for word in ("pantalon", "short", "bermuda", "buzo", "jogger", "legging", "falda")):
-        return "Tipo de pantalÃ³n largo/corto - Ropa y accesorios (Falabella GSC PerÃº)"
-    if any(word in text for word in ("casaca", "chaqueta", "parka", "chaleco", "polar")):
-        return "Tipo de chaqueta/chaleco - Ropa y accesorios (Falabella GSC PerÃº)"
-    return "Tipo de camisa/blusa/polo/camiseta - Ropa y accesorios (Falabella GSC PerÃº)"
-
-
-def centry_apply_accessory_fields(centry_row, product_type, gender, material):
-    text = centry_product_type_lower(product_type)
-    centry_row["GÃ©nero de vestuario - Ropa y accesorios (Falabella GSC PerÃº)"] = centry_gender_marketplace(gender)
-    centry_row["Material del accesorio - Ropa y accesorios (Falabella GSC PerÃº)"] = material
-    centry_row["Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC PerÃº)"] = first_non_empty(material, "Otros")
-    centry_row["ComposiciÃ³n - Ropa y accesorios (Falabella GSC PerÃº)"] = first_non_empty(material, "-")
-    centry_row["ComposiciÃ³n (MercadoLibre PerÃº)"] = first_non_empty(material, "")
-    if any(word in text for word in ("gorro", "jockey", "sombrero", "beanie")):
-        centry_row["Tipo de ropa para la cabeza - Ropa y accesorios (Falabella GSC PerÃº)"] = product_type
-        centry_row["Tipo de sombrero (MercadoLibre PerÃº)"] = product_type
-    if "cuello" in text:
-        centry_row["Tipo de ropa para el cuello - Ropa y accesorios (Falabella GSC PerÃº)"] = product_type
-    if any(word in text for word in ("mochila", "bolso", "cartera", "billetera", "canguro", "banano")):
-        centry_row["Tipo de bolso mochila funda - Ropa y accesorios (Falabella GSC PerÃº)"] = product_type
-        centry_row["Tipo de cartera (MercadoLibre PerÃº)"] = product_type
-        centry_row["Uso de la cartera/mochila/bolsa - Uso de la cartera mochila bolsa - Ropa y accesorios (Falabella GSC PerÃº)"] = "Urbano"
-    if "maleta" in text:
-        centry_row["Tipo de maleta - Ropa y accesorios (Falabella GSC PerÃº)"] = product_type
-        centry_row["Material de la maleta - Material de la maleta - Ropa y accesorios (Falabella GSC PerÃº)"] = first_non_empty(material, "")
-    centry_row["Contenido del paquete - Package content - Almacenamiento (Falabella GSC PerÃº)"] = "1"
-    centry_row["Con monedero (MercadoLibre PerÃº)"] = "No"
-    centry_row["Con cierre ajustable (MercadoLibre PerÃº)"] = "No"
-    centry_row["Es reversible (MercadoLibre PerÃº)"] = "No"
-    centry_row["Con cierre (MercadoLibre PerÃº)"] = "No"
-
-
-def centry_apply_apparel_fields(centry_row, product_type, gender, material, composition):
-    centry_row["GÃ©nero de vestuario - Ropa y accesorios (Falabella GSC PerÃº)"] = centry_gender_marketplace(gender)
-    centry_row["Material de vestuario - Ropa y accesorios (Falabella GSC PerÃº)"] = material
-    centry_row["Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC PerÃº)"] = first_non_empty(material, "Otros")
-    centry_row["ComposiciÃ³n - Ropa y accesorios (Falabella GSC PerÃº)"] = first_non_empty(composition, material, "-")
-    target_column = centry_apparel_top_bottom_column(product_type)
-    centry_row[target_column] = product_type
-    centry_row["Tipo de prenda para la parte superior - Ropa y accesorios (Falabella GSC PerÃº)"] = product_type
-    centry_row["DiseÃ±o - Ropa y accesorios (Falabella GSC PerÃº)"] = "-"
-    centry_row["Tipo de cierre - Ropa y accesorios (Falabella GSC PerÃº)"] = ""
-
-
-def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_label="Centry"):
-    if df is None or df.empty or size_column not in df.columns:
-        return df, issues
-    result = df.copy()
-    key_values = result[key_column].map(clean_value) if key_column in result.columns else pd.Series("", index=result.index)
-
-    k_mask = result[size_column].map(is_internal_k_size)
-    if k_mask.any():
-        issues.append({"Mod-Col": output_label, "Problema": f"Se eliminaron {safe_int_value(k_mask.sum())} filas con talla interna K"})
-        result = result[~k_mask].copy()
-        key_values = key_values.loc[result.index]
-
-    zero_block_mask = result.apply(lambda row: is_zero_size(row.get(size_column)) and centry_output_blocks_zero_size(row), axis=1)
-    if zero_block_mask.any():
-        issues.append({"Mod-Col": output_label, "Problema": f"Se eliminaron {safe_int_value(zero_block_mask.sum())} filas con talla 0/000 en vestuario/calzado"})
-        result = result[~zero_block_mask].copy()
-        key_values = key_values.loc[result.index]
-
-    if result.empty:
-        return result, issues
-
-    drop_accessory_zero = pd.Series(False, index=result.index)
-    for key, group in result.groupby(key_values, sort=False):
-        if not clean_value(key):
-            continue
-        accessory_group = group.apply(centry_output_is_accessory, axis=1)
-        if not accessory_group.any():
-            continue
-        accessory_rows = group.loc[accessory_group]
-        has_real_size = (
-            accessory_rows[size_column].map(clean_value).ne("")
-            & ~accessory_rows[size_column].map(is_zero_size)
-        ).any()
-        if has_real_size:
-            group_zero = accessory_rows[size_column].map(is_zero_size)
-            drop_accessory_zero.loc[accessory_rows.index[group_zero]] = True
-    if drop_accessory_zero.any():
-        issues.append({"Mod-Col": output_label, "Problema": f"Se eliminaron {safe_int_value(drop_accessory_zero.sum())} filas accesorio talla 0/000 porque existe una talla real"})
-        result = result[~drop_accessory_zero].copy()
-
-    one_size_mask = result[size_column].map(is_one_size)
-    if one_size_mask.any():
-        result.loc[one_size_mask, size_column] = "O/S"
-    return result, issues
-
-
-def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None, arti_df=None):
-    if matrixify_df is None or matrixify_df.empty:
-        return pd.DataFrame(columns=CENTRY_COLUMNS), pd.DataFrame(columns=["Mod-Col", "Problema"])
-    brand_config = brand_config or {}
-    df = coalesce_duplicate_columns(matrixify_df).copy()
-    for column in MATRIXIFY_COLUMNS:
-        if column not in df.columns:
-            df[column] = ""
-    product_fields = [
-        "Title", "Body HTML", "Vendor", "Type", "Tags", "Status", "Published", "Image Src",
-        "Metafield: custom.codigo_modelo_color [id]", "Metafield: custom.estilo [single_line_text_field]",
-        "Metafield: custom.color [single_line_text_field]",
-        "Metafield: custom.materialidad [single_line_text_field]",
-        "Metafield: custom.tecnologia [list.single_line_text_field]",
-    ]
-    for column in product_fields:
-        if column in df.columns:
-            df[column] = df[column].replace("", pd.NA).ffill().fillna("")
-    only_codes_set = {clean_value(code).upper() for code in (only_codes or []) if clean_value(code)}
-    rows = []
-    issues = []
-    normalized_arti_df = normalize_arti_columns_for_app(arti_df) if arti_df is not None else arti_df
-    if normalized_arti_df is not None and not normalized_arti_df.empty and normalized_arti_df["CodBarras"].map(clean_value).eq("").all():
-        issues.append({"Mod-Col": "BigQuery/ARTI", "Problema": "La fuente maestra no trajo CodBarras/EAN/barcode reconocible"})
-    arti_lookup = build_centry_arti_lookup(normalized_arti_df)
-    current_mod_col = ""
-    for _, row in df.iterrows():
-        variant_sku = centry_value(row.get("Variant SKU"))
-        if not variant_sku:
-            continue
-        mod_col = centry_mod_col_from_row(row)
-        current_mod_col = mod_col or current_mod_col
-        model, color_code = split_model_color(current_mod_col)
-        if only_codes_set and current_mod_col not in only_codes_set and model not in only_codes_set:
-            continue
-        images = centry_split_images(row.get("Image Src"))
-        title = centry_value(row.get("Title"))
-        vendor = centry_value(row.get("Vendor"), brand_config.get("label", ""))
-        product_type = centry_value(row.get("Type"))
-        color = first_non_empty(centry_color_name_from_row(row, color_code), color_code)
-        raw_size = first_non_empty(row.get("__CENTRY_RAW_SIZE"), row.get("Option1 Value"))
-        gender = centry_gender(row)
-        is_footwear = centry_is_footwear(row)
-        fallback_package = centry_package_values(row)
-        dimensions = centry_lookup_dimensions(product_type, fallback_package)
-        category_record = centry_lookup_category(product_type, gender, vendor, centry_category(row))
-        category_probe = pd.Series({"Clase": category_record.get("class"), "CategorÃ­a": category_record.get("category"), "Type": product_type})
-        arti_item = centry_arti_item_for_row(row, arti_lookup, current_mod_col, raw_size)
-        size = centry_display_size(raw_size, centry_output_is_accessory(category_probe) and is_one_size(raw_size))
-        barcode = first_non_empty(arti_item.get("barcode"), row.get("Variant Barcode"))
-        tal_value = first_non_empty(arti_item.get("raw_size"), raw_size)
-        variant_centry_sku = barcode or variant_sku
-        class_name = category_record.get("class") or ("Calzado" if is_footwear else "Vestuario")
-        material = centry_material_from_row(row)
-        composition = centry_composition_from_row(row)
-        age = centry_age_from_gender(gender)
-        footwear_cane = centry_footwear_cane_from_row(row)
-        characteristics = centry_labeled_characteristics(
-            row,
-            vendor,
-            product_type,
-            color,
-            gender,
-            material,
-            composition,
-            footwear_cane,
-        )
-        centry_row = {column: "" for column in CENTRY_COLUMNS}
-        centry_row.update(
-            {
-                "Nombre del Producto": title,
-                "Marca": vendor,
-                "Descripcion": strip_html(row.get("Body HTML")),
-                "Listado de caracterÃ­sticas": characteristics,
-                "GarantÃ­a": "3 meses, GarantÃ­a del vendedor",
-                "Alto del paquete": first_non_empty(dimensions.get("height"), fallback_package["height"]),
-                "Ancho del paquete": first_non_empty(dimensions.get("width"), fallback_package["width"]),
-                "Largo del paquete": first_non_empty(dimensions.get("length"), fallback_package["length"]),
-                "Peso del paquete": first_non_empty(dimensions.get("weight"), fallback_package["weight"]),
-                "CategorÃ­a": category_record.get("category") or centry_category(row),
-                "Precio": centry_value(row.get("Variant Price")),
-                "SKU del producto": current_mod_col,
-                "SKU de la variante": variant_centry_sku,
-                "CÃ³digo de barra variante (EAN/UPC/ISBN)": barcode,
-                "Color": color,
-                "Talla": size,
-                "CondiciÃ³n del Producto": "Nuevo",
-                "AÃ±o de temporada": datetime.now().year,
-                "Temporada": centry_value(row.get("Temporada"), "Verano"),
-                "GÃ©nero": gender,
-                "Estado": "Activo",
-                "cccc": current_mod_col,
-                "Incluir en MercadoLibrePe / MercadoLibrePe": "SI",
-                "Incluir en Falabella Global Peru / FalabellaGlobalProduction": "SI",
-                "Es inflamable (MercadoLibre PerÃº)": "No",
-                "ComposiciÃ³n (MercadoLibre PerÃº)": composition,
-                "Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC PerÃº)": first_non_empty(material, "Otros"),
-                "DiseÃ±o - Ropa y accesorios (Falabella GSC PerÃº)": "-",
-                "Contenido del paquete - Package content - Almacenamiento (Falabella GSC PerÃº)": "1",
-                "DiseÃ±o de la tela (MercadoLibre PerÃº)": "-",
-                "Con monedero (MercadoLibre PerÃº)": "No",
-                "Con cierre ajustable (MercadoLibre PerÃº)": "No",
-                "Es reversible (MercadoLibre PerÃº)": "No",
-                "Con cierre (MercadoLibre PerÃº)": "No",
-                "INFORMACIÃ“N ADICIONAL": "",
-                "Unnamed: 52": "",
-                "Unnamed: 53": product_type,
-                "Unnamed: 54": f"{product_type}{gender}{vendor}",
-                "Mod": model,
-                "Col": color_code,
-                "Tal": tal_value,
-                "Cod Mod Col Talla": f"{current_mod_col}-{size}" if current_mod_col and size else current_mod_col,
-                "Clase": class_name,
-                "GuÃ­a de tallas": centry_size_guide(gender, class_name, vendor),
-                "Base de categorÃ­a": category_record.get("base") or f"{product_type}{gender}{vendor}",
-            }
-        )
-        for index, image in enumerate(images, start=1):
-            centry_row["URL imagen principal" if index == 1 else f"URL imagen {index}"] = image
-        if is_footwear:
-            centry_row["GÃ©nero - Calzado (Falabella GSC PerÃº)"] = centry_gender_marketplace(gender)
-            centry_row["Tipo - Calzado (Falabella GSC PerÃº)"] = product_type or "Zapatillas"
-            centry_row["Horma - Calzado (Falabella GSC PerÃº)"] = "Normal"
-            centry_row["Material principal - Calzado (Falabella GSC PerÃº)"] = material
-            centry_row["Tipo de calzado (MercadoLibre PerÃº)"] = product_type or "Zapatillas"
-            centry_row["Edad (MercadoLibre PerÃº)"] = age
-            centry_row["Material del calzado (MercadoLibre PerÃº)"] = first_non_empty(composition, material)
-            centry_row["Tipo de taco (MercadoLibre PerÃº)"] = footwear_cane
-        elif centry_is_accessory_type(product_type, category_record):
-            centry_apply_accessory_fields(centry_row, product_type, gender, material)
-        else:
-            centry_apply_apparel_fields(centry_row, product_type, gender, material, composition)
-        if not title:
-            issues.append({"Mod-Col": current_mod_col, "Problema": "Sin nombre de producto"})
-        if not images:
-            issues.append({"Mod-Col": current_mod_col, "Problema": "Sin imagen principal"})
-        rows.append(centry_row)
-    centry_df = pd.DataFrame(rows, columns=CENTRY_COLUMNS).fillna("")
-    centry_df = centry_df.replace({"#N/D": "", "#ND": "", "#N/A": ""})
-    centry_df, issues = filter_centry_size_rows(centry_df, issues, "Talla", key_column="SKU del producto", output_label="Centry")
-    if not centry_df.empty:
-        barcode_column = "CÃ³digo de barra variante (EAN/UPC/ISBN)"
-        missing_barcode = centry_df[centry_df[barcode_column].map(clean_value) == ""].copy()
-        for _, missing_row in missing_barcode.iterrows():
-            issues.append(
-                {
-                    "Mod-Col": clean_value(missing_row.get("SKU del producto")) or "Centry",
-                    "Problema": f"Sin codigo de barras en SKU {clean_value(missing_row.get('SKU de la variante'))}",
-                }
-            )
-    return centry_df, pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
-
-
-def centry_package_values(row):
-    is_footwear = centry_is_footwear(row)
-    return {
-        "weight": 900 if is_footwear else 200,
-        "length": 35 if is_footwear else 29,
-        "width": 21 if is_footwear else 27,
-        "height": 12 if is_footwear else 1,
-    }
-
-
-def centry_bullets(row, vendor, product_type, color, gender):
-    tags = [part.strip() for part in centry_value(row.get("Tags")).split(",") if part.strip()]
-    items = [
-        ("Tipo Producto", product_type),
-        ("GÃ©nero", gender),
-        ("Color Comercial", color),
-        ("Marca", vendor),
-    ]
-    for tag in tags[:8]:
-        if "|" in tag:
-            continue
-        items.append(("CaracterÃ­stica", tag))
-    return ", ".join(f"{label} | {value}" for label, value in items if centry_value(value))
-
-
-def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
-    if matrixify_df is None or matrixify_df.empty:
-        return pd.DataFrame(columns=CENTRY_SIAL_COLUMNS)
-    brand_config = brand_config or {}
-    df = coalesce_duplicate_columns(matrixify_df).copy()
-    for column in MATRIXIFY_COLUMNS:
-        if column not in df.columns:
-            df[column] = ""
-    product_fields = [
-        "Title", "Body HTML", "Vendor", "Type", "Tags", "Image Src",
-        "Metafield: custom.codigo_modelo_color [id]", "Metafield: custom.color [single_line_text_field]",
-        "Metafield: custom.materialidad [single_line_text_field]",
-        "Metafield: custom.tecnologia [list.single_line_text_field]",
-    ]
-    for column in product_fields:
-        if column not in df.columns:
-            df[column] = ""
-        df[column] = df[column].replace("", pd.NA).ffill().fillna("")
-
-    rows = []
-    for _, row in df.iterrows():
-        sku = centry_value(row.get("Variant SKU"))
-        if not sku:
-            continue
-        mod_col = centry_mod_col_from_row(row)
-        model, color_code = split_model_color(mod_col)
-        vendor = centry_value(row.get("Vendor"), brand_config.get("label", ""))
-        product_type = centry_value(row.get("Type"))
-        color = first_non_empty(centry_color_name_from_row(row, color_code), color_code)
-        raw_size = first_non_empty(row.get("__CENTRY_RAW_SIZE"), row.get("Option1 Value"))
-        gender = centry_gender(row)
-        images = centry_split_images(row.get("Image Src"))
-        image = images[0] if images else ""
-        fallback_package = centry_package_values(row)
-        package = centry_sial_dimension_package(row, product_type, fallback_package)
-        category_record = centry_lookup_category(product_type, gender, vendor, centry_category(row))
-        category = category_record.get("class") or ("CALZADO" if centry_is_footwear(row) else ("ACCESORIOS" if "accesorio" in centry_category(row).lower() else "VESTUARIO"))
-        category_probe = pd.Series({"Clase": category, "Categoria ": category, "Type": product_type})
-        size = centry_display_size(raw_size, centry_output_is_accessory(category_probe) and is_one_size(raw_size))
-        tal_value = first_non_empty(row.get("__CENTRY_RAW_SIZE"), raw_size)
-        rows.append(
-            {
-                "Mod": model,
-                "Col": color_code,
-                "Tal": tal_value,
-                "Product Name ": centry_value(row.get("Title")) or mod_col,
-                "Product Bullets": centry_bullets(row, vendor, product_type, color, gender),
-                "Product Description": strip_html(row.get("Body HTML")),
-                "Image URL": image,
-                "Product Weight": first_non_empty(package.get("weight"), fallback_package["weight"]),
-                "Product Length": first_non_empty(package.get("length"), fallback_package["length"]),
-                "Product Width": first_non_empty(package.get("width"), fallback_package["width"]),
-                "Product Height": first_non_empty(package.get("height"), fallback_package["height"]),
-                "Package Weight": first_non_empty(package.get("weight"), fallback_package["weight"]),
-                "Package Length": first_non_empty(package.get("length"), fallback_package["length"]),
-                "Package Width": first_non_empty(package.get("width"), fallback_package["width"]),
-                "Package Height": first_non_empty(package.get("height"), fallback_package["height"]),
-                "Boost ": "",
-                "Talla Web ": size,
-                "Color Web": color,
-                "Categoria ": category,
-                "Sub Categoria": product_type,
-                "Genero": gender,
-                "Estilo ": model,
-                "Colecciones ": "",
-                "Temporada ": centry_value(row.get("Temporada"), "Verano"),
-                "Modelo": model,
-                "Marca": vendor,
-                "Tecnologias ": limit_words(first_non_empty(row.get("Metafield: custom.tecnologia [list.single_line_text_field]"), ""), 45),
-                "Caracteristicas": limit_words(centry_value(row.get("Tags")).replace(",", " |"), 45),
-                "Tipo de Boardshort": "",
-                "Tipo de Bikini": "",
-                "Iniciativas": "",
-                "Tipo de Material": first_non_empty(row.get("Metafield: custom.materialidad [single_line_text_field]"), ""),
-                "1": "",
-                "Tipo de Prenda": product_type,
-                "Adicional 2 ": "",
-                "Adicional 3 ": "",
-                "Adicional 4 ": "",
-                "Adicional 5 ": "",
-                "Adicional 6 ": "",
-                "Adicional 7 ": "",
-                "Adicional 8 ": "",
-                "Adicional 9 ": "",
-                "Adicional 10": "",
-                "Mod-Col": mod_col,
-                "Sku - Sial": sku,
-                "Nuevo o Actualizar (Rockford.pe)": "Crear",
-                "Sku - Supermall.pe": sku,
-                "Porduct Id - Supermall.pe": "",
-            }
-        )
-    sial_df = pd.DataFrame(rows, columns=CENTRY_SIAL_COLUMNS).fillna("")
-    sial_df, _ = filter_centry_size_rows(sial_df, [], "Tal", key_column="Mod-Col", output_label="Carga Sial Centry")
-    if not sial_df.empty and "Talla Web " in sial_df.columns:
-        sial_df["Talla Web "] = sial_df["Tal"].map(centry_display_size)
-    return sial_df
-
-
-def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"):
-    if centry_df is None or centry_df.empty:
-        return
-    df = centry_df.copy()
-    total_rows = len(df)
-    total_products = df.get("SKU del producto", pd.Series(dtype=object)).map(clean_value).nunique()
-    no_barcode = safe_int_value((df.get("CÃ³digo de barra variante (EAN/UPC/ISBN)", pd.Series(dtype=object)).map(clean_value) == "").sum())
-    no_image = safe_int_value((df.get("URL imagen principal", pd.Series(dtype=object)).map(clean_value) == "").sum())
-    no_price = safe_int_value((df.get("Precio", pd.Series(dtype=object)).map(clean_value) == "").sum())
-    issue_count = 0 if issues_df is None or issues_df.empty else len(issues_df)
-    render_html(
-        f"""
-        <div class="combo-card">
-            <div class="combo-card-head">
-                <div>
-                    <div class="combo-title"><span class="combo-title-icon">C</span> {title}</div>
-                    <p>Revision rapida de completitud antes de enviar el archivo al canal.</p>
-                </div>
-                <div class="combo-chip">{format_kpi_number(total_rows)} filas</div>
-            </div>
-            <div class="commercial-summary-grid">
-                <div class="commercial-summary-tile ok"><span>Productos</span><b>&#10003;</b><strong>{format_kpi_number(total_products)}</strong></div>
-                <div class="commercial-summary-tile {'ok' if no_barcode == 0 else 'bad'}"><span>EAN faltante</span><b>{'&#10003;' if no_barcode == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_barcode)}</strong></div>
-                <div class="commercial-summary-tile {'ok' if no_image == 0 else 'bad'}"><span>Imagen faltante</span><b>{'&#10003;' if no_image == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_image)}</strong></div>
-                <div class="commercial-summary-tile {'ok' if no_price == 0 else 'bad'}"><span>Precio faltante</span><b>{'&#10003;' if no_price == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_price)}</strong></div>
-                <div class="commercial-summary-tile {'ok' if issue_count == 0 else 'bad'}"><span>Observaciones</span><b>{'&#10003;' if issue_count == 0 else '&#10005;'}</b><strong>{format_kpi_number(issue_count)}</strong></div>
-            </div>
-        </div>
-        """
-    )
-    st.dataframe(df.head(120), use_container_width=True, height=360)
-    if issues_df is not None and not issues_df.empty:
-        st.warning(f"Centry tiene {len(issues_df):,} observaciones.")
-        st.dataframe(issues_df, use_container_width=True)
-
-
-def model_codes_from_text(value):
-    return [part.strip().upper() for part in re.split(r"[\n,; ]+", clean_value(value)) if part.strip()]
-
-
-def model_codes_from_excel(df):
-    if df is None or df.empty:
-        return []
-    code_column = first_existing_column(
-        df,
-        [
-            "Mod-Col",
-            "Mod Col",
-            "Codigo Modelo Color",
-            "Codigo modelo-color",
-            "Codigo modelo color",
-            "Codigo modelo",
-            "Cod Mod Col",
-            "Modelo Color",
-            "Modelo-Color",
-            "modelo_color",
-            "sku",
-        ],
-    )
-    if code_column is None:
-        non_empty_columns = [col for col in df.columns if df[col].map(clean_value).ne("").any()]
-        if len(non_empty_columns) == 1:
-            code_column = non_empty_columns[0]
-    if code_column is None:
-        return []
-    values = df[code_column].dropna().map(clean_value).tolist()
-    codes = []
-    seen = set()
-    for value in values:
-        for code in model_codes_from_text(value):
-            if code not in seen:
-                codes.append(code)
-                seen.add(code)
-    return codes
-
-
-def centry_ean_column(df):
-    if df is None or df.empty:
-        return ""
-    candidates = [
-        "CÃ³digo de barra variante (EAN/UPC/ISBN)",
-        "CÃƒÂ³digo de barra variante (EAN/UPC/ISBN)",
-    ]
-    for candidate in candidates:
-        if candidate in df.columns:
-            return candidate
-    for column in df.columns:
-        normalized = normalize_header(column)
-        if "codigodebarravariante" in normalized or "eanupcisbn" in normalized:
-            return column
-    return ""
-
-
-def centry_missing_ean_count(centry_df):
-    column = centry_ean_column(centry_df)
-    if not column:
-        return len(centry_df) if centry_df is not None else 0
-    return safe_int_value(centry_df[column].map(clean_value).eq("").sum())
-
-
-def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, brand_config):
-    codes = [clean_value(code).upper() for code in codes if clean_value(code)]
-    if not codes:
-        return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(columns=["Mod-Col", "Problema"])
-
-    issues = []
-    code_set = set(codes)
-    model_only_set = {code for code in codes if "-" not in code}
-    shopify_df = coalesce_duplicate_columns(shopify_matrixify_df).copy() if shopify_matrixify_df is not None else pd.DataFrame()
-    if not shopify_df.empty:
-        for column in MATRIXIFY_COLUMNS:
-            if column not in shopify_df.columns:
-                shopify_df[column] = ""
-        for column in ("Title", "Body HTML", "Vendor", "Type", "Tags", "Image Src", "Metafield: custom.codigo_modelo_color [id]"):
-            if column in shopify_df.columns:
-                shopify_df[column] = shopify_df[column].replace("", pd.NA).ffill().fillna("")
-        shopify_df["__CENTRY_KEY"] = shopify_df.apply(centry_mod_col_from_row, axis=1)
-    else:
-        shopify_df["__CENTRY_KEY"] = pd.Series(dtype=object)
-
-    product_lookup = {}
-    if not shopify_df.empty and "__CENTRY_KEY" in shopify_df.columns:
-        for key, group in shopify_df.groupby("__CENTRY_KEY", sort=False):
-            key = clean_value(key).upper()
-            if key and key not in product_lookup:
-                product_lookup[key] = group.iloc[0]
-
-    arti = normalize_arti_columns_for_app(arti_df).copy() if arti_df is not None else pd.DataFrame()
-    for column in ("CODINT_MA", "COD MOD COL", "Mod-Col", "TALNUM_MA", "MARCA_MA", "Precio", "CodBarras"):
-        if column not in arti.columns:
-            arti[column] = ""
-    issues.append({"Mod-Col": "Diagnostico EAN", "Problema": arti_barcode_diagnostics(arti)})
-    if arti["CodBarras"].map(clean_value).eq("").all():
-        issues.append({"Mod-Col": "Diagnostico BigQuery", "Problema": bigquery_barcode_schema_diagnostics(get_bigquery_config())})
-    arti["__KEY"] = arti["Mod-Col"].where(arti["Mod-Col"].map(clean_value) != "", arti["COD MOD COL"]).map(lambda value: clean_value(value).upper())
-    arti["__MODEL"] = arti["__KEY"].map(lambda value: value.rsplit("-", 1)[0] if "-" in value else value)
-    allowed = {clean_value(value).upper() for value in brand_config.get("allowed_arti_brands", [])}
-    if allowed and "MARCA_MA" in arti.columns:
-        arti = arti[arti["MARCA_MA"].map(lambda value: clean_value(value).upper()).isin(allowed)].copy()
-    arti = arti[(arti["__KEY"].isin(code_set)) | (arti["__MODEL"].isin(model_only_set))].copy()
-    if arti.empty:
-        return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(
-            [{"Mod-Col": code, "Problema": "Codigo no encontrado en BigQuery/ARTI"} for code in codes],
-            columns=["Mod-Col", "Problema"],
-        )
-
-    arti["__SIZE"] = arti["TALNUM_MA"].map(normalize_master_size)
-    invalid_size = arti[arti["__SIZE"].map(clean_value) == ""].copy()
-    for key, group in invalid_size.groupby("__KEY"):
-        issues.append({"Mod-Col": key, "Problema": f"{len(group):,} filas BigQuery/ARTI omitidas por talla vacia o no reconocida"})
-    arti = arti[arti["__SIZE"].map(clean_value) != ""].copy()
-    if arti.empty:
-        return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
-
-    rows = []
-    for key, variants in arti.groupby("__KEY", sort=False):
-        variants = variants.copy()
-        variants = variants[variants["CODINT_MA"].map(clean_value) != ""].copy()
-        if variants.empty:
-            issues.append({"Mod-Col": key, "Problema": "Sin SKU valido en BigQuery/ARTI"})
-            continue
-        kept_indexes = []
-        seen_skus = set()
-        seen_sizes = set()
-        duplicate_skus = []
-        duplicate_sizes = []
-        keep_duplicate_visible_sizes = (
-            "MARCA_MA" in variants.columns
-            and variants["MARCA_MA"].map(lambda value: normalize_brand_name(value) == "MOUNTAIN HARDWEAR").any()
-        )
-        for variant_index, variant_row in variants.iterrows():
-            sku_key = clean_value(variant_row.get("CODINT_MA")).upper()
-            size_key = clean_value(display_size_for_site(variant_row.get("__SIZE"), brand_config)).upper()
-            if sku_key and sku_key in seen_skus:
-                duplicate_skus.append(f"{sku_key} ({size_key or 'sin talla'})")
-                continue
-            if size_key and size_key in seen_sizes and not keep_duplicate_visible_sizes:
-                duplicate_sizes.append(f"{size_key} ({sku_key or 'sin SKU'})")
-                continue
-            if sku_key:
-                seen_skus.add(sku_key)
-            if size_key:
-                seen_sizes.add(size_key)
-            kept_indexes.append(variant_index)
-        variants = variants.loc[kept_indexes].copy()
-        if duplicate_skus:
-            issues.append({"Mod-Col": key, "Problema": f"Se omitieron {len(duplicate_skus):,} variantes duplicadas por SKU: {', '.join(duplicate_skus[:10])}"})
-        if duplicate_sizes:
-            issues.append({"Mod-Col": key, "Problema": f"Se omitieron {len(duplicate_sizes):,} variantes duplicadas por talla visible: {', '.join(duplicate_sizes[:10])}"})
-        if variants.empty:
-            issues.append({"Mod-Col": key, "Problema": "Todas las variantes fueron omitidas por duplicidad de SKU/talla"})
-            continue
-        variants = variants.sort_values("__SIZE", key=lambda series: series.map(master_size_sort_key))
-        product_row = product_lookup.get(key)
-        raw_brand = first_non_empty(variants.iloc[0].get("MARCA_MA"), product_row.get("Vendor") if product_row is not None else "", brand_config.get("label", ""))
-        vendor = brand_display_name(raw_brand, brand_config.get("label", ""))
-        image_config = brand_image_config(raw_brand, brand_config)
-        image_urls = image_candidates(key, image_config)
-        title = first_non_empty(product_row.get("Title") if product_row is not None else "", key)
-        body_html = first_non_empty(product_row.get("Body HTML") if product_row is not None else "", "")
-        product_type = first_non_empty(product_row.get("Type") if product_row is not None else "", "")
-        tags = first_non_empty(product_row.get("Tags") if product_row is not None else "", vendor)
-        materiality = first_non_empty(product_row.get("Metafield: custom.materialidad [single_line_text_field]") if product_row is not None else "", "")
-        technology = first_non_empty(product_row.get("Metafield: custom.tecnologia [list.single_line_text_field]") if product_row is not None else "", "")
-        color = first_non_empty(product_row.get("Metafield: custom.color [single_line_text_field]") if product_row is not None else "", split_model_color(key)[1])
-        if product_row is None:
-            issues.append({"Mod-Col": key, "Problema": "No existe en Shopify; se completo Centry con BigQuery/ARTI y fotos S3"})
-
-        for position, (_, variant) in enumerate(variants.iterrows(), start=1):
-            size = display_size_for_site(variant.get("__SIZE"), brand_config)
-            rows.append(
-                {
-                    "Handle": clean_value(product_row.get("Handle")) if product_row is not None else key.lower(),
-                    "Title": title,
-                    "Body HTML": body_html,
-                    "Vendor": vendor,
-                    "Type": product_type,
-                    "Tags": tags,
-                    "Image Src": "; ".join(image_urls),
-                    "Variant SKU": clean_value(variant.get("CODINT_MA")),
-                    "__CENTRY_RAW_SIZE": clean_value(variant.get("TALNUM_MA")),
-                    "Option1 Name": "Talla",
-                    "Option1 Value": size,
-                    "Option2 Name": "Color",
-                    "Option2 Value": color,
-                    "Variant Barcode": clean_value(variant.get("CodBarras")),
-                    "Variant Price": clean_value(variant.get("Precio")),
-                    "Metafield: custom.codigo_modelo_color [id]": key,
-                    "Metafield: custom.marca [single_line_text_field]": vendor,
-                    "Metafield: custom.color [single_line_text_field]": color,
-                    "Metafield: custom.materialidad [single_line_text_field]": materiality,
-                    "Metafield: custom.tecnologia [list.single_line_text_field]": technology,
-                    "Status": clean_value(product_row.get("Status")) if product_row is not None else "",
-                    "Published": clean_value(product_row.get("Published")) if product_row is not None else "",
-                    "Variant Position": position,
-                }
-            )
-
-    matrixify_like = pd.DataFrame(rows)
-    for column in MATRIXIFY_COLUMNS:
-        if column not in matrixify_like.columns:
-            matrixify_like[column] = ""
-    return matrixify_like, pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
-
-
-def _split_tags(value):
-    return [tag.strip() for tag in clean_value(value).split(",") if tag.strip()]
-
-
-def _join_tags(values):
-    return ", ".join(dict.fromkeys(tag for tag in values if clean_value(tag)))
-
-
-def _split_semicolon_values(value):
-    return [item.strip() for item in re.split(r"[;\n\r]+", clean_value(value)) if item.strip()]
-
-
-def _product_lookup_from_shopify(records):
-    by_key = {}
-    by_handle = {}
-
-    def add_key(value, record):
-        key = clean_value(value).upper()
-        compact_key = product_lookup_key(key)
-        for candidate in (key, compact_key):
-            if candidate and candidate not in by_key:
-                by_key[candidate] = record
-
-    for record in records:
-        key = clean_value(record.get("Mod-Col")).upper()
-        handle = clean_value(record.get("Handle"))
-        add_key(key, record)
-        for variant in record.get("Variants") or []:
-            for candidate in variant_mod_col_candidates(variant):
-                add_key(candidate, record)
-        if handle and handle not in by_handle:
-            by_handle[handle] = record
-    return by_key, by_handle
-
-
-def _source_key_for_update(row):
-    for column in ("Mod-Col", "COD MOD COL", "Metafield: custom.codigo_modelo_color [id]"):
-        value = clean_value(row.get(column))
-        if value:
-            return value.upper()
-    return ""
-
-
-def normalize_photo_update_input(df):
-    if df is None:
-        return None
-    source = df.dropna(how="all").copy()
-    if source.empty:
-        return source
-
-    mod_col = first_existing_column(
-        source,
-        [
-            "Mod-Col",
-            "Mod Col",
-            "COD MOD COL",
-            "Codigo Modelo Color",
-            "CÃ³digo Modelo Color",
-            "codigo_modelo_color",
-            "Modelo Color",
-            "Modelo-Color",
-        ],
-    )
-    if mod_col:
-        source["Mod-Col"] = source[mod_col]
-        return source
-
-    first_column = source.columns[0]
-    values = []
-    if looks_like_mod_col(first_column):
-        values.append(first_column)
-    values.extend(source[first_column].dropna().tolist())
-    values = [clean_value(value).upper() for value in values if clean_value(value)]
-    return pd.DataFrame({"Mod-Col": values})
-
-
-def build_shopify_update_preview(
-    shopify_products,
-    update_input_df,
-    operation,
-    brand_config,
-    tag_mode="merge",
-    image_mode="replace",
-    only_missing_images=True,
-    body_mode="from_input",
-):
-    by_key, by_handle = _product_lookup_from_shopify(shopify_products)
-    rows = []
-    issues = []
-    operation = clean_value(operation)
-
-    if operation == "siblings":
-        products_df = pd.DataFrame(shopify_products)
-        if products_df.empty:
-            return pd.DataFrame(), pd.DataFrame([{"Problema": "Shopify no devolvio productos"}]), pd.DataFrame()
-        products_df["__MODEL"] = products_df["Mod-Col"].map(lambda value: clean_value(value).upper().rsplit("-", 1)[0])
-        siblings_by_model = (
-            products_df[products_df["__MODEL"] != ""]
-            .groupby("__MODEL")["Handle"]
-            .apply(lambda values: ", ".join(dict.fromkeys(clean_value(value) for value in values if clean_value(value))))
-            .to_dict()
-        )
-        custom_siblings_by_model = (
-            products_df[products_df["__MODEL"] != ""]
-            .groupby("__MODEL")["Product ID"]
-            .apply(lambda values: json.dumps(list(dict.fromkeys(clean_value(value) for value in values if clean_value(value)))))
-            .to_dict()
-        )
-        for _, product in products_df.iterrows():
-            new_value = siblings_by_model.get(product["__MODEL"], "")
-            custom_new_value = custom_siblings_by_model.get(product["__MODEL"], "[]")
-            current_theme = clean_value(product.get("Siblings"))
-            current_custom = clean_value(product.get("Custom Siblings"))
-            if not new_value or (current_theme == new_value and current_custom == custom_new_value):
-                continue
-            rows.append(
-                {
-                    "Accion": "Actualizar",
-                    "Sitio": brand_config["site_label"],
-                    "Operacion": "siblings",
-                    "Mod-Col": product.get("Mod-Col"),
-                    "Product ID": product.get("Product ID"),
-                    "Handle": product.get("Handle"),
-                    "Campo": "Metafield: theme.siblings + Metafield: custom.siblings",
-                    "Valor actual": f"theme: {current_theme} | custom: {current_custom}",
-                    "Valor nuevo": new_value,
-                    "Valor nuevo custom": custom_new_value,
-                    "Metafield: theme.siblings [single_line_text_field]": new_value,
-                    "Metafield: custom.siblings [list.product_reference]": custom_new_value,
-                    "Estado": "OK",
-                    "Observacion": f"{len(_split_tags(new_value))} handles del mismo modelo",
-                }
-            )
-        return pd.DataFrame(rows), pd.DataFrame(issues), pd.DataFrame()
-
-    if operation == "photos":
-        update_input_df = normalize_photo_update_input(update_input_df)
-    source_df = update_input_df.dropna(how="all").copy() if update_input_df is not None else pd.DataFrame()
-    if operation == "photos" and source_df.empty:
-        source_df = pd.DataFrame(shopify_products)
-
-    matrixify_rows = []
-    for input_index, row in source_df.iterrows():
-        key = _source_key_for_update(row)
-        handle = clean_value(row.get("Handle"))
-        product = by_key.get(key) or by_key.get(product_lookup_key(key)) or by_handle.get(handle)
-        if not product:
-            issues.append({"Mod-Col": key, "Handle": handle, "Problema": "No se encontro producto en Shopify", "Fila": input_index + 2})
-            continue
-
-        product_id = product.get("Product ID")
-        product_key = key or clean_value(product.get("Mod-Col")).upper()
-        if operation == "tags":
-            tags_col = first_existing_column(source_df, ["Tags", "tags", "Etiquetas"])
-            if not tags_col:
-                issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No se encontro columna Tags"})
-                continue
-            current_tags = _split_tags(product.get("Tags"))
-            incoming_tags = _split_tags(row.get(tags_col))
-            new_tags = _join_tags(incoming_tags if tag_mode == "replace" else current_tags + incoming_tags)
-            rows.append(
-                {
-                    "Accion": "Actualizar",
-                    "Sitio": brand_config["site_label"],
-                    "Operacion": "tags",
-                    "Mod-Col": product_key,
-                    "Product ID": product_id,
-                    "Handle": product.get("Handle"),
-                    "Campo": "Tags",
-                    "Valor actual": product.get("Tags"),
-                    "Valor nuevo": new_tags,
-                    "Estado": "OK",
-                    "Observacion": "REPLACE seguro: se envia la lista final completa",
-                }
-            )
-        elif operation == "title":
-            title_col = first_existing_column(source_df, ["Title", "Titulo", "TÃ­tulo", "Nombre"])
-            if not title_col:
-                issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No se encontro columna Title"})
-                continue
-            new_title = clean_value(row.get(title_col))
-            rows.append(
-                {
-                    "Accion": "Actualizar",
-                    "Sitio": brand_config["site_label"],
-                    "Operacion": "title",
-                    "Mod-Col": product_key,
-                    "Product ID": product_id,
-                    "Handle": product.get("Handle"),
-                    "Campo": "Title",
-                    "Valor actual": product.get("Title"),
-                    "Valor nuevo": new_title,
-                    "Estado": "OK",
-                    "Observacion": "",
-                }
-            )
-        elif operation == "body":
-            if body_mode == "from_input":
-                from generate_columbia_matrixify import build_body_html
-
-                new_body = build_body_html(row)
-                if not new_body:
-                    issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No hay contenido para Body HTML"})
-                    continue
-            else:
-                issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "Correccion desde catalogo todavia requiere Matrixify local"})
-                continue
-            rows.append(
-                {
-                    "Accion": "Actualizar",
-                    "Sitio": brand_config["site_label"],
-                    "Operacion": "body",
-                    "Mod-Col": product_key,
-                    "Product ID": product_id,
-                    "Handle": product.get("Handle"),
-                    "Campo": "Body HTML",
-                    "Valor actual": product.get("Body HTML"),
-                    "Valor nuevo": new_body,
-                    "Estado": "OK",
-                    "Observacion": "Incluye Caracteristicas, Material y Cuidado separados",
-                }
-            )
-        elif operation == "photos":
-            current_images = clean_value(product.get("Image Src"))
-            if only_missing_images and current_images:
-                continue
-            from generate_columbia_matrixify import brand_image_config, image_candidates
-
-            row_brand_config = brand_image_config(row.get("Marca") or product.get("Vendor"), brand_config)
-            urls = image_candidates(product_key, row_brand_config)
-            urls_text = "; ".join(urls)
-            rows.append(
-                {
-                    "Accion": "Sincronizar Shopify" if image_mode == "replace" else "Agregar fotos Shopify",
-                    "Sitio": brand_config["site_label"],
-                    "Operacion": "photos",
-                    "Mod-Col": product_key,
-                    "Product ID": product_id,
-                    "Handle": product.get("Handle"),
-                    "Campo": "Fotos",
-                    "Valor actual": current_images,
-                    "Valor nuevo": urls_text,
-                    "Modo fotos": image_mode,
-                    "Media IDs": product.get("Media IDs"),
-                    "Estado": "OK",
-                    "Observacion": "REPLACE elimina fotos actuales antes de subir las 10 URLs nuevas; MERGE agrega las URLs nuevas.",
-                }
-            )
-            matrixify_rows.append(
-                {
-                    "ID": product.get("Legacy ID"),
-                    "Handle": product.get("Handle"),
-                    "Command": "MERGE",
-                    "Image Src": urls_text,
-                    "Image Command": "REPLACE" if image_mode == "replace" else "MERGE",
-                    "Image Position": "",
-                    "Image Alt Text": product.get("Title"),
-                }
-            )
-
-    return pd.DataFrame(rows), pd.DataFrame(issues), pd.DataFrame(matrixify_rows)
-
-
-def apply_shopify_preview(shopify_config, preview_df):
-    results = []
-    for _, row in preview_df.iterrows():
-        status = "OK"
-        message = ""
-        try:
-            operation = clean_value(row.get("Operacion"))
-            product_id = clean_value(row.get("Product ID"))
-            if operation == "tags":
-                product_update(shopify_config, product_id, tags=_split_tags(row.get("Valor nuevo")))
-            elif operation == "title":
-                product_update(shopify_config, product_id, title=clean_value(row.get("Valor nuevo")))
-            elif operation == "body":
-                product_update(shopify_config, product_id, body_html=clean_value(row.get("Valor nuevo")))
-            elif operation == "photos":
-                image_urls = _split_semicolon_values(row.get("Valor nuevo"))
-                media_ids = _split_semicolon_values(row.get("Media IDs"))
-                image_mode = clean_value(row.get("Modo fotos")).lower() or "replace"
-                message = _sync_product_photos_direct(
-                    shopify_config,
-                    product_id,
-                    image_urls,
-                    existing_media_ids=media_ids,
-                    image_mode=image_mode,
-                    alt_text=clean_value(row.get("Handle")) or clean_value(row.get("Mod-Col")),
-                )
-            elif operation == "siblings":
-                sibling_value = clean_value(row.get("Valor nuevo"))
-                custom_sibling_value = clean_value(
-                    row.get("Valor nuevo custom") or row.get("Metafield: custom.siblings [list.product_reference]")
-                )
-                if not custom_sibling_value:
-                    custom_sibling_value = "[]"
-                metafields_set(
-                    shopify_config,
-                    [
-                        {
-                            "ownerId": product_id,
-                            "namespace": "theme",
-                            "key": "siblings",
-                            "type": "single_line_text_field",
-                            "value": sibling_value,
-                        },
-                        {
-                            "ownerId": product_id,
-                            "namespace": "custom",
-                            "key": "siblings",
-                            "type": "list.product_reference",
-                            "value": custom_sibling_value,
-                        }
-                    ],
-                )
-            else:
-                status = "OMITIDO"
-                message = "Operacion no habilitada para escritura directa"
-        except Exception as exc:
-            status = "ERROR"
-            message = str(exc)
-        results.append(
-            {
-                "Mod-Col": row.get("Mod-Col"),
-                "Handle": row.get("Handle"),
-                "Operacion": row.get("Operacion"),
-                "Campo": row.get("Campo"),
-                "Resultado": status,
-                "Mensaje": message,
-            }
-        )
-    return pd.DataFrame(results)
-
-
-def shopify_products_to_matrixify_df(shopify_products):
-    default_columns = [
-        "ID",
-        "Handle",
-        "Command",
-        "Title",
-        "Body HTML",
-        "Vendor",
-        "Type",
-        "Tags",
-        "Image Src",
-        "Variant SKU",
-        "Variant Barcode",
-        "Variant Inventory Item ID",
-        "Variant ID",
-        "Variant Image",
-        "Metafield: custom.codigo_modelo_color [id]",
-        "Metafield: theme.siblings [single_line_text_field]",
-        "Metafield: theme.siblings_color [single_line_text_field]",
-        "Metafield: custom.siblings [single_line_text_field]",
-        "Metafield: custom.siblings_color [single_line_text_field]",
-    ]
-    try:
-        if Path(DEFAULT_MATRIXIFY_PATH).exists():
-            default_columns = list(pd.read_excel(DEFAULT_MATRIXIFY_PATH, sheet_name="Products", nrows=0).columns)
-    except Exception:
-        pass
-    for column in (
-        "Metafield: theme.siblings [single_line_text_field]",
-        "Metafield: theme.siblings_color [single_line_text_field]",
-        "Metafield: custom.siblings [single_line_text_field]",
-        "Metafield: custom.siblings_color [single_line_text_field]",
-    ):
-        if column not in default_columns:
-            default_columns.append(column)
-
-    rows = []
-    for product in shopify_products:
-        variants = product.get("Variants") or [{}]
-        for index, variant in enumerate(variants):
-            row = {column: "" for column in default_columns}
-            row.update(
-                {
-                    "ID": product.get("Legacy ID"),
-                    "Handle": product.get("Handle"),
-                    "Command": "MERGE",
-                    "Title": product.get("Title") if index == 0 else "",
-                    "Body HTML": product.get("Body HTML") if index == 0 else "",
-                    "Vendor": product.get("Vendor") if index == 0 else "",
-                    "Type": product.get("Type") if index == 0 else "",
-                    "Tags": product.get("Tags") if index == 0 else "",
-                    "Image Src": product.get("Image Src") if index == 0 else "",
-                    "Variant SKU": variant.get("Variant SKU", ""),
-                    "Variant Barcode": variant.get("Variant Barcode", ""),
-                    "Variant Price": variant.get("Variant Price", ""),
-                    "Variant Inventory Item ID": variant.get("Variant Inventory Item ID", ""),
-                    "Variant ID": variant.get("Variant ID", ""),
-                    "Variant Image": variant.get("Variant Image", ""),
-                    "Option1 Name": variant.get("Option1 Name", "") or "Talla",
-                    "Option1 Value": variant.get("Option1 Value", ""),
-                    "Option2 Name": variant.get("Option2 Name", ""),
-                    "Option2 Value": variant.get("Option2 Value", ""),
-                    "Metafield: custom.codigo_modelo_color [id]": product.get("Mod-Col") if index == 0 else "",
-                    "Metafield: theme.siblings [single_line_text_field]": product.get("Siblings") if index == 0 else "",
-                    "Metafield: theme.siblings_color [single_line_text_field]": product.get("Siblings Color") if index == 0 else "",
-                    "Metafield: custom.siblings [single_line_text_field]": (
-                        product.get("Custom Siblings") or product.get("Siblings")
-                    )
-                    if index == 0
-                    else "",
-                    "Metafield: custom.siblings_color [single_line_text_field]": (
-                        product.get("Custom Siblings Color") or product.get("Siblings Color")
-                    )
-                    if index == 0
-                    else "",
-                }
-            )
-            rows.append(row)
-    return pd.DataFrame(rows, columns=default_columns)
-
-
-STOCK_QUERY_DEFAULT = """
-WITH stock_base AS (
-  SELECT
-    fecha_corte,
-    id_producto,
-    conca || '-' || talla AS key_producto,
-    codigo_tienda,
-    CONCAT_TIENDA,
-    stock_tiendas,
-    stock_bodega
-  FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
-  WHERE fecha_corte = (
-    SELECT MAX(fecha_corte)
-    FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
-    WHERE EXTRACT(YEAR FROM fecha_corte) = EXTRACT(YEAR FROM CURRENT_DATE())
-  )
-)
-SELECT
-  fecha_corte,
-  id_producto,
-  UPPER(TRIM(key_producto)) AS key_producto,
-  codigo_tienda,
-  CONCAT_TIENDA,
-  COALESCE(stock_tiendas, 0) AS stock_tiendas,
-  COALESCE(stock_bodega, 0) AS stock_bodega,
-  COALESCE(stock_tiendas, 0) + COALESCE(stock_bodega, 0) AS stock_total
-FROM stock_base
-"""
-
-STOCK_QUERY_SAFE = """
-WITH stock_base AS (
-  SELECT
-    fecha_corte,
-    id_producto,
-    conca || '-' || talla AS key_producto,
-    codigo_tienda,
-    stock_tiendas,
-    stock_bodega
-  FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
-  WHERE fecha_corte = (
-    SELECT MAX(fecha_corte)
-    FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
-    WHERE EXTRACT(YEAR FROM fecha_corte) = EXTRACT(YEAR FROM CURRENT_DATE())
-  )
-)
-SELECT
-  fecha_corte,
-  id_producto,
-  UPPER(TRIM(key_producto)) AS key_producto,
-  codigo_tienda,
-  COALESCE(stock_tiendas, 0) AS stock_tiendas,
-  COALESCE(stock_bodega, 0) AS stock_bodega,
-  COALESCE(stock_tiendas, 0) + COALESCE(stock_bodega, 0) AS stock_total
-FROM stock_base
-"""
-
-
-def read_current_stock_from_bigquery(bigquery_config):
-    try:
-        from google.cloud import bigquery
-        from google.oauth2 import service_account
-    except ImportError as exc:
-        raise RuntimeError("Faltan dependencias de BigQuery para leer stock.") from exc
-
-    config = dict(bigquery_config or {})
-    credentials_info = config.get("service_account_info")
-    credentials = None
-    project_id = clean_value(config.get("project_id"))
-    if credentials_info:
-        credentials = service_account.Credentials.from_service_account_info(dict(credentials_info))
-        project_id = project_id or credentials.project_id
-
-    job_project_id = clean_value(config.get("job_project_id")) or project_id
-    client = bigquery.Client(project=job_project_id or None, credentials=credentials)
-    job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
-    location = clean_value(config.get("location")) or None
-    query = clean_value(config.get("stock_query")) or STOCK_QUERY_DEFAULT
-    try:
-        df = client.query(query, job_config=job_config, location=location).to_dataframe()
-    except Exception:
-        if query.strip() == STOCK_QUERY_SAFE.strip():
-            raise
-        df = client.query(STOCK_QUERY_SAFE, job_config=job_config, location=location).to_dataframe()
-    df = standardize_stock_columns(df)
-
-    for column in ("fecha_corte", "id_producto", "key_producto", "codigo_tienda", "CONCAT_TIENDA", "stock_tiendas", "stock_bodega", "stock_total"):
-        if column not in df.columns:
-            df[column] = 0 if column.startswith("stock_") else ""
-    df["key_producto"] = df["key_producto"].map(lambda value: clean_value(value).upper())
-    df["codigo_tienda"] = df["codigo_tienda"].map(normalize_warehouse_code)
-    for column in ("stock_tiendas", "stock_bodega", "stock_total"):
-        df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0)
-    return df
-
-
-def normalize_site_for_stock(value):
-    return re.sub(r"[^a-z0-9]+", "", clean_value(value).lower())
-
-
-def normalize_warehouse_code(value):
-    text = clean_value(value)
-    if not text:
-        return ""
-    try:
-        numeric = float(text)
-        if numeric.is_integer():
-            code = int(numeric)
-            return str(code) if 1 <= code <= 400 else ""
-    except ValueError:
-        pass
-    tokens = re.findall(r"\d+", text)
-    valid_codes = [int(token) for token in tokens if token.isdigit() and 1 <= int(token) <= 400]
-    return str(valid_codes[0]) if valid_codes else ""
-
-
-def store_code_from_concat_tienda(value):
-    text = clean_value(value)
-    if not text:
-        return ""
-    numbers = [int(token) for token in re.findall(r"\d+", text)]
-    if len(numbers) >= 2:
-        store = numbers[-1]
-        return str(store) if 1 <= store <= 400 else ""
-    return normalize_warehouse_code(text)
-
-
-def stock_units_from_concat_tienda(value, store_code):
-    text = clean_value(value)
-    store = normalize_warehouse_code(store_code)
-    if not text:
-        return 0
-    numbers = [int(token) for token in re.findall(r"\d+", text)]
-    if not numbers:
-        return 0
-    if len(numbers) >= 2:
-        if store and str(numbers[-1]) == store:
-            return numbers[0]
-        if store and str(numbers[0]) == store:
-            return numbers[-1]
-        if not store and 1 <= numbers[-1] <= 400:
-            return numbers[0]
-    if not store:
-        return 0
-    candidates = [number for number in numbers if str(number) != store]
-    if not candidates:
-        return 0
-    return max(candidates)
-
-
-def standardize_stock_columns(df):
-    result = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
-    rename_map = {}
-    candidates_by_target = {
-        "key_producto": ["key_producto", "key producto"],
-        "codigo_tienda": ["codigo_tienda", "codigo tienda", "cod tda", "cod_tda", "codtda", "codigo_tda", "codigo tda"],
-        "CONCAT_TIENDA": ["CONCAT_TIENDA", "concat_tienda", "concat tienda", "CONCAT TIENDA"],
-        "stock_tiendas": ["stock_tiendas", "stock tiendas"],
-        "stock_bodega": ["stock_bodega", "stock bodega"],
-        "stock_total": ["stock_total", "stock total"],
-    }
-    for target, candidates in candidates_by_target.items():
-        found = first_existing_column(result, candidates)
-        if found and found != target:
-            rename_map[found] = target
-    if rename_map:
-        result = result.rename(columns=rename_map)
-    if "codigo_tienda" in result.columns:
-        result["codigo_tienda"] = result["codigo_tienda"].map(normalize_warehouse_code)
-    if "CONCAT_TIENDA" in result.columns:
-        if "codigo_tienda" not in result.columns:
-            result["codigo_tienda"] = ""
-        missing_store = result["codigo_tienda"].map(clean_value) == ""
-        result.loc[missing_store, "codigo_tienda"] = result.loc[missing_store, "CONCAT_TIENDA"].map(
-            store_code_from_concat_tienda
-        )
-    return result
-
-
-def default_ecomm_stock_rules():
-    rows = []
-    for site_norm, codes in DEFAULT_ECOMM_SITE_WAREHOUSES.items():
-        for code in codes:
-            rows.append(
-                {
-                    "bodega_code": code,
-                    "site_norm": site_norm,
-                    "stock_seguridad": DEFAULT_ECOMM_STOCK_SECURITY.get(code, 0),
-                    "stock_activo": 1,
-                    "bodega_nombre": f"Bodega {code}",
-                }
-            )
-    return pd.DataFrame(rows)
-
-
-@st.cache_data(show_spinner=False)
-def load_ecomm_stock_rules(path_text):
-    path = Path(path_text)
-    if not path.exists():
-        return default_ecomm_stock_rules()
-    try:
-        assigned = pd.read_excel(path, sheet_name="Bodegas Asginadas", dtype=object).dropna(how="all")
-        warehouses = pd.read_excel(path, sheet_name="Bodegas", dtype=object).dropna(how="all")
-    except Exception:
-        return default_ecomm_stock_rules()
-    assigned.columns = [clean_value(column).lower() for column in assigned.columns]
-    warehouses.columns = [clean_value(column).lower() for column in warehouses.columns]
-    assigned["bodega_code"] = assigned.get("bodega", pd.Series(dtype=object)).map(normalize_warehouse_code)
-    assigned["site_norm"] = assigned.get("sitio", pd.Series(dtype=object)).map(normalize_site_for_stock)
-    assigned["stock_activo"] = pd.to_numeric(assigned.get("on/off", 0), errors="coerce").fillna(0).astype(int)
-    warehouses["bodega_code"] = warehouses.get("numbodega", pd.Series(dtype=object)).map(normalize_warehouse_code)
-    warehouses["stock_seguridad"] = pd.to_numeric(
-        warehouses.get("stock_seguridad", 0), errors="coerce"
-    ).fillna(0)
-    warehouses["warehouse_estado"] = pd.to_numeric(warehouses.get("estado", 1), errors="coerce").fillna(1).astype(int)
-    warehouses["bodega_nombre"] = warehouses.get("nombrebodega", "")
-    rules = assigned.merge(
-        warehouses[["bodega_code", "stock_seguridad", "warehouse_estado", "bodega_nombre"]],
-        how="left",
-        on="bodega_code",
-    )
-    rules["stock_seguridad"] = pd.to_numeric(rules["stock_seguridad"], errors="coerce").fillna(0)
-    rules["warehouse_estado"] = pd.to_numeric(rules["warehouse_estado"], errors="coerce").fillna(1).astype(int)
-    return rules[
-        (rules["bodega_code"] != "")
-        & (rules["site_norm"] != "")
-        & (rules["stock_activo"] == 1)
-        & (rules["warehouse_estado"] == 1)
-    ].copy()
-
-
-def apply_ecomm_stock_rules(stock_df, brand_config):
-    empty_filtered = pd.DataFrame(
-        columns=["fecha_corte", "id_producto", "key_producto", "stock_tiendas", "stock_bodega", "stock_total"]
-    )
-    stock = standardize_stock_columns(stock_df)
-    if stock.empty:
-        return stock
-    if "codigo_tienda" not in stock.columns or not stock["codigo_tienda"].map(clean_value).any():
-        return empty_filtered
-
-    rules = load_ecomm_stock_rules(str(DEFAULT_ECOMM_WAREHOUSES_PATH))
-    site_norm = normalize_site_for_stock(brand_config.get("site_label"))
-    site_rules = rules[rules["site_norm"] == site_norm].copy() if not rules.empty else pd.DataFrame()
-    if site_rules.empty:
-        return empty_filtered
-
-    stock["codigo_tienda_norm"] = stock["codigo_tienda"].map(normalize_warehouse_code)
-    stock = stock.merge(
-        site_rules[["bodega_code", "stock_seguridad"]],
-        how="inner",
-        left_on="codigo_tienda_norm",
-        right_on="bodega_code",
-    )
-    if stock.empty:
-        return empty_filtered
-
-    for column in ("stock_tiendas", "stock_bodega", "stock_total", "stock_seguridad"):
-        stock[column] = pd.to_numeric(stock.get(column, 0), errors="coerce").fillna(0)
-    stock["stock_bruto_ecomm"] = stock["stock_tiendas"] + stock["stock_bodega"]
-    stock.loc[stock["stock_bruto_ecomm"] <= 0, "stock_bruto_ecomm"] = stock.loc[
-        stock["stock_bruto_ecomm"] <= 0, "stock_total"
-    ]
-    if "CONCAT_TIENDA" in stock.columns:
-        concat_units = stock.apply(
-            lambda row: stock_units_from_concat_tienda(row.get("CONCAT_TIENDA"), row.get("codigo_tienda_norm")),
-            axis=1,
-        )
-        stock.loc[stock["stock_bruto_ecomm"] <= 0, "stock_bruto_ecomm"] = concat_units[
-            stock["stock_bruto_ecomm"] <= 0
-        ]
-    stock["stock_total"] = (stock["stock_bruto_ecomm"] - stock["stock_seguridad"]).clip(lower=0)
-    stock["stock_seguridad_aplicado"] = stock["stock_bruto_ecomm"] - stock["stock_total"]
-
-    grouped = (
-        stock.groupby(["fecha_corte", "key_producto"], as_index=False)
-        .agg(
-            id_producto=("id_producto", "first"),
-            stock_tiendas=("stock_tiendas", "sum"),
-            stock_bodega=("stock_bodega", "sum"),
-            stock_total=("stock_total", "sum"),
-            stock_bruto_ecomm=("stock_bruto_ecomm", "sum"),
-            stock_seguridad_aplicado=("stock_seguridad_aplicado", "sum"),
-            bodegas_ecomm=("codigo_tienda_norm", "nunique"),
-        )
-    )
-    return grouped
-
-
-def build_ecomm_stock_match_summary(stock_df, brand_config):
-    rules = load_ecomm_stock_rules(str(DEFAULT_ECOMM_WAREHOUSES_PATH))
-    site_norm = normalize_site_for_stock(brand_config.get("site_label"))
-    site_rules = rules[rules["site_norm"] == site_norm].copy() if not rules.empty else pd.DataFrame()
-    if site_rules.empty:
-        return pd.DataFrame(
-            [
-                {
-                    "Bodega": "Sin reglas",
-                    "Nombre": f"Archivo existe: {'Si' if DEFAULT_ECOMM_WAREHOUSES_PATH.exists() else 'No'} | sitio: {brand_config.get('site_label')}",
-                    "Stock seguridad": 0,
-                    "Aparece en query": "No",
-                    "Filas query": 0,
-                    "Stock bruto": 0,
-                    "Stock efectivo": 0,
-                }
-            ]
-        )
-
-    stock = standardize_stock_columns(stock_df)
-    if stock.empty or "codigo_tienda" not in stock.columns:
-        stock_summary = pd.DataFrame(columns=["bodega_code", "Filas query", "Stock bruto", "Stock efectivo"])
-    else:
-        stock["bodega_code"] = stock["codigo_tienda"].map(normalize_warehouse_code)
-        for column in ("stock_tiendas", "stock_bodega", "stock_total"):
-            stock[column] = pd.to_numeric(stock.get(column, 0), errors="coerce").fillna(0)
-        stock["stock_bruto"] = stock["stock_tiendas"] + stock["stock_bodega"]
-        stock.loc[stock["stock_bruto"] <= 0, "stock_bruto"] = stock.loc[stock["stock_bruto"] <= 0, "stock_total"]
-        if "CONCAT_TIENDA" in stock.columns:
-            concat_units = stock.apply(
-                lambda row: stock_units_from_concat_tienda(row.get("CONCAT_TIENDA"), row.get("bodega_code")),
-                axis=1,
-            )
-            stock.loc[stock["stock_bruto"] <= 0, "stock_bruto"] = concat_units[stock["stock_bruto"] <= 0]
-        stock = stock.merge(
-            site_rules[["bodega_code", "stock_seguridad"]],
-            how="left",
-            on="bodega_code",
-        )
-        stock["stock_seguridad"] = pd.to_numeric(stock["stock_seguridad"], errors="coerce").fillna(0)
-        stock["stock_efectivo"] = (stock["stock_bruto"] - stock["stock_seguridad"]).clip(lower=0)
-        stock_summary = (
-            stock.groupby("bodega_code", as_index=False)
-            .agg(
-                **{
-                    "Filas query": ("key_producto", "count"),
-                    "Stock bruto": ("stock_bruto", "sum"),
-                    "Stock efectivo": ("stock_efectivo", "sum"),
-                }
-            )
-        )
-
-    summary = site_rules[["bodega_code", "bodega_nombre", "stock_seguridad"]].drop_duplicates("bodega_code").merge(
-        stock_summary,
-        how="left",
-        on="bodega_code",
-    )
-    summary["Filas query"] = pd.to_numeric(summary["Filas query"], errors="coerce").fillna(0).astype(int)
-    summary["Stock bruto"] = pd.to_numeric(summary["Stock bruto"], errors="coerce").fillna(0)
-    summary["Stock efectivo"] = pd.to_numeric(summary["Stock efectivo"], errors="coerce").fillna(0)
-    summary["Aparece en query"] = summary["Filas query"].map(lambda value: "Si" if safe_int_value(value) > 0 else "No")
-    return summary.rename(
-        columns={
-            "bodega_code": "Bodega",
-            "bodega_nombre": "Nombre",
-            "stock_seguridad": "Stock seguridad",
-        }
-    )[["Bodega", "Nombre", "Stock seguridad", "Aparece en query", "Filas query", "Stock bruto", "Stock efectivo"]]
-
-
-def stock_key_from_parts(mod_col, size):
-    mod_col = clean_value(mod_col).upper()
-    size = clean_value(normalize_size(size)).upper()
-    return f"{mod_col}-{size}" if mod_col and size else ""
-
-
-def filter_visible_kpi_sizes(df):
-    if df is None or df.empty or "Mod-Col KPI" not in df.columns or "Talla KPI" not in df.columns:
-        return df
-    result = df.copy()
-    result = result[~result["Talla KPI"].map(is_internal_k_size)].copy()
-    keep_parts = []
-    for _, group in result.groupby("Mod-Col KPI", dropna=False):
-        has_one_size = group["Talla KPI"].map(is_one_size).any()
-        if has_one_size:
-            group = group[~group["Talla KPI"].map(is_zero_size)].copy()
-        keep_parts.append(group)
-    if not keep_parts:
-        return result.iloc[0:0].copy()
-    return pd.concat(keep_parts, ignore_index=True)
-
-
-def valid_kpi_price(value):
-    text = clean_value(value)
-    if not text:
-        return False
-    try:
-        return float(text.replace(",", ".")) > 0
-    except ValueError:
-        return False
-
-
-def numeric_kpi_value(value):
-    text = clean_value(value).replace(",", ".")
-    if not text:
-        return 0
-    try:
-        return float(text)
-    except ValueError:
-        return 0
-
-
-def flatten_shopify_for_kpis(shopify_products):
-    product_rows = []
-    variant_rows = []
-    for product in shopify_products or []:
-        mod_col = clean_value(product.get("Mod-Col")).upper()
-        status = clean_value(product.get("Status")).upper()
-        online_url = clean_value(product.get("Online Store URL"))
-        variants = product.get("Variants") or []
-        has_price = any(valid_kpi_price(variant.get("Variant Price")) for variant in variants)
-        product_rows.append(
-            {
-                "Mod-Col": mod_col,
-                "Handle": clean_value(product.get("Handle")),
-                "Title": clean_value(product.get("Title")),
-                "Status": status,
-                "Publicado": "SI" if online_url else "",
-                "Visible": status == "ACTIVE" and (bool(online_url) or not online_url),
-                "Tiene precio": has_price,
-                "Fotos": len([url for url in clean_value(product.get("Image Src")).split(";") if clean_value(url)]),
-            }
-        )
-        for variant in variants:
-            variant_rows.append(
-                {
-                    "Mod-Col": mod_col,
-                    "Handle": clean_value(product.get("Handle")),
-                    "Status": status,
-                    "Publicado": "SI" if online_url else "",
-                    "Variant SKU": clean_value(variant.get("Variant SKU")),
-                    "Variant Price": clean_value(variant.get("Variant Price")),
-                    "Variant Inventory Qty": numeric_kpi_value(variant.get("Variant Inventory Qty")),
-                    "Tiene precio": valid_kpi_price(variant.get("Variant Price")),
-                }
-            )
-    return pd.DataFrame(product_rows), pd.DataFrame(variant_rows)
-
-
-def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
-    arti = arti_df.copy() if isinstance(arti_df, pd.DataFrame) else pd.DataFrame()
-    stock = stock_df.copy() if isinstance(stock_df, pd.DataFrame) else pd.DataFrame()
-    allowed = set(brand_config.get("allowed_arti_brands") or [])
-    if "MARCA_MA" in arti.columns and allowed:
-        arti = arti[arti["MARCA_MA"].map(lambda value: clean_value(value).upper()).isin(allowed)].copy()
-    if "Mod-Col" not in arti.columns:
-        arti["Mod-Col"] = ""
-    if "COD MOD COL" not in arti.columns:
-        arti["COD MOD COL"] = ""
-    for column in ("CODINT_MA", "TALNUM_MA", "MARCA_MA"):
-        if column not in arti.columns:
-            arti[column] = ""
-
-    arti["Mod-Col KPI"] = arti["Mod-Col"].where(arti["Mod-Col"].map(clean_value) != "", arti["COD MOD COL"])
-    arti["Mod-Col KPI"] = arti["Mod-Col KPI"].map(lambda value: clean_value(value).upper())
-    arti["Talla KPI"] = arti["TALNUM_MA"].map(normalize_size)
-    arti["Stock Key"] = arti.apply(lambda row: stock_key_from_parts(row.get("Mod-Col KPI"), row.get("Talla KPI")), axis=1)
-    expected = arti[(arti["Mod-Col KPI"] != "") & (arti["Stock Key"] != "")].copy()
-    expected = filter_visible_kpi_sizes(expected)
-
-    if stock.empty:
-        stock = pd.DataFrame(columns=["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"])
-    stock["key_producto"] = stock["key_producto"].map(lambda value: clean_value(value).upper())
-    ecomm_stock_match = build_ecomm_stock_match_summary(stock, brand_config)
-    stock = apply_ecomm_stock_rules(stock, brand_config)
-    stock_ecomm_rows = safe_int_value((pd.to_numeric(stock.get("stock_total", 0), errors="coerce").fillna(0) > 0).sum()) if not stock.empty else 0
-    stock_ecomm_models = (
-        stock.loc[pd.to_numeric(stock.get("stock_total", 0), errors="coerce").fillna(0) > 0, "key_producto"]
-        .map(lambda value: clean_value(value).rsplit("-", 1)[0])
-        .nunique()
-        if not stock.empty and "key_producto" in stock.columns
-        else 0
-    )
-    if stock.empty:
-        stock = pd.DataFrame(columns=["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"])
-    stock["key_producto"] = stock["key_producto"].map(lambda value: clean_value(value).upper())
-    expected = expected.merge(
-        stock[["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"]],
-        how="left",
-        left_on="Stock Key",
-        right_on="key_producto",
-    )
-    for column in ("stock_tiendas", "stock_bodega", "stock_total"):
-        expected[column] = pd.to_numeric(expected[column], errors="coerce").fillna(0)
-
-    products_df, variants_df = flatten_shopify_for_kpis(shopify_products)
-    shopify_model_keys = {clean_value(value).upper() for value in products_df.get("Mod-Col", pd.Series(dtype=object)) if clean_value(value)}
-    shopify_variant_skus = {clean_value(value) for value in variants_df.get("Variant SKU", pd.Series(dtype=object)) if clean_value(value)}
-    product_status_by_key = products_df.drop_duplicates("Mod-Col").set_index("Mod-Col").to_dict("index") if not products_df.empty and "Mod-Col" in products_df.columns else {}
-
-    expected["SKU"] = expected["CODINT_MA"].map(clean_value)
-    expected["Con stock"] = expected["stock_total"] > 0
-    expected["Producto creado Shopify"] = expected["Mod-Col KPI"].map(lambda value: value in shopify_model_keys)
-    expected["Variante creada Shopify"] = expected["SKU"].map(lambda value: value in shopify_variant_skus)
-    expected["Status Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Status")))
-    expected["Visible Shopify"] = expected["Status Shopify"].map(lambda value: clean_value(value).upper() == "ACTIVE")
-    expected["Fotos Shopify"] = expected["Mod-Col KPI"].map(lambda value: int(product_status_by_key.get(value, {}).get("Fotos") or 0))
-
-    model_stock = (
-        expected.groupby("Mod-Col KPI", as_index=False)
-        .agg(
-            Marca=("MARCA_MA", "first"),
-            Stock_total=("stock_total", "sum"),
-            Tallas_BigQuery=("Talla KPI", "nunique"),
-            Tallas_con_stock=("Con stock", "sum"),
-            Producto_creado=("Producto creado Shopify", "max"),
-            Visible_Shopify=("Visible Shopify", "max"),
-            Fotos_Shopify=("Fotos Shopify", "max"),
-        )
-    )
-    model_stock["Debe estar visible"] = model_stock["Stock_total"] > 0
-    model_stock["Estado"] = model_stock.apply(
-        lambda row: (
-            "OK visible con stock"
-            if row["Debe estar visible"] and row["Visible_Shopify"]
-            else "Con stock no visible"
-            if row["Debe estar visible"] and not row["Visible_Shopify"]
-            else "Sin stock visible"
-            if not row["Debe estar visible"] and row["Visible_Shopify"]
-            else "OK apagado sin stock"
-        ),
-        axis=1,
-    )
-
-    missing_models = model_stock[(model_stock["Debe estar visible"]) & (~model_stock["Producto_creado"])].copy()
-    stock_not_visible = model_stock[
-        (model_stock["Debe estar visible"]) & (model_stock["Producto_creado"]) & (~model_stock["Visible_Shopify"])
-    ].copy()
-    no_stock_visible = model_stock[(~model_stock["Debe estar visible"]) & (model_stock["Visible_Shopify"])].copy()
-    missing_stock_variants = expected[(expected["Con stock"]) & (~expected["Variante creada Shopify"])].copy()
-    models_with_missing_stock_variants = {
-        clean_value(value)
-        for value in missing_stock_variants.get("Mod-Col KPI", pd.Series(dtype=object)).dropna()
-    }
-    model_stock["Variantes_stock_incompletas"] = model_stock["Mod-Col KPI"].map(
-        lambda value: clean_value(value) in models_with_missing_stock_variants
-    )
-
-    price_by_model = (
-        variants_df.groupby("Mod-Col", as_index=False)["Tiene precio"].max()
-        if not variants_df.empty and "Mod-Col" in variants_df.columns
-        else pd.DataFrame(columns=["Mod-Col", "Tiene precio"])
-    )
-    shopify_stock_by_model = (
-        variants_df.groupby("Mod-Col", as_index=False)["Variant Inventory Qty"].sum()
-        if not variants_df.empty and "Mod-Col" in variants_df.columns and "Variant Inventory Qty" in variants_df.columns
-        else pd.DataFrame(columns=["Mod-Col", "Variant Inventory Qty"])
-    )
-    model_stock = model_stock.merge(
-        shopify_stock_by_model.rename(columns={"Variant Inventory Qty": "Stock_Shopify"}),
-        how="left",
-        left_on="Mod-Col KPI",
-        right_on="Mod-Col",
-    )
-    model_stock["Stock_Shopify"] = pd.to_numeric(model_stock["Stock_Shopify"], errors="coerce").fillna(0)
-    if "Mod-Col" in model_stock.columns:
-        model_stock = model_stock.drop(columns=["Mod-Col"])
-
-    no_price_models = model_stock[model_stock["Producto_creado"] & model_stock["Debe estar visible"]].merge(
-        price_by_model,
-        how="left",
-        left_on="Mod-Col KPI",
-        right_on="Mod-Col",
-    )
-    no_price_models["Tiene precio"] = no_price_models["Tiene precio"].fillna(False)
-    no_price_models = no_price_models[~no_price_models["Tiene precio"]].copy()
-    no_photo_models = model_stock[
-        model_stock["Debe estar visible"] & model_stock["Producto_creado"] & (model_stock["Fotos_Shopify"] <= 0)
-    ].copy()
-    no_shopify_stock_models = model_stock[
-        model_stock["Debe estar visible"] & model_stock["Producto_creado"] & (model_stock["Stock_Shopify"] <= 0)
-    ].copy()
-    no_price_keys = {clean_value(value) for value in no_price_models.get("Mod-Col KPI", pd.Series(dtype=object))}
-    model_stock["Sin_precio_shopify"] = model_stock["Mod-Col KPI"].map(lambda value: clean_value(value) in no_price_keys)
-    no_photo_keys = {clean_value(value) for value in no_photo_models.get("Mod-Col KPI", pd.Series(dtype=object))}
-    model_stock["Sin_foto_shopify"] = model_stock["Mod-Col KPI"].map(lambda value: clean_value(value) in no_photo_keys)
-    no_shopify_stock_keys = {
-        clean_value(value) for value in no_shopify_stock_models.get("Mod-Col KPI", pd.Series(dtype=object))
-    }
-    model_stock["Sin_stock_shopify"] = model_stock["Mod-Col KPI"].map(
-        lambda value: clean_value(value) in no_shopify_stock_keys
-    )
-    model_stock["Con_foto_shopify"] = model_stock["Fotos_Shopify"] > 0
-    model_stock["Con_stock_shopify"] = model_stock["Stock_Shopify"] > 0
-    model_stock["Listo_venta"] = (
-        model_stock["Debe estar visible"]
-        & model_stock["Producto_creado"]
-        & model_stock["Visible_Shopify"]
-        & model_stock["Con_stock_shopify"]
-        & ~model_stock["Sin_precio_shopify"]
-        & ~model_stock["Sin_foto_shopify"]
-    )
-
-    created_with_stock = int((model_stock["Debe estar visible"] & model_stock["Producto_creado"]).sum())
-    created_without_stock = int((model_stock["Producto_creado"] & ~model_stock["Debe estar visible"]).sum())
-    web_visible = int(model_stock["Listo_venta"].sum())
-    non_visible_web = model_stock[
-        model_stock["Debe estar visible"] & model_stock["Producto_creado"] & (~model_stock["Listo_venta"])
-    ].copy()
-
-    def non_visible_reason(row):
-        if row.get("Sin_stock_shopify"):
-            return "Sin stock Shopify"
-        if row.get("Sin_foto_shopify"):
-            return "Sin foto"
-        if row.get("Sin_precio_shopify"):
-            return "Sin precio"
-        if not row.get("Visible_Shopify"):
-            return "No activo/publicado"
-        return "Otros por revisar"
-
-    def non_visible_blockers(row):
-        blockers = []
-        if row.get("Sin_stock_shopify"):
-            blockers.append("Sin stock Shopify")
-        if row.get("Sin_foto_shopify"):
-            blockers.append("Sin foto")
-        if row.get("Sin_precio_shopify"):
-            blockers.append("Sin precio")
-        if not row.get("Visible_Shopify"):
-            blockers.append("No activo/publicado")
-        return " + ".join(blockers) if blockers else "Otros por revisar"
-
-    def non_visible_state(row):
-        pieces = [
-            "Stock Shopify OK" if row.get("Con_stock_shopify") else "Sin stock Shopify",
-            "Con foto" if row.get("Con_foto_shopify") else "Sin foto",
-            "Con precio" if not row.get("Sin_precio_shopify") else "Sin precio",
-            "Activo/publicado" if row.get("Visible_Shopify") else "No activo/publicado",
-        ]
-        return " | ".join(pieces)
-
-    if not non_visible_web.empty:
-        non_visible_web["Motivo principal"] = non_visible_web.apply(non_visible_reason, axis=1)
-        non_visible_web["Bloqueos"] = non_visible_web.apply(non_visible_blockers, axis=1)
-        non_visible_web["Estado operativo"] = non_visible_web.apply(non_visible_state, axis=1)
-        non_visible_web["ModCol_BQ"] = 1
-        non_visible_web["ModCol_stock_shopify"] = non_visible_web["Con_stock_shopify"].map(lambda value: 1 if value else 0)
-        non_visible_counts = non_visible_web["Motivo principal"].value_counts().to_dict()
-        non_visible_combo_summary = (
-            non_visible_web.groupby(["Bloqueos", "Estado operativo"], as_index=False)
-            .agg(
-                Modelos=("Mod-Col KPI", "nunique"),
-                Stock_BigQuery=("ModCol_BQ", "sum"),
-                Stock_Shopify=("ModCol_stock_shopify", "sum"),
-            )
-            .sort_values(["Modelos", "Stock_BigQuery"], ascending=[False, False])
-        )
-    else:
-        non_visible_web["Motivo principal"] = ""
-        non_visible_web["Bloqueos"] = ""
-        non_visible_web["Estado operativo"] = ""
-        non_visible_web["ModCol_BQ"] = 0
-        non_visible_web["ModCol_stock_shopify"] = 0
-        non_visible_counts = {}
-        non_visible_combo_summary = pd.DataFrame(
-            columns=["Bloqueos", "Estado operativo", "Modelos", "Stock_BigQuery", "Stock_Shopify"]
-        )
-
-    kpis = {
-        "modelos_con_stock": int(model_stock["Debe estar visible"].sum()),
-        "modelos_creados_shopify": int(model_stock["Producto_creado"].sum()),
-        "modelos_creados_con_stock": created_with_stock,
-        "cobertura_shopify": float(created_with_stock / model_stock["Debe estar visible"].sum()) if model_stock["Debe estar visible"].sum() else 0,
-        "modelos_pendientes": int(len(missing_models)),
-        "con_stock_no_visibles": int(len(stock_not_visible)),
-        "sin_stock_visibles": int(len(no_stock_visible)),
-        "modelos_variantes_incompletas": int(model_stock["Variantes_stock_incompletas"].sum()),
-        "productos_creados_sin_stock": created_without_stock,
-        "productos_visibles": int((model_stock["Debe estar visible"] & model_stock["Visible_Shopify"]).sum()),
-        "modelos_visibles_web": web_visible,
-        "modelos_no_visibles_web": max(created_with_stock - web_visible, 0),
-        "no_visible_sin_stock_shopify": int(non_visible_counts.get("Sin stock Shopify", 0)),
-        "no_visible_sin_foto": int(non_visible_counts.get("Sin foto", 0)),
-        "no_visible_sin_precio": int(non_visible_counts.get("Sin precio", 0)),
-        "no_visible_no_activo": int(non_visible_counts.get("No activo/publicado", 0)),
-        "no_visible_otros": int(non_visible_counts.get("Otros por revisar", 0)),
-        "modelos_listos_tienda": web_visible,
-        "modelos_con_stock_con_foto": int(
-            (model_stock["Debe estar visible"] & model_stock["Producto_creado"] & model_stock["Con_foto_shopify"]).sum()
-        ),
-        "modelos_visibles_con_foto": int(
-            (model_stock["Debe estar visible"] & model_stock["Visible_Shopify"] & model_stock["Con_foto_shopify"]).sum()
-        ),
-        "modelos_con_stock_shopify": int(
-            (model_stock["Debe estar visible"] & model_stock["Producto_creado"] & model_stock["Con_stock_shopify"]).sum()
-        ),
-        "modelos_sin_stock_shopify": int(len(no_shopify_stock_models)),
-        "sincronizacion_stock_shopify": float(
-            (
-                model_stock["Debe estar visible"]
-                & model_stock["Producto_creado"]
-                & model_stock["Con_stock_shopify"]
-            ).sum()
-            / created_with_stock
-        ) if created_with_stock else 0,
-        "modelos_listos_venta": web_visible,
-        "modelos_sin_precio": int(len(no_price_models)),
-        "modelos_sin_foto": int(len(no_photo_models)),
-        "stock_ecomm_rows": int(stock_ecomm_rows),
-        "stock_ecomm_models": int(stock_ecomm_models),
-    }
-    model_stock["Creado_con_stock"] = model_stock["Debe estar visible"] & model_stock["Producto_creado"]
-    brand_summary = (
-        model_stock.groupby("Marca", as_index=False)
-        .agg(
-            Modelos_con_stock=("Debe estar visible", "sum"),
-            Creados_Shopify=("Creado_con_stock", "sum"),
-            Pendientes_creacion=("Producto_creado", lambda values: 0),
-            Stock_total=("Stock_total", "sum"),
-        )
-    )
-    if not brand_summary.empty:
-        brand_summary["Pendientes_creacion"] = brand_summary["Modelos_con_stock"] - brand_summary["Creados_Shopify"]
-        brand_summary["Cobertura"] = brand_summary.apply(
-            lambda row: row["Creados_Shopify"] / row["Modelos_con_stock"] if row["Modelos_con_stock"] else 0,
-            axis=1,
-        )
-
-    action_rows = []
-    for _, row in missing_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock no creado", "Accion sugerida": "Pedir input al Brand Manager", "Stock total": row["Stock_total"]})
-    for _, row in no_stock_visible.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Sin stock visible", "Accion sugerida": "Apagar producto en Shopify", "Stock total": row["Stock_total"]})
-    for _, row in no_price_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Creado con stock sin precio", "Accion sugerida": "Cargar precio en Shopify", "Stock total": row["Stock_total"]})
-    for _, row in no_photo_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock sin foto", "Accion sugerida": "Solicitar fotos al Brand Manager", "Stock total": row["Stock_total"]})
-    for _, row in no_shopify_stock_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock eComm sin stock Shopify", "Accion sugerida": "Revisar sincronizacion de stock hacia Shopify", "Stock total": row["Stock_total"]})
-
-    actions_df = pd.DataFrame(action_rows)
-    missing_stock_variants_export = (
-        missing_stock_variants[["Mod-Col KPI", "MARCA_MA", "Talla KPI", "SKU", "stock_total"]]
-        .rename(columns={"Mod-Col KPI": "Mod-Col", "Talla KPI": "Talla", "stock_total": "Stock total"})
-        if not missing_stock_variants.empty
-        else pd.DataFrame(columns=["Mod-Col", "MARCA_MA", "Talla", "SKU", "Stock total"])
-    )
-    return {
-        "kpis": kpis,
-        "model_stock": model_stock,
-        "brand_summary": brand_summary,
-        "actions": actions_df,
-        "missing_stock_variants": missing_stock_variants_export,
-        "no_price_models": no_price_models,
-        "no_photo_models": no_photo_models,
-        "no_shopify_stock_models": no_shopify_stock_models,
-        "non_visible_web": non_visible_web,
-        "non_visible_combo_summary": non_visible_combo_summary,
-        "ecomm_stock_match": ecomm_stock_match,
-        "stock_not_visible": stock_not_visible,
-        "no_stock_visible": no_stock_visible,
-    }
-
-
-def load_catalog_kpi_result(brand_config, shopify_config):
-    arti_df, arti_source = read_arti_for_app(brand_config)
-    stock_df = read_current_stock_from_bigquery(get_bigquery_config())
-    shopify_products = fetch_products(shopify_config)
-    result = build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config)
-    result["meta"] = {
-        "arti_source": arti_source,
-        "stock_rows": len(stock_df),
-        "shopify_products": len(shopify_products),
-        "fecha_corte": clean_value(stock_df["fecha_corte"].max()) if not stock_df.empty and "fecha_corte" in stock_df.columns else "",
-        "refreshed_at": datetime.now(timezone.utc).isoformat(),
-    }
-    return result
-
-
-def kpi_cache_path(site_key):
-    safe_site = re.sub(r"[^a-zA-Z0-9_-]+", "_", clean_value(site_key) or "site")
-    return KPI_CACHE_DIR / f"{safe_site}.pkl"
-
-
-def load_cached_catalog_kpi_result(site_key):
-    path = kpi_cache_path(site_key)
-    if not path.exists():
-        return None
-    try:
-        with path.open("rb") as cache_file:
-            result = pickle.load(cache_file)
-        return result if isinstance(result, dict) and "kpis" in result else None
-    except Exception:
-        return None
-
-
-def save_cached_catalog_kpi_result(site_key, result):
-    if not isinstance(result, dict) or "kpis" not in result:
-        return
-    KPI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    with kpi_cache_path(site_key).open("wb") as cache_file:
-        pickle.dump(result, cache_file)
-
-
-def siblings_by_model_from_shopify(shopify_products):
-    products_df = pd.DataFrame(shopify_products)
-    if products_df.empty or "Mod-Col" not in products_df.columns or "Handle" not in products_df.columns:
-        return {}
-    products_df["__MODEL"] = products_df["Mod-Col"].map(lambda value: clean_value(value).upper().rsplit("-", 1)[0])
-    return (
-        products_df[products_df["__MODEL"] != ""]
-        .groupby("__MODEL")["Handle"]
-        .apply(lambda values: ", ".join(dict.fromkeys(clean_value(value) for value in values if clean_value(value))))
-        .to_dict()
-    )
-
-
-def apply_shopify_siblings_to_matrixify(matrixify_df, shopify_products):
-    siblings_map = siblings_by_model_from_shopify(shopify_products)
-    if matrixify_df is None or matrixify_df.empty or not siblings_map:
-        return matrixify_df
-    df = matrixify_df.copy()
-    key_column = "Metafield: custom.codigo_modelo_color [id]"
-    siblings_column = "Metafield: theme.siblings [single_line_text_field]"
-    custom_siblings_column = "Metafield: custom.siblings [single_line_text_field]"
-    if key_column not in df.columns:
-        return df
-    for column in (siblings_column, custom_siblings_column):
-        if column not in df.columns:
-            df[column] = ""
-
-    def sibling_value(row):
-        key = clean_value(row.get(key_column)).upper()
-        if not key:
-            return row.get(siblings_column)
-        model = key.rsplit("-", 1)[0]
-        return siblings_map.get(model, row.get(siblings_column) or row.get(custom_siblings_column))
-
-    top_rows = df["Handle"].map(clean_value) != ""
-    values = df.loc[top_rows].apply(sibling_value, axis=1)
-    df.loc[top_rows, siblings_column] = values
-    df.loc[top_rows, custom_siblings_column] = values
-    return df
-
-
-def _product_gid(value):
-    text = clean_value(value)
-    if not text:
-        return ""
-    if text.startswith("gid://"):
-        return text
-    return f"gid://shopify/Product/{text}"
-
-
-def _metafield_type_from_column(column):
-    match = re.search(r"\[(.+?)\]$", clean_value(column))
-    if not match:
-        return "single_line_text_field"
-    return match.group(1)
-
-
-def _metafield_can_write_direct(column):
-    namespace, key = _metafield_namespace_key(column)
-    field_type = _metafield_type_from_column(column)
-    if field_type in ("page_reference", "list.page_reference"):
-        return False, f"{namespace}.{key} requiere IDs internos de Shopify; se mantiene para Matrixify"
-    return True, ""
-
-
-def _logo_lookup_keys(record):
-    keys = set()
-    candidates = [
-        record.get("handle"),
-        record.get("displayName"),
-    ]
-    for field in record.get("fields") or []:
-        candidates.append(field.get("value"))
-        reference = field.get("reference") or {}
-        image = reference.get("image") or {}
-        candidates.append(reference.get("url"))
-        candidates.append(image.get("url"))
-        for referenced_node in ((field.get("references") or {}).get("nodes")) or []:
-            referenced_image = referenced_node.get("image") or {}
-            candidates.append(referenced_node.get("url"))
-            candidates.append(referenced_image.get("url"))
-
-    expanded_candidates = []
-    for candidate in candidates:
-        expanded_candidates.append(candidate)
-        text = clean_value(candidate).lower()
-        if not text:
-            continue
-        parsed_path = unquote(urlparse(text).path or "")
-        if parsed_path:
-            filename = Path(parsed_path).stem
-            if filename:
-                expanded_candidates.append(filename)
-
-    for candidate in expanded_candidates:
-        text = clean_value(candidate).lower()
-        if not text:
-            continue
-        normalized = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
-        compact = re.sub(r"[^a-z0-9]+", "", text)
-        for key in (text, normalized, compact):
-            if key:
-                keys.add(key)
-                keys.add(f"logo.{key}")
-                keys.add(f"{key}-clb")
-                keys.add(f"logo.{key}-clb")
-        if normalized.endswith("-clb"):
-            base = normalized[:-4]
-            keys.update({base, f"logo.{base}"})
-        if text.startswith("logo."):
-            bare = text.split(".", 1)[1]
-            keys.add(bare)
-            if bare.endswith("-clb"):
-                keys.add(bare[:-4])
-    return keys
-
-
-def _logo_reference_candidates(reference, handle=""):
-    values = [reference, handle]
-    candidates = set()
-    for value in values:
-        text = clean_value(value).lower()
-        if not text:
-            continue
-        if text.startswith("logo."):
-            text = text.split(".", 1)[1]
-        base_values = {text}
-        if text.endswith("-clb"):
-            base_values.add(text[:-4])
-        for base in list(base_values):
-            normalized = re.sub(r"[^a-z0-9]+", "-", base).strip("-")
-            compact = re.sub(r"[^a-z0-9]+", "", base)
-            spaced = normalized.replace("-", " ")
-            for item in (base, normalized, compact, spaced):
-                if item:
-                    candidates.add(item)
-                    candidates.add(f"logo.{item}")
-                    candidates.add(f"{item}-clb")
-                    candidates.add(f"logo.{item}-clb")
-    return {candidate.lower() for candidate in candidates if candidate}
-
-
-def _metaobject_gid_lookup(shopify_config, metaobject_type):
-    cache_key = f"metaobject_lookup_{clean_value(metaobject_type)}"
-    if cache_key not in st.session_state:
-        records = fetch_metaobjects(shopify_config, metaobject_type)
-        lookup = {}
-        for record in records:
-            gid = clean_value(record.get("id"))
-            if not gid:
-                continue
-            for key in _logo_lookup_keys(record):
-                lookup[key.lower()] = gid
-        st.session_state[cache_key] = lookup
-    return st.session_state[cache_key]
-
-
-def _all_metaobject_gid_lookup(shopify_config):
-    cache_key = "metaobject_lookup_all"
-    if cache_key in st.session_state:
-        return st.session_state[cache_key]
-
-    by_handle = {}
-    by_reference = {}
-    definitions = fetch_metaobject_definitions(shopify_config)
-    for definition in definitions:
-        metaobject_type = clean_value(definition.get("type"))
-        if not metaobject_type:
-            continue
-        try:
-            lookup = _metaobject_gid_lookup(shopify_config, metaobject_type)
-        except Exception:
-            continue
-        for handle, gid in lookup.items():
-            by_handle.setdefault(handle.lower(), gid)
-            by_reference[f"{metaobject_type}.{handle}".lower()] = gid
-
-    st.session_state[cache_key] = {"by_handle": by_handle, "by_reference": by_reference}
-    return st.session_state[cache_key]
-
-
-def _metaobject_definition_ids_from_metafield(shopify_config, namespace, key):
-    cache_key = f"metafield_definition_metaobjects_{namespace}_{key}"
-    if cache_key in st.session_state:
-        return st.session_state[cache_key]
-
-    definition_ids = []
-    if fetch_metafield_definition is None:
-        st.session_state[cache_key] = definition_ids
-        return definition_ids
-    try:
-        definition = fetch_metafield_definition(shopify_config, "PRODUCT", namespace, key)
-    except Exception:
-        definition = {}
-    for validation in definition.get("validations") or []:
-        name = clean_value(validation.get("name"))
-        value = clean_value(validation.get("value"))
-        if name not in ("metaobject_definition_id", "metaobject_definition_ids") or not value:
-            continue
-        try:
-            parsed_value = json.loads(value)
-            if isinstance(parsed_value, list):
-                definition_ids.extend(clean_value(item) for item in parsed_value if clean_value(item))
-            elif clean_value(parsed_value):
-                definition_ids.append(clean_value(parsed_value))
-        except Exception:
-            definition_ids.extend(
-                clean_value(item)
-                for item in re.split(r"[,|\s]+", value)
-                if clean_value(item).startswith("gid://shopify/MetaobjectDefinition/")
-            )
-    st.session_state[cache_key] = list(dict.fromkeys(definition_ids))
-    return st.session_state[cache_key]
-
-
-def _metaobject_gid_lookup_for_metafield(shopify_config, namespace, key):
-    cache_key = f"metaobject_lookup_metafield_{namespace}_{key}"
-    if cache_key in st.session_state:
-        return st.session_state[cache_key]
-
-    lookup = {}
-    if fetch_metaobjects_for_definition is None:
-        st.session_state[cache_key] = lookup
-        return lookup
-    for definition_id in _metaobject_definition_ids_from_metafield(shopify_config, namespace, key):
-        try:
-            records = fetch_metaobjects_for_definition(shopify_config, definition_id)
-        except Exception:
-            continue
-        for record in records:
-            gid = clean_value(record.get("id"))
-            if not gid:
-                continue
-            for lookup_key in _logo_lookup_keys(record):
-                lookup[lookup_key.lower()] = gid
-    st.session_state[cache_key] = lookup
-    return lookup
-
-
-def _resolve_metaobject_reference_value(shopify_config, column, value):
-    text = clean_value(value)
-    field_type = _metafield_type_from_column(column)
-    if field_type not in ("metaobject_reference", "list.metaobject_reference") or not text:
-        return text
-
-    references = [item.strip() for item in text.split(",") if item.strip()]
-    gids = []
-    missing = []
-    for reference in references:
-        if reference.startswith("gid://shopify/Metaobject/"):
-            gids.append(reference)
-            continue
-        if "." not in reference:
-            missing.append(reference)
-            continue
-        metaobject_type, handle = reference.split(".", 1)
-        try:
-            lookup = _metaobject_gid_lookup(shopify_config, metaobject_type)
-        except Exception:
-            lookup = {}
-        gid = ""
-        for candidate in _logo_reference_candidates(reference, handle):
-            gid = lookup.get(candidate)
-            if gid:
-                break
-        if not gid:
-            namespace, key = _metafield_namespace_key(column)
-            metafield_lookup = _metaobject_gid_lookup_for_metafield(shopify_config, namespace, key)
-            for candidate in _logo_reference_candidates(reference, handle):
-                gid = metafield_lookup.get(candidate)
-                if gid:
-                    break
-        if not gid:
-            fallback_lookup = _all_metaobject_gid_lookup(shopify_config)
-            for candidate in _logo_reference_candidates(reference, handle):
-                gid = fallback_lookup["by_reference"].get(candidate) or fallback_lookup["by_handle"].get(candidate)
-                if gid:
-                    break
-        if gid:
-            gids.append(gid)
-        else:
-            missing.append(reference)
-
-    if missing:
-        raise ValueError(f"No encontre metaobjects para: {', '.join(missing)}")
-    if field_type == "list.metaobject_reference":
-        return json.dumps(gids, ensure_ascii=False)
-    return gids[0] if gids else ""
-
-
-def _shopify_image_url(value):
-    url = _normalize_legacy_image_url(value)
-    prefix = "https://ecom-imagenes.forus-digital.xyz.peru.s3.amazonaws.com/"
-    if url.startswith(prefix):
-        return "https://s3.amazonaws.com/ecom-imagenes.forus-digital.xyz.peru/" + url[len(prefix):]
-    return url
-
-
-def _normalize_legacy_image_url(value):
-    url = clean_value(value)
-    replacements = {
-        "COLUMBIA%20SHOPIFY": "COLUMBIA",
-        "ROCKFORD%20SHOPIFY": "ROCKFORD",
-        "HUSH%20PUPPIES%20SHOPIFY": "HUSH%20PUPPIES",
-        "VANS%20SHOPIFY": "VANS",
-        "KEDS%20SHOPIFY": "KEDS",
-        "PATAGONIA%20SHOPIFY": "PATAGONIA",
-        "SOREL%20SHOPIFY": "SOREL",
-        "MOUNTAIN%20HARDWEAR%20SHOPIFY": "MOUNTAINHARDWEAR",
-        "COLUMBIA SHOPIFY": "COLUMBIA",
-        "ROCKFORD SHOPIFY": "ROCKFORD",
-        "HUSH PUPPIES SHOPIFY": "HUSH PUPPIES",
-        "VANS SHOPIFY": "VANS",
-        "KEDS SHOPIFY": "KEDS",
-        "PATAGONIA SHOPIFY": "PATAGONIA",
-        "SOREL SHOPIFY": "SOREL",
-        "MOUNTAIN HARDWEAR SHOPIFY": "MOUNTAINHARDWEAR",
-    }
-    for old, new in replacements.items():
-        url = url.replace(f"/{old}/", f"/{new}/")
-    return url
-
-
-def _image_url_candidates(value):
-    original = clean_value(value)
-    normalized = _normalize_legacy_image_url(original)
-    converted = _shopify_image_url(original)
-    return list(dict.fromkeys([url for url in (converted, normalized, original) if url]))
-
-
-def _url_is_reachable_image(url, timeout=8):
-    headers = {"User-Agent": "Mozilla/5.0", "Range": "bytes=0-512"}
-    for method in ("HEAD", "GET"):
-        request = Request(url, method=method, headers=headers)
-        try:
-            with urlopen(request, timeout=timeout) as response:
-                content_type = clean_value(response.headers.get("Content-Type")).lower()
-                return response.status < 400 and content_type.startswith("image/")
-        except HTTPError as exc:
-            if exc.code in (403, 405) and method == "HEAD":
-                continue
-            return False
-        except (URLError, TimeoutError, OSError):
-            return False
+    return any(term in text for term in blocked_terms)
+
+
+def is_zero_size(value):
+    raw_text = clean(value).upper()
+    normalized_text = clean(normalize_size(value)).upper()
+    candidates = {raw_text, normalized_text}
+    for text in candidates:
+        text = re.sub(r"\b(TALLA|SIZE|TAL)\b", "", text)
+        text = re.sub(r"\s+", "", text).replace(",", ".")
+        if re.fullmatch(r"0+(\.0+)?", text):
+            return True
+        if re.fullmatch(r"0+\.?0*[A-Z]*", text) and re.sub(r"[^A-Z]", "", text) in ("",):
+            return True
+    if re.search(r"(^|[^A-Z0-9])0+([,.]0+)?([^A-Z0-9]|$)", raw_text):
+        return True
     return False
 
 
-def _first_reachable_image_url(value):
-    candidates = _image_url_candidates(value)
-    for url in candidates:
-        if _url_is_reachable_image(url):
-            return url, ""
-    return "", candidates[0] if candidates else clean_value(value)
+def is_one_size(value):
+    size = clean(normalize_size(value)).upper().replace(" ", "")
+    return size in ("O/S", "OS", "ONESIZE", "UNICA", "ÚNICA", "TALLAUNICA")
 
 
-def _download_image_bytes(value):
-    last_error = ""
-    headers = {"User-Agent": "Mozilla/5.0"}
-    for url in _image_url_candidates(value):
-        try:
-            request = Request(url, headers=headers)
-            with urlopen(request, timeout=30) as response:
-                content_type = clean_value(response.headers.get("Content-Type")).lower()
-                if response.status >= 400 or not content_type.startswith("image/"):
-                    last_error = f"{url}: no es imagen valida"
-                    continue
-                data = response.read()
-                if not data:
-                    last_error = f"{url}: imagen vacia"
-                    continue
-                filename = Path(unquote(urlparse(url).path or "")).name or "product_image.jpg"
-                return data, content_type.split(";")[0], filename, url
-        except Exception as exc:
-            last_error = f"{url}: {exc}"
-    raise ShopifyApiError(last_error or "No se pudo descargar la imagen")
+def display_size_for_site(value, brand_config=None):
+    brand_config = brand_config or get_brand_config()
+    site_label = clean(brand_config.get("site_label"))
+    if site_label == "Rockford.pe" and (is_one_size(value) or is_zero_size(value)):
+        return "Talla Única"
+    return normalize_size(value)
 
 
-def _file_status_summary(file_statuses):
-    ready = []
-    failed = []
-    pending = []
-    for file_node in file_statuses or []:
-        status = clean_value(file_node.get("fileStatus")).upper()
-        if status == "READY":
-            ready.append(file_node)
-        elif status == "FAILED":
-            failed.append(file_node)
-        else:
-            pending.append(file_node)
-    return ready, failed, pending
-
-
-def _file_cdn_url(file_node):
-    image = file_node.get("image") or {}
-    preview = file_node.get("preview") or {}
-    preview_image = preview.get("image") or {}
-    return clean_value(image.get("url")) or clean_value(preview_image.get("url"))
-
-
-def _product_set_files_with_fallback(shopify_config, product_gid, product_files):
-    try:
-        product_set_files(shopify_config, product_gid, product_files)
-        return "productSet staged"
-    except Exception as product_set_exc:
-        cdn_files = []
-        file_errors = []
-        for product_file in product_files:
-            try:
-                created = file_create(
-                    shopify_config,
-                    product_file.get("originalSource"),
-                    alt=product_file.get("alt"),
-                    content_type=product_file.get("contentType") or "IMAGE",
-                )
-                file_ids = [clean_value(file_node.get("id")) for file_node in created if clean_value(file_node.get("id"))]
-                statuses = wait_file_statuses(shopify_config, file_ids) if file_ids else created
-                ready_files, failed_files, pending_files = _file_status_summary(statuses)
-                if failed_files:
-                    file_errors.append(f"{product_file.get('filename')}: archivo fallido")
-                    continue
-                if pending_files and not ready_files:
-                    file_errors.append(f"{product_file.get('filename')}: archivo en procesamiento")
-                    continue
-                source_node = (ready_files or statuses or created or [{}])[0]
-                cdn_url = _file_cdn_url(source_node)
-                if not cdn_url:
-                    file_errors.append(f"{product_file.get('filename')}: sin URL CDN")
-                    continue
-                cdn_files.append(
-                    {
-                        "originalSource": cdn_url,
-                        "alt": product_file.get("alt"),
-                        "filename": product_file.get("filename"),
-                        "contentType": "IMAGE",
-                        "duplicateResolutionMode": "APPEND_UUID",
-                    }
-                )
-            except Exception as exc:
-                file_errors.append(f"{product_file.get('filename')}: {exc}")
-        if cdn_files:
-            product_set_files(shopify_config, product_gid, cdn_files)
-            if file_errors:
-                raise ShopifyApiError(
-                    f"productSet staged fallo ({product_set_exc}); fallback CDN parcial: {' | '.join(file_errors[:3])}"
-                )
-            return "fileCreate CDN"
-        raise ShopifyApiError(f"productSet staged fallo: {product_set_exc}; fallback sin archivos: {' | '.join(file_errors[:3])}")
-
-
-def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existing_media_ids=None, image_mode="replace", alt_text=""):
-    existing_media_ids = existing_media_ids or []
-    image_urls = [url for url in image_urls[:10] if clean_value(url)]
-    image_mode = clean_value(image_mode).lower() or "replace"
-    product_files = []
-    image_errors = []
-
-    for image_index, raw_image_url in enumerate(image_urls, start=1):
-        try:
-            image_bytes, mime_type, filename, _ = _download_image_bytes(raw_image_url)
-            resource_url = staged_upload_image(shopify_config, filename, mime_type, image_bytes)
-            product_files.append(
-                {
-                    "originalSource": resource_url,
-                    "alt": clean_value(alt_text),
-                    "filename": filename,
-                    "contentType": "IMAGE",
-                    "duplicateResolutionMode": "APPEND_UUID",
-                }
-            )
-        except Exception as exc:
-            image_errors.append(f"foto {image_index}: {exc}")
-
-    if not product_files:
-        raise ShopifyApiError("No se pudo subir ninguna foto nueva. " + " | ".join(image_errors[:3]))
-
-    route = _product_set_files_with_fallback(shopify_config, product_gid, product_files)
-    deleted_count = 0
-    delete_note = ""
-    if image_mode == "replace" and existing_media_ids:
-        try:
-            deleted = product_delete_media(shopify_config, product_gid, existing_media_ids)
-            deleted_count = len(deleted)
-        except Exception as exc:
-            detail = clean_value(exc).lower()
-            if "do not exist" in detail or "does not exist" in detail:
-                deleted_count = len(existing_media_ids)
-                delete_note = " Las fotos anteriores ya no existian despues del reemplazo."
-            else:
-                raise
-
-    message = (
-        f"{deleted_count} fotos anteriores eliminadas. "
-        f"{len(product_files)} fotos nuevas inyectadas por API ({route})."
-        if image_mode == "replace"
-        else f"{len(product_files)} fotos nuevas agregadas por API ({route})."
-    )
-    if delete_note:
-        message += delete_note
-    if image_errors:
-        message += f" No se cargaron {len(image_errors)} de {len(image_urls)} URLs: {' | '.join(image_errors[:3])}"
-    return message
-
-
-def _media_status_summary(media_statuses):
-    ready = []
-    failed = []
-    pending = []
-    for media in media_statuses or []:
-        status = clean_value(media.get("status")).upper()
-        if status == "READY":
-            ready.append(media)
-        elif status == "FAILED":
-            failed.append(media)
-        else:
-            pending.append(media)
-    return ready, failed, pending
-
-
-def _media_error_text(media):
-    errors = media.get("mediaErrors") or []
-    if not errors:
-        return clean_value(media.get("status")) or "sin detalle"
-    messages = []
-    for error in errors[:2]:
-        detail = clean_value(error.get("message")) or clean_value(error.get("details")) or clean_value(error.get("code"))
-        if detail:
-            messages.append(detail)
-    return "; ".join(messages) if messages else "sin detalle"
-
-
-def _metafield_value_for_api(column, value, shopify_config=None):
-    text = clean_value(value)
-    field_type = _metafield_type_from_column(column)
-    if field_type in ("metaobject_reference", "list.metaobject_reference"):
-        if shopify_config is None:
-            return text
-        return _resolve_metaobject_reference_value(shopify_config, column, text)
-    if field_type.startswith("list.") and text and not text.startswith("["):
-        items = [item.strip() for item in text.split(",") if item.strip()]
-        return json.dumps(items, ensure_ascii=False)
-    if field_type == "boolean":
-        lowered = text.lower()
-        if lowered in ("true", "1", "yes", "si", "sÃ­"):
-            return "true"
-        if lowered in ("false", "0", "no"):
-            return "false"
-    return text
-
-
-def _metafield_namespace_key(column):
-    text = clean_value(column)
-    if not text.startswith("Metafield: "):
-        return "", ""
-    name = re.sub(r"\s*\[.+?\]\s*$", "", text.replace("Metafield: ", "", 1)).strip()
-    if "." not in name:
-        return "", ""
-    namespace, key = name.split(".", 1)
-    return namespace.strip(), key.strip()
-
-
-def _top_product_rows(matrixify_df):
-    if matrixify_df.empty or "Handle" not in matrixify_df.columns:
-        return pd.DataFrame()
-    df = matrixify_df.copy()
-    df["__HANDLE"] = df["Handle"].map(clean_value)
-    df = df[df["__HANDLE"] != ""].copy()
-    return df.drop_duplicates(subset=["__HANDLE"], keep="first").copy()
-
-
-def _variant_rows_for_handle(matrixify_df, handle):
-    if matrixify_df.empty or "Handle" not in matrixify_df.columns:
-        return pd.DataFrame()
-    current_handle = ""
-    matching_indexes = []
-    target_handle = clean_value(handle)
-    for index, row in matrixify_df.iterrows():
-        row_handle = clean_value(row.get("Handle"))
-        if row_handle:
-            current_handle = row_handle
-        if current_handle == target_handle:
-            matching_indexes.append(index)
-    return matrixify_df.loc[matching_indexes].copy() if matching_indexes else pd.DataFrame()
-
-
-def _valid_price(value):
-    text = clean_value(value)
-    if not text:
-        return ""
-    try:
-        if float(text.replace(",", ".")) <= 0:
-            return ""
-    except Exception:
-        pass
-    return text
-
-
-def _variant_bulk_input_from_row(row, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
-    size = clean_value(row.get("Option1 Value"))
-    sku = clean_value(row.get("Variant SKU"))
-    price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
-    if not size or not sku or not price:
-        return None
-
-    option_name = clean_value(option_name) or clean_value(row.get("Option1 Name")) or "Talla"
-    option_value = {"name": size}
-    if clean_value(option_id):
-        option_value["optionId"] = clean_value(option_id)
-    else:
-        option_value["optionName"] = option_name
-    variant = {
-        "optionValues": [option_value]
-    }
-    compare_at_price = _valid_price(row.get("Variant Compare At Price")) or _valid_price(fallback_compare_at_price)
-    barcode = clean_value(row.get("Variant Barcode"))
-    variant["price"] = price
-    if compare_at_price:
-        variant["compareAtPrice"] = compare_at_price
-    if barcode:
-        variant["barcode"] = barcode
-    variant["inventoryItem"] = {"sku": sku, "tracked": True}
-    return variant
-
-
-def _variant_validation_issues(product_variant_rows):
-    issues = []
-    seen_skus = set()
-    seen_sizes = set()
-    for _, row in product_variant_rows.iterrows():
-        sku = clean_value(row.get("Variant SKU"))
-        size = clean_value(row.get("Option1 Value"))
-        price = _valid_price(row.get("Variant Price"))
-        barcode = clean_value(row.get("Variant Barcode"))
-        row_issues = []
-        if not sku:
-            row_issues.append("sin SKU")
-        elif sku.upper() in seen_skus:
-            row_issues.append("SKU duplicado")
-        if sku:
-            seen_skus.add(sku.upper())
-        if not size:
-            row_issues.append("sin talla")
-        elif size.upper() in seen_sizes:
-            row_issues.append("talla duplicada")
-        if size:
-            seen_sizes.add(size.upper())
-        if not price:
-            row_issues.append("sin precio")
-        if not barcode:
-            row_issues.append("sin barcode")
-        if row_issues:
-            issues.append(f"{sku or '(sin SKU)'}: {', '.join(row_issues)}")
-    return issues
-
-
-def _dedupe_product_variant_rows(product_variant_rows):
-    if product_variant_rows is None or product_variant_rows.empty:
-        return product_variant_rows, []
+def dedupe_variants_for_shopify(variants, brand_config=None, issues=None, key="", input_index=None):
+    if variants is None or variants.empty:
+        return variants
     kept_indexes = []
     seen_skus = set()
     seen_sizes = set()
     duplicate_skus = []
     duplicate_sizes = []
-    keep_duplicate_visible_sizes = False
-    if "Vendor" in product_variant_rows.columns:
-        keep_duplicate_visible_sizes = product_variant_rows["Vendor"].map(
-            lambda value: normalize_brand_name(value) == "MOUNTAIN HARDWEAR"
-        ).any()
-    for index, row in product_variant_rows.iterrows():
-        sku = clean_value(row.get("Variant SKU")).upper()
-        size = clean_value(row.get("Option1 Value")).upper()
+    keep_duplicate_visible_sizes = variants_are_mountain_hardwear(variants)
+    for index, row in variants.iterrows():
+        sku = clean(row.get("CODINT_MA")).upper()
+        size = clean(display_size_for_site(row.get("__SIZE"), brand_config)).upper()
         if sku and sku in seen_skus:
             duplicate_skus.append(f"{sku} ({size or 'sin talla'})")
             continue
@@ -4148,5209 +712,1976 @@ def _dedupe_product_variant_rows(product_variant_rows):
         if size:
             seen_sizes.add(size)
         kept_indexes.append(index)
-    messages = []
-    if duplicate_skus:
-        messages.append(
-            f"Se omitieron {len(duplicate_skus)} variantes duplicadas por SKU: "
-            + ", ".join(duplicate_skus[:10])
-        )
-    if duplicate_sizes:
-        messages.append(
-            f"Se omitieron {len(duplicate_sizes)} variantes duplicadas por talla: "
-            + ", ".join(duplicate_sizes[:10])
-        )
-    return product_variant_rows.loc[kept_indexes].copy(), messages
+    if issues is not None:
+        if duplicate_skus:
+            issue = {
+                "Mod-Col": key,
+                "Problema": "Se omitieron variantes duplicadas por SKU antes de enviar a Shopify",
+                "Cantidad": safe_int(len(duplicate_skus)),
+                "Detalle": ", ".join(duplicate_skus[:12]),
+            }
+            if input_index is not None:
+                issue["Fila input"] = input_index + 2
+            issues.append(issue)
+        if duplicate_sizes:
+            issue = {
+                "Mod-Col": key,
+                "Problema": "Se omitieron variantes duplicadas por talla visible antes de enviar a Shopify",
+                "Cantidad": safe_int(len(duplicate_sizes)),
+                "Detalle": ", ".join(duplicate_sizes[:12]),
+            }
+            if input_index is not None:
+                issue["Fila input"] = input_index + 2
+            issues.append(issue)
+    return variants.loc[kept_indexes].copy()
 
 
-def _missing_variant_inputs(product_variant_rows, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
-    if product_variant_rows.empty:
-        return []
-
-    existing_skus = set()
-    existing_sizes = set()
-    for _, row in product_variant_rows.iterrows():
-        if not clean_value(row.get("Variant ID")):
-            continue
-        sku = clean_value(row.get("Variant SKU")).upper()
-        size = clean_value(row.get("Option1 Value")).upper()
-        if sku:
-            existing_skus.add(sku)
-        if size:
-            existing_sizes.add(size)
-
-    variants = []
-    seen_keys = set()
-    for _, variant_row in product_variant_rows.iterrows():
-        if clean_value(variant_row.get("Variant ID")):
-            continue
-        sku = clean_value(variant_row.get("Variant SKU"))
-        size = clean_value(variant_row.get("Option1 Value"))
-        if not size:
-            continue
-        if sku and sku.upper() in existing_skus:
-            continue
-        if size.upper() in existing_sizes:
-            continue
-        dedupe_key = (sku.upper(), size.upper())
-        if dedupe_key in seen_keys:
-            continue
-        payload = _variant_bulk_input_from_row(
-            variant_row,
-            option_id=option_id,
-            option_name=option_name,
-            fallback_price=fallback_price,
-            fallback_compare_at_price=fallback_compare_at_price,
-        )
-        if payload:
-            variants.append(payload)
-            seen_keys.add(dedupe_key)
-    return variants
+def sial_size_value(value):
+    return clean(value)
 
 
-def _all_variant_inputs(product_variant_rows, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
-    variants = []
-    seen_keys = set()
-    for _, variant_row in product_variant_rows.iterrows():
-        sku = clean_value(variant_row.get("Variant SKU"))
-        size = clean_value(variant_row.get("Option1 Value"))
-        if not size:
-            continue
-        dedupe_key = (sku.upper(), size.upper())
-        if dedupe_key in seen_keys:
-            continue
-        payload = _variant_bulk_input_from_row(
-            variant_row,
-            option_id=option_id,
-            option_name=option_name,
-            fallback_price=fallback_price,
-            fallback_compare_at_price=fallback_compare_at_price,
-        )
-        if payload:
-            variants.append(payload)
-            seen_keys.add(dedupe_key)
-    return variants
+def is_internal_k_size(value):
+    size = clean(normalize_size(value)).upper().replace(" ", "")
+    return bool(re.fullmatch(r"K\d+", size))
 
 
-def _size_option_from_product_data(product_data, fallback_name="Talla"):
-    options = product_data.get("options") or []
-    fallback = clean_value(fallback_name).lower()
-    for option in options:
-        if clean_value(option.get("name")).lower() == fallback:
-            return option
-    for option in options:
-        if clean_value(option.get("name")).lower() in ("talla", "size", "title"):
-            return option
-    return options[0] if options else {}
-
-
-def _existing_sizes_from_product_data(product_data, option_name):
-    sizes = set()
-    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
-        size = _selected_option_value(variant, option_name)
-        if size:
-            sizes.update(_size_lookup_keys(size))
-    return sizes
-
-
-def _price_fallback_from_product_data(product_data):
-    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
-        price = _valid_price(variant.get("price"))
-        if price:
-            return price, _valid_price(variant.get("compareAtPrice"))
-    return "", ""
-
-
-def _price_fallback_from_rows(product_variant_rows):
-    for _, row in product_variant_rows.iterrows():
-        price = _valid_price(row.get("Variant Price"))
-        if price:
-            return price, _valid_price(row.get("Variant Compare At Price"))
-    return "", ""
-
-
-def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
-    if product_variant_rows.empty:
-        return []
-    requested_option_name = clean_value(product_variant_rows.iloc[0].get("Option1 Name")) or "Talla"
-    size_option = _size_option_from_product_data(product_data, requested_option_name)
-    option_id = clean_value(size_option.get("id"))
-    option_name = clean_value(size_option.get("name")) or requested_option_name
-    existing_sizes = _existing_sizes_from_product_data(product_data, option_name)
-    existing_skus = {
-        clean_value(variant.get("sku") or (variant.get("inventoryItem") or {}).get("sku")).upper()
-        for variant in ((product_data.get("variants") or {}).get("nodes")) or []
-        if clean_value(variant.get("sku") or (variant.get("inventoryItem") or {}).get("sku"))
-    }
-    fallback_price, fallback_compare_at_price = _price_fallback_from_product_data(product_data)
-
-    variants = []
-    seen_sizes = set()
-    seen_skus = set()
-    for _, variant_row in product_variant_rows.iterrows():
-        sku = clean_value(variant_row.get("Variant SKU")).upper()
-        size = clean_value(variant_row.get("Option1 Value"))
-        if not size or not sku:
-            continue
-        size_keys = _size_lookup_keys(size)
-        if sku and (sku in existing_skus or sku in seen_skus):
-            continue
-        if any(size_key in existing_sizes or size_key in seen_sizes for size_key in size_keys):
-            continue
-        payload = _variant_bulk_input_from_row(
-            variant_row,
-            option_id=option_id,
-            option_name=option_name,
-            fallback_price=fallback_price,
-            fallback_compare_at_price=fallback_compare_at_price,
-        )
-        if payload:
-            variants.append(payload)
-            seen_sizes.update(size_keys)
-            if sku:
-                seen_skus.add(sku)
-    return variants
-
-
-def _variant_update_payload_from_row(row, variant_id, fallback_price=None, fallback_compare_at_price=None):
-    variant_id = clean_value(variant_id)
-    if not variant_id:
-        return None
-    sku = clean_value(row.get("Variant SKU"))
-    price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
-    barcode = clean_value(row.get("Variant Barcode"))
-    if not price and not sku and not barcode:
-        return None
-    payload = {
-        "id": variant_id,
-    }
-    if price:
-        payload["price"] = price
-    compare_at_price = _valid_price(row.get("Variant Compare At Price")) or _valid_price(fallback_compare_at_price)
-    if compare_at_price:
-        payload["compareAtPrice"] = compare_at_price
-    if barcode:
-        payload["barcode"] = barcode
-    if sku:
-        payload["inventoryItem"] = {"sku": sku, "tracked": True}
-    return payload
-
-
-def _inventory_item_update_payload_from_row(row, inventory_item_id):
-    inventory_item_id = clean_value(inventory_item_id)
-    sku = clean_value(row.get("Variant SKU"))
-    if not inventory_item_id or not sku:
-        return None
-    return {
-        "id": inventory_item_id,
-        "input": {"sku": sku, "tracked": True},
-        "sku": sku,
-    }
-
-
-def _existing_variant_updates_from_shopify(product_variant_rows, product_data):
-    if product_variant_rows.empty:
-        return []
-    requested_option_name = clean_value(product_variant_rows.iloc[0].get("Option1 Name")) or "Talla"
-    size_option = _size_option_from_product_data(product_data, requested_option_name)
-    option_name = clean_value(size_option.get("name")) or requested_option_name
-    fallback_price, fallback_compare_at_price = _price_fallback_from_rows(product_variant_rows)
-    expected_by_size = {}
-    for _, row in product_variant_rows.iterrows():
-        size = clean_value(row.get("Option1 Value")).upper()
-        if size:
-            _set_row_by_size_keys(expected_by_size, size, row)
-
-    updates = []
-    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
-        size = _selected_option_value(variant, option_name).upper()
-        row = _row_by_size_keys(expected_by_size, size)
-        if row is None:
-            continue
-        expected_price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
-        expected_barcode = clean_value(row.get("Variant Barcode"))
-        expected_sku = clean_value(row.get("Variant SKU")).upper()
-        current_price = _valid_price(variant.get("price"))
-        current_barcode = clean_value(variant.get("barcode"))
-        inventory_item = variant.get("inventoryItem") or {}
-        current_inventory_sku = clean_value(inventory_item.get("sku")).upper()
-        needs_update = (
-            (expected_price and current_price != expected_price)
-            or (expected_barcode and current_barcode != expected_barcode)
-            or (expected_sku and current_inventory_sku != expected_sku)
-        )
-        if not needs_update:
-            continue
-        payload = _variant_update_payload_from_row(
-            row,
-            variant.get("id"),
-            fallback_price=fallback_price,
-            fallback_compare_at_price=fallback_compare_at_price,
-        )
-        if payload:
-            updates.append(payload)
-    return updates
-
-
-def _existing_inventory_item_updates_from_shopify(product_variant_rows, product_data):
-    if product_variant_rows.empty:
-        return []
-    requested_option_name = clean_value(product_variant_rows.iloc[0].get("Option1 Name")) or "Talla"
-    size_option = _size_option_from_product_data(product_data, requested_option_name)
-    option_name = clean_value(size_option.get("name")) or requested_option_name
-    expected_by_size = {}
-    for _, row in product_variant_rows.iterrows():
-        size = clean_value(row.get("Option1 Value")).upper()
-        if size:
-            _set_row_by_size_keys(expected_by_size, size, row)
-
-    updates = []
-    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
-        size = _selected_option_value(variant, option_name).upper()
-        row = _row_by_size_keys(expected_by_size, size)
-        if row is None:
-            continue
-        expected_sku = clean_value(row.get("Variant SKU")).upper()
-        if not expected_sku:
-            continue
-        inventory_item = variant.get("inventoryItem") or {}
-        current_sku = clean_value(inventory_item.get("sku")).upper()
-        tracked = bool(inventory_item.get("tracked"))
-        if current_sku == expected_sku and tracked:
-            continue
-        payload = _inventory_item_update_payload_from_row(row, inventory_item.get("id"))
-        if payload:
-            updates.append(payload)
-    return updates
-
-
-def _apply_inventory_item_updates(shopify_config, inventory_item_updates):
-    inventory_ok = 0
-    inventory_errors = []
-    for inventory_update in inventory_item_updates or []:
+def boolean_mask(series, predicate):
+    if series is None:
+        return pd.Series(dtype=bool)
+    def apply_predicate(value):
         try:
-            if inventory_item_update is None:
-                raise RuntimeError("Falta actualizar shopify_api.py: no existe inventory_item_update.")
-            inventory_item_update(
-                shopify_config,
-                inventory_update["id"],
-                inventory_update["input"],
+            return bool(predicate(value))
+        except (TypeError, ValueError, AttributeError):
+            return False
+
+    return series.map(apply_predicate).fillna(False).astype(bool)
+
+
+def _row_blocks_zero_size(row):
+    return category_blocks_zero_size(row)
+
+
+def row_is_mountain_hardwear(row):
+    values = [
+        row.get("Vendor"),
+        row.get("Metafield: custom.marca [single_line_text_field]"),
+        row.get("Marca"),
+        row.get("Brand"),
+    ]
+    return any(normalize_brand_name(value) == "MOUNTAIN HARDWEAR" for value in values if clean(value))
+
+
+def final_variant_filter(output_df, sial_df, issues_df):
+    issues = [] if issues_df is None or issues_df.empty else issues_df.to_dict("records")
+
+    if output_df is not None and not output_df.empty and "Option1 Value" in output_df.columns:
+        k_mask = output_df["Option1 Value"].map(is_internal_k_size)
+        if k_mask.any():
+            issues.append(
+                {
+                    "Mod-Col": "Salida final",
+                    "Problema": "Se eliminaron filas finales con talla interna K",
+                    "Fila input": "",
+                    "Cantidad": safe_int(k_mask.sum()),
+                }
             )
-            inventory_ok += 1
-        except Exception as exc:
-            inventory_errors.append(f"{inventory_update.get('sku')}: {exc}")
-    return inventory_ok, inventory_errors
+            output_df = output_df[~k_mask].copy()
+
+        zero_mask = output_df.apply(
+            lambda row: is_zero_size(row.get("Option1 Value")) and _row_blocks_zero_size(row),
+            axis=1,
+        )
+        if zero_mask.any():
+            issues.append(
+                {
+                    "Mod-Col": "Salida final",
+                    "Problema": "Se eliminaron filas finales con talla 0/000 en vestuario/calzado",
+                    "Fila input": "",
+                    "Cantidad": safe_int(zero_mask.sum()),
+                }
+            )
+            output_df = output_df[~zero_mask].copy()
+
+        if "Variant SKU" in output_df.columns:
+            missing_sku_mask = output_df["Variant SKU"].map(clean).eq("")
+            if missing_sku_mask.any():
+                issues.append(
+                    {
+                        "Mod-Col": "Salida final",
+                        "Problema": "Se eliminaron filas finales sin Variant SKU",
+                        "Fila input": "",
+                        "Cantidad": safe_int(missing_sku_mask.sum()),
+                    }
+                )
+                output_df = output_df[~missing_sku_mask].copy()
+
+        if {"Handle", "Option1 Value"}.issubset(output_df.columns):
+            drop_accessory_zero = pd.Series(False, index=output_df.index)
+            handle_key = output_df["Handle"].map(clean).str.upper()
+            for _, group in output_df.groupby(handle_key, sort=False):
+                zero_group_mask = group["Option1 Value"].map(is_zero_size)
+                if not zero_group_mask.any():
+                    continue
+                real_size_mask = group["Option1 Value"].map(clean).ne("") & ~group["Option1 Value"].map(is_zero_size)
+                if real_size_mask.any():
+                    drop_accessory_zero.loc[group.index[zero_group_mask]] = True
+            if drop_accessory_zero.any():
+                issues.append(
+                    {
+                        "Mod-Col": "Salida final",
+                        "Problema": "Se eliminaron filas finales talla 0/000 porque el producto tiene una talla real",
+                        "Fila input": "",
+                        "Cantidad": safe_int(drop_accessory_zero.sum()),
+                    }
+                )
+                output_df = output_df[~drop_accessory_zero].copy()
+
+        if {"Handle", "Variant SKU"}.issubset(output_df.columns):
+            sku_key = output_df["Variant SKU"].map(clean).str.upper()
+            handle_key = output_df["Handle"].map(clean).str.upper()
+            duplicate_sku_mask = sku_key.ne("") & pd.DataFrame({"Handle": handle_key, "SKU": sku_key}).duplicated(keep="first")
+            if duplicate_sku_mask.any():
+                issues.append(
+                    {
+                        "Mod-Col": "Salida final",
+                        "Problema": "Se eliminaron filas finales con SKU duplicado dentro del mismo producto",
+                        "Fila input": "",
+                        "Cantidad": safe_int(duplicate_sku_mask.sum()),
+                    }
+                )
+                output_df = output_df[~duplicate_sku_mask].copy()
+
+        if {"Handle", "Option1 Value"}.issubset(output_df.columns):
+            size_key = output_df["Option1 Value"].map(clean).str.upper()
+            handle_key = output_df["Handle"].map(clean).str.upper()
+            duplicate_size_mask = size_key.ne("") & pd.DataFrame({"Handle": handle_key, "Size": size_key}).duplicated(keep="first")
+            mountain_mask = output_df.apply(row_is_mountain_hardwear, axis=1)
+            duplicate_size_mask = duplicate_size_mask & ~mountain_mask
+            if duplicate_size_mask.any():
+                issues.append(
+                    {
+                        "Mod-Col": "Salida final",
+                        "Problema": "Se eliminaron filas finales con talla visible duplicada dentro del mismo producto",
+                        "Fila input": "",
+                        "Cantidad": safe_int(duplicate_size_mask.sum()),
+                    }
+                )
+                output_df = output_df[~duplicate_size_mask].copy()
+
+    if sial_df is not None and not sial_df.empty and "Talla" in sial_df.columns:
+        k_mask = sial_df["Talla"].map(is_internal_k_size)
+        if k_mask.any():
+            sial_df = sial_df[~k_mask].copy()
+        def sial_zero_blocked(row):
+            if not is_zero_size(row.get("Talla")):
+                return False
+            text = normalize_text(
+                " ".join(
+                    clean(row.get(column))
+                    for column in ("Categoria ", "Sub Categoria", "Tipo de Producto")
+                    if column in row.index
+                )
+            )
+            return "calzado" in text or "vestuario" in text
+
+        zero_mask = sial_df.apply(sial_zero_blocked, axis=1)
+        if zero_mask.any():
+            sial_df = sial_df[~zero_mask].copy()
+
+    return output_df, sial_df, pd.DataFrame(issues)
 
 
-def _variant_option_values(product_variant_rows):
-    values = []
-    for _, row in product_variant_rows.iterrows():
-        size = clean_value(row.get("Option1 Value"))
-        if size and size not in values:
-            values.append(size)
-    return values
+def sial_product_bullets(product, product_type, color_web, tech_col, brand_config=None, brand_label=""):
+    brand_config = brand_config or get_brand_config()
+    brand_label = clean(brand_label) or brand_config["label"]
+    pieces = [
+        ("Tipo De Producto", product_type),
+        ("Género", product_gender(product)),
+        ("Color", color_web),
+        ("Marca", brand_label),
+    ]
+    technology = product_technology(product, tech_col)
+    if technology:
+        pieces.append(("Tecnologías", technology))
+    return ", ".join(f"{label} | {value}" for label, value in pieces if clean(value))
 
 
-def _ordered_sizes_from_rows(product_variant_rows):
-    if product_variant_rows.empty:
-        return []
-    ordered = []
-    for _, row in product_variant_rows.iterrows():
-        size = clean_value(row.get("Option1 Value"))
-        if size and size not in ordered:
-            ordered.append(size)
-    return ordered
+def sial_short_features(value, max_words=45):
+    return limit_words(value, max_words)
 
 
-def _selected_option_value(variant, option_name):
-    expected = clean_value(option_name).lower()
-    for option in variant.get("selectedOptions") or []:
-        if clean_value(option.get("name")).lower() == expected:
-            return clean_value(option.get("value"))
-    if (variant.get("selectedOptions") or []):
-        return clean_value((variant.get("selectedOptions") or [{}])[0].get("value"))
+def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None, brand_label=""):
+    brand_config = brand_config or get_brand_config()
+    brand_label = clean(brand_label) or brand_config["label"]
+    display_size = sial_size_value(variant.get("__SIAL_SIZE") or variant["__SIZE"])
+    model, color = split_model_color(key)
+    product_type = clean(product.get("Type"))
+    color_web = clean(product.get("Color Web"))
+    title = clean(product.get("Title"))
+    body_html = build_body_html(product)
+    existing_id = clean(existing_product.get("ID"))
+    dimension_defaults = sial_dimension_defaults(product)
+    technology = limit_words(product_technology(product, tech_col), 45)
+    row = {
+        "Cod. Modelo": model,
+        "Cod. Color": color,
+        "Talla": display_size,
+        "Product Name ": title,
+        "Product Bullets": first_non_empty(
+            product.get("Product Bullets"),
+            sial_product_bullets(product, product_type, color_web, tech_col, brand_config, brand_label),
+        ),
+        "Product Description": first_non_empty(product.get("Product Description"), strip_html(body_html)),
+        "Image URL": "",
+        "Product Weight": sial_dimension_value(product, "weight", dimension_defaults["weight"]),
+        "Product Length": sial_dimension_value(product, "length", dimension_defaults["length"]),
+        "Product Width": sial_dimension_value(product, "width", dimension_defaults["width"]),
+        "Product Height": sial_dimension_value(product, "height", dimension_defaults["height"]),
+        "Package Weight": sial_dimension_value(product, "weight", dimension_defaults["weight"]),
+        "Package Length": sial_dimension_value(product, "length", dimension_defaults["length"]),
+        "Package Width": sial_dimension_value(product, "width", dimension_defaults["width"]),
+        "Package Height": sial_dimension_value(product, "height", dimension_defaults["height"]),
+        "Boost ": clean(product.get("Boost ")),
+        "Talla Web ": display_size,
+        "Color Web": color_web,
+        "Categoria ": product_category(product),
+        "Sub Categoria": product_type,
+        "Genero": product_gender(product),
+        "Estilo ": clean(product.get("Estilo ")) or clean(product.get("Metafield: custom.tipo [single_line_text_field]")),
+        "Colecciones ": clean(product.get("Colecciones ")),
+        "Temporada ": clean(product.get("Temporada ")) or clean(product.get("Temporada")),
+        "Modelo": clean(product.get("Modelo")),
+        "Marca": brand_label,
+        "Tecnologias ": technology,
+        "Caracteristicas": sial_short_features(product.get("Caracteristicas")),
+        "Tipo de Boardshort": clean(product.get("Tipo de Boardshort")),
+        "Tipo de Bikini": clean(product.get("Tipo de Bikini")),
+        "Iniciativas": clean(product.get("Iniciativas")),
+        "Tipo de Material": clean(product.get("Tipo de Material")),
+        "1": clean(product.get("1")),
+        "Tipo de Prenda": clean(product.get("Tipo de Prenda")),
+        "Adicional 2 ": clean(product.get("Adicional 2 ")),
+        "Adicional 3 ": clean(product.get("Adicional 3 ")),
+        "Adicional 4 ": clean(product.get("Adicional 4 ")),
+        "Adicional 5 ": clean(product.get("Adicional 5 ")),
+        "Adicional 6 ": clean(product.get("Adicional 6 ")),
+        "Adicional 7 ": clean(product.get("Adicional 7 ")),
+        "Adicional 8 ": clean(product.get("Adicional 8 ")),
+        "Adicional 9 ": clean(product.get("Adicional 9 ")),
+        "Adicional 10": clean(product.get("Adicional 10")),
+        "Mod-Col": key,
+        "Sku - Sial": clean(variant.get("CODINT_MA")),
+    }
+    for column in brand_config.get("sial_tail_columns", []):
+        if column.startswith("Nuevo o Actualizar"):
+            row[column] = "Actualizar" if existing_id else "Crear"
+        elif column.startswith("Porduct Id"):
+            row[column] = existing_id if brand_config["store_domain"] in column else ""
+        elif column.startswith("Sku -"):
+            row[column] = clean(variant.get("CODINT_MA"))
+        elif column in brand_config.get("sial_active_columns", []):
+            row[column] = 1
+        else:
+            row[column] = ""
+    return row
+
+
+def html_list(value):
+    text = clean(value)
+    if not text:
+        return ""
+    items = [item.strip() for item in re.split(r"[\n\r]+", text) if item.strip()]
+    if not items:
+        items = [text]
+    return "<ul>" + "".join(f"<li>{item}</li>" for item in items) + "</ul>"
+
+
+def build_body_html(row):
+    description = clean(row.get("Body HTML.1")) or clean(row.get("Body HTML"))
+    features = clean(row.get("Caracteristicas"))
+    material = clean(row.get("Material"))
+    care = clean(row.get("Cuidado"))
+
+    parts = []
+    if description:
+        parts.append(
+            '<section class="nweb" data-titulo="Nombre Web" id="nombre-web-section">'
+            "<h3>Descripción</h3>"
+            f"<p>{description}</p>"
+        )
+    if features:
+        parts.append(
+            '<div class="nweb__Caracteristicas" data-titulo="Características">'
+            '<h3 class="nweb__Caracteristicas-titulo">Características</h3>'
+            f'{html_list(features)}'
+            "</div>"
+        )
+    if material:
+        parts.append(
+            '<div class="nweb__Materiales" data-titulo="Materiales">'
+            '<h3 class="nweb__Materiales-titulo">Materiales</h3>'
+            f'{html_list(material)}'
+            "</div>"
+        )
+    if care:
+        parts.append(
+            '<div class="nweb__Cuidados" data-titulo="Cuidados">'
+            '<h3 class="nweb__Cuidados-titulo">Cuidados</h3>'
+            f'{html_list(care)}'
+            "</div>"
+        )
+    if description:
+        parts.append("</section>")
+    return "".join(parts) if parts else ""
+
+
+def first_existing(df, candidates):
+    normalized = {str(col).strip().lower(): col for col in df.columns}
+    normalized_compact = {normalize_header_key(col): col for col in df.columns}
+    for candidate in candidates:
+        found = normalized.get(candidate.lower())
+        if found is not None:
+            return found
+        found = normalized_compact.get(normalize_header_key(candidate))
+        if found is not None:
+            return found
+    return None
+
+
+def normalize_header_key(value):
+    text = normalize_brand_name(value).lower()
+    text = text.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+    text = text.replace("ñ", "n")
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def ensure_mod_col_column(df):
+    if "Mod-Col" in df.columns:
+        return df
+    mod_col = first_existing(
+        df,
+        [
+            "Mod-Col",
+            "Mod Col",
+            "ModCol",
+            "MODCOL",
+            "COD MOD COL",
+            "COD_MOD_COL",
+            "COD-MOD-COL",
+            "Cod Mod Col",
+            "Codigo Modelo Color",
+            "Código Modelo Color",
+            "Codigo Modelo-Color",
+            "Código Modelo-Color",
+            "codigo_modelo_color",
+            "codigo modelo color",
+            "Metafield: custom.codigo_modelo_color [id]",
+        ],
+    )
+    if not mod_col:
+        available = ", ".join(str(column) for column in df.columns)
+        raise ValueError(
+            "No encontre la columna de codigo modelo-color. "
+            "El input debe tener una columna llamada Mod-Col, COD MOD COL o codigo_modelo_color. "
+            f"Columnas recibidas: {available}"
+        )
+    df = df.copy()
+    df["Mod-Col"] = df[mod_col]
+    return df
+
+
+def detect_brand_column(df):
+    return first_existing(
+        df,
+        [
+            "Marca",
+            "MARCA",
+            "Brand",
+            "Vendor",
+            "Proveedor",
+            "Metafield: custom.marca [single_line_text_field]",
+        ],
+    )
+
+
+def input_brand_report(input_df, brand_config):
+    brand_column = detect_brand_column(input_df)
+    allowed = set(brand_config.get("allowed_arti_brands", []))
+    if not brand_column:
+        return brand_column, [], []
+
+    detected = sorted(
+        {
+            normalize_brand_name(value)
+            for value in input_df[brand_column].dropna()
+            if normalize_brand_name(value)
+        }
+    )
+    blocked = [brand for brand in detected if brand not in allowed]
+    return brand_column, detected, blocked
+
+
+def normalize_compare(value):
+    return re.sub(r"\s+", " ", clean(value)).strip().upper()
+
+
+def load_known_types(path=KNOWN_TYPES_PATH):
+    if not path.exists():
+        return set(), ""
+
+    values = set()
+    if path.suffix.lower() in (".txt", ".csv"):
+        if path.suffix.lower() == ".txt":
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                if normalize_compare(line):
+                    values.add(normalize_compare(line))
+        else:
+            df = pd.read_csv(path, dtype=object)
+            for column in df.columns:
+                if any(word in str(column).lower() for word in ["tipo", "type", "familia", "prenda"]):
+                    values.update(normalize_compare(value) for value in df[column].dropna())
+            if not values and len(df.columns):
+                values.update(normalize_compare(value) for value in df.iloc[:, 0].dropna())
+        return {value for value in values if value}, str(path)
+
+    xl = pd.ExcelFile(path)
+    for sheet_name in xl.sheet_names:
+        df = pd.read_excel(path, sheet_name=sheet_name, dtype=object)
+        if df.empty:
+            continue
+        candidate_columns = [
+            column
+            for column in df.columns
+            if any(word in str(column).lower() for word in ["tipo", "type", "familia", "prenda"])
+        ]
+        if not candidate_columns and len(df.columns):
+            candidate_columns = [df.columns[0]]
+        for column in candidate_columns:
+            values.update(normalize_compare(value) for value in df[column].dropna())
+
+    return {value for value in values if value}, str(path)
+
+
+def build_new_type_warnings(input_df):
+    known_types, source = load_known_types()
+    if not known_types:
+        return pd.DataFrame(
+            [
+                {
+                    "Campo": "Configuracion",
+                    "Valor": "",
+                    "Productos": "",
+                    "Ejemplos Mod-Col": "",
+                    "Nota": "No se encontro data/tipos_shopify.xlsx. Si quieres control de tipos nuevos, pega ahi la lista actual de Shopify.",
+                }
+            ]
+        )
+
+    checks = [
+        ("Type", "Type"),
+        ("Metafield custom.tipo", "Metafield: custom.tipo [single_line_text_field]"),
+    ]
+    rows = []
+    for label, column in checks:
+        if column not in input_df.columns:
+            continue
+        work = input_df[["Mod-Col", column]].copy()
+        work["__VALUE"] = work[column].map(clean)
+        work["__KEY"] = work[column].map(normalize_compare)
+        work = work[(work["__KEY"] != "") & (~work["__KEY"].isin(known_types))]
+        for value, group in work.groupby("__VALUE", dropna=True):
+            rows.append(
+                {
+                    "Campo": label,
+                    "Valor": value,
+                    "Productos": len(group),
+                    "Ejemplos Mod-Col": ", ".join(group["Mod-Col"].map(clean).head(10)),
+                    "Nota": f"No existe en {source}",
+                }
+            )
+
+    return pd.DataFrame(rows, columns=["Campo", "Valor", "Productos", "Ejemplos Mod-Col", "Nota"])
+
+
+def available_output_path(path):
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for number in range(2, 1000):
+        candidate = path.with_name(f"{stem}_{number}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("No pude encontrar un nombre de salida disponible.")
+
+
+ARTI_REQUIRED_COLUMNS = [
+    "CODINT_MA",
+    "COD MOD COL",
+    "Mod-Col",
+    "TALNUM_MA",
+    "MARCA_MA",
+    "Precio",
+    "CodBarras",
+]
+
+SIAL_COLUMNS = [
+    "Cod. Modelo",
+    "Cod. Color",
+    "Talla",
+    "Product Name ",
+    "Product Bullets",
+    "Product Description",
+    "Image URL",
+    "Product Weight",
+    "Product Length",
+    "Product Width",
+    "Product Height",
+    "Package Weight",
+    "Package Length",
+    "Package Width",
+    "Package Height",
+    "Boost ",
+    "Talla Web ",
+    "Color Web",
+    "Categoria ",
+    "Sub Categoria",
+    "Genero",
+    "Estilo ",
+    "Colecciones ",
+    "Temporada ",
+    "Modelo",
+    "Marca",
+    "Tecnologias ",
+    "Caracteristicas",
+    "Tipo de Boardshort",
+    "Tipo de Bikini",
+    "Iniciativas",
+    "Tipo de Material",
+    "1",
+    "Tipo de Prenda",
+    "Adicional 2 ",
+    "Adicional 3 ",
+    "Adicional 4 ",
+    "Adicional 5 ",
+    "Adicional 6 ",
+    "Adicional 7 ",
+    "Adicional 8 ",
+    "Adicional 9 ",
+    "Adicional 10",
+    "Mod-Col",
+    "Sku - Sial",
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "Nuevo o Actualizar (Supermall.pe).1",
+    "Porduct Id - Rockford.pe",
+    "4",
+    "13",
+    "6",
+]
+
+
+def get_sial_columns(brand_config=None):
+    brand_config = brand_config or get_brand_config()
+    tail_start = SIAL_COLUMNS.index("Nuevo o Actualizar (Columbia.pe)")
+    columns = SIAL_COLUMNS[:tail_start] + list(brand_config.get("sial_tail_columns") or SIAL_COLUMNS[tail_start:])
+    deduped = []
+    seen = set()
+    for column in columns:
+        if column in seen:
+            continue
+        deduped.append(column)
+        seen.add(column)
+    return deduped
+
+
+def coalesce_duplicate_columns(df):
+    if df is None or df.empty or not df.columns.duplicated().any():
+        return df
+
+    result = pd.DataFrame(index=df.index)
+    for column in dict.fromkeys(df.columns):
+        same_name = df.loc[:, df.columns == column]
+        if same_name.shape[1] == 1:
+            result[column] = same_name.iloc[:, 0]
+            continue
+
+        merged = same_name.iloc[:, 0].copy()
+        for index in range(1, same_name.shape[1]):
+            candidate = same_name.iloc[:, index]
+            empty_mask = merged.map(clean) == ""
+            merged.loc[empty_mask] = candidate.loc[empty_mask]
+        result[column] = merged
+    return result
+
+
+BIGQUERY_ARTI_COLUMN_CANDIDATES = {
+    "CODINT_MA": [
+        "CODINT_MA",
+        "codint_ma",
+        "codint",
+        "id_producto",
+        "idproducto",
+        "sku",
+        "sku_producto",
+    ],
+    "COD MOD COL": [
+        "COD MOD COL",
+        "COD_MOD_COL",
+        "cod_mod_col",
+        "codmod_codcol",
+        "codmod_ma_codcol_ma",
+        "mod_col",
+        "modelo_color",
+        "codigo_modelo_color",
+    ],
+    "Mod-Col": [
+        "Mod-Col",
+        "MOD_COL",
+        "mod_col",
+        "codmod_codcol",
+        "codmod_ma_codcol_ma",
+        "modelo_color",
+        "codigo_modelo_color",
+    ],
+    "TALNUM_MA": [
+        "TALNUM_MA",
+        "talnum_ma",
+        "talla_numero",
+        "talla",
+        "size",
+    ],
+    "MARCA_MA": [
+        "MARCA_MA",
+        "marca_ma",
+        "marca",
+        "brand",
+    ],
+    "Precio": [
+        "Precio",
+        "precio_ma",
+        "precio",
+        "price",
+        "precio_venta",
+        "pvp",
+    ],
+    "CodBarras": [
+        "CodBarras",
+        "codbarras",
+        "CODBARRAS",
+        "cod_barras",
+        "codigo_barras",
+        "codigo_barra",
+        "codigo de barras",
+        "codigo de barra",
+        "barcode",
+        "bar_code",
+        "ean",
+        "EAN",
+        "cod_ean",
+        "codigo_ean",
+        "upc",
+        "UPC",
+        "gtin",
+        "ean13",
+        "ean_13",
+        "barra",
+        "barras",
+        "codbarra",
+        "cod_barra",
+        "codbar",
+        "cod_bar",
+        "codbar_ma",
+        "cod_bar_ma",
+        "CODBAR_MA",
+        "COD_BAR_MA",
+        "cod_barr",
+        "codbarr",
+        "cod_barras_ma",
+        "codbarra_ma",
+        "codbarras_ma",
+        "barra_ma",
+        "ean_ma",
+        "ean_producto",
+        "ean_prod",
+        "ean_sku",
+        "ean13_ma",
+        "codigo_barra_producto",
+        "codigo_barras_producto",
+        "gtin_ma",
+        "upc_ma",
+        "upc_producto",
+        "codigo_barras_ma",
+        "codigo_de_barras",
+        "codigo_de_barra",
+        "codigo_ean13",
+        "cod_ean13",
+    ],
+}
+
+BIGQUERY_MODEL_COLUMN_CANDIDATES = [
+    "codmod_ma",
+    "cod_modelo",
+    "codmodelo",
+    "modelo_codigo",
+]
+
+BIGQUERY_COLOR_COLUMN_CANDIDATES = [
+    "codcol_ma",
+    "cod_color",
+    "codcolor",
+    "color_codigo",
+]
+
+
+def _truthy(value):
+    if isinstance(value, bool):
+        return value
+    return clean(value).lower() in ("1", "true", "yes", "si", "sí", "y")
+
+
+def _bigquery_configured(config):
+    if not config:
+        return False
+    if "enabled" in config and not _truthy(config.get("enabled")):
+        return False
+    table = clean(config.get("table"))
+    has_full_table = table.count(".") == 2
+    has_split_table = clean(config.get("project_id")) and clean(config.get("dataset")) and table
+    return bool(clean(config.get("query")) or has_full_table or has_split_table)
+
+
+def _bigquery_config_from_env():
+    config = {
+        "enabled": os.getenv("BIGQUERY_ENABLED", ""),
+        "job_project_id": os.getenv("BIGQUERY_JOB_PROJECT_ID", ""),
+        "project_id": os.getenv("BIGQUERY_PROJECT_ID", ""),
+        "dataset": os.getenv("BIGQUERY_DATASET", ""),
+        "table": os.getenv("BIGQUERY_TABLE", ""),
+        "query": os.getenv("BIGQUERY_QUERY", ""),
+        "location": os.getenv("BIGQUERY_LOCATION", ""),
+    }
+    service_account_json = os.getenv("BIGQUERY_SERVICE_ACCOUNT_JSON", "")
+    if service_account_json:
+        config["service_account_info"] = json.loads(service_account_json)
+    return {key: value for key, value in config.items() if value}
+
+
+def _bigquery_config_from_streamlit():
+    try:
+        import streamlit as st
+    except Exception:
+        return {}
+
+    try:
+        secrets = st.secrets
+        config = dict(secrets.get("bigquery", {}))
+        service_account = secrets.get("gcp_service_account", None)
+        if service_account:
+            config["service_account_info"] = dict(service_account)
+        return {key: value for key, value in config.items() if value}
+    except Exception:
+        return {}
+
+
+def _normalize_bigquery_name(value):
+    return re.sub(r"[^a-z0-9]+", "", clean(value).lower())
+
+
+def _find_bigquery_column(available_columns, candidates):
+    by_normalized = {_normalize_bigquery_name(column): column for column in available_columns}
+    for candidate in candidates:
+        found = by_normalized.get(_normalize_bigquery_name(candidate))
+        if found:
+            return found
     return ""
 
 
-def _verify_shopify_variants(product_variant_rows, product_data):
-    expected = {}
-    for _, row in product_variant_rows.iterrows():
-        sku = clean_value(row.get("Variant SKU")).upper()
-        if not sku:
+def _find_bigquery_barcode_columns(available_columns):
+    exact = _find_bigquery_column(available_columns, BIGQUERY_ARTI_COLUMN_CANDIDATES["CodBarras"])
+    candidates = [exact] if exact else []
+    tokens = ("ean", "barra", "barras", "barcode", "barcod", "upc", "gtin")
+    for column in available_columns:
+        normalized = _normalize_bigquery_name(column)
+        if any(token in normalized for token in tokens):
+            candidates.append(column)
+    return list(dict.fromkeys([column for column in candidates if column]))
+
+
+def normalize_arti_required_columns(df):
+    if df is None or df.empty:
+        return df
+    result = coalesce_duplicate_columns(df).copy()
+    for output_column, candidates in BIGQUERY_ARTI_COLUMN_CANDIDATES.items():
+        if output_column not in result.columns:
+            result[output_column] = ""
+        for candidate in candidates:
+            found = _find_bigquery_column(result.columns, [candidate])
+            if not found or found == output_column:
+                continue
+            fill_mask = result[output_column].map(clean).eq("") & result[found].map(clean).ne("")
+            if fill_mask.any():
+                result.loc[fill_mask, output_column] = result.loc[fill_mask, found]
+    barcode_candidates = _find_bigquery_barcode_columns(result.columns)
+    for found in barcode_candidates:
+        if found == "CodBarras":
             continue
-        expected[sku] = {
-            "size": clean_value(row.get("Option1 Value")),
-            "price": _valid_price(row.get("Variant Price")),
-            "barcode": clean_value(row.get("Variant Barcode")),
+        fill_mask = result["CodBarras"].map(clean).eq("") & result[found].map(clean).ne("")
+        if fill_mask.any():
+            result.loc[fill_mask, "CodBarras"] = result.loc[fill_mask, found]
+    if ("Mod-Col" not in result.columns or not (result["Mod-Col"].map(clean) != "").any()) and "COD MOD COL" in result.columns:
+        result["Mod-Col"] = result["COD MOD COL"]
+    for column in ARTI_REQUIRED_COLUMNS:
+        if column not in result.columns:
+            result[column] = ""
+    return result
+
+
+def _bigquery_select_expression(output_column, source_column, composite_expression=""):
+    if composite_expression:
+        return f"{composite_expression} AS `{output_column}`"
+    if source_column:
+        return f"CAST(`{source_column}` AS STRING) AS `{output_column}`"
+    return f"CAST(NULL AS STRING) AS `{output_column}`"
+
+
+def _bigquery_model_color_expression(column_map, model_column, color_column):
+    if column_map.get("COD MOD COL"):
+        return ""
+    if not model_column or not color_column:
+        return ""
+    return f"CONCAT(CAST(`{model_column}` AS STRING), '-', CAST(`{color_column}` AS STRING))"
+
+
+def _read_arti_from_bigquery(config, brand_config=None):
+    brand_config = brand_config or get_brand_config()
+    try:
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+    except ImportError as exc:
+        raise RuntimeError(
+            "BigQuery esta configurado, pero faltan dependencias. "
+            "Instala google-cloud-bigquery y db-dtypes."
+        ) from exc
+
+    project_id = clean(config.get("project_id"))
+    credentials_info = config.get("service_account_info")
+    credentials = None
+    if credentials_info:
+        credentials = service_account.Credentials.from_service_account_info(dict(credentials_info))
+        project_id = project_id or credentials.project_id
+
+    job_project_id = clean(config.get("job_project_id")) or project_id
+    client = bigquery.Client(project=job_project_id or None, credentials=credentials)
+    job_project_id = job_project_id or client.project
+    project_id = project_id or job_project_id
+    query = clean(config.get("query"))
+    if not query:
+        dataset = clean(config.get("dataset"))
+        table = clean(config.get("table"))
+        table_id = table if table.count(".") == 2 else f"{project_id}.{dataset}.{table}"
+        table_schema = client.get_table(table_id).schema
+        available_columns = [field.name for field in table_schema]
+        column_map = {
+            output_column: _find_bigquery_column(available_columns, candidates)
+            for output_column, candidates in BIGQUERY_ARTI_COLUMN_CANDIDATES.items()
         }
-    if not expected:
-        return ["No hay SKUs esperados para verificar."]
+        barcode_columns = _find_bigquery_barcode_columns(available_columns)
+        if barcode_columns:
+            column_map["CodBarras"] = barcode_columns[0]
+        model_column = _find_bigquery_column(available_columns, BIGQUERY_MODEL_COLUMN_CANDIDATES)
+        color_column = _find_bigquery_column(available_columns, BIGQUERY_COLOR_COLUMN_CANDIDATES)
+        model_color_expression = _bigquery_model_color_expression(column_map, model_column, color_column)
+        if model_color_expression:
+            column_map["COD MOD COL"] = "__MODEL_COLOR__"
+            column_map["Mod-Col"] = "__MODEL_COLOR__"
 
-    actual = {}
-    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
-        inventory_item = variant.get("inventoryItem") or {}
-        sku = clean_value(inventory_item.get("sku") or variant.get("sku")).upper()
-        if sku:
-            actual[sku] = variant
+        missing_required = [
+            output_column
+            for output_column in ("CODINT_MA", "COD MOD COL", "TALNUM_MA")
+            if not column_map.get(output_column)
+        ]
+        if missing_required:
+            raise RuntimeError(
+                "No pude encontrar columnas necesarias en BigQuery: "
+                f"{', '.join(missing_required)}. "
+                f"Columnas disponibles: {', '.join(available_columns[:80])}"
+            )
 
-    problems = []
+        if not column_map.get("Mod-Col"):
+            column_map["Mod-Col"] = column_map["COD MOD COL"]
 
-    def normalize_price(value):
-        text = _valid_price(value)
-        if not text:
-            return ""
+        select_lines = [
+            _bigquery_select_expression(
+                output_column,
+                "" if column_map.get(output_column) == "__MODEL_COLOR__" else column_map.get(output_column),
+                model_color_expression if column_map.get(output_column) == "__MODEL_COLOR__" else "",
+            )
+            for output_column in ARTI_REQUIRED_COLUMNS
+        ]
+        for index, barcode_column in enumerate(barcode_columns[1:20], start=2):
+            select_lines.append(f"CAST(`{barcode_column}` AS STRING) AS `CodBarras_alt_{index}`")
+        where_lines = [f"`{column_map['CODINT_MA']}` IS NOT NULL"]
+        if model_color_expression:
+            where_lines.extend([f"`{model_column}` IS NOT NULL", f"`{color_column}` IS NOT NULL"])
+        else:
+            where_lines.append(f"`{column_map['COD MOD COL']}` IS NOT NULL")
+        if column_map.get("MARCA_MA") and brand_config.get("allowed_arti_brands"):
+            allowed_brands = ", ".join(f"'{brand}'" for brand in brand_config["allowed_arti_brands"])
+            where_lines.append(f"UPPER(CAST(`{column_map['MARCA_MA']}` AS STRING)) IN ({allowed_brands})")
+
+        query = f"""
+        SELECT
+          {", ".join(select_lines)}
+        FROM `{table_id}`
+        WHERE {" AND ".join(where_lines)}
+        """
+
+    job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
+    query_job = client.query(query, job_config=job_config, location=clean(config.get("location")) or None)
+    df = query_job.to_dataframe()
+    df = normalize_arti_required_columns(df)
+    source = clean(config.get("table")) or "query configurada"
+    return df[ARTI_REQUIRED_COLUMNS].astype(object), f"BigQuery: {source}"
+
+
+def read_arti_source(
+    zip_path=DEFAULT_ARTI_ZIP_PATH,
+    csv_path=DEFAULT_ARTI_CSV_PATH,
+    xlsx_path=DEFAULT_ARTI_XLSX_PATH,
+    bigquery_config=None,
+    allow_local_fallback=True,
+    brand_config=None,
+):
+    brand_config = brand_config or get_brand_config()
+    if bigquery_config is None:
+        bigquery_config = _bigquery_config_from_streamlit() or _bigquery_config_from_env()
+    if _bigquery_configured(bigquery_config):
         try:
-            return f"{float(text.replace(',', '.')):.2f}"
-        except ValueError:
-            return text
-
-    for sku, expected_values in expected.items():
-        variant = actual.get(sku)
-        if not variant:
-            problems.append(f"{sku}: no existe en Shopify")
-            continue
-        inventory_item = variant.get("inventoryItem") or {}
-        inventory_sku = clean_value(inventory_item.get("sku")).upper()
-        if inventory_sku != sku:
-            problems.append(f"{sku}: inventory item SKU '{inventory_sku or 'vacio'}', esperado {sku}")
-        price = _valid_price(variant.get("price"))
-        barcode = clean_value(variant.get("barcode"))
-        expected_price = normalize_price(expected_values["price"])
-        actual_price = normalize_price(price)
-        if expected_values["price"] and not price:
-            problems.append(f"{sku}: creado sin precio")
-        elif expected_price and actual_price and expected_price != actual_price:
-            problems.append(f"{sku}: precio Shopify {actual_price}, esperado {expected_price}")
-        if expected_values["barcode"] and not barcode:
-            problems.append(f"{sku}: creado sin barcode")
-        elif expected_values["barcode"] and barcode and barcode != expected_values["barcode"]:
-            problems.append(f"{sku}: barcode Shopify {barcode}, esperado {expected_values['barcode']}")
-    return problems
-
-
-def _reorder_product_sizes(shopify_config, product_gid, product_variant_rows):
-    ordered_sizes = _ordered_sizes_from_rows(product_variant_rows)
-    if not product_gid or len(ordered_sizes) < 2:
-        return ""
-
-    product_data = fetch_product_options_and_variants(shopify_config, product_gid)
-    options = product_data.get("options") or []
-    variants = ((product_data.get("variants") or {}).get("nodes")) or []
-    if not options or not variants:
-        return ""
-
-    option_name = clean_value(product_variant_rows.iloc[0].get("Option1 Name")) or "Talla"
-    size_option = None
-    for option in options:
-        if clean_value(option.get("name")).lower() == option_name.lower():
-            size_option = option
-            break
-    if size_option is None:
-        size_option = options[0]
-        option_name = clean_value(size_option.get("name")) or option_name
-
-    existing_values = [
-        clean_value(option_value.get("name"))
-        for option_value in size_option.get("optionValues") or []
-        if clean_value(option_value.get("name"))
-    ]
-    values_in_order = [size for size in ordered_sizes if size in existing_values]
-    values_in_order.extend(value for value in existing_values if value not in values_in_order)
-
-    variant_by_size = {}
-    for variant in variants:
-        size = _selected_option_value(variant, option_name)
-        if size and size not in variant_by_size:
-            variant_by_size[size] = variant.get("id")
-    variant_order = [size for size in ordered_sizes if size in variant_by_size]
-    variant_order.extend(size for size in variant_by_size if size not in variant_order)
-    if len(variant_order) < len(ordered_sizes):
-        missing_sizes = [size for size in ordered_sizes if size not in variant_by_size]
-        raise ShopifyApiError(f"No se puede ordenar porque faltan variantes creadas: {', '.join(missing_sizes)}")
-    positions = [
-        {"id": variant_by_size[size], "position": position}
-        for position, size in enumerate(variant_order, start=1)
-        if clean_value(variant_by_size.get(size))
-    ]
-    if not positions:
-        raise ShopifyApiError("No se encontraron variantes para ordenar.")
-    product_variants_bulk_reorder(shopify_config, product_gid, positions)
-
-    verified_product = fetch_product_options_and_variants(shopify_config, product_gid)
-    verified_variants = ((verified_product.get("variants") or {}).get("nodes")) or []
-    verified_sizes = [
-        _selected_option_value(variant, option_name)
-        for variant in verified_variants
-        if _selected_option_value(variant, option_name)
-    ]
-    expected_prefix = [size for size in ordered_sizes if size in verified_sizes]
-    if verified_sizes[: len(expected_prefix)] != expected_prefix:
-        raise ShopifyApiError(
-            f"Shopify no confirmo el orden. Esperado: {', '.join(expected_prefix)}. Actual: {', '.join(verified_sizes[:len(expected_prefix)])}"
-        )
-    return "orden obligatorio de variantes confirmado"
-
-
-def apply_full_product_updates(shopify_config, matrixify_df):
-    rows = []
-    product_rows = _top_product_rows(matrixify_df)
-    metafield_columns = [
-        column
-        for column in matrixify_df.columns
-        if clean_value(column).startswith("Metafield: ")
-        and column not in (
-            "Metafield: custom.guia_de_tallas [page_reference]",
-        )
-    ]
-
-    for _, row in product_rows.iterrows():
-        handle = clean_value(row.get("Handle"))
-        product_id = clean_value(row.get("ID"))
-        product_gid = _product_gid(product_id)
-        product_messages = []
-        product_status = "OK"
-        product_variant_rows = _variant_rows_for_handle(matrixify_df, handle)
-        product_variant_rows, dedupe_messages = _dedupe_product_variant_rows(product_variant_rows)
-        if dedupe_messages:
-            product_status = "PARCIAL"
-            product_messages.extend(dedupe_messages)
-        variant_input_issues = _variant_validation_issues(product_variant_rows)
-        was_new_product = not bool(product_gid)
-
-        try:
-            if variant_input_issues:
-                product_status = "PARCIAL"
-                product_messages.append("Variantes incompletas no se enviaran completas: " + " | ".join(variant_input_issues[:8]))
-
-            status = clean_value(row.get("Status")).upper()
-            if status == "ACTIVE":
-                shopify_status = "ACTIVE"
-            elif status == "DRAFT":
-                shopify_status = "DRAFT"
-            else:
-                shopify_status = None
-
-            if product_gid:
-                product_update(
-                    shopify_config,
-                    product_gid,
-                    title=clean_value(row.get("Title")) or None,
-                    body_html=clean_value(row.get("Body HTML")) or None,
-                    tags=_split_tags(row.get("Tags")) if clean_value(row.get("Tags")) else None,
-                    vendor=clean_value(row.get("Vendor")) or None,
-                    product_type=clean_value(row.get("Type")) or None,
-                    status=shopify_status,
-                )
-                product_messages.append("Producto actualizado")
-            else:
-                created_product = product_create(
-                    shopify_config,
-                    title=clean_value(row.get("Title")) or handle,
-                    handle=handle or None,
-                    body_html=clean_value(row.get("Body HTML")) or None,
-                    tags=_split_tags(row.get("Tags")) if clean_value(row.get("Tags")) else None,
-                    vendor=clean_value(row.get("Vendor")) or None,
-                    product_type=clean_value(row.get("Type")) or None,
-                    status=shopify_status or "ACTIVE",
-                    option_name=clean_value(row.get("Option1 Name")) or "Talla",
-                    option_values=_variant_option_values(product_variant_rows),
-                )
-                product_gid = clean_value(created_product.get("id"))
-                product_id = clean_value(created_product.get("legacyResourceId")) or product_id
-                product_messages.append("Producto nuevo creado")
-
-            publish_date = publication_date_from_row(row)
-            if shopify_status != "DRAFT":
-                try:
-                    publishable_publish(shopify_config, product_gid, publish_date=publish_date)
-                    if publish_date:
-                        product_messages.append(f"Publicacion programada: {publish_date}")
-                    else:
-                        product_messages.append("Publicado en Online Store")
-                except Exception as exc:
-                    product_status = "PARCIAL"
-                    product_messages.append(f"Error publicacion: {exc}")
-
-            metafields = []
-            skipped_metafields = []
-            metafield_errors = []
-            for column in metafield_columns:
-                value = clean_value(row.get(column))
-                if value == "":
-                    continue
-                namespace, key = _metafield_namespace_key(column)
-                if not namespace or not key:
-                    continue
-                can_write, skip_reason = _metafield_can_write_direct(column)
-                if not can_write:
-                    skipped_metafields.append(skip_reason)
-                    continue
-                try:
-                    api_value = _metafield_value_for_api(column, value, shopify_config)
-                except Exception as exc:
-                    metafield_errors.append(f"{namespace}.{key}: {exc}")
-                    continue
-                metafields.append(
-                    {
-                        "ownerId": product_gid,
-                        "namespace": namespace,
-                        "key": key,
-                        "type": _metafield_type_from_column(column),
-                        "value": api_value,
-                    }
-                )
-            if metafields:
-                metafield_ok = 0
-                for metafield in metafields:
-                    try:
-                        metafields_set(shopify_config, [metafield])
-                        metafield_ok += 1
-                    except Exception as exc:
-                        metafield_errors.append(f"{metafield['namespace']}.{metafield['key']}: {exc}")
-                if metafield_ok:
-                    product_messages.append(f"{metafield_ok} metafields actualizados")
-                if metafield_errors:
-                    product_status = "PARCIAL"
-                    product_messages.append("Errores metafields: " + " | ".join(metafield_errors[:5]))
-                if skipped_metafields:
-                    product_status = "PARCIAL" if product_status == "OK" else product_status
-                    product_messages.append("Metafields omitidos: " + " | ".join(dict.fromkeys(skipped_metafields)))
-            elif metafield_errors:
-                product_status = "PARCIAL"
-                product_messages.append("Errores metafields: " + " | ".join(metafield_errors[:5]))
-
-            raw_image_urls = [url.strip() for url in clean_value(row.get("Image Src")).split(";") if url.strip()]
-            if raw_image_urls:
-                try:
-                    existing_media_ids = [
-                        media_id.strip()
-                        for media_id in clean_value(row.get("Media IDs")).split(";")
-                        if media_id.strip()
-                    ]
-                    if clean_value(row.get("Image Command")).upper() == "REPLACE" and existing_media_ids:
-                        product_delete_media(shopify_config, product_gid, existing_media_ids)
-                        product_messages.append(f"{len(existing_media_ids)} fotos anteriores eliminadas")
-                    product_files = []
-                    image_errors = []
-                    for image_index, raw_image_url in enumerate(raw_image_urls[:10], start=1):
-                        try:
-                            image_bytes, mime_type, filename, source_url = _download_image_bytes(raw_image_url)
-                            resource_url = staged_upload_image(shopify_config, filename, mime_type, image_bytes)
-                            product_files.append(
-                                {
-                                    "originalSource": resource_url,
-                                    "alt": clean_value(row.get("Image Alt Text")) or clean_value(row.get("Title")),
-                                    "filename": filename,
-                                    "contentType": "IMAGE",
-                                    "duplicateResolutionMode": "APPEND_UUID",
-                                }
-                            )
-                        except Exception as exc:
-                            image_errors.append(f"foto {image_index}: {exc}")
-                    if product_files:
-                        route = _product_set_files_with_fallback(shopify_config, product_gid, product_files)
-                        product_messages.append(f"{len(product_files)} fotos enviadas por {route}")
-                    if image_errors:
-                        product_status = "PARCIAL"
-                        product_messages.append(
-                            f"Fotos no cargadas: {len(image_errors)} de {min(len(raw_image_urls), 10)}. "
-                            f"Detalle: {' | '.join(image_errors[:3])}"
-                        )
-                except Exception as exc:
-                    product_status = "PARCIAL"
-                    product_messages.append(f"Error fotos: {exc}")
-
-            product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
-            existing_variant_updates = _existing_variant_updates_from_shopify(
-                product_variant_rows,
-                product_data_for_variants,
-            )
-            if existing_variant_updates:
-                try:
-                    if product_variants_bulk_update is None:
-                        raise RuntimeError("Falta actualizar shopify_api.py: no existe product_variants_bulk_update.")
-                    updated_variants = product_variants_bulk_update(
-                        shopify_config,
-                        product_gid,
-                        existing_variant_updates,
-                    )
-                    product_messages.append(
-                        f"{len(updated_variants)} variantes existentes actualizadas con SKU/precio/barcode"
-                    )
-                    product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
-                except Exception as exc:
-                    product_status = "PARCIAL"
-                    product_messages.append(f"Error actualizando variantes existentes: {exc}")
-
-            inventory_item_updates = _existing_inventory_item_updates_from_shopify(
-                product_variant_rows,
-                product_data_for_variants,
-            )
-            if inventory_item_updates:
-                inventory_ok, inventory_errors = _apply_inventory_item_updates(
-                    shopify_config,
-                    inventory_item_updates,
-                )
-                if inventory_ok:
-                    product_messages.append(f"{inventory_ok} SKUs/tracking actualizados en inventory item")
-                    product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
-                if inventory_errors:
-                    product_status = "PARCIAL"
-                    product_messages.append("Error SKU inventory item: " + " | ".join(inventory_errors[:5]))
-
-            missing_variants = _missing_variant_inputs_from_shopify(
-                product_variant_rows,
-                product_data_for_variants,
-            )
-            if missing_variants:
-                try:
-                    created_variants = product_variants_bulk_create(
-                        shopify_config,
-                        product_gid,
-                        missing_variants,
-                        strategy="REMOVE_STANDALONE_VARIANT" if was_new_product else None,
-                    )
-                    if created_variants:
-                        product_messages.append(
-                            f"{len(created_variants)} variantes creadas de {len(missing_variants)} faltantes"
-                        )
-                    if len(created_variants) < len(missing_variants):
-                        product_status = "PARCIAL"
-                        product_messages.append(
-                            f"Shopify confirmo menos variantes de las enviadas: {len(created_variants)} de {len(missing_variants)}"
-                        )
-                except Exception as exc:
-                    product_status = "PARCIAL"
-                    product_messages.append(f"Error variantes: {exc}")
-
-            product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
-            post_create_inventory_updates = _existing_inventory_item_updates_from_shopify(
-                product_variant_rows,
-                product_data_for_variants,
-            )
-            if post_create_inventory_updates:
-                inventory_ok, inventory_errors = _apply_inventory_item_updates(
-                    shopify_config,
-                    post_create_inventory_updates,
-                )
-                if inventory_ok:
-                    product_messages.append(f"{inventory_ok} SKUs/tracking reforzados despues de crear variantes")
-                    product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
-                if inventory_errors:
-                    product_status = "PARCIAL"
-                    product_messages.append("Error SKU post-creacion: " + " | ".join(inventory_errors[:5]))
-
-            verified_product_data = fetch_product_options_and_variants(shopify_config, product_gid)
-            variant_sync_problems = _verify_shopify_variants(product_variant_rows, verified_product_data)
-            if variant_sync_problems:
-                product_status = "PARCIAL"
-                product_messages.append("Verificacion variantes: " + " | ".join(variant_sync_problems[:8]))
-
-            try:
-                reorder_message = _reorder_product_sizes(shopify_config, product_gid, product_variant_rows)
-                if reorder_message:
-                    product_messages.append(reorder_message)
-            except Exception as exc:
-                product_status = "PARCIAL"
-                product_messages.append(f"Error orden tallas: {exc}")
-
-            rows.append(
-                {
-                    "Handle": handle,
-                    "ID": product_id,
-                    "Resultado": product_status,
-                    "Mensaje": ". ".join(product_messages) or "Sin cambios aplicados",
-                }
-            )
+            return _read_arti_from_bigquery(bigquery_config, brand_config=brand_config)
         except Exception as exc:
-            rows.append({"Handle": handle, "ID": product_id, "Resultado": "ERROR", "Mensaje": str(exc)})
-    return pd.DataFrame(rows)
+            if not allow_local_fallback:
+                raise RuntimeError(f"No se pudo leer ARTI desde BigQuery. Detalle: {exc}") from exc
+            print(f"No se pudo leer BigQuery; usando respaldo local. Detalle: {exc}")
+    if zip_path.exists():
+        return pd.read_csv(zip_path, dtype=object, usecols=lambda col: col in ARTI_REQUIRED_COLUMNS), str(zip_path)
+    if csv_path.exists():
+        return pd.read_csv(csv_path, dtype=object, usecols=lambda col: col in ARTI_REQUIRED_COLUMNS), str(csv_path)
+    if xlsx_path.exists():
+        return (
+            pd.read_excel(
+                xlsx_path,
+                sheet_name=0,
+                dtype=object,
+                usecols=lambda col: col in ARTI_REQUIRED_COLUMNS,
+            ),
+            str(xlsx_path),
+        )
+    return (
+        pd.read_excel(
+            ARTI_PATH,
+            sheet_name="Hoja1",
+            dtype=object,
+            usecols=lambda col: col in ARTI_REQUIRED_COLUMNS,
+        ),
+        str(ARTI_PATH),
+    )
 
 
-SITE_UI_CONFIG = {
-    "Columbia.pe": {
-        "brand_name": "Columbia",
-        "logo_path": "assets/brands/columbia.png",
-        "primary_color": "#004B8D",
-        "accent_color": "#009FE3",
-        "shopify_store": "columbiape.myshopify.com",
-    },
-    "Rockford.pe": {
-        "brand_name": "Rockford",
-        "logo_path": "assets/brands/rockford.png",
-        "primary_color": "#0B2345",
-        "accent_color": "#B0895B",
-        "shopify_store": "rockfordpe.myshopify.com",
-    },
-    "HushPuppies.pe": {
-        "brand_name": "Hush Puppies",
-        "logo_path": "assets/brands/hushpuppies.png",
-        "primary_color": "#4B2E1F",
-        "accent_color": "#C49A6C",
-        "shopify_store": "hushpuppiespe.myshopify.com",
-    },
-    "Vans.pe": {
-        "brand_name": "Vans",
-        "logo_path": "assets/brands/vans.png",
-        "primary_color": "#111827",
-        "accent_color": "#D71920",
-        "shopify_store": "vans-dev.myshopify.com",
-    },
-    "Patagonia.pe": {
-        "brand_name": "Patagonia",
-        "logo_path": "assets/brands/patagonia.png",
-        "primary_color": "#1D4E89",
-        "accent_color": "#F15A24",
-        "shopify_store": "patagoniape.myshopify.com",
-    },
-    "Sorel.pe": {
-        "brand_name": "Sorel",
-        "logo_path": "assets/brands/sorel.png",
-        "primary_color": "#111827",
-        "accent_color": "#C2410C",
-        "shopify_store": "sorelpe.myshopify.com",
-    },
-    "MountainHardwear.pe": {
-        "brand_name": "Mountain Hardwear",
-        "logo_path": "assets/brands/mountainhardwear.png",
-        "primary_color": "#B91C1C",
-        "accent_color": "#111827",
-        "shopify_store": "mountainhardwearpe.myshopify.com",
-    },
+def prepare_matrixify_context(matrixify_source):
+    if isinstance(matrixify_source, pd.DataFrame):
+        matrixify_df = matrixify_source.copy()
+        matrixify_columns = list(matrixify_df.columns)
+    else:
+        matrixify_df = pd.DataFrame()
+        matrixify_columns = list(matrixify_source)
+
+    end_column = "Metafield: custom.guia_de_tallas [page_reference]"
+    if end_column in matrixify_columns:
+        matrixify_columns = matrixify_columns[: matrixify_columns.index(end_column) + 1]
+    required_columns = [
+        SIBLINGS_COLUMN,
+        SIBLINGS_COLOR_COLUMN,
+        CUSTOM_SIBLINGS_COLUMN,
+        CUSTOM_SIBLINGS_COLOR_COLUMN,
+        PUBLICATION_DATE_COLUMN,
+    ]
+    for column in required_columns:
+        if column not in matrixify_columns:
+            matrixify_columns.append(column)
+    return matrixify_columns, matrixify_df
+
+
+def build_existing_lookup(matrixify_df):
+    product_by_key = {}
+    product_by_handle = {}
+    variant_by_sku = {}
+
+    if matrixify_df.empty:
+        return product_by_key, product_by_handle, variant_by_sku
+
+    for _, row in matrixify_df.iterrows():
+        handle = clean(row.get("Handle"))
+        mod_col = clean(row.get("Metafield: custom.codigo_modelo_color [id]")).upper()
+        sku = clean(row.get("Variant SKU"))
+
+        product_payload = {
+            "ID": clean(row.get("ID")),
+            "Handle": handle,
+            "Created At": row.get("Created At", ""),
+            "Updated At": row.get("Updated At", ""),
+            "Published At": row.get("Published At", ""),
+            "URL": row.get("URL", ""),
+        }
+
+        if handle and handle not in product_by_handle:
+            product_by_handle[handle] = product_payload
+        if mod_col and mod_col not in product_by_key:
+            product_by_key[mod_col] = product_payload
+
+        if sku and sku not in variant_by_sku:
+            variant_by_sku[sku] = {
+                "Variant Inventory Item ID": clean(row.get("Variant Inventory Item ID")),
+                "Variant ID": clean(row.get("Variant ID")),
+                "Variant Image": row.get("Variant Image", ""),
+                "Variant Price": valid_price(row.get("Variant Price")),
+                "Variant Compare At Price": valid_price(row.get("Variant Compare At Price")),
+            }
+
+    return product_by_key, product_by_handle, variant_by_sku
+
+
+def matrixify_rows_for_handle(matrixify_df, handle):
+    if matrixify_df is None or matrixify_df.empty or "Handle" not in matrixify_df.columns:
+        return pd.DataFrame()
+    target_handle = clean(handle)
+    if not target_handle:
+        return pd.DataFrame()
+
+    current_handle = ""
+    matching_indexes = []
+    for index, row in matrixify_df.iterrows():
+        row_handle = clean(row.get("Handle"))
+        if row_handle:
+            current_handle = row_handle
+        if current_handle == target_handle:
+            matching_indexes.append(index)
+    return matrixify_df.loc[matching_indexes].copy() if matching_indexes else pd.DataFrame()
+
+
+def variant_payload_from_existing_row(row):
+    return {
+        "Variant Inventory Item ID": clean(row.get("Variant Inventory Item ID")),
+        "Variant ID": clean(row.get("Variant ID")),
+        "Variant SKU": clean(row.get("Variant SKU")),
+        "Variant Image": row.get("Variant Image", ""),
+        "Variant Price": valid_price(row.get("Variant Price")),
+        "Variant Compare At Price": valid_price(row.get("Variant Compare At Price")),
+    }
+
+
+def variant_size_lookup_keys(value):
+    keys = []
+    raw = clean(value).upper()
+    normalized = clean(normalize_size(value)).upper()
+    aliases = {
+        "SX": "XS",
+        "XS": "SX",
+        "OS": "O/S",
+        "O/S": "OS",
+        "UNICA": "O/S",
+        "ÚNICA": "O/S",
+        "ÃšNICA": "O/S",
+        "TALLA UNICA": "O/S",
+        "TALLA ÚNICA": "O/S",
+        "TALLA ÃšNICA": "O/S",
+        "0": "O/S",
+        "000": "O/S",
+    }
+    for key in (raw, normalized, aliases.get(raw, ""), aliases.get(normalized, "")):
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def build_product_variant_lookup(existing_rows):
+    variant_by_product_sku = {}
+    variant_by_product_size = {}
+    if existing_rows is None or existing_rows.empty:
+        return variant_by_product_sku, variant_by_product_size
+
+    for _, existing_row in existing_rows.iterrows():
+        payload = variant_payload_from_existing_row(existing_row)
+        sku = clean(existing_row.get("Variant SKU"))
+        if sku and sku not in variant_by_product_sku:
+            variant_by_product_sku[sku] = payload
+        for size_key in variant_size_lookup_keys(existing_row.get("Option1 Value")):
+            if size_key not in variant_by_product_size:
+                variant_by_product_size[size_key] = payload
+    return variant_by_product_sku, variant_by_product_size
+
+
+def variant_without_sku_by_size(variant_by_product_size, value):
+    for size_key in variant_size_lookup_keys(value):
+        variant = variant_by_product_size.get(size_key)
+        if variant and not clean(variant.get("Variant SKU")):
+            return variant
+    return {}
+
+
+def first_valid_product_price(existing_rows):
+    if existing_rows is None or existing_rows.empty or "Variant Price" not in existing_rows.columns:
+        return ""
+    for value in existing_rows["Variant Price"]:
+        price = valid_price(value)
+        if price:
+            return price
+    return ""
+
+
+def product_publication_date(product):
+    for column in PUBLICATION_DATE_CANDIDATES:
+        value = clean(product.get(column))
+        if value:
+            return value
+    by_normalized = {normalize_header_key(column): column for column in getattr(product, "index", [])}
+    for column in PUBLICATION_DATE_CANDIDATES:
+        found = by_normalized.get(normalize_header_key(column))
+        if found is not None:
+            value = clean(product.get(found))
+            if value:
+                return value
+    return ""
+
+
+def row_first_existing(product, candidates):
+    for column in candidates:
+        value = clean(product.get(column))
+        if value:
+            return value
+    by_normalized = {normalize_header_key(column): column for column in getattr(product, "index", [])}
+    for column in candidates:
+        found = by_normalized.get(normalize_header_key(column))
+        if found is not None:
+            value = clean(product.get(found))
+            if value:
+                return value
+    return ""
+
+
+def find_technology_column(df):
+    direct = first_existing(df, ["METAFIELD TECNOLOGÍAS", "METAFIELD TECNOLOGIAS", "Tecnologias ", "Tecnologías"])
+    if direct:
+        return direct
+    for column in df.columns:
+        key = normalize_header_key(column)
+        if key in ("metafieldtecnologias", "metafieldtecnologas", "tecnologias", "tecnologas", "tecnologia"):
+            return column
+        if key.startswith("metafieldtecnolog") or key in ("tecnolog", "tecnologas"):
+            return column
+    return ""
+
+
+def fill_top_row_product_fields(output_df, input_df, tech_col=None):
+    if output_df is None or output_df.empty or input_df is None or input_df.empty:
+        return output_df
+    if PRODUCT_KEY_COLUMN not in output_df.columns:
+        return output_df
+
+    tech_by_key = {}
+    publication_by_key = {}
+    for _, product in input_df.iterrows():
+        key = clean(product.get("__KEY")) or clean(product.get("Mod-Col")).upper()
+        if not key:
+            continue
+        tech_by_key[key] = row_first_existing(product, [tech_col, find_technology_column(input_df)])
+        publication_by_key[key] = product_publication_date(product)
+
+    if "Handle" in output_df.columns:
+        top_mask = output_df["Handle"].map(clean) != ""
+    else:
+        top_mask = pd.Series([True] * len(output_df), index=output_df.index)
+
+    for idx, row in output_df[top_mask].iterrows():
+        key = clean(row.get(PRODUCT_KEY_COLUMN)).upper()
+        technology_value = tech_by_key.get(key, "")
+        if technology_value:
+            logo_col = "Metafield: custom.logo [list.metaobject_reference]"
+            tech_field_col = "Metafield: custom.tecnologia [list.single_line_text_field]"
+            if logo_col in output_df.columns and not clean(row.get(logo_col)):
+                output_df.at[idx, logo_col] = format_technology_logos(technology_value)
+            if tech_field_col in output_df.columns and not clean(row.get(tech_field_col)):
+                output_df.at[idx, tech_field_col] = format_technology(technology_value)
+        publication_date = publication_by_key.get(key, "")
+        if publication_date and PUBLICATION_DATE_COLUMN in output_df.columns and not clean(row.get(PUBLICATION_DATE_COLUMN)):
+            output_df.at[idx, PUBLICATION_DATE_COLUMN] = publication_date
+    return output_df
+
+
+SKIP_COMPARE_EXCLUDED_COLUMNS = {
+    "ID",
+    "Command",
+    "Created At",
+    "Updated At",
+    "Published At",
+    "URL",
+    "Total Inventory Qty",
+    "Row #",
+    "Top Row",
+    "Image Type",
+    "Image Src",
+    "Image Command",
+    "Image Position",
+    "Image Width",
+    "Image Height",
+    "Image Alt Text",
+    "Variant Inventory Item ID",
+    "Variant ID",
+    "Variant Command",
+    "Variant Position",
+    "Variant Image",
 }
 
 
-def image_data_uri(path):
-    path = Path(path)
-    if not path.exists():
-        return ""
-    suffix = path.suffix.lower().replace(".", "")
-    mime_by_suffix = {
-        "jpg": "jpeg",
-        "jpeg": "jpeg",
-        "png": "png",
-        "webp": "webp",
-        "gif": "gif",
+def comparable_columns(columns):
+    return [
+        column
+        for column in columns
+        if column not in SKIP_COMPARE_EXCLUDED_COLUMNS
+        and not column.startswith(INVENTORY_PREFIX)
+        and not column.startswith("Metafield: shopify--")
+        and not column.startswith("Metafield: mm-google-shopping")
+        and not column.startswith("Metafield: mc-facebook")
+    ]
+
+
+def product_is_unchanged(product_rows, existing_rows, columns):
+    if existing_rows.empty:
+        return False
+
+    generated_skus = [clean(row.get("Variant SKU")) for row in product_rows]
+    existing_by_sku = {
+        clean(row.get("Variant SKU")): row
+        for _, row in existing_rows.iterrows()
+        if clean(row.get("Variant SKU"))
     }
-    mime = mime_by_suffix.get(suffix, "png")
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:image/{mime};base64,{encoded}"
 
+    if set(generated_skus) != set(existing_by_sku):
+        return False
 
-def resolve_logo_path(path):
-    path = Path(path)
-    if path.exists():
-        return str(path)
-
-    folder = path.parent
-    stem = path.stem
-    aliases = {
-        "mountainhardwear": ["mhw", "mountainhardwear"],
-        "hushpuppies": ["hushpuppies", "hush_puppies"],
-    }
-    stems = [stem, f"logo_{stem}"]
-    for alias in aliases.get(stem, []):
-        stems.extend([alias, f"logo_{alias}"])
-
-    for candidate_stem in dict.fromkeys(stems):
-        for suffix in ("png", "jpg", "jpeg", "webp"):
-            candidate = folder / f"{candidate_stem}.{suffix}"
-            if candidate.exists():
-                return str(candidate)
-
-    wanted_keys = {re.sub(r"[^a-z0-9]+", "", stem.lower())}
-    for alias in aliases.get(stem, []):
-        wanted_keys.add(re.sub(r"[^a-z0-9]+", "", alias.lower()))
-    if folder.exists():
-        for candidate in folder.iterdir():
-            if not candidate.is_file() or candidate.suffix.lower().replace(".", "") not in ("png", "jpg", "jpeg", "webp"):
+    compare_cols = comparable_columns(columns)
+    for generated in product_rows:
+        sku = clean(generated.get("Variant SKU"))
+        existing = existing_by_sku.get(sku)
+        if existing is None:
+            return False
+        for column in compare_cols:
+            if column not in existing.index:
                 continue
-            candidate_key = candidate.stem.lower()
-            candidate_key = re.sub(r"^logo[_-]*", "", candidate_key)
-            candidate_key = re.sub(r"\.(png|jpg|jpeg|webp)$", "", candidate_key)
-            candidate_key = re.sub(r"[^a-z0-9]+", "", candidate_key)
-            if candidate_key in wanted_keys:
-                return str(candidate)
-    return str(path)
-
-
-def brand_logo_stem_for_name(brand_name):
-    normalized = re.sub(r"[^a-z0-9]+", "", clean_value(brand_name).lower())
-    logo_stems = {
-        "columbia": "columbia",
-        "rockford": "rockford",
-        "patagonia": "patagonia",
-        "sorel": "sorel",
-        "mountainhardwear": "mountainhardwear",
-        "hushpuppies": "hushpuppies",
-        "hushpuppieskids": "hpk",
-        "accesorioshp": "hushpuppies",
-        "keds": "keds",
-        "vans": "vans",
-    }
-    return logo_stems.get(normalized, normalized)
-
-
-def brand_logo_path_for_name(brand_name):
-    stem = brand_logo_stem_for_name(brand_name)
-    return resolve_logo_path(f"assets/brands/{stem}.png")
-
-
-def render_html(html, sidebar=False):
-    target = st.sidebar if sidebar else st
-    if hasattr(target, "html"):
-        target.html(html)
-    else:
-        target.markdown(html, unsafe_allow_html=True)
-
-
-def get_site_config(brand_config, shopify_config=None):
-    if isinstance(brand_config, str):
-        selected_site = brand_config
-        site_key = next(
-            (key for key, config in SITE_CONFIGS.items() if config["site_label"] == selected_site),
-            selected_site,
-        )
-        brand_config = get_brand_config(site_key)
-    ui_config = SITE_UI_CONFIG.get(brand_config["site_label"], {}).copy()
-    ui_config.setdefault("brand_name", brand_config["label"])
-    ui_config.setdefault("logo_path", ui_config.get("logo") or f"assets/brands/{brand_config['site_key']}.png")
-    ui_config["logo"] = ui_config["logo_path"]
-    ui_config.setdefault("primary_color", "#17269A")
-    ui_config.setdefault("accent_color", "#009FE3")
-    ui_config["site_label"] = brand_config["site_label"]
-    ui_config["allowed_brands"] = brand_config.get("allowed_arti_brands", [])
-    ui_config["output_file"] = brand_config.get("output_filename", "")
-    ui_config["shopify_store"] = clean_value((shopify_config or {}).get("shop_domain")) or ui_config.get("shopify_store", "")
-    ui_config["api_version"] = clean_value((shopify_config or {}).get("api_version")) or DEFAULT_API_VERSION
-    return ui_config
-
-
-def inject_custom_css(config):
-    site_logo_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
-    site_logo_css = f'url("{site_logo_src}")' if site_logo_src else "none"
-    site_label_css = clean_value(config.get("site_label")).replace("\\", "\\\\").replace('"', '\\"')
-    st.markdown(
-        f"""
-        <style>
-        :root {{
-            --brand-primary: {config["primary_color"]};
-            --brand-accent: {config["accent_color"]};
-            --site-logo-url: {site_logo_css};
-            --site-label: "{site_label_css}";
-            --brand-soft: color-mix(in srgb, var(--brand-accent) 12%, white);
-            --forus-blue: #17269A;
-            --shopify-green: #95BF47;
-            --bg-main: #F6F8FC;
-            --card-bg: #FFFFFF;
-            --text-main: #0F172A;
-            --text-muted: #64748B;
-        }}
-        .stApp {{ background: var(--bg-main); color: var(--text-main); }}
-        header[data-testid="stHeader"] {{
-            display: none;
-        }}
-        div[data-testid="stToolbar"],
-        div[data-testid="stDecoration"],
-        #MainMenu,
-        footer {{
-            visibility: hidden;
-            height: 0;
-        }}
-        .block-container {{
-            max-width: 1180px;
-            padding-top: 26px;
-            padding-bottom: 34px;
-        }}
-        button[kind="header"],
-        button[kind="headerNoPadding"],
-        button[data-testid="stBaseButton-header"],
-        button[data-testid="stBaseButton-headerNoPadding"],
-        button[data-testid="stExpandSidebarButton"],
-        button[data-testid="stSidebarCollapseButton"],
-        button[data-testid="collapsedControl"],
-        div[data-testid="collapsedControl"] {{
-            display: none !important;
-            pointer-events: none !important;
-        }}
-        section[data-testid="stSidebar"] {{
-            background: #F3F6FB;
-            border-right: 1px solid #DDE6F2;
-            display: block !important;
-            visibility: visible !important;
-            min-width: 360px !important;
-            width: 360px !important;
-            max-width: 360px !important;
-            transform: translateX(0) !important;
-            position: fixed !important;
-            left: 0 !important;
-            top: 0 !important;
-            bottom: 0 !important;
-            z-index: 999 !important;
-        }}
-        section[data-testid="stSidebar"] > div {{
-            padding: 28px 18px;
-            width: 360px !important;
-            overflow-y: auto !important;
-        }}
-        div[data-testid="stSidebarContent"] {{
-            width: 360px !important;
-        }}
-        [data-testid="stSidebar"][aria-expanded="false"],
-        [data-testid="stSidebar"][aria-hidden="true"] {{
-            display: block !important;
-            visibility: visible !important;
-            transform: translateX(0) !important;
-            margin-left: 0 !important;
-        }}
-        section[data-testid="stSidebar"] + div,
-        div[data-testid="stAppViewContainer"] > .main {{
-            margin-left: 360px !important;
-        }}
-        @media (max-width: 900px) {{
-            section[data-testid="stSidebar"],
-            section[data-testid="stSidebar"] > div,
-            div[data-testid="stSidebarContent"] {{
-                min-width: 330px !important;
-                width: 330px !important;
-                max-width: 330px !important;
-            }}
-            section[data-testid="stSidebar"] + div,
-            div[data-testid="stAppViewContainer"] > .main {{
-                margin-left: 330px !important;
-            }}
-        }}
-        section[data-testid="stSidebar"] p,
-        section[data-testid="stSidebar"] label,
-        section[data-testid="stSidebar"] span {{
-            color: #172554;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] span,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] input,
-        section[data-testid="stSidebar"] div[data-baseweb="popover"] span {{
-            color: #0F172A !important;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] details,
-        section[data-testid="stSidebar"] .stButton button {{
-            border-radius: 18px;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
-            min-height: 56px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 10px 22px rgba(15,23,42,0.07);
-            padding-left: 12px;
-        }}
-        section[data-testid="stSidebar"] .stSelectbox label,
-        section[data-testid="stSidebar"] .stRadio label {{
-            color: #5B6B86 !important;
-            font-weight: 800;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card {{
-            position: relative;
-            margin: 6px 0 24px;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card::after {{
-            content: "Sitio activo";
-            position: absolute;
-            left: 108px;
-            top: 18px;
-            z-index: 3;
-            color: #172554;
-            font-size: 13px;
-            line-height: 1;
-            font-weight: 950;
-            pointer-events: none;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card::before {{
-            content: "";
-            position: absolute;
-            left: 18px;
-            top: 50%;
-            width: 72px;
-            height: 46px;
-            transform: translateY(-50%);
-            border-radius: 13px;
-            background-color: #F8FAFC;
-            background-image: var(--site-logo-url);
-            background-repeat: no-repeat;
-            background-position: center;
-            background-size: contain;
-            border: 1px solid #E2E8F0;
-            z-index: 2;
-            pointer-events: none;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
-            min-height: 78px;
-            border-radius: 20px;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            border-color: #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
-            padding-left: 108px;
-            padding-right: 36px;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] {{
-            position: relative;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"]::before {{
-            content: var(--site-label);
-            position: absolute;
-            left: 108px;
-            right: 48px;
-            top: 37px;
-            z-index: 3;
-            color: #0F172A;
-            font-size: 18px;
-            line-height: 1.15;
-            font-weight: 950;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: clip;
-            pointer-events: none;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div > div:first-child {{
-            flex: 1 1 auto;
-            justify-content: center;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div > div:first-child > div {{
-            width: 100%;
-            text-align: center;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] span {{
-            color: #0F172A !important;
-            font-size: 18px;
-            font-weight: 900;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] span,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] input {{
-            color: transparent !important;
-            caret-color: transparent !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div *:not(svg):not(path) {{
-            color: transparent !important;
-            text-shadow: none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] svg,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] path {{
-            color: #0F172A !important;
-            fill: #0F172A !important;
-        }}
-        .forus-sidebar {{
-            border-radius: 24px;
-            padding: 22px 20px;
-            margin: 2px 0 28px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.08);
-        }}
-        .forus-logo {{
-            font-size: 30px;
-            line-height: 1;
-            font-weight: 900;
-            letter-spacing: -0.06em;
-            color: #17269A;
-        }}
-        .forus-tagline {{
-            margin-top: 5px;
-            color: #17269A;
-            font-size: 9px;
-            letter-spacing: 0.28em;
-            font-weight: 900;
-        }}
-        .sidebar-brand-card {{
-            display: none;
-            border-radius: 22px;
-            padding: 14px;
-            margin: 12px 0 16px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        .sidebar-brand-logo {{
-            min-height: 66px;
-            display: grid;
-            place-items: center;
-        }}
-        .sidebar-brand-logo img {{
-            max-width: 150px;
-            max-height: 54px;
-            object-fit: contain;
-        }}
-        .sidebar-brand-name {{
-            color: var(--brand-primary) !important;
-            font-size: 18px;
-            line-height: 1.15;
-            text-align: center;
-            font-weight: 900;
-            margin: 0;
-        }}
-        .sidebar-brand-caption {{
-            color: #64748B !important;
-            font-size: 11px;
-            text-align: center;
-            margin: 8px 0 0;
-            font-weight: 800;
-        }}
-        .sidebar-card {{
-            border-radius: 22px;
-            padding: 22px 20px;
-            margin: 18px 0 24px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        .sidebar-label {{
-            margin: 18px 0 10px;
-            font-size: 14px;
-            text-transform: none;
-            letter-spacing: 0;
-            color: #5B6B86;
-            font-weight: 900;
-        }}
-        .sidebar-value {{
-            margin: 0;
-            font-size: 16px;
-            line-height: 1.6;
-            color: #172554 !important;
-            font-weight: 800;
-        }}
-        .active-site-card {{
-            display: grid;
-            place-items: center;
-            border-radius: 20px;
-            padding: 12px 14px;
-            margin: 12px 0 22px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        .active-site-logo {{
-            width: 100%;
-            min-width: 0;
-            height: 54px;
-            display: grid;
-            place-items: center;
-            border-radius: 14px;
-            background: #F8FAFC;
-            border: 1px solid #E2E8F0;
-            overflow: hidden;
-        }}
-        .active-site-logo img {{
-            max-width: 150px;
-            max-height: 42px;
-            object-fit: contain;
-        }}
-        .active-site-name {{
-            margin: 2px 0 0;
-            color: #0F172A !important;
-            font-size: 18px;
-            line-height: 1.1;
-            font-weight: 950;
-        }}
-        .allowed-logo-grid {{
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 10px;
-        }}
-        .allowed-logo-chip {{
-            min-height: 66px;
-            display: grid;
-            place-items: center;
-            padding: 12px 8px;
-            border-radius: 16px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 10px 20px rgba(15,23,42,0.05);
-        }}
-        .allowed-logo-chip.primary {{
-            border-color: #93C5FD;
-            box-shadow: 0 0 0 1px #BFDBFE, 0 10px 20px rgba(23,38,154,0.08);
-        }}
-        .allowed-logo-chip img {{
-            max-width: 104px;
-            max-height: 40px;
-            object-fit: contain;
-        }}
-        .allowed-logo-chip span {{
-            max-width: 100%;
-            color: #172554 !important;
-            font-size: 10px;
-            line-height: 1.15;
-            text-align: center;
-            font-weight: 950;
-            text-transform: uppercase;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] {{
-            display: grid;
-            gap: 10px;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label {{
-            min-height: 58px;
-            border-radius: 18px;
-            border: 1px solid #DDE6F2;
-            background: #FFFFFF;
-            box-shadow: 0 10px 22px rgba(15,23,42,0.06);
-            padding: 8px 16px;
-            margin: 0;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {{
-            border-color: #93C5FD;
-            box-shadow: 0 0 0 1px #BFDBFE, 0 10px 22px rgba(23,38,154,0.08);
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label p {{
-            color: #172554 !important;
-            font-size: 16px;
-            font-weight: 850;
-        }}
-        .st-key-shopify_sidebar_card {{
-            border-radius: 24px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            padding: 20px;
-            margin-top: 18px;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.08);
-        }}
-        .st-key-shopify_sidebar_card h3 {{
-            margin: 0;
-            color: #0F172A;
-            font-size: 19px;
-            font-weight: 950;
-        }}
-        .shopify-card-head {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 16px;
-        }}
-        .shopify-config-box {{
-            border-radius: 18px;
-            background: #ECFDF5;
-            border: 1px solid #BBF7D0;
-            padding: 16px;
-            color: #047857;
-            font-size: 14px;
-            line-height: 1.55;
-            font-weight: 800;
-            margin-bottom: 14px;
-        }}
-        .shopify-meta {{
-            color: #64748B !important;
-            font-size: 13px;
-            margin: 0 0 14px;
-        }}
-        section[data-testid="stSidebar"] {{
-            background:#F3F6FB !important;
-            border-right:1px solid #DDE6F2 !important;
-            min-width:340px !important;
-            width:340px !important;
-            max-width:340px !important;
-        }}
-        section[data-testid="stSidebar"] > div,
-        div[data-testid="stSidebarContent"] {{
-            width:340px !important;
-        }}
-        section[data-testid="stSidebar"] + div,
-        div[data-testid="stAppViewContainer"] > .main {{
-            margin-left:340px !important;
-        }}
-        section[data-testid="stSidebar"] > div {{
-            padding:28px 14px 18px !important;
-        }}
-        section[data-testid="stSidebar"] p,
-        section[data-testid="stSidebar"] label,
-        section[data-testid="stSidebar"] span {{
-            color:#172554 !important;
-        }}
-        .forus-sidebar {{
-            display:block !important;
-            margin:4px 0 24px !important;
-            padding:20px 18px !important;
-            border:1px solid #DDE6F2 !important;
-            border-radius:22px !important;
-            background:#FFFFFF !important;
-            box-shadow:0 12px 24px rgba(15,23,42,0.08) !important;
-        }}
-        .forus-logo {{
-            width:auto;
-            min-width:0;
-            height:auto;
-            border-radius:0;
-            display:block;
-            background:transparent;
-            color:#17269A !important;
-            font-size:30px !important;
-            letter-spacing:-0.06em;
-        }}
-        .forus-tagline {{
-            display:block;
-            color:#17269A !important;
-        }}
-        .forus-sidebar::after {{
-            content:none;
-        }}
-        section[data-testid="stSidebar"] hr,
-        section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] + div {{
-            border-color:#DDE6F2 !important;
-        }}
-        .st-key-logout_card {{
-            position:fixed;
-            left:0;
-            bottom:0;
-            width:340px;
-            padding:18px 14px 22px;
-            background:#F3F6FB;
-            border-top:1px solid #DDE6F2;
-            box-sizing:border-box;
-            z-index:1000;
-        }}
-        .st-key-logout_card div[data-testid="stCaptionContainer"] {{
-            display:none;
-        }}
-        .st-key-logout_card .stButton button {{
-            min-height:46px !important;
-            width:100%;
-            justify-content:flex-start;
-            padding-left:18px;
-            border:1px solid #005AA8 !important;
-            background:#FFFFFF !important;
-            color:#005AA8 !important;
-            box-shadow:none !important;
-            font-size:16px;
-            font-weight:900;
-        }}
-        .st-key-logout_card .stButton button::before {{
-            content:"â†ª";
-            margin-right:12px;
-            font-size:20px;
-            color:#005AA8;
-        }}
-        .st-key-site_picker_card,
-        .st-key-shopify_sidebar_card {{
-            display:block !important;
-        }}
-        .allowed-logo-grid {{
-            display:grid !important;
-            grid-template-columns:repeat(2, minmax(0, 1fr)) !important;
-            gap:10px !important;
-            margin:10px 0 18px !important;
-        }}
-        .allowed-logo-chip {{
-            min-height:68px !important;
-            padding:10px 8px !important;
-            border-radius:14px !important;
-            background:#FFFFFF !important;
-            border:1px solid #DDE6F2 !important;
-            box-shadow:0 10px 20px rgba(15,23,42,0.05) !important;
-        }}
-        .allowed-logo-chip.primary {{
-            border-color:#60A5FA !important;
-            box-shadow:0 0 0 1px #BFDBFE, 0 10px 20px rgba(23,38,154,0.08) !important;
-        }}
-        .allowed-logo-chip img {{
-            max-width:108px !important;
-            max-height:42px !important;
-            object-fit:contain !important;
-        }}
-        section[data-testid="stSidebar"] .sidebar-label {{
-            margin:14px 0 8px !important;
-            color:#0B1B46 !important;
-            font-size:13px !important;
-            font-weight:950 !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav {{
-            margin:12px 0 16px;
-        }}
-        section[data-testid="stSidebar"] .sidebar-choice-preview {{
-            min-height:58px;
-            display:flex;
-            align-items:center;
-            gap:14px;
-            padding:12px 16px;
-            margin:9px 0 -58px;
-            border-radius:16px;
-            border:1px solid #DDE6F2;
-            background:#FFFFFF;
-            box-shadow:0 10px 20px rgba(15,23,42,0.05);
-            box-sizing:border-box;
-            pointer-events:none;
-            position:relative;
-            z-index:1;
-        }}
-        section[data-testid="stSidebar"] .sidebar-choice-preview.active {{
-            border-color:#60A5FA;
-            background:#EFF6FF;
-            box-shadow:0 0 0 1px #BFDBFE, 0 12px 24px rgba(37,99,235,0.10);
-        }}
-        section[data-testid="stSidebar"] .sidebar-choice-preview span {{
-            width:32px;
-            height:32px;
-            border-radius:10px;
-            display:grid;
-            place-items:center;
-            background:#EEF2FF;
-            color:#2563EB !important;
-            font-size:18px;
-            font-weight:950;
-        }}
-        section[data-testid="stSidebar"] .sidebar-choice-preview.active span {{
-            background:#2563EB;
-            color:#FFFFFF !important;
-        }}
-        section[data-testid="stSidebar"] .sidebar-choice-preview strong {{
-            color:#0B1B46;
-            font-size:15px;
-            line-height:1.1;
-            font-weight:950;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav .stButton button,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav .stButton button {{
-            min-height:58px !important;
-            width:100%;
-            margin:0 0 9px;
-            border-radius:16px !important;
-            opacity:0;
-            position:relative;
-            z-index:2;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label {{
-            border:0 !important;
-            box-shadow:none !important;
-            background:transparent !important;
-            min-height:46px !important;
-            border-radius:9px !important;
-            padding:0 14px !important;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {{
-            background:#FFFFFF !important;
-            border:1px solid #93C5FD !important;
-            box-shadow:0 0 0 1px #BFDBFE !important;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label [data-testid="stMarkdownContainer"] p {{
-            color:#172554 !important;
-            font-size:15px !important;
-            font-weight:900 !important;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label input,
-        section[data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child {{
-            display:none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav .sidebar-choice-preview,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav .sidebar-choice-preview {{
-            display:none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"],
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] {{
-            display:grid !important;
-            gap:10px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label {{
-            min-height:60px !important;
-            display:flex !important;
-            align-items:center !important;
-            gap:12px !important;
-            padding:12px 16px !important;
-            margin:0 !important;
-            border-radius:16px !important;
-            border:1px solid #DDE6F2 !important;
-            background:#FFFFFF !important;
-            box-shadow:0 10px 20px rgba(15,23,42,0.05) !important;
-            box-sizing:border-box !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:has(input:checked),
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:has(input:checked) {{
-            background:#EFF6FF !important;
-            border-color:#60A5FA !important;
-            box-shadow:0 0 0 1px #BFDBFE, 0 12px 24px rgba(37,99,235,0.10) !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label::before,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label::before {{
-            width:32px;
-            height:32px;
-            min-width:32px;
-            border-radius:10px;
-            display:grid;
-            place-items:center;
-            background:#EEF2FF;
-            color:#2563EB;
-            font-size:16px;
-            font-weight:950;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:nth-of-type(1)::before {{
-            content:"K";
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:nth-of-type(2)::before {{
-            content:"C";
-        }}
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:nth-of-type(1)::before {{
-            content:"T";
-        }}
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:nth-of-type(2)::before {{
-            content:"P";
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:has(input:checked)::before,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:has(input:checked)::before {{
-            background:#2563EB;
-            color:#FFFFFF;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label p,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label p {{
-            margin:0 !important;
-            color:#0B1B46 !important;
-            font-size:15px !important;
-            line-height:1.1 !important;
-            font-weight:950 !important;
-        }}
-        section[data-testid="stSidebar"] {{
-            background:#F4F7FB !important;
-            border-right:1px solid #DCE6F2 !important;
-        }}
-        section[data-testid="stSidebar"] > div {{
-            padding:20px 14px 18px !important;
-        }}
-        .forus-sidebar {{
-            margin:0 0 18px !important;
-            padding:18px 16px !important;
-            border-radius:18px !important;
-            box-shadow:0 10px 22px rgba(15,23,42,0.06) !important;
-        }}
-        .st-key-logout_card {{
-            position:static !important;
-            width:auto !important;
-            padding:0 !important;
-            margin:12px 0 18px !important;
-            background:transparent !important;
-            border:0 !important;
-        }}
-        .st-key-logout_card .stButton button {{
-            min-height:40px !important;
-            width:auto !important;
-            padding:0 14px !important;
-            border-radius:14px !important;
-            font-size:13px !important;
-            font-weight:850 !important;
-        }}
-        .st-key-logout_card .stButton button::before {{
-            font-size:16px !important;
-            margin-right:8px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav {{
-            margin:10px 0 14px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"],
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] {{
-            gap:8px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label {{
-            min-height:44px !important;
-            padding:10px 12px !important;
-            border-radius:14px !important;
-            box-shadow:0 8px 16px rgba(15,23,42,0.045) !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label::before,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label::before {{
-            content:none !important;
-            display:none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label p,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label p {{
-            font-size:14px !important;
-            font-weight:850 !important;
-        }}
-        .st-key-shopify_sidebar_card {{
-            margin:18px 0 0 !important;
-            padding:16px !important;
-            border-radius:18px !important;
-        }}
-        .st-key-shopify_sidebar_card .stButton button {{
-            min-height:40px !important;
-            width:100% !important;
-            border-radius:14px !important;
-            font-size:13px !important;
-            font-weight:850 !important;
-        }}
-        section[data-testid="stSidebar"] .stButton button:disabled {{
-            display:none !important;
-        }}
-        section[data-testid="stSidebar"] div:has(> .stButton button:disabled),
-        section[data-testid="stSidebar"] div:has(> div > .stButton button:disabled) {{
-            min-height:0 !important;
-            margin:0 !important;
-            padding:0 !important;
-        }}
-        .top-header {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 18px;
-            border: 1px solid #DDE6F2;
-            border-radius: 0;
-            background: white;
-            padding: 22px 28px;
-            margin: 0 0 16px;
-            box-shadow: none;
-        }}
-        .brand-lockup {{
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            min-width: 0;
-        }}
-        .brand-logo-card {{
-            width: 92px;
-            height: 58px;
-            border: 1px solid #E2E8F0;
-            border-radius: 18px;
-            display: grid;
-            place-items: center;
-            background: #FFFFFF;
-            overflow: hidden;
-            flex: 0 0 auto;
-        }}
-        .brand-logo-card img {{
-            max-width: 82px;
-            max-height: 42px;
-            object-fit: contain;
-        }}
-        .brand-fallback {{
-            color: var(--brand-primary);
-            font-weight: 900;
-            font-size: 14px;
-            text-align: center;
-            padding: 0 6px;
-        }}
-        .header-eyebrow {{
-            color: var(--brand-accent);
-            font-size: 11px;
-            font-weight: 900;
-            letter-spacing: 0.18em;
-            text-transform: uppercase;
-            margin: 0;
-        }}
-        .header-title {{
-            margin: 3px 0 2px;
-            font-size: 28px;
-            line-height: 1.15;
-            font-weight: 900;
-            color: #0F172A;
-            letter-spacing: 0;
-        }}
-        .header-subtitle {{
-            margin: 0;
-            color: var(--text-muted);
-            font-size: 13px;
-            line-height: 1.45;
-        }}
-        .shopify-lockup {{
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            flex: 0 0 auto;
-        }}
-        .shopify-bag {{
-            width: 44px;
-            height: 44px;
-            border-radius: 16px;
-            display: grid;
-            place-items: center;
-            background: var(--shopify-green);
-            color: white;
-            font-size: 23px;
-            font-weight: 900;
-            font-style: italic;
-        }}
-        .status-badge {{
-            display: inline-flex;
-            align-items: center;
-            border-radius: 999px;
-            padding: 5px 10px;
-            font-size: 11px;
-            font-weight: 900;
-            background: #ECFDF5;
-            color: #047857;
-            border: 1px solid #A7F3D0;
-            white-space: nowrap;
-        }}
-        .status-badge.blue {{
-            background: #EFF6FF;
-            color: #17269A;
-            border-color: #BFDBFE;
-        }}
-        .status-badge.warn {{
-            background: #FFFBEB;
-            color: #B45309;
-            border-color: #FDE68A;
-        }}
-        .matrix-stepper {{
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 12px;
-            margin: 0 0 24px;
-            border: 1px solid #DDE6F2;
-            border-radius: 28px;
-            padding: 18px;
-            background: #FFFFFF;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        .step-card {{
-            min-height: 74px;
-            border-radius: 18px;
-            background: #F8FAFC;
-            border: 1px solid #E8EEF7;
-            padding: 14px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }}
-        .step-card.current {{
-            border-color: #BFDBFE;
-            background: #EFF6FF;
-        }}
-        .step-index {{
-            display: inline-grid;
-            place-items: center;
-            width: 40px;
-            height: 40px;
-            border-radius: 999px;
-            background: #FFFFFF;
-            color: var(--brand-primary);
-            border: 1px solid #DDE6F2;
-            font-size: 15px;
-            font-weight: 900;
-            box-shadow: 0 7px 15px rgba(15,23,42,0.08);
-        }}
-        .step-title {{
-            margin: 0 0 2px;
-            color: #0F172A;
-            font-size: 16px;
-            font-weight: 900;
-        }}
-        .step-caption {{
-            margin: 0;
-            color: var(--text-muted);
-            font-size: 12px;
-        }}
-        .section-card {{
-            border: 1px solid #DDE6F2;
-            border-radius: 26px;
-            background: white;
-            padding: 26px 28px;
-            margin: 0 0 24px;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-            overflow: visible;
-        }}
-        .section-card h2 {{
-            color: #0F172A;
-            margin: 0 0 8px;
-            font-size: 24px;
-            line-height: 1.2;
-            font-weight: 900;
-            letter-spacing: 0;
-        }}
-        .section-card.action-card h2 {{
-            color: #FFFFFF;
-        }}
-        .section-card.action-card p {{
-            color: #E0E7FF;
-        }}
-        .section-card.action-card {{
-            padding: 20px 22px;
-            margin-bottom: 12px;
-        }}
-        .section-card p, .section-card .caption {{
-            color: var(--text-muted);
-            font-size: 13px;
-        }}
-        .source-grid {{
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 14px;
-            margin-top: 22px;
-        }}
-        .metric-grid {{
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 12px;
-            margin-top: 16px;
-        }}
-        .source-card, .metric-card, .check-item {{
-            border: 1px solid #E2E8F0;
-            border-radius: 18px;
-            background: #F8FAFC;
-            padding: 18px 20px;
-        }}
-        .source-card b, .metric-card b {{
-            display: block;
-            color: #0F172A;
-            font-size: 13px;
-            margin-bottom: 4px;
-        }}
-        .source-card span, .metric-card span, .check-item {{
-            color: var(--text-muted);
-            font-size: 12px;
-        }}
-        .source-card strong {{
-            display: block;
-            color: #0F172A;
-            font-size: 18px;
-            margin-top: 8px;
-            font-weight: 900;
-        }}
-        .st-key-sources_upload_panel {{
-            border: 1px solid #DDE6F2;
-            border-radius: 26px;
-            background: #FFFFFF;
-            padding: 26px 28px;
-            margin: 0 0 24px;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        .st-key-sources_upload_panel h2 {{
-            color: #0F172A;
-            margin: 0 0 8px;
-            font-size: 24px;
-            line-height: 1.2;
-            font-weight: 900;
-            letter-spacing: 0;
-        }}
-        .st-key-sources_upload_panel p {{
-            color: var(--text-muted);
-            font-size: 13px;
-            margin: 0;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] {{
-            border: 0 !important;
-            border-radius: 0 !important;
-            padding: 0 !important;
-            background: transparent !important;
-            box-shadow: none !important;
-            margin-top: 0;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] section {{
-            border: 0 !important;
-            background: transparent !important;
-            padding: 0 !important;
-            min-height: 0 !important;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button {{
-            border-radius: 18px !important;
-            background: var(--forus-blue) !important;
-            color: #FFFFFF !important;
-            border: 1px solid var(--forus-blue) !important;
-            box-shadow: 0 10px 20px rgba(23,38,154,0.24);
-            min-height: 52px;
-            min-width: 190px;
-            padding: 0 24px !important;
-            font-size: 0 !important;
-            font-weight: 900 !important;
-            width: 100%;
-            display: inline-flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            gap: 10px !important;
-            overflow: hidden !important;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button * {{
-            display: none !important;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::before {{
-            content: "â‡§";
-            font-size: 18px !important;
-            color: #FFFFFF !important;
-            line-height: 1;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::after {{
-            content: "Cargar input";
-            font-size: 15px !important;
-            color: #FFFFFF !important;
-            line-height: 1;
-            white-space: nowrap;
-        }}
-        .st-key-catalog_upload_slot div[data-testid="stFileUploader"] button::after {{
-            content: "Subir Catalogo Matrixify";
-            font-size: 15px !important;
-            color: #FFFFFF !important;
-            line-height: 1;
-            white-space: nowrap;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"] {{
-            display: block !important;
-            color: #0F172A !important;
-            font-weight: 800;
-            margin-top: 8px;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] small,
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] {{
-            display: none !important;
-        }}
-        .metric-card strong {{
-            display: block;
-            margin-top: 4px;
-            color: #0F172A;
-            font-size: 18px;
-            line-height: 1;
-            font-weight: 900;
-        }}
-        .metric-card span {{
-            display: block;
-            min-height: 30px;
-            line-height: 1.35;
-        }}
-        .kpi-hero {{
-            display:flex;
-            align-items:flex-start;
-            justify-content:space-between;
-            gap:18px;
-            margin-bottom:8px;
-        }}
-        .kpi-title h2 {{
-            margin:0;
-            color:#0F172A;
-            font-size:30px;
-            font-weight:950;
-        }}
-        .kpi-title p {{
-            margin:6px 0 0;
-            color:#64748B;
-            font-size:13px;
-            font-weight:750;
-        }}
-        .kpi-card-grid {{
-            display:grid;
-            grid-template-columns:repeat(4,minmax(0,1fr));
-            gap:14px;
-            margin:14px 0 22px;
-        }}
-        .kpi-section-label {{
-            margin:18px 0 -4px;
-            color:#0B1B46;
-            font-weight:950;
-            font-size:1.02rem;
-            letter-spacing:0;
-        }}
-        .kpi-section-label.secondary {{
-            margin-top:8px;
-            color:#64748B;
-        }}
-        .kpi-card {{
-            display:flex;
-            align-items:center;
-            gap:16px;
-            min-height:96px;
-            padding:18px 20px;
-            border-radius:14px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
-            box-shadow:0 12px 26px rgba(15,23,42,0.07);
-        }}
-        .kpi-icon {{
-            width:54px;
-            height:54px;
-            min-width:54px;
-            display:grid;
-            place-items:center;
-            border-radius:50%;
-            font-size:23px;
-            font-weight:950;
-        }}
-        .kpi-card span {{
-            display:block;
-            color:#334155;
-            font-size:13px;
-            font-weight:900;
-            margin-bottom:5px;
-        }}
-        .kpi-card strong {{
-            display:block;
-            color:#0F172A;
-            font-size:30px;
-            line-height:1;
-            font-weight:950;
-        }}
-        .kpi-card.blue .kpi-icon {{ background:#EAF2FF; color:#2563EB; }}
-        .kpi-card.green .kpi-icon {{ background:#EAF8EF; color:#16A34A; }}
-        .kpi-card.purple .kpi-icon {{ background:#F1EAFF; color:#6D28D9; }}
-        .kpi-card.orange .kpi-icon {{ background:#FFF3E4; color:#EA580C; }}
-        .kpi-card.cyan .kpi-icon {{ background:#E8F7FB; color:#0891B2; }}
-        .kpi-card.lime .kpi-icon {{ background:#ECFDF3; color:#15803D; }}
-        .kpi-card.red .kpi-icon {{ background:#FEECEF; color:#DC2626; }}
-        .kpi-card.slate .kpi-icon {{ background:#EEF2F7; color:#334155; }}
-        div[class*="refresh_kpis"] .stButton button {{
-            width:38px;
-            min-width:38px;
-            height:38px;
-            padding:0;
-            border-radius:50%;
-            font-size:20px;
-            line-height:1;
-        }}
-        .combo-card {{
-            width:100%;
-            max-width:100%;
-            box-sizing:border-box;
-            margin:18px 0 28px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
-            border-radius:18px;
-            box-shadow:0 18px 40px rgba(15,23,42,0.08);
-            overflow:hidden;
-        }}
-        .combo-card-head {{
-            display:flex;
-            justify-content:space-between;
-            align-items:flex-start;
-            gap:18px;
-            padding:24px 26px 18px;
-        }}
-        .combo-title {{
-            display:flex;
-            align-items:center;
-            gap:14px;
-            color:#0B1B46;
-            font-size:1.5rem;
-            font-weight:950;
-        }}
-        .combo-title-icon {{
-            display:inline-grid;
-            place-items:center;
-            width:44px;
-            height:44px;
-            border-radius:12px;
-            background:#EAF2FF;
-            color:#2563EB;
-            box-shadow:inset 0 0 0 1px #BFDBFE;
-        }}
-        .combo-card-head p {{
-            margin:8px 0 0 58px;
-            color:#64748B;
-            font-weight:750;
-        }}
-        .combo-chip {{
-            padding:10px 14px;
-            border:1px solid #DDE6F2;
-            border-radius:12px;
-            color:#172554;
-            font-weight:900;
-            background:#F8FAFC;
-            white-space:nowrap;
-        }}
-        .combo-table-wrap {{
-            width:100%;
-            max-width:100%;
-            padding:0 24px 18px;
-            box-sizing:border-box;
-            overflow-x:auto;
-        }}
-        .combo-table {{
-            width:100%;
-            min-width:900px;
-            table-layout:fixed;
-            border-collapse:separate;
-            border-spacing:0;
-            border:1px solid #DDE6F2;
-            border-radius:12px;
-            overflow:hidden;
-        }}
-        .combo-table-wrap.compact {{ overflow-x:visible; }}
-        .combo-table.compact {{
-            min-width:0;
-        }}
-        .combo-table th {{
-            padding:16px 14px;
-            text-align:left;
-            background:#F8FAFC;
-            color:#475569;
-            font-weight:950;
-            font-size:13px;
-            border-bottom:1px solid #DDE6F2;
-        }}
-        .combo-table td {{
-            padding:16px 14px;
-            border-bottom:1px solid #E6EDF7;
-            border-right:1px solid #E6EDF7;
-            vertical-align:middle;
-            color:#0B1B46;
-            font-weight:750;
-        }}
-        .combo-table td:last-child, .combo-table th:last-child {{ border-right:none; }}
-        .combo-table tbody tr:last-child td {{ border-bottom:none; }}
-        .combo-blocker {{
-            display:grid;
-            grid-template-columns:72px 1fr;
-            align-items:center;
-            gap:12px;
-            min-width:0;
-        }}
-        .combo-blocker b {{
-            font-size:.94rem;
-            line-height:1.25;
-        }}
-        .combo-blocker small {{
-            grid-column:2;
-            color:#0B1B46;
-            font-size:.82rem;
-            font-weight:850;
-            line-height:1.25;
-        }}
-        .combo-bubble {{
-            display:inline-block;
-            width:42px;
-            height:42px;
-            border-radius:50%;
-            opacity:.72;
-            margin-right:-16px;
-            box-shadow:0 10px 22px rgba(15,23,42,0.08);
-        }}
-        .bubble-blue {{ background:#93C5FD; }}
-        .bubble-amber {{ background:#FDBA74; }}
-        .bubble-rose {{ background:#FDA4AF; }}
-        .bubble-purple {{ background:#C4B5FD; }}
-        .bubble-slate {{ background:#CBD5E1; }}
-        .combo-state {{
-            display:inline-block;
-            width:100%;
-            max-width:100%;
-            box-sizing:border-box;
-            padding:10px 12px;
-            border-radius:10px;
-            line-height:1.45;
-            font-size:.9rem;
-            font-weight:800;
-            color:#0B1B46;
-            border:1px solid rgba(148,163,184,.2);
-        }}
-        .combo-state.blue {{ background:#EFF6FF; }}
-        .combo-state.amber {{ background:#FFF7ED; }}
-        .combo-state.rose {{ background:#FFF1F2; }}
-        .combo-state.mint {{ background:#ECFDF5; }}
-        .combo-state.slate {{ background:#F8FAFC; }}
-        .combo-table.compact .combo-state {{
-            font-size:1rem;
-            line-height:1.55;
-            padding:14px 16px;
-        }}
-        .commercial-status-grid {{
-            display:grid;
-            grid-template-columns:repeat(3, minmax(120px, 1fr));
-            gap:12px;
-            width:100%;
-        }}
-        .commercial-status-tile {{
-            min-height:70px;
-            border-radius:10px;
-            border:1px solid #DDE6F2;
-            display:grid;
-            grid-template-columns:1fr 34px;
-            grid-template-rows:auto auto;
-            align-items:center;
-            gap:4px 10px;
-            padding:12px 14px;
-            box-sizing:border-box;
-        }}
-        .commercial-status-tile span {{
-            color:#0B1B46;
-            font-size:14px;
-            font-weight:950;
-        }}
-        .commercial-status-tile b {{
-            grid-row:1 / span 2;
-            grid-column:2;
-            width:34px;
-            height:34px;
-            border-radius:8px;
-            display:grid;
-            place-items:center;
-            font-size:20px;
-            font-weight:950;
-        }}
-        .commercial-status-tile small {{
-            color:#475569;
-            font-size:12px;
-            font-weight:850;
-        }}
-        .commercial-status-tile.ok {{
-            background:#ECFDF3;
-            border-color:#BBF7D0;
-        }}
-        .commercial-status-tile.ok b {{
-            background:#16A34A;
-            color:#FFFFFF;
-        }}
-        .commercial-status-tile.bad {{
-            background:#FEF2F2;
-            border-color:#FECACA;
-        }}
-        .commercial-status-tile.bad b {{
-            background:#DC2626;
-            color:#FFFFFF;
-        }}
-        .commercial-summary-grid {{
-            display:grid;
-            grid-template-columns:repeat(3, minmax(160px, 1fr));
-            gap:14px;
-            padding:0 24px 18px;
-        }}
-        .commercial-summary-tile {{
-            min-height:72px;
-            border-radius:12px;
-            border:1px solid #DDE6F2;
-            display:grid;
-            grid-template-columns:1fr 38px;
-            grid-template-rows:auto auto;
-            align-items:center;
-            gap:5px 12px;
-            padding:14px 16px;
-            box-sizing:border-box;
-        }}
-        .commercial-summary-tile span {{
-            color:#334155;
-            font-size:13px;
-            font-weight:900;
-        }}
-        .commercial-summary-tile strong {{
-            color:#0B1B46;
-            font-size:18px;
-            font-weight:950;
-        }}
-        .commercial-summary-tile b {{
-            grid-row:1 / span 2;
-            grid-column:2;
-            width:38px;
-            height:38px;
-            border-radius:10px;
-            display:grid;
-            place-items:center;
-            color:#FFFFFF;
-            font-size:22px;
-            font-weight:950;
-        }}
-        .commercial-summary-tile.ok {{
-            background:#ECFDF3;
-            border-color:#BBF7D0;
-        }}
-        .commercial-summary-tile.ok b {{ background:#16A34A; }}
-        .commercial-summary-tile.bad {{
-            background:#FEF2F2;
-            border-color:#FECACA;
-        }}
-        .commercial-summary-tile.bad b {{ background:#DC2626; }}
-        .combo-model-metric {{
-            text-align:left;
-            min-width:180px;
-        }}
-        .combo-model-metric strong {{
-            display:block;
-            color:#7C3AED;
-            font-size:2rem;
-            line-height:1;
-            font-weight:950;
-        }}
-        .combo-model-metric span {{
-            display:block;
-            margin-top:7px;
-            color:#0B1B46;
-            font-size:.95rem;
-            font-weight:850;
-        }}
-        .combo-model-metric i {{
-            display:block;
-            height:8px;
-            margin-top:12px;
-            width:min(180px, 100%);
-            border-radius:999px;
-            background:#E8EEF7;
-            overflow:hidden;
-        }}
-        .combo-model-metric b {{
-            display:block;
-            height:100%;
-            border-radius:999px;
-            background:linear-gradient(90deg,#7C3AED,#2563EB);
-        }}
-        .combo-metric {{
-            min-width:0;
-            text-align:center;
-        }}
-        .combo-metric strong {{
-            display:block;
-            font-size:1.55rem;
-            line-height:1;
-            font-weight:950;
-        }}
-        .combo-metric span {{
-            display:block;
-            margin-top:7px;
-            color:#0B1B46;
-            font-size:.9rem;
-            font-weight:850;
-        }}
-        .combo-metric i {{
-            display:block;
-            height:7px;
-            margin:12px auto 0;
-            width:min(112px, 84%);
-            border-radius:999px;
-            background:#E8EEF7;
-            overflow:hidden;
-        }}
-        .combo-metric b {{
-            display:block;
-            height:100%;
-            border-radius:999px;
-        }}
-        .combo-metric.purple strong {{ color:#7C3AED; }}
-        .combo-metric.blue strong {{ color:#2563EB; }}
-        .combo-metric.green strong {{ color:#16A34A; }}
-        .combo-metric.purple b {{ background:#7C3AED; }}
-        .combo-metric.blue b {{ background:#2563EB; }}
-        .combo-metric.green b {{ background:#16A34A; }}
-        .combo-table tfoot td {{
-            background:#EFF6FF;
-            color:#0B1B46;
-            font-size:1.1rem;
-            font-weight:950;
-        }}
-        .combo-table tfoot td:first-child span {{
-            margin-left:20px;
-            color:#475569;
-            font-size:1rem;
-            font-weight:800;
-        }}
-        .combo-table tfoot small {{
-            display:block;
-            margin-top:4px;
-            color:#2563EB;
-            font-weight:900;
-        }}
-        .kpi-panel {{
-            border-radius:16px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
-            box-shadow:0 12px 26px rgba(15,23,42,0.06);
-            padding:18px;
-            margin:14px 0;
-        }}
-        .kpi-panel h3 {{
-            margin:0 0 14px;
-            color:#172554;
-            font-size:20px;
-            font-weight:950;
-        }}
-        .brand-kpi-table {{
-            width:100%;
-            border-collapse:separate;
-            border-spacing:0;
-            overflow:hidden;
-            border:1px solid #E2E8F0;
-            border-radius:14px;
-            background:#FFFFFF;
-        }}
-        .brand-kpi-table th,
-        .brand-kpi-table td {{
-            padding:14px 16px;
-            border-bottom:1px solid #E2E8F0;
-            color:#172554;
-            font-size:13px;
-            text-align:left;
-        }}
-        .brand-kpi-table th {{
-            background:#F8FAFC;
-            color:#475569;
-            font-weight:950;
-        }}
-        .brand-kpi-table tr:last-child td {{ border-bottom:0; }}
-        .brand-cell {{
-            display:flex;
-            align-items:center;
-            gap:12px;
-            font-weight:900;
-        }}
-        .brand-cell img {{
-            width:44px;
-            height:28px;
-            object-fit:contain;
-        }}
-        .coverage-track {{
-            height:8px;
-            border-radius:999px;
-            background:#E8EDF4;
-            overflow:hidden;
-            min-width:96px;
-        }}
-        .coverage-bar {{
-            height:100%;
-            border-radius:999px;
-            background:#16C55D;
-        }}
-        .coverage-cell {{
-            display:flex;
-            align-items:center;
-            gap:10px;
-            color:#16A34A !important;
-            font-weight:950;
-        }}
-        .kpi-chart-grid {{
-            display:grid;
-            grid-template-columns:repeat(2,minmax(0,1fr));
-            gap:16px;
-            margin:18px 0;
-        }}
-        .chart-card {{
-            min-height:360px;
-            border-radius:14px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
-            box-shadow:0 12px 26px rgba(15,23,42,0.06);
-            padding:18px 20px 20px;
-        }}
-        .chart-head {{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:10px;
-            margin-bottom:18px;
-        }}
-        .chart-title {{
-            display:flex;
-            align-items:center;
-            gap:10px;
-            color:#172554;
-            font-size:20px;
-            font-weight:950;
-        }}
-        .chart-action {{
-            display:none;
-        }}
-        .bar-stage {{
-            height:250px;
-            display:flex;
-            align-items:flex-end;
-            gap:12px;
-            padding:16px 8px 4px;
-            border-bottom:1px solid #DDE6F2;
-            background:repeating-linear-gradient(to top, transparent 0, transparent 48px, #E8EEF7 49px);
-        }}
-        .bar-item {{
-            flex:1;
-            min-width:0;
-            display:flex;
-            flex-direction:column;
-            align-items:center;
-            justify-content:flex-end;
-            gap:7px;
-            height:100%;
-        }}
-        .bar-value {{
-            color:#0B5CF6;
-            font-size:12px;
-            font-weight:950;
-        }}
-        .bar-fill {{
-            width:64%;
-            min-height:3px;
-            border-radius:7px 7px 0 0;
-            background:linear-gradient(180deg,#2563FF 0%,#0958D9 100%);
-            box-shadow:0 8px 18px rgba(37,99,255,0.22);
-        }}
-        .bar-fill.purple {{
-            background:linear-gradient(180deg,#6D5BFF 0%,#3D2CCF 100%);
-        }}
-        .bar-label {{
-            min-height:46px;
-            display:flex;
-            flex-direction:column;
-            align-items:center;
-            justify-content:flex-start;
-            gap:5px;
-            color:#172554;
-            font-size:10px;
-            line-height:1.1;
-            text-align:center;
-            font-weight:850;
-        }}
-        .table-pager {{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:12px;
-            margin-top:14px;
-        }}
-        .pager-note {{
-            color:#64748B;
-            font-size:12px;
-            font-weight:750;
-        }}
-        .bar-item {{
-            position:relative;
-            cursor:pointer;
-            outline:none;
-        }}
-        .bar-item:hover .bar-fill,
-        .bar-item:focus .bar-fill {{
-            transform:scaleY(1.04);
-            filter:saturate(1.2);
-            box-shadow:0 12px 28px rgba(37,99,255,0.32);
-        }}
-        .bar-item:hover .bar-value,
-        .bar-item:focus .bar-value {{
-            color:#003BDB;
-            transform:translateY(-2px);
-        }}
-        .bar-fill {{
-            transition:transform .18s ease, filter .18s ease, box-shadow .18s ease;
-            transform-origin:bottom;
-        }}
-        .bar-value {{
-            transition:transform .18s ease, color .18s ease;
-        }}
-        .bar-tooltip {{
-            position:absolute;
-            left:50%;
-            bottom:calc(100% + 8px);
-            transform:translateX(-50%) translateY(6px);
-            min-width:138px;
-            padding:10px 12px;
-            border-radius:10px;
-            background:#0F172A;
-            color:#FFFFFF;
-            font-size:12px;
-            line-height:1.25;
-            font-weight:850;
-            opacity:0;
-            pointer-events:none;
-            z-index:8;
-            box-shadow:0 12px 24px rgba(15,23,42,0.2);
-            transition:opacity .16s ease, transform .16s ease;
-        }}
-        .bar-tooltip strong {{
-            display:block;
-            color:#FFFFFF;
-            font-size:15px;
-            margin-top:3px;
-        }}
-        .bar-tooltip::after {{
-            content:"";
-            position:absolute;
-            left:50%;
-            top:100%;
-            transform:translateX(-50%);
-            border:7px solid transparent;
-            border-top-color:#0F172A;
-        }}
-        .bar-item:hover .bar-tooltip,
-        .bar-item:focus .bar-tooltip {{
-            opacity:1;
-            transform:translateX(-50%) translateY(0);
-        }}
-        .bar-label-icon {{
-            color:#17269A;
-            font-size:16px;
-            line-height:1;
-        }}
-        .kpi-table-card {{
-            border-radius:14px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
-            box-shadow:0 12px 26px rgba(15,23,42,0.06);
-            padding:18px;
-            margin:16px 0;
-        }}
-        .kpi-table-head {{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:16px;
-            margin-bottom:14px;
-        }}
-        .kpi-table-title {{
-            display:flex;
-            align-items:center;
-            gap:10px;
-            color:#172554;
-            font-size:20px;
-            font-weight:950;
-        }}
-        .kpi-table-controls {{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:12px;
-            margin:12px 0 16px;
-        }}
-        .kpi-filter-button {{
-            min-width:120px;
-            height:38px;
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            gap:8px;
-            border-radius:8px;
-            border:1px solid #DDE6F2;
-            color:#172554;
-            background:#FFFFFF;
-            font-size:13px;
-            font-weight:900;
-        }}
-        .kpi-table {{
-            width:100%;
-            border-collapse:separate;
-            border-spacing:0;
-            border:1px solid #E2E8F0;
-            border-radius:12px;
-            overflow:hidden;
-        }}
-        .kpi-table th,
-        .kpi-table td {{
-            padding:13px 14px;
-            border-bottom:1px solid #E2E8F0;
-            border-right:1px solid #E2E8F0;
-            color:#172554;
-            font-size:13px;
-            text-align:left;
-        }}
-        .kpi-table th {{
-            background:#F8FAFC;
-            color:#64748B;
-            font-weight:950;
-        }}
-        .kpi-table tr:last-child td {{ border-bottom:0; }}
-        .kpi-table th:last-child,
-        .kpi-table td:last-child {{ border-right:0; }}
-        .row-index {{
-            display:inline-grid;
-            place-items:center;
-            width:24px;
-            height:24px;
-            border-radius:8px;
-            background:#F1F5F9;
-            color:#172554;
-            font-size:12px;
-            font-weight:900;
-        }}
-        .problem-dot {{
-            display:inline-block;
-            width:8px;
-            height:8px;
-            border-radius:50%;
-            background:#F43F5E;
-            margin-right:8px;
-            box-shadow:0 0 0 3px #FFE4E6;
-        }}
-        .action-chip {{
-            display:inline-flex;
-            align-items:center;
-            gap:8px;
-        }}
-        .action-chip::before {{
-            content:"";
-            width:22px;
-            height:22px;
-            border-radius:50%;
-            background:#EAF2FF;
-            border:1px solid #BFDBFE;
-        }}
-        .stock-badge {{
-            display:inline-flex;
-            min-width:34px;
-            justify-content:center;
-            padding:4px 10px;
-            border-radius:999px;
-            color:#E11D48;
-            background:#FFE8EE;
-            font-weight:950;
-        }}
-        @media (max-width: 1100px) {{
-            .kpi-chart-grid {{ grid-template-columns:1fr; }}
-        }}
-        @media (max-width: 1100px) {{
-            .kpi-card-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
-        }}
-        .st-key-action_panel .stButton button {{
-            width: auto;
-            min-width: 180px;
-            min-height: 48px;
-            background: var(--forus-blue) !important;
-            color: #FFFFFF !important;
-            border-color: var(--forus-blue) !important;
-            box-shadow: 0 10px 22px rgba(23,38,154,0.22);
-        }}
-        .base-status-card {{
-            border: 1px solid #DDE6F2;
-            border-radius: 22px;
-            background: #FFFFFF;
-            padding: 18px;
-            margin: 0 0 22px;
-            box-shadow: 0 10px 22px rgba(15,23,42,0.05);
-        }}
-        .base-status-head {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 14px;
-        }}
-        .base-status-head h3 {{
-            margin: 0;
-            color: #0F172A;
-            font-size: 18px;
-            font-weight: 950;
-        }}
-        .base-status-grid {{
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 12px;
-        }}
-        .base-status-item {{
-            border: 1px solid #E2E8F0;
-            border-radius: 18px;
-            background: #F8FAFC;
-            padding: 14px 16px;
-        }}
-        .base-status-item b {{
-            display: block;
-            color: #0F172A;
-            font-size: 13px;
-            margin-bottom: 6px;
-        }}
-        .base-status-item span {{
-            display: block;
-            color: #64748B;
-            font-size: 12px;
-            line-height: 1.35;
-            min-height: 30px;
-        }}
-        .wide-checklist {{
-            border: 1px solid #DDE6F2;
-            border-radius: 26px;
-            background: #FFFFFF;
-            padding: 22px;
-            margin: 0 0 24px;
-            box-shadow: 0 10px 22px rgba(15,23,42,0.05);
-        }}
-        .wide-checklist h2 {{
-            margin: 0 0 6px;
-            color: #0F172A;
-            font-size: 22px;
-            font-weight: 950;
-        }}
-        .wide-checklist p {{
-            margin: 0 0 16px;
-            color: #64748B;
-            font-size: 13px;
-        }}
-        .wide-checklist-grid {{
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 10px;
-        }}
-        .wide-checklist-item {{
-            border: 1px solid #E2E8F0;
-            border-radius: 16px;
-            background: #F8FAFC;
-            padding: 14px;
-            color: #475569;
-            font-size: 12px;
-            line-height: 1.35;
-        }}
-        .chip-row {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 12px;
-        }}
-        .chip {{
-            border-radius: 999px;
-            padding: 6px 10px;
-            background: var(--brand-soft);
-            border: 1px solid color-mix(in srgb, var(--brand-accent) 34%, white);
-            color: var(--brand-primary);
-            font-size: 11px;
-            font-weight: 900;
-        }}
-        .benefits-wrap {{
-            display: none;
-        }}
-        .upload-shell {{
-            border: 1px solid #DDE6F2;
-            border-radius: 26px;
-            background: linear-gradient(180deg, #FFFFFF 0%, #FBFDFF 100%);
-            padding: 26px 28px 22px;
-            margin: 0 0 18px;
-            box-shadow: 0 18px 38px rgba(15,23,42,0.07);
-            position: relative;
-            overflow: hidden;
-        }}
-        .st-key-input_upload_panel {{
-            border: 1px solid #DDE6F2;
-            border-radius: 26px;
-            background: linear-gradient(180deg, #FFFFFF 0%, #FBFDFF 100%);
-            padding: 26px 28px 24px;
-            margin: 0 0 24px;
-            box-shadow: 0 18px 38px rgba(15,23,42,0.07);
-            position: relative;
-            overflow: hidden;
-        }}
-        .st-key-input_upload_panel::after {{
-            content: "XLS";
-            position: absolute;
-            right: 24px;
-            top: 24px;
-            width: 56px;
-            height: 56px;
-            border-radius: 18px;
-            display: grid;
-            place-items: center;
-            color: var(--brand-primary);
-            background: var(--brand-soft);
-            border: 1px solid color-mix(in srgb, var(--brand-accent) 30%, white);
-            font-weight: 900;
-            font-size: 17px;
-        }}
-        .st-key-input_upload_panel h2 {{
-            margin: 0 0 8px;
-            font-size: 25px;
-            color: #0F172A;
-            font-weight: 900;
-            letter-spacing: 0;
-        }}
-        .st-key-input_upload_panel p {{
-            color: var(--text-muted);
-            font-size: 13px;
-            margin-bottom: 14px;
-        }}
-        .st-key-input_upload_panel div[data-testid="stRadio"] {{
-            margin: 14px 0 10px;
-            padding: 14px 16px;
-            border: 1px solid #E2E8F0;
-            border-radius: 18px;
-            background: #F8FAFC;
-        }}
-        .st-key-input_upload_panel div[data-testid="stFileUploader"] {{
-            margin-top: 12px;
-        }}
-        .upload-shell::after {{
-            content: "";
-            position: absolute;
-            width: 180px;
-            height: 180px;
-            right: -70px;
-            top: -90px;
-            border-radius: 999px;
-            background: color-mix(in srgb, var(--brand-accent) 14%, transparent);
-            pointer-events: none;
-        }}
-        .upload-title-row {{
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 18px;
-            margin-bottom: 18px;
-            position: relative;
-            z-index: 1;
-        }}
-        .upload-title-row h2 {{
-            margin: 0 0 8px;
-            font-size: 25px;
-            line-height: 1.15;
-            color: #0F172A;
-            font-weight: 900;
-        }}
-        .upload-title-row p {{
-            margin: 0;
-            color: var(--text-muted);
-            font-size: 13px;
-            line-height: 1.5;
-        }}
-        .upload-icon {{
-            width: 52px;
-            height: 52px;
-            border-radius: 18px;
-            display: grid;
-            place-items: center;
-            color: var(--brand-primary);
-            background: var(--brand-soft);
-            border: 1px solid color-mix(in srgb, var(--brand-accent) 30%, white);
-            font-weight: 900;
-            font-size: 22px;
-        }}
-        .upload-note {{
-            border: 1px dashed color-mix(in srgb, var(--brand-accent) 45%, white);
-            background: #F8FBFF;
-            border-radius: 20px;
-            padding: 15px 18px;
-            margin-bottom: 12px;
-            color: #475569;
-            font-size: 13px;
-            font-weight: 700;
-            position: relative;
-            z-index: 1;
-        }}
-        div[data-testid="stFileUploader"] {{
-            border: 1px dashed color-mix(in srgb, var(--brand-accent) 52%, white) !important;
-            border-radius: 22px !important;
-            padding: 14px !important;
-            background: #FFFFFF !important;
-            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.65);
-        }}
-        div[data-testid="stFileUploader"] section {{
-            border: 0 !important;
-            background: #F1F5F9 !important;
-            border-radius: 16px !important;
-            padding: 18px !important;
-        }}
-        div[data-testid="stFileUploader"] button {{
-            border-radius: 12px !important;
-            background: #FFFFFF !important;
-            color: var(--brand-primary) !important;
-            border: 1px solid #CBD5E1 !important;
-            font-weight: 900 !important;
-        }}
-        div[data-testid="stFileUploader"] small,
-        div[data-testid="stFileUploader"] span {{
-            color: #64748B !important;
-            font-weight: 700;
-        }}
-        div[data-testid="stRadio"] {{
-            background: transparent;
-            margin-bottom: 10px;
-        }}
-        div[data-testid="stRadio"] label p {{
-            color: #172554 !important;
-            font-weight: 800;
-        }}
-        div[data-testid="stDataFrame"] {{
-            border-radius: 18px;
-            overflow: hidden;
-            border: 1px solid #E2E8F0;
-        }}
-        .stButton button, .stDownloadButton button {{
-            border-radius: 18px;
-            font-weight: 800;
-            border-color: var(--brand-primary);
-        }}
-        .stButton button[kind="primary"], .stDownloadButton button[kind="primary"] {{
-            background: var(--brand-primary);
-            border-color: var(--brand-primary);
-        }}
-        section[data-testid="stSidebar"] .stButton button:disabled,
-        section[data-testid="stSidebar"] .stButton button[disabled],
-        section[data-testid="stSidebar"] button:disabled,
-        section[data-testid="stSidebar"] button[disabled] {{
-            display:none !important;
-            visibility:hidden !important;
-            min-height:0 !important;
-            height:0 !important;
-            padding:0 !important;
-            margin:0 !important;
-            border:0 !important;
-        }}
-        section[data-testid="stSidebar"] div:has(button:disabled),
-        section[data-testid="stSidebar"] div:has(button[disabled]) {{
-            min-height:0 !important;
-            height:auto !important;
-            padding:0 !important;
-            margin:0 !important;
-            border:0 !important;
-            box-shadow:none !important;
-            background:transparent !important;
-        }}
-        @media (max-width: 900px) {{
-            .top-header {{ align-items: flex-start; flex-direction: column; }}
-            .matrix-stepper, .source-grid, .metric-grid {{ grid-template-columns: 1fr; }}
-            .shopify-lockup {{ width: 100%; justify-content: space-between; }}
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def inject_styles(config=None):
-    inject_custom_css(config or get_site_config(get_brand_config()))
-
-
-def render_sidebar_brand():
-    forus_src = image_data_uri(FORUS_LOGO_PATH)
-    logo_html = (
-        f'<img src="{forus_src}" alt="Forus" style="max-width:138px;max-height:54px;object-fit:contain;">'
-        if forus_src
-        else '<div class="forus-logo">FORUS</div><div class="forus-tagline">CONSUMER FANATIC</div>'
-    )
-    render_html(f'<div class="forus-sidebar">{logo_html}</div>', sidebar=True)
-
-
-def render_sidebar_brand_card(config):
-    brand_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
-    brand_html = (
-        f'<img src="{brand_src}" alt="{config["brand_name"]}">'
-        if brand_src
-        else f'<p class="sidebar-brand-name">{config["brand_name"]}</p>'
-    )
-    render_html(
-        f"""
-        <div class="sidebar-brand-card">
-            <div class="sidebar-brand-logo">{brand_html}</div>
-            <p class="sidebar-brand-caption">{config["site_label"]}</p>
-        </div>
-        """,
-        sidebar=True,
-    )
-
-
-def render_active_site_card(config):
-    brand_name = escape(clean_value(config.get("brand_name")) or "Sitio")
-    brand_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
-    logo_html = (
-        f'<img src="{brand_src}" alt="{brand_name}">'
-        if brand_src
-        else f'<span>{brand_name[:2].upper()}</span>'
-    )
-    render_html(
-        f"""
-        <div class="active-site-card">
-            <div class="active-site-logo">{logo_html}</div>
-        </div>
-        """,
-        sidebar=True,
-    )
-
-
-def render_allowed_brands_card(brand_config):
-    allowed_brands = list(brand_config["allowed_arti_brands"])
-    primary_brand = brand_config["label"].upper()
-    ordered_allowed = [primary_brand] + [brand for brand in allowed_brands if brand != primary_brand]
-    chips = []
-    rendered_logo_stems = set()
-    for index, brand in enumerate(ordered_allowed):
-        clean_brand = clean_value(brand)
-        logo_stem = brand_logo_stem_for_name(clean_brand)
-        if logo_stem in rendered_logo_stems:
-            continue
-        rendered_logo_stems.add(logo_stem)
-        brand_src = image_data_uri(brand_logo_path_for_name(clean_brand))
-        brand_label = escape(clean_brand.title())
-        visual = f'<img src="{brand_src}" alt="{brand_label}">' if brand_src else f"<span>{brand_label}</span>"
-        primary_class = " primary" if not chips else ""
-        chips.append(
-            f"""
-            <div class="allowed-logo-chip{primary_class}" title="{brand_label}">
-                {visual}
-            </div>
-            """
-        )
-    render_html(
-        f"""
-        <p class="sidebar-label">Marca(s) permitidas</p>
-        <div class="allowed-logo-grid">
-            {''.join(chips)}
-        </div>
-        """,
-        sidebar=True,
-    )
-
-
-def render_sidebar(config, shopify_config=None, bigquery_ready=False, input_loaded=False):
-    render_sidebar_brand_card(config)
-    if shopify_config is not None:
-        render_sidebar_status(config, shopify_config, bigquery_ready, input_loaded=input_loaded)
-
-
-def render_sidebar_status(config, shopify_config, bigquery_ready, input_loaded=False):
-    input_state = "Cargado" if input_loaded else "Pendiente"
-    render_html(
-        f"""
-        <div class="sidebar-card">
-            <p class="sidebar-label">Estado operativo</p>
-            <p class="sidebar-value">Marca activa: {config["brand_name"]}</p>
-            <p class="sidebar-value">Input comercial: {input_state}</p>
-            <p class="sidebar-value">Salida: {config["output_file"]}</p>
-        </div>
-        """,
-        sidebar=True,
-    )
-
-
-def render_sidebar_shopify_card(config, shopify_config):
-    configured = is_shopify_configured(shopify_config)
-    state = "OK" if configured else "Pend."
-    domain = clean_value(shopify_config.get("shop_domain")) or config.get("shopify_store") or "No configurado"
-    render_html(
-        f"""
-        <div class="shopify-card-head">
-            <h3>Shopify API</h3>
-            <span class="status-badge">{state}</span>
-        </div>
-        <div class="shopify-config-box">Configurado:<br>{domain}</div>
-        <p class="shopify-meta">Admin API {config["api_version"]} Â· Token en Secrets</p>
-        """,
-        sidebar=True,
-    )
-
-
-def render_top_header(config):
-    brand_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
-    shopify_src = image_data_uri(SHOPIFY_LOGO_PATH)
-    brand_html = (
-        f'<img src="{brand_src}" alt="{config["brand_name"]}">'
-        if brand_src
-        else f'<div class="brand-fallback">{config["brand_name"]}</div>'
-    )
-    shopify_html = (
-        f'<img src="{shopify_src}" alt="Shopify" style="max-width:44px;max-height:44px;object-fit:contain;">'
-        if shopify_src
-        else '<div class="shopify-bag">S</div>'
-    )
-    render_html(
-        f"""
-        <div class="top-header">
-            <div class="brand-lockup">
-                <div class="brand-logo-card">{brand_html}</div>
-                <div>
-                    <p class="header-eyebrow">Catalogo Control Center</p>
-                    <h1 class="header-title">{config["site_label"]} &rarr; Shopify</h1>
-                    <p class="header-subtitle">Gestiona el catalogo con datos de BigQuery y sincronizacion directa con Shopify.</p>
-                </div>
-            </div>
-            <div class="shopify-lockup">
-                <span class="status-badge blue">BigQuery activo</span>
-                <span class="status-badge">Shopify conectado</span>
-                {shopify_html}
-            </div>
-        </div>
-        """,
-    )
-
-
-def render_header(brand_config=None):
-    render_top_header(get_site_config(brand_config or get_brand_config()))
-
-
-def render_stepper(config, current_step=1):
-    steps = [
-        ("Input", "Archivo comercial"),
-        ("BigQuery", "Fuente maestra"),
-        ("Validacion", "Reglas y cruces"),
-        ("Shopify", "Sincronizacion final"),
-    ]
-    items = []
-    for index, (title, caption) in enumerate(steps, start=1):
-        current = " current" if index == current_step else ""
-        status = "Actual" if index == 1 else ("OK" if index == 2 else ("Revisar" if index == 3 else "Pend."))
-        tone = "blue" if index == 1 else ("" if index == 2 else (" warn" if index == 3 else " blue"))
-        items.append(
-            f"""
-            <div class="step-card{current}">
-                <span class="step-index">{index}</span>
-                <div style="min-width:0;flex:1;">
-                    <p class="step-title">{title}</p>
-                    <p class="step-caption">{caption}</p>
-                </div>
-                <span class="status-badge{tone}">{status}</span>
-            </div>
-            """
-        )
-    render_html(f'<div class="matrix-stepper">{"".join(items)}</div>')
-
-
-def current_flow_step():
-    if st.session_state.get("complete_apply_result_df") is not None or st.session_state.get("shopify_apply_result_df") is not None:
-        return 4
-    if st.session_state.get("complete_matrixify_df") is not None or st.session_state.get("shopify_preview_df") is not None:
-        return 3
-    if st.session_state.get("input_loaded") or st.session_state.get("input") is not None or st.session_state.get("input_row_count"):
-        return 2
-    return 1
-
-
-def clear_complete_load_state():
-    for key in (
-        "complete_matrixify_df",
-        "complete_summary_df",
-        "complete_issues_df",
-        "complete_type_warnings_df",
-        "complete_skipped_df",
-        "complete_sial_df",
-        "complete_centry_df",
-        "complete_centry_issues_df",
-        "complete_apply_result_df",
-        "complete_analysis_message",
-    ):
-        st.session_state.pop(key, None)
-
-
-def reset_load_workspace():
-    clear_complete_load_state()
-    for key in (
-        "input_loaded",
-        "input_row_count",
-        "shopify_product_count",
-        "complete_shopify_products",
-        "complete_context",
-        "shopify_preview_df",
-        "shopify_apply_result_df",
-        "template_update",
-        "update_centry_codes",
-        "update_tags",
-        "update_photos",
-        "update_title",
-        "update_body",
-    ):
-        st.session_state.pop(key, None)
-    st.session_state["load_reset_nonce"] = int(st.session_state.get("load_reset_nonce") or 0) + 1
-    st.session_state["load_reset_message"] = "Listo. La pantalla quedo limpia para una nueva carga."
-
-
-def uploaded_file_fingerprint(uploaded_file):
-    if not uploaded_file:
-        return ""
-    return "|".join(
-        clean_value(value)
-        for value in (
-            getattr(uploaded_file, "name", ""),
-            getattr(uploaded_file, "size", ""),
-        )
-    )
-
-
-def render_sources_card(config, bigquery_ready, arti_source="", template_source="Shopify API", input_count=0, shopify_count=0, arti_count=0):
-    bigquery_config = get_bigquery_config()
-    project = clean_value(bigquery_config.get("project_id"))
-    if not project and isinstance(bigquery_config.get("service_account_info"), dict):
-        project = clean_value(bigquery_config["service_account_info"].get("project_id"))
-    dataset = clean_value(bigquery_config.get("dataset"))
-    table = clean_value(bigquery_config.get("table")) or "ARTI"
-    table_label = table if table.count(".") == 2 else ".".join(part for part in [project, dataset, table] if part)
-    input_text = f"{input_count:,} productos detectados" if input_count else "Pendiente de carga"
-    shopify_text = f"{shopify_count:,} productos sincronizados" if shopify_count else (config["shopify_store"] or template_source)
-    arti_text = f"{arti_count:,} filas BigQuery" if arti_count else "Tabla central enlazada"
-    render_html(
-        f"""
-        <div>
-            <div>
-                <h2>Archivos y fuentes cargadas</h2>
-                <p>Resumen limpio de lo que la app usara para preparar la carga.</p>
-            </div>
-            <div class="source-grid">
-                <div class="source-card" style="background:#EFF6FF;border-color:#BFDBFE;"><b>Input productos</b><span>{input_text}</span></div>
-                <div class="source-card" style="background:#ECFDF5;border-color:#BBF7D0;"><b>Shopify API</b><span>{shopify_text}</span></div>
-                <div class="source-card"><b>ARTI BigQuery</b><span>{arti_text}</span></div>
-            </div>
-        </div>
-        """,
-    )
-
-
-def render_operational_status(config, shopify_config, bigquery_ready, input_loaded):
-    render_html(
-        f"""
-        <div class="section-card">
-            <h2>Estado operativo</h2>
-            <div class="check-item">Shopify API: {"Conectado" if is_shopify_configured(shopify_config) else "Pendiente"}</div>
-            <div class="check-item">BigQuery: {"Activo" if bigquery_ready else "Respaldo local"}</div>
-            <div class="check-item">Marca activa: {config["brand_name"]}</div>
-            <div class="check-item">Input comercial: {"Cargado" if input_loaded else "Pendiente"}</div>
-        </div>
-        """,
-    )
-
-
-def render_summary_metrics(metrics):
-    items = "".join(
-        f'<div class="metric-card"><span>{label}</span><strong>{value}</strong></div>'
-        for label, value in metrics
-    )
-    render_html(f'<div class="section-card"><h2>Resumen bases</h2><p>Datos principales</p><div class="metric-grid">{items}</div></div>')
-
-
-def render_preview_table(input_df):
-    total = len(input_df) if input_df is not None else 0
-    shown = min(total, 20)
-    render_html(
-        f"""
-        <div class="section-card">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
-                <div>
-                    <h2>Vista previa del input</h2>
-                    <p>Primeras filas detectadas antes de analizar. Mostrando {shown} de {total} productos.</p>
-                </div>
-                <span class="status-badge blue">Preview</span>
-            </div>
-        </div>
-        """,
-    )
-    if input_df is not None and not input_df.empty:
-        st.dataframe(input_df.head(20), use_container_width=True, height=330)
-
-
-def render_validations_card():
-    render_html(
-        """
-        <div class="wide-checklist">
-            <h2>Checklist</h2>
-            <p>Estado de preparacion</p>
-            <div class="wide-checklist-grid">
-                <div class="wide-checklist-item">SKU, barcode y talla obligatorios.</div>
-                <div class="wide-checklist-item">Vendor validado contra marcas permitidas.</div>
-                <div class="wide-checklist-item">Cruce automatico con BigQuery.</div>
-                <div class="wide-checklist-item">Reporte de errores antes de exportar.</div>
-            </div>
-        </div>
-        """,
-    )
-
-
-def render_analyze_card(config):
-    render_html(
-        f"""
-        <div class="section-card action-card" style="background:var(--forus-blue);border-color:var(--forus-blue);">
-            <p style="color:#BFDBFE;font-size:12px;font-weight:900;letter-spacing:.22em;text-transform:uppercase;margin:0 0 10px;">Siguiente accion</p>
-            <h2>Analizar y preparar carga</h2>
-            <p>Cuando el input este correcto, genera la estructura Matrixify y la hoja Carga Sial.</p>
-        </div>
-        """,
-    )
-
-
-def render_matrixify_result_card(ready=False):
-    state = "Listo para descargar" if ready else "Pendiente de analisis"
-    tone = "" if ready else " warn"
-    render_html(
-        f"""
-        <div class="section-card">
-            <h2>Archivo Matrixify</h2>
-            <p>La estructura queda lista para revisar, descargar y sincronizar con Shopify.</p>
-            <span class="status-badge{tone}">{state}</span>
-        </div>
-        """,
-    )
-
-
-def render_base_status_card(setup_rows):
-    cards = []
-    for row in setup_rows:
-        status = clean_value(row.get("Estado"))
-        tone = "" if status.upper().startswith("OK") else " warn"
-        cards.append(
-            f"""
-            <div class="base-status-item">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                    <b>{row.get("Base", "")}</b>
-                    <span class="status-badge{tone}">{status}</span>
-                </div>
-                <span>{row.get("Ruta", "")}</span>
-            </div>
-            """
-        )
-    render_html(
-        f"""
-        <div class="base-status-card">
-            <div class="base-status-head">
-                <h3>Estado de bases</h3>
-                <span class="status-badge blue">Fuentes listas</span>
-            </div>
-            <div class="base-status-grid">{"".join(cards)}</div>
-        </div>
-        """
-    )
-
-
-def render_input_upload_card():
-    st.markdown(
-        """
-        <h2>Input comercial</h2>
-        <p>Sube el archivo comercial para analizar productos, variantes, precios y estructura Sial. Arrastra tu archivo o seleccionalo; formatos permitidos: .xlsx, .xls.</p>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def format_kpi_number(value):
-    if isinstance(value, str):
-        return value
-    try:
-        return f"{int(value):,}".replace(",", ".")
-    except (TypeError, ValueError):
-        return clean_value(value)
-
-
-def render_kpi_cards(kpis):
-    primary_cards = [
-        ("Modelos con stock eComm", kpis["modelos_con_stock"], "blue", "&#9633;"),
-        ("Creados con stock", kpis["modelos_creados_con_stock"], "green", "&#9679;"),
-        ("Pendientes por crear", kpis["modelos_pendientes"], "orange", "!"),
-        ("Cobertura stock eComm", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
-        ("Visibles en web", kpis["modelos_visibles_web"], "green", "&#9711;"),
-        ("No visibles en web", kpis["modelos_no_visibles_web"], "orange", "&#9676;"),
-        ("Sync stock Shopify", f"{kpis['sincronizacion_stock_shopify']:.0%}", "purple", "%"),
-    ]
-    def cards_html(cards):
-        return "".join(
-            f"""
-            <div class="kpi-card {tone}">
-                <div class="kpi-icon">{icon}</div>
-                <div><span>{label}</span><strong>{format_kpi_number(value)}</strong></div>
-            </div>
-            """
-            for label, value, tone, icon in cards
-        )
-
-    render_html(
-        f"""
-        <div class="kpi-section-label">KPIs principales segun stock eComm</div>
-        <div class="kpi-card-grid">{cards_html(primary_cards)}</div>
-        """
-    )
-
-
-def render_kpi_context_cards(kpis):
-    secondary_cards = [
-        ("Total creados Shopify", kpis["modelos_creados_shopify"], "green", "&#9635;"),
-        ("Creados sin stock eComm", kpis["productos_creados_sin_stock"], "cyan", "&#9636;"),
-    ]
-
-    def cards_html(cards):
-        return "".join(
-            f"""
-            <div class="kpi-card {tone}">
-                <div class="kpi-icon">{icon}</div>
-                <div><span>{label}</span><strong>{format_kpi_number(value)}</strong></div>
-            </div>
-            """
-            for label, value, tone, icon in cards
-        )
-
-    render_html(
-        f"""
-        <div class="kpi-section-label secondary">Contexto Shopify fuera del stock eComm</div>
-        <div class="kpi-card-grid">{cards_html(secondary_cards)}</div>
-        """
-    )
-
-
-def short_problem_label(value):
-    text = clean_value(value)
-    mapping = {
-        "Con stock no visible": "No activo",
-        "No activo en Shopify": "No activo",
-        "Modelo con stock no creado": "No creado",
-        "Modelo con stock sin foto": "Sin foto",
-        "Creado con stock sin precio": "Sin precio",
-        "Modelo con stock BQ sin stock Shopify": "Sin stock Shopify",
-        "Modelo con stock eComm sin stock Shopify": "Sin stock Shopify",
-        "Sin stock visible": "Visible sin stock",
-    }
-    return mapping.get(text, text[:18])
-
-
-def render_brand_summary_table(brand_summary):
-    if brand_summary is None or brand_summary.empty:
-        return
-    rows = []
-    for index, row in brand_summary.reset_index(drop=True).iterrows():
-        brand = clean_value(row.get("Marca"))
-        logo_src = image_data_uri(brand_logo_path_for_name(brand))
-        logo_html = f'<img src="{logo_src}" alt="{escape(brand)}">' if logo_src else ""
-        coverage = safe_float_value(row.get("Cobertura"))
-        coverage_pct = max(0, min(100, coverage * 100))
-        rows.append(
-            f"""
-            <tr>
-                <td>{index + 1}</td>
-                <td><div class="brand-cell">{logo_html}<span>{escape(brand.title())}</span></div></td>
-                <td>{format_kpi_number(row.get("Modelos_con_stock"))}</td>
-                <td style="color:#16A34A;font-weight:950;">{format_kpi_number(row.get("Creados_Shopify"))}</td>
-                <td style="color:#EA580C;font-weight:950;">{format_kpi_number(row.get("Pendientes_creacion"))}</td>
-                <td>{format_kpi_number(row.get("Stock_total"))}</td>
-                <td>
-                    <div class="coverage-cell">
-                        <div class="coverage-track"><div class="coverage-bar" style="width:{coverage_pct:.0f}%;"></div></div>
-                        <span>{coverage_pct:.1f}%</span>
-                    </div>
-                </td>
-            </tr>
-            """
-        )
-    render_html(
-        f"""
-        <div class="kpi-panel">
-            <h3>Resumen por marca</h3>
-            <table class="brand-kpi-table">
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Marca</th>
-                        <th>Modelos con stock</th>
-                        <th>Creados Shopify</th>
-                        <th>Pendientes creacion</th>
-                        <th>Stock total</th>
-                        <th>Cobertura</th>
-                    </tr>
-                </thead>
-                <tbody>{''.join(rows)}</tbody>
-            </table>
-        </div>
-        """
-    )
-
-
-def render_kpi_bar_chart(title, rows, icon="&#9661;", purple=False):
-    rows = list(rows or [])
-    max_value = max([safe_float_value(row.get("value")) for row in rows] or [1]) or 1
-    bars = []
-    for row in rows:
-        value = safe_float_value(row.get("value"))
-        height = max(3, safe_int_value((value / max_value) * 190)) if value else 3
-        label = escape(clean_value(row.get("label")))
-        short_label = escape(clean_value(row.get("short")) or clean_value(row.get("label")))
-        label_html = "<br>".join(short_label.split(" "))
-        value_text = format_kpi_number(value)
-        bar_class = "bar-fill purple" if purple else "bar-fill"
-        bars.append(
-            f"""
-            <div class="bar-item" tabindex="0" aria-label="{label}: {value_text}">
-                <div class="bar-tooltip">{label}<strong>{value_text}</strong></div>
-                <div class="bar-value">{value_text}</div>
-                <div class="{bar_class}" style="height:{height}px;"></div>
-                <div class="bar-label">
-                    <span class="bar-label-icon">{row.get("icon", "")}</span>
-                    <span>{label_html}</span>
-                </div>
-            </div>
-            """
-        )
-    return f"""
-    <div class="chart-card">
-        <div class="chart-head">
-            <div class="chart-title"><span>{icon}</span><span>{escape(title)}</span></div>
-        </div>
-        <div class="bar-stage">{''.join(bars)}</div>
-    </div>
-    """
-
-
-def render_kpi_chart_grid(funnel_rows, pareto_rows):
-    render_html(
-        f"""
-        <div class="kpi-chart-grid">
-            {render_kpi_bar_chart("Funnel de catalogo", funnel_rows, icon="&#9661;")}
-            {render_kpi_bar_chart("Pareto de problemas", pareto_rows, icon="&#9638;", purple=True)}
-        </div>
-        """
-    )
-
-
-def render_non_visible_combo_table(combo_df):
-    combo_df = combo_df.copy() if isinstance(combo_df, pd.DataFrame) else pd.DataFrame()
-    render_html(
-        """
-        <div class="kpi-table-card">
-            <div class="kpi-table-head">
-                <div class="kpi-table-title"><span>â—Ž</span><span>Que bloquea a los no visibles en web</span></div>
-            </div>
-        </div>
-        """
-    )
-    if combo_df.empty:
-        st.success("No hay modelos creados con stock bloqueados para web.")
-        return combo_df
-    display = combo_df.rename(
-        columns={
-            "Bloqueos": "Bloqueos detectados",
-            "Estado operativo": "Estado actual",
-            "Stock_BQ": "Stock BigQuery",
-            "Stock_Shopify": "Stock Shopify",
-        }
-    )
-    st.dataframe(display, use_container_width=True, hide_index=True, height=260)
-    return combo_df
-
-
-def combo_metric_html(value, percent, tone):
-    value_text = format_kpi_number(value)
-    pct_text = f"{percent:.1f}%"
-    return f"""
-    <div class="combo-metric {tone}">
-        <strong>{value_text}</strong>
-        <span>({pct_text})</span>
-        <i><b style="width:{max(2, min(100, percent)):.1f}%"></b></i>
-    </div>
-    """
-
-
-def render_non_visible_combo_table(combo_df):
-    combo_df = combo_df.copy() if isinstance(combo_df, pd.DataFrame) else pd.DataFrame()
-    if combo_df.empty:
-        st.success("No hay modelos creados con stock bloqueados para web.")
-        return combo_df
-
-    total_models = safe_float_value(combo_df["Modelos"].sum())
-    total_bq = safe_float_value(combo_df.get("Stock_BigQuery", combo_df["Modelos"]).sum())
-    total_shopify_raw = safe_float_value(combo_df.get("Stock_Shopify", pd.Series(dtype=float)).sum())
-    total_models_safe = total_models or 1
-    total_bq_safe = total_bq or 1
-    total_shopify_safe = total_shopify_raw or 1
-
-    def pct(value, total):
-        return max(0, min(100, (safe_float_value(value) / total) * 100))
-
-    def soft_class(text):
-        text = clean_value(text)
-        if "Sin stock Shopify" in text and "Sin foto" in text:
-            return "mint"
-        if "Sin stock Shopify" in text:
-            return "blue"
-        if "Sin foto" in text:
-            return "amber"
-        if "Sin precio" in text:
-            return "rose"
-        return "slate"
-
-    def bubble_html(text):
-        blockers = [part.strip() for part in clean_value(text).split("+") if part.strip()]
-        colors = {
-            "Sin stock Shopify": "bubble-blue",
-            "Sin foto": "bubble-amber",
-            "Sin precio": "bubble-rose",
-            "No activo/publicado": "bubble-purple",
-        }
-        bubbles = "".join(
-            f'<span class="combo-bubble {colors.get(blocker, "bubble-slate")}"></span>' for blocker in blockers[:4]
-        )
-        if not bubbles:
-            bubbles = '<span class="combo-bubble bubble-slate"></span>'
-        label = blockers[0] if blockers else clean_value(text)
-        rest = " + ".join(blockers[1:])
-        rest_html = f"<small>+ {escape(rest)}</small>" if rest else ""
-        return f'<div class="combo-blocker">{bubbles}<b>{escape(label)}</b>{rest_html}</div>'
-
-    rows = []
-    for _, row in combo_df.iterrows():
-        models = safe_int_value(row.get("Modelos"))
-        bq = safe_int_value(row.get("Stock_BigQuery"), models)
-        shopify = safe_int_value(row.get("Stock_Shopify"))
-        rows.append(
-            f"""
-            <tr>
-                <td>{bubble_html(row.get("Bloqueos"))}</td>
-                <td><div class="combo-state {soft_class(row.get("Bloqueos"))}">{escape(clean_value(row.get("Estado operativo")))}</div></td>
-                <td>{combo_metric_html(models, pct(models, total_models_safe), "purple")}</td>
-                <td>{combo_metric_html(bq, pct(bq, total_bq_safe), "blue")}</td>
-                <td>{combo_metric_html(shopify, pct(shopify, total_shopify_safe), "green")}</td>
-            </tr>
-            """
-        )
-
-    render_html(
-        f"""
-        <div class="combo-card">
-            <div class="combo-card-head">
-                <div>
-                    <div class="combo-title"><span class="combo-title-icon">â—Ž</span> Cruce de bloqueos web</div>
-                    <p>Combinaciones de estados para explicar los modelos creados con stock BQ que no son visibles en web.</p>
-                </div>
-                <div class="combo-chip">{format_kpi_number(safe_int_value(total_models))} modelo-color</div>
-            </div>
-            <div class="combo-table-wrap">
-                <table class="combo-table">
-                    <colgroup>
-                        <col style="width:26%;">
-                        <col style="width:28%;">
-                        <col style="width:14%;">
-                        <col style="width:16%;">
-                        <col style="width:16%;">
-                    </colgroup>
-                    <thead>
-                        <tr>
-                            <th>Bloqueos detectados</th>
-                            <th>Estado actual</th>
-                            <th>Modelos</th>
-                            <th>Mod-Col BigQuery</th>
-                            <th>Mod-Col con stock Shopify</th>
-                        </tr>
-                    </thead>
-                    <tbody>{''.join(rows)}</tbody>
-                    <tfoot>
-                        <tr>
-                            <td colspan="2"><b>Totales</b><span>{len(combo_df)} combinaciones</span></td>
-                            <td>{format_kpi_number(safe_int_value(total_models))}<small>100%</small></td>
-                            <td>{format_kpi_number(safe_int_value(total_bq))}<small>100%</small></td>
-                            <td>{format_kpi_number(safe_int_value(total_shopify_raw))}<small>100%</small></td>
-                        </tr>
-                    </tfoot>
-                </table>
-            </div>
-        </div>
-        """
-    )
-    return combo_df
-
-
-def render_non_visible_combo_table(combo_df):
-    combo_df = combo_df.copy() if isinstance(combo_df, pd.DataFrame) else pd.DataFrame()
-    if combo_df.empty:
-        st.success("No hay modelos creados con stock bloqueados para web.")
-        return combo_df
-
-    def commercial_status(row):
-        state = clean_value(row.get("Estado operativo"))
-        blockers = clean_value(row.get("Bloqueos"))
-        return pd.Series(
-            {
-                "Stock": "Sin stock Shopify" not in state and "Sin stock Shopify" not in blockers,
-                "Imagen": "Sin foto" not in state and "Sin foto" not in blockers,
-                "Precio": "Sin precio" not in state and "Sin precio" not in blockers,
-            }
-        )
-
-    status_df = combo_df.apply(commercial_status, axis=1)
-    commercial_df = pd.concat([combo_df, status_df], axis=1)
-    combo_view = (
-        commercial_df.groupby(["Stock", "Precio", "Imagen"], as_index=False)
-        .agg(Modelos=("Modelos", "sum"))
-        .sort_values("Modelos", ascending=False)
-    )
-    combo_view = combo_view[~(combo_view["Stock"] & combo_view["Precio"] & combo_view["Imagen"])].copy()
-    if combo_view.empty:
-        st.success("No hay bloqueos comerciales de stock, precio o imagen.")
-        return combo_df
-    total_models = safe_float_value(combo_view["Modelos"].sum())
-    total_models_safe = total_models or 1
-    stock_missing = safe_int_value(combo_view.loc[~combo_view["Stock"], "Modelos"].sum())
-    price_missing = safe_int_value(combo_view.loc[~combo_view["Precio"], "Modelos"].sum())
-    image_missing = safe_int_value(combo_view.loc[~combo_view["Imagen"], "Modelos"].sum())
-
-    def percent(value):
-        return max(0, min(100, (safe_float_value(value) / total_models_safe) * 100))
-
-    def status_tile(label, ok):
-        state_class = "ok" if ok else "bad"
-        icon = "&#10003;" if ok else "&#10005;"
-        text = "OK" if ok else "Falta"
-        return f"""
-        <div class="commercial-status-tile {state_class}">
-            <span>{escape(label)}</span>
-            <b>{icon}</b>
-            <small>{text}</small>
-        </div>
-        """
-
-    def summary_tile(label, value, ok_label):
-        is_ok = safe_int_value(value) == 0
-        state_class = "ok" if is_ok else "bad"
-        icon = "&#10003;" if is_ok else "&#10005;"
-        value_text = ok_label if is_ok else f"{format_kpi_number(value)} falta"
-        return f"""
-        <div class="commercial-summary-tile {state_class}">
-            <span>{escape(label)}</span>
-            <b>{icon}</b>
-            <strong>{escape(value_text)}</strong>
-        </div>
-        """
-
-    rows = []
-    for _, row in combo_view.iterrows():
-        models = safe_int_value(row.get("Modelos"))
-        pct_value = percent(models)
-        rows.append(
-            f"""
-            <tr>
-                <td>
-                    <div class="commercial-status-grid">
-                        {status_tile("Stock", bool(row.get("Stock")))}
-                        {status_tile("Precio", bool(row.get("Precio")))}
-                        {status_tile("Imagen", bool(row.get("Imagen")))}
-                    </div>
-                </td>
-                <td>
-                    <div class="combo-model-metric">
-                        <strong>{format_kpi_number(models)}</strong>
-                        <span>{pct_value:.1f}% del bloqueo</span>
-                        <i><b style="width:{max(2, min(100, pct_value)):.1f}%"></b></i>
-                    </div>
-                </td>
-            </tr>
-            """
-        )
-
-    render_html(
-        f"""
-        <div class="combo-card">
-            <div class="combo-card-head">
-                <div>
-                    <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Checklist comercial web</div>
-                    <p>Estado de las bases comerciales necesarias para que los modelos esten listos para venta.</p>
-                </div>
-                <div class="combo-chip">{format_kpi_number(safe_int_value(total_models))} modelo-color</div>
-            </div>
-            <div class="commercial-summary-grid">
-                {summary_tile("Stock", stock_missing, "OK")}
-                {summary_tile("Precio", price_missing, "OK")}
-                {summary_tile("Imagen", image_missing, "OK")}
-            </div>
-            <div class="combo-table-wrap compact">
-                <table class="combo-table compact">
-                    <colgroup>
-                        <col style="width:68%;">
-                        <col style="width:32%;">
-                    </colgroup>
-                    <thead>
-                        <tr>
-                            <th>Bases comerciales</th>
-                            <th>Modelos</th>
-                        </tr>
-                    </thead>
-                    <tbody>{''.join(rows)}</tbody>
-                    <tfoot>
-                        <tr>
-                            <td><b>Totales</b><span>{len(combo_view)} combinaciones comerciales</span></td>
-                            <td>{format_kpi_number(safe_int_value(total_models))}<small>100%</small></td>
-                        </tr>
-                    </tfoot>
-                </table>
-            </div>
-        </div>
-        """
-    )
-    return combo_df
-
-
-def render_actions_table(actions_df, key_prefix):
-    actions_df = actions_df.copy() if isinstance(actions_df, pd.DataFrame) else pd.DataFrame()
-    render_html(
-        """
-        <div class="kpi-table-card">
-            <div class="kpi-table-head">
-                <div class="kpi-table-title"><span>â–£</span><span>Pendientes accionables</span></div>
-            </div>
-        </div>
-        """
-    )
-    if actions_df.empty:
-        st.success("No hay pendientes accionables con la regla actual.")
-        return actions_df
-
-    control_left, control_problem, control_brand, control_right = st.columns([1.8, 1.1, 1.0, 0.7])
-    with control_left:
-        search = st.text_input(
-            "Buscar pendientes",
-            placeholder="Buscar por Mod-Col, marca o problema...",
-            label_visibility="collapsed",
-            key=f"{key_prefix}_actions_search",
-        )
-    with control_problem:
-        problems = ["Todos"] + sorted(actions_df["Problema"].dropna().map(clean_value).unique().tolist())
-        selected_problem = st.selectbox(
-            "Filtrar",
-            problems,
-            label_visibility="collapsed",
-            key=f"{key_prefix}_actions_filter",
-        )
-    with control_brand:
-        brands = ["Todas"] + sorted(actions_df["Marca"].dropna().map(clean_value).unique().tolist())
-        selected_brand = st.selectbox(
-            "Marca",
-            brands,
-            label_visibility="collapsed",
-            key=f"{key_prefix}_actions_brand",
-        )
-    with control_right:
-        page_size = st.selectbox(
-            "Filas",
-            [12, 25, 50, 100, "Todos"],
-            label_visibility="collapsed",
-            key=f"{key_prefix}_actions_rows",
-        )
-
-    filtered = actions_df.copy()
-    if search:
-        needle = clean_value(search).lower()
-        filtered = filtered[
-            filtered.apply(lambda row: needle in " ".join(clean_value(value).lower() for value in row.values), axis=1)
-        ].copy()
-    if selected_problem != "Todos":
-        filtered = filtered[filtered["Problema"].map(clean_value) == selected_problem].copy()
-    if selected_brand != "Todas":
-        filtered = filtered[filtered["Marca"].map(clean_value) == selected_brand].copy()
-
-    page_key = f"{key_prefix}_actions_page"
-    if page_key not in st.session_state:
-        st.session_state[page_key] = 1
-    if page_size == "Todos":
-        page_size_int = len(filtered) or 1
-        total_pages = 1
-        st.session_state[page_key] = 1
-    else:
-        page_size_int = int(page_size)
-        total_pages = max(1, (len(filtered) + page_size_int - 1) // page_size_int)
-        st.session_state[page_key] = min(max(1, int(st.session_state[page_key])), total_pages)
-    start = (st.session_state[page_key] - 1) * page_size_int
-    visible = filtered.iloc[start : start + page_size_int].copy()
-    rows = []
-    for index, row in visible.reset_index(drop=True).iterrows():
-        rows.append(
-            f"""
-            <tr>
-                <td><span class="row-index">{start + index + 1}</span></td>
-                <td><strong>{escape(clean_value(row.get("Mod-Col")))}</strong></td>
-                <td>{escape(clean_value(row.get("Marca")))}</td>
-                <td><span class="problem-dot"></span>{escape(clean_value(row.get("Problema")))}</td>
-                <td><span class="action-chip">{escape(clean_value(row.get("Accion sugerida")))}</span></td>
-                <td style="text-align:center;"><span class="stock-badge">{format_kpi_number(row.get("Stock total"))}</span></td>
-            </tr>
-            """
-        )
-    render_html(
-        f"""
-        <div class="kpi-table-card" style="margin-top:0;">
-            <table class="kpi-table">
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Mod-Col</th>
-                        <th>Marca</th>
-                        <th>Problema</th>
-                        <th>Accion sugerida</th>
-                        <th>Stock total</th>
-                    </tr>
-                </thead>
-                <tbody>{''.join(rows)}</tbody>
-            </table>
-        </div>
-        """
-    )
-    pager_left, pager_mid, pager_right = st.columns([1.4, 1, 1.4])
-    with pager_left:
-        st.caption(f"Mostrando {len(visible)} de {len(filtered)} resultados filtrados.")
-    with pager_mid:
-        c1, c2, c3 = st.columns([1, 1.2, 1])
-        with c1:
-            if st.button("â€¹", key=f"{key_prefix}_actions_prev", disabled=st.session_state[page_key] <= 1):
-                st.session_state[page_key] -= 1
-                st.rerun()
-        with c2:
-            st.markdown(
-                f"<div style='text-align:center;color:#172554;font-weight:950;padding-top:8px;'>"
-                f"{st.session_state[page_key]} / {total_pages}</div>",
-                unsafe_allow_html=True,
-            )
-        with c3:
-            if st.button("â€º", key=f"{key_prefix}_actions_next", disabled=st.session_state[page_key] >= total_pages):
-                st.session_state[page_key] += 1
-                st.rerun()
-    return filtered
-
-
-def render_missing_variants_table(missing_variants_df, key_prefix):
-    if missing_variants_df is None or missing_variants_df.empty:
+            if compare_clean(generated.get(column, "")) != compare_clean(existing.get(column, "")):
+                return False
+    return True
+
+
+PRODUCT_KEY_COLUMN = "Metafield: custom.codigo_modelo_color [id]"
+SIBLINGS_COLUMN = "Metafield: theme.siblings [single_line_text_field]"
+SIBLINGS_COLOR_COLUMN = "Metafield: theme.siblings_color [single_line_text_field]"
+CUSTOM_SIBLINGS_COLUMN = "Metafield: custom.siblings [single_line_text_field]"
+CUSTOM_SIBLINGS_COLOR_COLUMN = "Metafield: custom.siblings_color [single_line_text_field]"
+PUBLICATION_DATE_COLUMN = "Publication Publish Date"
+PUBLICATION_DATE_CANDIDATES = [
+    "Publication Publish Date",
+    "Fecha publicación",
+    "Fecha publicacion",
+    "Fecha de publicación",
+    "Fecha de publicacion",
+    "Publish Date",
+    "Publication Date",
+    "Published At",
+]
+
+
+def _catalog_product_rows(matrixify_df):
+    if matrixify_df is None or matrixify_df.empty:
         return pd.DataFrame()
-    df = missing_variants_df.copy()
-    control_left, control_mid, control_right = st.columns([2.0, 1.1, 0.8])
-    with control_left:
-        search = st.text_input(
-            "Buscar variantes",
-            placeholder="Buscar por Mod-Col, marca, talla o SKU...",
-            label_visibility="collapsed",
-            key=f"{key_prefix}_variants_search",
-        )
-    with control_mid:
-        brands = ["Todas"] + sorted(df["MARCA_MA"].dropna().map(clean_value).unique().tolist())
-        selected_brand = st.selectbox(
-            "Filtrar marca",
-            brands,
-            label_visibility="collapsed",
-            key=f"{key_prefix}_variants_brand",
-        )
-    with control_right:
-        page_size = st.selectbox(
-            "Filas",
-            [12, 25, 50, 100, "Todas"],
-            label_visibility="collapsed",
-            key=f"{key_prefix}_variants_rows",
-        )
+    df = matrixify_df.copy()
+    if "Handle" not in df.columns:
+        return pd.DataFrame()
+    df["__HANDLE_CLEAN"] = df["Handle"].map(clean)
+    df = df[df["__HANDLE_CLEAN"] != ""].copy()
+    return df.drop_duplicates(subset=["__HANDLE_CLEAN"], keep="first").copy()
 
-    filtered = df.copy()
-    if search:
-        needle = clean_value(search).lower()
-        filtered = filtered[
-            filtered.apply(lambda row: needle in " ".join(clean_value(value).lower() for value in row.values), axis=1)
-        ].copy()
-    if selected_brand != "Todas":
-        filtered = filtered[filtered["MARCA_MA"].map(clean_value) == selected_brand].copy()
 
-    page_key = f"{key_prefix}_variants_page"
-    if page_key not in st.session_state:
-        st.session_state[page_key] = 1
-    if page_size == "Todas":
-        page_size_int = len(filtered) or 1
-        total_pages = 1
-        st.session_state[page_key] = 1
-    else:
-        page_size_int = int(page_size)
-        total_pages = max(1, (len(filtered) + page_size_int - 1) // page_size_int)
-        st.session_state[page_key] = min(max(1, int(st.session_state[page_key])), total_pages)
-    start = (st.session_state[page_key] - 1) * page_size_int
-    visible = filtered.iloc[start : start + page_size_int].copy()
+def _catalog_lookup(matrixify_df):
+    product_rows = _catalog_product_rows(matrixify_df)
+    by_key = {}
+    by_handle = {}
+    for _, row in product_rows.iterrows():
+        handle = clean(row.get("Handle"))
+        key = clean(row.get(PRODUCT_KEY_COLUMN)).upper()
+        payload = row.to_dict()
+        if handle:
+            by_handle[handle] = payload
+        if key:
+            by_key[key] = payload
+    return by_key, by_handle, product_rows
+
+
+def _source_key(row):
+    return first_non_empty(row.get("Mod-Col"), row.get("COD MOD COL"), row.get(PRODUCT_KEY_COLUMN)).upper()
+
+
+def _minimal_product_update(row, extra):
+    payload = {
+        "ID": clean(row.get("ID")),
+        "Handle": clean(row.get("Handle")),
+        "Command": "MERGE",
+    }
+    payload.update(extra)
+    return payload
+
+
+def _new_tags(current_tags, incoming_tags, mode):
+    current = [tag.strip() for tag in clean(current_tags).split(",") if tag.strip()]
+    incoming = [tag.strip() for tag in clean(incoming_tags).split(",") if tag.strip()]
+    if mode == "replace":
+        return ", ".join(dict.fromkeys(incoming))
+    return ", ".join(dict.fromkeys(current + incoming))
+
+
+def _split_labeled_body_text(text):
+    text = strip_html(text)
+    if not text:
+        return "", "", ""
+    pattern = re.compile(
+        r"(?:^|\s)(Caracter[iÃ]sticas|Características|Material(?:es)?|Cuidado(?:s)?):?\s*",
+        flags=re.IGNORECASE,
+    )
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return text, "", ""
+
+    sections = {"features": "", "material": "", "care": ""}
+    for index, match in enumerate(matches):
+        label = normalize_text(match.group(1))
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        value = text[start:end].strip(" :-")
+        if "material" in label:
+            sections["material"] = value
+        elif "cuidado" in label:
+            sections["care"] = value
+        else:
+            sections["features"] = value
+    if not sections["features"] and matches[0].start() > 0:
+        sections["features"] = text[: matches[0].start()].strip(" :-")
+    return sections["features"], sections["material"], sections["care"]
+
+
+def _body_needs_material_care_fix(value):
+    text = normalize_text(strip_html(value))
+    if not text:
+        return False
+    has_material = "material" in text or "materiales" in text
+    has_care = "cuidado" in text or "cuidados" in text
+    has_sections = "nweb__materiales" in clean(value).lower() and "nweb__cuidados" in clean(value).lower()
+    return (has_material or has_care) and not has_sections
+
+
+def _build_update_source(input_df, matrixify_df):
+    if input_df is not None and not input_df.empty:
+        return input_df.dropna(how="all").copy(), "input"
+    return _catalog_product_rows(matrixify_df), "catalog"
+
+
+def _arti_brand_by_key(arti):
+    if arti is None or arti.empty or "MARCA_MA" not in arti.columns:
+        return {}
+    df = arti.copy()
+    if "Mod-Col" not in df.columns:
+        df["Mod-Col"] = ""
+    if "COD MOD COL" not in df.columns:
+        df["COD MOD COL"] = ""
+    df["__KEY"] = df["Mod-Col"].where(df["Mod-Col"].map(clean) != "", df["COD MOD COL"]).map(lambda value: clean(value).upper())
+    df = df[(df["__KEY"] != "") & (df["MARCA_MA"].map(clean) != "")].copy()
+    return df.drop_duplicates(subset=["__KEY"]).set_index("__KEY")["MARCA_MA"].to_dict()
+
+
+def build_matrixify_updates(
+    matrixify_source,
+    update_input_df=None,
+    arti=None,
+    operation="tags",
+    brand_config=None,
+    tag_mode="merge",
+    image_mode="replace",
+    only_missing_images=True,
+    body_mode="from_input",
+):
+    brand_config = brand_config or get_brand_config()
+    matrixify_df = matrixify_source.copy() if isinstance(matrixify_source, pd.DataFrame) else pd.DataFrame()
+    by_key, by_handle, catalog_products = _catalog_lookup(matrixify_df)
+    source_df, source_type = _build_update_source(update_input_df, matrixify_df)
+    operation = clean(operation).lower()
+    brand_by_key = _arti_brand_by_key(arti)
+
     rows = []
-    for index, row in visible.reset_index(drop=True).iterrows():
-        rows.append(
-            f"""
-            <tr>
-                <td><span class="row-index">{start + index + 1}</span></td>
-                <td><strong>{escape(clean_value(row.get("Mod-Col")))}</strong></td>
-                <td>{escape(clean_value(row.get("MARCA_MA")))}</td>
-                <td>{escape(clean_value(row.get("Talla")))}</td>
-                <td>{escape(clean_value(row.get("SKU")))}</td>
-                <td style="text-align:center;"><span class="stock-badge">{format_kpi_number(row.get("Stock total"))}</span></td>
-            </tr>
-            """
+    issues = []
+    seen_handles = set()
+
+    if operation == "siblings":
+        products = catalog_products.copy()
+        if products.empty:
+            return pd.DataFrame(), pd.DataFrame([{"Problema": "Catalogo Matrixify sin productos validos"}])
+        products["__KEY"] = products[PRODUCT_KEY_COLUMN].map(lambda value: clean(value).upper()) if PRODUCT_KEY_COLUMN in products.columns else ""
+        products["__MODEL"] = products["__KEY"].map(model_code)
+        siblings_by_model = (
+            products[products["__MODEL"] != ""]
+            .groupby("__MODEL")["Handle"]
+            .apply(lambda values: ", ".join(dict.fromkeys(clean(value) for value in values if clean(value))))
+            .to_dict()
         )
-    render_html(
-        f"""
-        <div class="kpi-table-card">
-            <div class="kpi-table-head">
-                <div class="kpi-table-title"><span>&#9635;</span><span>Detalle de variantes con stock incompletas</span></div>
-            </div>
-            <table class="kpi-table">
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Mod-Col</th>
-                        <th>Marca</th>
-                        <th>Talla</th>
-                        <th>SKU</th>
-                        <th>Stock total</th>
-                    </tr>
-                </thead>
-                <tbody>{''.join(rows)}</tbody>
-            </table>
-        </div>
-        """
-    )
-    pager_left, pager_mid, pager_right = st.columns([1.4, 1, 1.4])
-    with pager_left:
-        st.caption(f"Mostrando {len(visible)} de {len(filtered)} variantes filtradas. Este detalle no cuenta como KPI principal.")
-    with pager_mid:
-        c1, c2, c3 = st.columns([1, 1.2, 1])
-        with c1:
-            if st.button("â€¹", key=f"{key_prefix}_variants_prev", disabled=st.session_state[page_key] <= 1):
-                st.session_state[page_key] -= 1
-                st.rerun()
-        with c2:
-            st.markdown(
-                f"<div style='text-align:center;color:#172554;font-weight:950;padding-top:8px;'>"
-                f"{st.session_state[page_key]} / {total_pages}</div>",
-                unsafe_allow_html=True,
+        for _, product in products.iterrows():
+            model = product.get("__MODEL", "")
+            if not model or model not in siblings_by_model:
+                continue
+            handle = clean(product.get("Handle"))
+            if handle in seen_handles:
+                continue
+            seen_handles.add(handle)
+            rows.append(
+                _minimal_product_update(
+                    product,
+                    {
+                        SIBLINGS_COLUMN: siblings_by_model[model],
+                        SIBLINGS_COLOR_COLUMN: clean(product.get(SIBLINGS_COLOR_COLUMN)),
+                        CUSTOM_SIBLINGS_COLUMN: siblings_by_model[model],
+                        CUSTOM_SIBLINGS_COLOR_COLUMN: clean(product.get(CUSTOM_SIBLINGS_COLOR_COLUMN))
+                        or clean(product.get(SIBLINGS_COLOR_COLUMN)),
+                    },
+                )
             )
-        with c3:
-            if st.button("â€º", key=f"{key_prefix}_variants_next", disabled=st.session_state[page_key] >= total_pages):
-                st.session_state[page_key] += 1
-                st.rerun()
-    return filtered
+        return pd.DataFrame(rows), pd.DataFrame(issues)
 
-
-def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready):
-    render_html(
-        """
-        <div class="kpi-hero">
-            <div class="kpi-title">
-                <h2>Dashboard Shopify</h2>
-                <p>Visibilidad ejecutiva del catalogo, stock disponible y estado comercial en Shopify.</p>
-            </div>
-        </div>
-        """
-    )
-
-    if not bigquery_ready:
-        st.error("BigQuery no esta configurado. Para KPIs se necesita leer stock actual y ARTI.")
-        return
-    if not is_shopify_configured(shopify_config):
-        st.error("Shopify API no esta configurado para este sitio.")
-        return
-
-    components.html(
-        f"""
-        <script>
-        window.setTimeout(function() {{
-            window.parent.location.reload();
-        }}, {KPI_AUTO_REFRESH_SECONDS * 1000});
-        </script>
-        """,
-        height=0,
-    )
-
-    run_key = f"kpi_result_{brand_config['site_key']}"
-    result = st.session_state.get(run_key)
-    if result is None:
-        result = load_cached_catalog_kpi_result(brand_config["site_key"])
-        if result is not None:
-            st.session_state[run_key] = result
-    if result is None:
-        spinner_text = (
-            "Cargando dashboard actualizado..."
-        )
-        with st.spinner(spinner_text):
-            try:
-                result = load_catalog_kpi_result(brand_config, shopify_config)
-                st.session_state[run_key] = result
-                save_cached_catalog_kpi_result(brand_config["site_key"], result)
-            except Exception as exc:
-                st.error(f"No se pudo actualizar el dashboard: {exc}")
-
-    if not result:
-        st.info("Cargando dashboard...")
-        return
-
-    meta = result.get("meta", {}) if isinstance(result, dict) else {}
-    refreshed_at = parse_iso_datetime(meta.get("refreshed_at"))
-    refreshed_label = format_datetime_lima(meta.get("refreshed_at"))
-    toolbar_left, toolbar_right = st.columns([0.9, 0.1], vertical_alignment="center")
-    with toolbar_left:
-        if refreshed_label:
-            st.caption(f"Ultima actualizacion: {refreshed_label}")
-    with toolbar_right:
-        manual_refresh = st.button("â†»", type="primary", help="Actualizar dashboard", key=f"{brand_config['site_key']}_refresh_kpis")
-    if manual_refresh:
-        with st.spinner("Actualizando dashboard..."):
-            try:
-                result = load_catalog_kpi_result(brand_config, shopify_config)
-                st.session_state[run_key] = result
-                save_cached_catalog_kpi_result(brand_config["site_key"], result)
-            except Exception as exc:
-                st.error(f"No se pudo actualizar el dashboard: {exc}")
-
-    if refreshed_at is not None:
-        refresh_age = datetime.now(timezone.utc) - refreshed_at.astimezone(timezone.utc)
-        if refresh_age >= timedelta(seconds=KPI_AUTO_REFRESH_SECONDS):
-            st.warning(
-                f"Dashboard pendiente de actualizar. Ultima actualizacion: {refreshed_label}. "
-                "Haz click en el icono de actualizar."
+    for input_index, source_row in source_df.iterrows():
+        key = _source_key(source_row)
+        handle = clean(source_row.get("Handle"))
+        catalog_row = by_key.get(key) or by_handle.get(handle)
+        if not catalog_row:
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Handle": handle,
+                    "Problema": "No se encontro el producto en el catalogo Matrixify",
+                    "Fila": input_index + 2,
+                }
             )
-    else:
-        st.warning("Dashboard pendiente de actualizar. Haz click en el icono de actualizar.")
+            continue
 
-    kpis = result["kpis"]
-    combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
-    ecomm_match_df = result.get("ecomm_stock_match", pd.DataFrame())
-    if ecomm_match_df is None or ecomm_match_df.empty:
-        st.warning("No se genero auditoria de bodegas eComm para este sitio.")
-    else:
-        matched_stores = safe_int_value((ecomm_match_df["Aparece en query"] == "Si").sum())
-        total_stores = len(ecomm_match_df)
-        missing_stores = ecomm_match_df[ecomm_match_df["Aparece en query"] != "Si"]["Bodega"].astype(str).tolist()
-        if missing_stores:
-            st.warning(
-                f"Bodegas eComm configuradas sin stock en BigQuery: {matched_stores}/{total_stores} | "
-                f"Sin match: {', '.join(missing_stores[:8])}"
+        catalog_handle = clean(catalog_row.get("Handle"))
+        if catalog_handle in seen_handles:
+            continue
+        seen_handles.add(catalog_handle)
+
+        if operation == "tags":
+            tags_col = first_existing(source_df, ["Tags", "tags", "Etiquetas"])
+            if not tags_col:
+                issues.append({"Mod-Col": key, "Handle": catalog_handle, "Problema": "No se encontro columna Tags"})
+                continue
+            tags = _new_tags(catalog_row.get("Tags"), source_row.get(tags_col), tag_mode)
+            rows.append(
+                _minimal_product_update(
+                    catalog_row,
+                    {
+                        "Tags": tags,
+                        "Tags Command": "REPLACE",
+                    },
+                )
             )
-    render_kpi_cards(kpis)
-    render_non_visible_combo_table(combo_summary_df)
-    render_kpi_context_cards(kpis)
+        elif operation == "photos":
+            product_key = key or clean(catalog_row.get(PRODUCT_KEY_COLUMN)).upper()
+            source_brand = first_non_empty(
+                source_row.get("Marca"),
+                source_row.get("Brand"),
+                catalog_row.get("Metafield: custom.marca [single_line_text_field]"),
+                brand_by_key.get(product_key),
+            )
+            row_brand_config = brand_image_config(source_brand, brand_config)
+            urls = image_candidates(product_key, row_brand_config)
+            current_image = clean(catalog_row.get("Image Src"))
+            if only_missing_images and current_image:
+                continue
+            rows.append(
+                _minimal_product_update(
+                    catalog_row,
+                    {
+                        "Image Src": "; ".join(urls),
+                        "Image Command": "REPLACE" if image_mode == "replace" else "MERGE",
+                        "Image Position": "",
+                        "Image Alt Text": first_non_empty(
+                            source_row.get("Image Alt Text"),
+                            catalog_row.get("Image Alt Text"),
+                            catalog_row.get("Title"),
+                        ),
+                    },
+                )
+            )
+        elif operation == "title":
+            title_col = first_existing(source_df, ["Title", "Titulo", "Título", "Nombre"])
+            if not title_col:
+                issues.append({"Mod-Col": key, "Handle": catalog_handle, "Problema": "No se encontro columna Title"})
+                continue
+            rows.append(_minimal_product_update(catalog_row, {"Title": clean(source_row.get(title_col))}))
+        elif operation == "body":
+            if body_mode == "from_input":
+                body_html = build_body_html(source_row)
+                if not body_html:
+                    issues.append(
+                        {"Mod-Col": key, "Handle": catalog_handle, "Problema": "No hay Body HTML/Caracteristicas/Material/Cuidado para construir"}
+                    )
+                    continue
+            else:
+                current_body = clean(catalog_row.get("Body HTML"))
+                if not _body_needs_material_care_fix(current_body):
+                    continue
+                features, material, care = _split_labeled_body_text(current_body)
+                body_html = build_body_html(
+                    {
+                        "Body HTML": "",
+                        "Caracteristicas": features,
+                        "Material": material,
+                        "Cuidado": care,
+                    }
+                )
+                if not body_html:
+                    continue
+            rows.append(_minimal_product_update(catalog_row, {"Body HTML": body_html}))
+        else:
+            issues.append({"Problema": f"Operacion no soportada: {operation}"})
+            break
 
-    actions_df = result["actions"]
-    non_visible_web_df = result.get("non_visible_web", pd.DataFrame())
-    problem_counts = (
-        non_visible_web_df["Bloqueos"].value_counts().rename_axis("Problema").reset_index(name="Casos")
-        if non_visible_web_df is not None and not non_visible_web_df.empty and "Bloqueos" in non_visible_web_df.columns
-        else pd.DataFrame({"Problema": ["Sin observaciones"], "Casos": [0]})
+    output_df = pd.DataFrame(rows)
+    issues_df = pd.DataFrame(issues)
+    return output_df, issues_df
+
+
+def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None):
+    brand_config = brand_config or get_brand_config()
+    matrixify_columns, matrixify_df = prepare_matrixify_context(matrixify_source)
+    product_by_key, product_by_handle, variant_by_sku = build_existing_lookup(matrixify_df)
+
+    input_df = ensure_mod_col_column(input_df.dropna(how="all").copy())
+    input_df["__KEY"] = input_df["Mod-Col"].map(lambda value: clean(value).upper())
+    input_df["__MODEL"] = input_df["Mod-Col"].map(model_code)
+    input_df["__HANDLE"] = input_df.apply(
+        lambda row: normalize_handle(row.get("Handle Input") or row.get("Handle"), row.get("Mod-Col")),
+        axis=1,
     )
-    funnel_rows = [
-        {"label": "Modelos con stock eComm", "short": "Stock eComm", "value": kpis["modelos_con_stock"], "icon": "&#9633;"},
-        {"label": "Creados con stock", "short": "Creados stock", "value": kpis["modelos_creados_con_stock"], "icon": "&#9635;"},
-        {"label": "Pendientes de creacion", "short": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
-        {"label": "Visibles en web", "short": "Visibles web", "value": kpis["modelos_visibles_web"], "icon": "&#9711;"},
-        {"label": "No visibles en web", "short": "No visibles web", "value": kpis["modelos_no_visibles_web"], "icon": "&#9676;"},
-        {"label": "Causa principal: sin stock Shopify", "short": "Causa stock", "value": kpis["no_visible_sin_stock_shopify"], "icon": "S"},
-        {"label": "Causa principal: sin foto", "short": "Causa foto", "value": kpis["no_visible_sin_foto"], "icon": "&#9673;"},
-        {"label": "Causa principal: sin precio", "short": "Causa precio", "value": kpis["no_visible_sin_precio"], "icon": "$"},
-        {"label": "Causa principal: no activo", "short": "Causa activo", "value": kpis["no_visible_no_activo"], "icon": "&#9676;"},
-    ]
-    pareto_rows = [
-        {
-            "label": clean_value(row.get("Problema")),
-            "short": short_problem_label(row.get("Problema")),
-            "value": safe_int_value(row.get("Casos")),
-            "icon": "&#9679;",
-        }
-        for _, row in problem_counts.head(6).iterrows()
-    ]
+    siblings_by_model = (
+        input_df.groupby("__MODEL")["__HANDLE"]
+        .apply(lambda values: ", ".join(dict.fromkeys(clean(value) for value in values if clean(value))))
+        .to_dict()
+    )
+    brand_column = detect_brand_column(input_df)
+    image_lookup = build_image_lookup_by_brand(input_df, brand_column, brand_config)
+    wanted_keys = set(input_df["__KEY"])
+    arti = arti.copy()
+    if "MARCA_MA" in arti.columns and brand_config.get("allowed_arti_brands"):
+        allowed_brands = set(brand_config["allowed_arti_brands"])
+        brand_mask = arti["MARCA_MA"].map(normalize_brand_name).isin(allowed_brands)
+        if brand_mask.any():
+            arti = arti[brand_mask].copy()
+    if "Mod-Col" not in arti.columns:
+        arti["Mod-Col"] = ""
+    if "COD MOD COL" not in arti.columns:
+        arti["COD MOD COL"] = ""
+    arti["__KEY"] = arti["Mod-Col"].where(
+        arti["Mod-Col"].map(clean) != "",
+        arti["COD MOD COL"],
+    ).map(lambda value: clean(value).upper())
+    for optional_column in ("Precio", "CodBarras"):
+        if optional_column not in arti.columns:
+            arti[optional_column] = ""
+    arti = arti[arti["__KEY"].isin(wanted_keys)].copy()
+    arti = arti[arti["CODINT_MA"].map(clean) != ""].copy()
+    arti["__SIAL_SIZE"] = arti["TALNUM_MA"].map(clean)
+    arti["__SIZE"] = arti["TALNUM_MA"].map(normalize_size)
+    invalid_size_rows = arti[arti["__SIZE"].map(clean) == ""].copy()
+    arti = arti[arti["__SIZE"] != ""].copy()
+    arti = arti.sort_values(by=["__KEY", "__SIZE"], key=lambda series: series.map(size_sort_key))
 
-    brand_summary = result.get("brand_summary", pd.DataFrame())
-    if brand_summary is not None and not brand_summary.empty and len(brand_summary) > 1:
-        render_brand_summary_table(brand_summary)
+    tech_col = find_technology_column(input_df)
+    rows = []
+    sial_rows = []
+    issues = []
+    skipped_rows = []
 
-    render_kpi_chart_grid(funnel_rows, pareto_rows)
-    filtered_actions_df = render_actions_table(actions_df, f"{brand_config['site_key']}_kpi")
-    if filtered_actions_df is not None and not filtered_actions_df.empty:
-        st.download_button(
-            "Descargar pendientes filtrados",
-            data=dataframe_to_excel_bytes({"Pendientes filtrados": filtered_actions_df}),
-            file_name=f"pendientes_filtrados_{brand_config['site_key']}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    for input_index, product in input_df.iterrows():
+        key = product["__KEY"]
+        invalid_sizes_for_key = invalid_size_rows[invalid_size_rows["__KEY"] == key] if not invalid_size_rows.empty else pd.DataFrame()
+        if not invalid_sizes_for_key.empty:
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Se omitieron filas de BigQuery/ARTI con talla vacia o no reconocida",
+                    "Fila input": input_index + 2,
+                    "Cantidad": safe_int(len(invalid_sizes_for_key)),
+                }
+            )
+        variants = arti[arti["__KEY"] == key].copy()
+        if "__SIZE" in variants.columns:
+            one_size_mask = boolean_mask(variants["__SIZE"], is_one_size)
+            zero_size_mask = boolean_mask(variants["__SIZE"], is_zero_size)
+            internal_k_size_mask = boolean_mask(variants["__SIZE"], is_internal_k_size)
+        else:
+            one_size_mask = pd.Series(False, index=variants.index)
+            zero_size_mask = pd.Series(False, index=variants.index)
+            internal_k_size_mask = pd.Series(False, index=variants.index)
+        has_one_size = bool(one_size_mask.any())
+        one_size_zero_count = safe_int(zero_size_mask.sum()) if has_one_size else 0
+        if one_size_zero_count:
+            variants = variants[~zero_size_mask].copy()
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Se omitio talla 0/000 porque el producto tambien tiene O/S",
+                    "Fila input": input_index + 2,
+                    "Cantidad": one_size_zero_count,
+                }
+            )
+            zero_size_mask = boolean_mask(variants["__SIZE"], is_zero_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
+            internal_k_size_mask = boolean_mask(variants["__SIZE"], is_internal_k_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
+        should_block_zero_size = category_blocks_zero_size(product)
+        zero_size_count = safe_int(zero_size_mask.sum()) if should_block_zero_size else 0
+        internal_k_size_count = safe_int(internal_k_size_mask.sum())
+        if zero_size_count:
+            variants = variants[~zero_size_mask].copy()
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Se omitieron variantes con talla 0 en vestuario/calzado",
+                    "Fila input": input_index + 2,
+                    "Cantidad": zero_size_count,
+                }
+            )
+            internal_k_size_mask = boolean_mask(variants["__SIZE"], is_internal_k_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
+        if internal_k_size_count:
+            variants = variants[~internal_k_size_mask].copy()
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Se omitieron variantes con talla interna K",
+                    "Fila input": input_index + 2,
+                    "Cantidad": internal_k_size_count,
+                }
+            )
+        if variants.empty:
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Sin variantes validas en ARTI/BigQuery",
+                    "Fila input": input_index + 2,
+                }
+            )
+            continue
+
+        variants = dedupe_variants_for_shopify(
+            variants,
+            brand_config=brand_config,
+            issues=issues,
+            key=key,
+            input_index=input_index,
         )
+        if variants.empty:
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": "Todas las variantes fueron omitidas por duplicidad de SKU/talla",
+                    "Fila input": input_index + 2,
+                }
+            )
+            continue
+        variants = variants.sort_values("__SIZE", key=lambda series: series.map(size_sort_key))
 
-    missing_variants_df = result["missing_stock_variants"]
-    filtered_variants_df = missing_variants_df
-    if missing_variants_df is not None and not missing_variants_df.empty:
-        filtered_variants_df = render_missing_variants_table(missing_variants_df, f"{brand_config['site_key']}_kpi")
-        if filtered_variants_df is not None and not filtered_variants_df.empty:
-            st.download_button(
-                "Descargar variantes filtradas",
-                data=dataframe_to_excel_bytes({"Variantes filtradas": filtered_variants_df}),
-                file_name=f"variantes_filtradas_{brand_config['site_key']}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        variant_brand_raw, variant_brand_names = brand_from_variants(variants)
+        if len(variant_brand_names) > 1:
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": f"BigQuery/ARTI tiene mas de una marca para el mismo modelo-color: {', '.join(variant_brand_names)}",
+                    "Fila input": input_index + 2,
+                }
+            )
+        product_brand_raw = variant_brand_raw or (product.get(brand_column) if brand_column else "")
+        handle = product["__HANDLE"]
+        product_image_config = brand_image_config(product_brand_raw, brand_config)
+        image_cache_key = (key, product_image_config["image_folder"])
+        if image_cache_key not in image_lookup:
+            image_lookup[image_cache_key] = build_image_lookup([key], brand_config=product_image_config).get(key, [])
+        product_images = image_lookup.get(image_cache_key, [])
+        if not product_images:
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": f"Sin fotos validas en la ruta {product_image_config['image_folder']}",
+                    "Fila input": input_index + 2,
+                }
+            )
+        title = clean(product.get("Title"))
+        body_html = build_body_html(product)
+        tags = clean(product.get("Tags"))
+        product_type = clean(product.get("Type"))
+        technology_value = row_first_existing(
+            product,
+            [tech_col, "METAFIELD TECNOLOGÍAS", "METAFIELD TECNOLOGIAS", "Tecnologias ", "Tecnologías"],
+        )
+        color_web = clean(product.get("Color Web"))
+        product_brand_label = brand_display_name(product_brand_raw, brand_config["label"])
+        publication_date = product_publication_date(product)
+        siblings_value = siblings_by_model.get(product["__MODEL"], handle)
+        image_alt = f"{title} {color_web}".strip()
+        existing_product = product_by_key.get(key) or product_by_handle.get(handle) or {}
+        existing_handle = existing_product.get("Handle") or handle
+        existing_rows = matrixify_rows_for_handle(matrixify_df, existing_handle)
+        existing_variant_by_sku, existing_variant_by_size = build_product_variant_lookup(existing_rows)
+        product_price_fallback = first_valid_product_price(existing_rows)
+        product_rows = []
+        product_sial_rows = []
+
+        for position, (_, variant) in enumerate(variants.iterrows(), start=1):
+            if is_internal_k_size(variant.get("__SIZE")) or is_internal_k_size(variant.get("TALNUM_MA")):
+                continue
+            if should_block_zero_size and (
+                is_zero_size(variant.get("__SIZE")) or is_zero_size(variant.get("TALNUM_MA"))
+            ):
+                continue
+
+            is_first = position == 1
+            display_size = display_size_for_site(variant["__SIZE"], brand_config)
+            output = {column: "" for column in matrixify_columns}
+            variant_sku = clean(variant.get("CODINT_MA"))
+            existing_variant = (
+                existing_variant_by_sku.get(variant_sku, {})
+                or variant_without_sku_by_size(existing_variant_by_size, display_size)
+                or variant_by_sku.get(variant_sku, {})
+            )
+            variant_price = (
+                valid_price(variant.get("Precio"))
+                or valid_price(existing_variant.get("Variant Price"))
+                or product_price_fallback
+            )
+            variant_compare_at_price = valid_price(existing_variant.get("Variant Compare At Price"))
+
+            output.update(
+                {
+                    "ID": existing_product.get("ID", ""),
+                    "Handle": handle,
+                    "Command": "MERGE",
+                    "Title": title,
+                    "Body HTML": body_html if is_first else "",
+                    "Vendor": product_brand_label,
+                    "Type": product_type,
+                    "Tags": tags,
+                    "Tags Command": "REPLACE",
+                    "Status": "Active",
+                    "Published": "TRUE" if variant_price else "FALSE",
+                    "Created At": existing_product.get("Created At", ""),
+                    "Updated At": existing_product.get("Updated At", ""),
+                    "Published At": existing_product.get("Published At", ""),
+                    PUBLICATION_DATE_COLUMN: publication_date,
+                    "Published Scope": "web",
+                    "Gift Card": "FALSE",
+                    "URL": existing_product.get("URL", ""),
+                    "Total Inventory Qty": 0,
+                    "Row #": position,
+                    "Top Row": "TRUE" if is_first else "",
+                    "Image Type": "IMAGE",
+                    "Image Src": "; ".join(product_images),
+                    "Image Command": "MERGE",
+                    "Image Position": "",
+                    "Image Width": "",
+                    "Image Height": "",
+                    "Image Alt Text": image_alt,
+                    "Variant Inventory Item ID": existing_variant.get("Variant Inventory Item ID", ""),
+                    "Variant ID": existing_variant.get("Variant ID", ""),
+                    "Variant Command": "MERGE",
+                    "Option1 Name": "Talla",
+                    "Option1 Value": display_size,
+                    "Variant Position": position,
+                    "Variant SKU": variant_sku,
+                    "Variant Barcode": clean(variant.get("CodBarras")),
+                    "Variant Image": existing_variant.get("Variant Image", ""),
+                    "Variant Price": variant_price,
+                    "Variant Compare At Price": variant_compare_at_price,
+                }
             )
 
-    excel_bytes = dataframe_to_excel_bytes(
-        {
-            "Resumen modelos": result["model_stock"],
-            "Resumen por marca": result.get("brand_summary", pd.DataFrame()),
-            "Match bodegas eComm": result.get("ecomm_stock_match", pd.DataFrame()),
-            "Pendientes accionables": filtered_actions_df if filtered_actions_df is not None else pd.DataFrame(),
-            "Detalle variantes stock": filtered_variants_df if filtered_variants_df is not None else pd.DataFrame(),
-            "Resumen bloqueos web": result.get("non_visible_combo_summary", pd.DataFrame()),
-            "No visibles web": result.get("non_visible_web", pd.DataFrame()),
-            "Sin stock Shopify": result.get("no_shopify_stock_models", pd.DataFrame()),
-            "Sin precio": result["no_price_models"],
-            "Sin foto": result["no_photo_models"],
-        }
+            for column in matrixify_columns:
+                if column.startswith(INVENTORY_PREFIX):
+                    output[column] = 0
+
+            if is_first:
+                output.update(
+                    {
+                        "Metafield: custom.pais_de_fabricacion [single_line_text_field]": clean(
+                            product.get("Metafield: custom.pais_de_fabricacion [single_line_text_field]")
+                        ),
+                        "Metafield: custom.logo [list.metaobject_reference]": format_technology_logos(
+                            technology_value
+                        ),
+                        "Metafield: custom.color_forus [single_line_text_field]": clean(
+                            product.get("Metafield: custom.color_forus [single_line_text_field]")
+                        ),
+                        "Metafield: theme.siblings_color [single_line_text_field]": color_web,
+                        "Metafield: theme.siblings [single_line_text_field]": siblings_value,
+                        "Metafield: custom.siblings_color [single_line_text_field]": color_web,
+                        "Metafield: custom.siblings [single_line_text_field]": siblings_value,
+                        "Metafield: custom.grupo_color [single_line_text_field]": clean(
+                            product.get("Metafield: custom.grupo_color [single_line_text_field]")
+                        ),
+                        "Metafield: custom.genero [single_line_text_field]": clean(
+                            product.get("Metafield: custom.genero [single_line_text_field]")
+                        ),
+                        "Metafield: custom.tipo [single_line_text_field]": clean(
+                            product.get("Metafield: custom.tipo [single_line_text_field]")
+                        ),
+                        "Metafield: custom.descripcion_corta [single_line_text_field]": clean(
+                            product.get("Metafield: custom.descripcion_corta [single_line_text_field]")
+                        ),
+                        "Metafield: custom.nombre_corto [single_line_text_field]": clean(
+                            product.get("Metafield: custom.nombre_corto [single_line_text_field]")
+                        ),
+                        "Metafield: custom.codigo_modelo_color [id]": clean(
+                            product.get("Metafield: custom.codigo_modelo_color [id]")
+                        )
+                        or key,
+                        "Metafield: custom.materialidad [single_line_text_field]": clean(
+                            product.get("Metafield: custom.materialidad [single_line_text_field]")
+                        ),
+                        "Metafield: custom.marca [single_line_text_field]": product_brand_label,
+                        "Metafield: custom.sub_categoria [single_line_text_field]": clean(
+                            product.get("Metafield: custom.sub_categoria [single_line_text_field]")
+                        )
+                        or product_type,
+                        "Metafield: custom.categoria [single_line_text_field]": clean(
+                            product.get("Metafield: custom.categoria [single_line_text_field]")
+                        ),
+                        "Metafield: custom.guia_de_tallas [page_reference]": clean(
+                            product.get("Metafield: custom.guia_de_tallas [page_reference]")
+                        ),
+                        "Metafield: custom.tecnologia [list.single_line_text_field]": format_technology(
+                            technology_value
+                        ),
+                        "Metafield: custom.deporte [list.single_line_text_field]": format_technology(
+                            product.get("Metafield: custom.deporte [list.single_line_text_field]")
+                        ),
+                        "Metafield: mm-google-shopping.custom_product [boolean]": "FALSE",
+                    }
+                )
+
+            product_rows.append(output)
+            product_sial_rows.append(
+                build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config, product_brand_label)
+            )
+
+        if existing_product.get("ID") and product_is_unchanged(product_rows, existing_rows, matrixify_columns):
+            skipped_rows.append(
+                {
+                    "Mod-Col": key,
+                    "Handle": handle,
+                    "Filas omitidas": len(product_rows),
+                    "Motivo": "Ya existe en Matrixify modelo y no presenta cambios en campos comparados",
+                }
+            )
+            continue
+
+        rows.extend(product_rows)
+        sial_rows.extend(product_sial_rows)
+
+    output_df = pd.DataFrame(rows, columns=matrixify_columns)
+    output_df = fill_top_row_product_fields(output_df, input_df, tech_col)
+    sial_df = pd.DataFrame(sial_rows, columns=get_sial_columns(brand_config))
+    sial_df = coalesce_duplicate_columns(sial_df)
+    issues_df = pd.DataFrame(issues)
+    output_df, sial_df, issues_df = final_variant_filter(output_df, sial_df, issues_df)
+    output_df = fill_top_row_product_fields(output_df, input_df, tech_col)
+    sial_df = coalesce_duplicate_columns(sial_df)
+    skipped_df = pd.DataFrame(
+        skipped_rows,
+        columns=["Mod-Col", "Handle", "Filas omitidas", "Motivo"],
     )
-    st.download_button(
-        "Descargar diagnostico KPIs",
-        data=excel_bytes,
-        file_name=f"kpis_catalogo_{brand_config['site_key']}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    type_warnings_df = build_new_type_warnings(input_df)
+    summary_df = pd.DataFrame(
+        [
+            {"Metrica": "Productos input", "Valor": len(input_df)},
+            {"Metrica": "Sitio destino", "Valor": brand_config["site_label"]},
+            {"Metrica": "Productos con match ARTI", "Valor": output_df["Handle"].nunique() if len(output_df) else 0},
+            {"Metrica": "Filas variantes Matrixify", "Valor": len(output_df)},
+            {"Metrica": "Filas Carga Sial", "Valor": len(sial_df)},
+            {"Metrica": "Productos omitidos sin cambios", "Valor": len(skipped_df)},
+            {
+                "Metrica": "Filas omitidas sin cambios",
+                "Valor": safe_int(skipped_df["Filas omitidas"].sum()) if len(skipped_df) else 0,
+            },
+            {
+                "Metrica": "Productos existentes con ID",
+                "Valor": output_df.loc[output_df["ID"].map(clean) != "", "Handle"].nunique()
+                if "ID" in output_df.columns and len(output_df)
+                else 0,
+            },
+            {
+                "Metrica": "Variantes existentes con Variant ID",
+                "Valor": safe_int((output_df["Variant ID"].map(clean) != "").sum())
+                if "Variant ID" in output_df.columns and len(output_df)
+                else 0,
+            },
+            {"Metrica": "Observaciones", "Valor": len(issues_df)},
+            {
+                "Metrica": "Tipos/Familias nuevas",
+                "Valor": 0
+                if type_warnings_df.empty or type_warnings_df.iloc[0]["Campo"] == "Configuracion"
+                else len(type_warnings_df),
+            },
+        ]
     )
-
-
-def get_auth_users():
-    try:
-        auth_config = dict(st.secrets.get("app_auth", {}))
-    except Exception:
-        auth_config = {}
-    users = auth_config.get("users", {})
-    if isinstance(users, dict) and users:
-        return {clean_value(user): clean_value(password) for user, password in users.items() if clean_value(user)}
-    username = clean_value(auth_config.get("username"))
-    password = clean_value(auth_config.get("password"))
-    if username and password:
-        return {username: password}
-    return {"admin": "forus2026", "hugo.camara@forus.pe": "forus2026"}
-
-
-def render_login_styles():
-    st.markdown(
-        """
-        <style>
-        [data-testid="stSidebar"] { display:none; }
-        [data-testid="stToolbar"], .stDeployButton { display:none !important; }
-        [data-testid="stAppViewContainer"] {
-            background:#152238;
-        }
-        .main .block-container {
-            padding-top:38px;
-            max-width:620px;
-        }
-        .st-key-login_card {
-            width:min(448px, calc(100vw - 32px));
-            margin:0 auto;
-            overflow:hidden;
-            border-radius:16px;
-            background:#FFFFFF;
-            box-shadow:0 28px 80px rgba(0,0,0,.28);
-        }
-        .login-head {
-            padding:32px 32px 34px;
-            text-align:center;
-            background:linear-gradient(180deg, #2367FF 0%, #1757EF 100%);
-            color:#FFFFFF;
-        }
-        .login-logo-row {
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            gap:22px;
-            margin-bottom:24px;
-        }
-        .login-forus-logo {
-            min-width:178px;
-            height:64px;
-            border-radius:10px;
-            background:#FFFFFF;
-            display:grid;
-            place-items:center;
-            padding:8px 14px;
-            box-sizing:border-box;
-        }
-        .login-forus-logo img {
-            max-width:100%;
-            max-height:48px;
-            object-fit:contain;
-        }
-        .login-forus-fallback {
-            color:#14306B;
-            font-size:34px;
-            line-height:1;
-            font-weight:950;
-            letter-spacing:.02em;
-        }
-        .login-forus-fallback small {
-            display:block;
-            margin-top:2px;
-            color:#14306B;
-            font-size:8px;
-            letter-spacing:.22em;
-            font-weight:900;
-        }
-        .login-divider {
-            width:1px;
-            height:48px;
-            background:rgba(255,255,255,.62);
-        }
-        .login-shopify-logo {
-            width:52px;
-            height:52px;
-            border-radius:10px;
-            background:#FFFFFF;
-            display:grid;
-            place-items:center;
-            box-shadow:0 10px 22px rgba(15,23,42,.12);
-        }
-        .login-shopify-logo img {
-            max-width:38px;
-            max-height:38px;
-            object-fit:contain;
-        }
-        .login-shopify-fallback {
-            color:#16A34A;
-            font-size:30px;
-            font-weight:950;
-        }
-        .login-head h1 {
-            margin:0;
-            font-size:30px;
-            line-height:1.12;
-            font-weight:950;
-        }
-        .login-head p {
-            margin:10px 0 0;
-            color:#EAF2FF;
-            font-size:16px;
-            font-weight:750;
-        }
-        .st-key-login_form_area {
-            padding:24px 32px 28px;
-        }
-        .st-key-login_form_area label {
-            color:#1E293B !important;
-            font-weight:850 !important;
-        }
-        .st-key-login_form_area .stTextInput input {
-            border-radius:12px;
-            min-height:48px;
-            background:#F8FAFC;
-            border:1px solid #CBD5E1;
-            font-size:15px;
-        }
-        .st-key-login_form_area .stButton button {
-            width:100%;
-            min-height:48px;
-            border-radius:12px;
-            background:#2367FF;
-            font-weight:950;
-        }
-        .login-note {
-            padding:0 32px 32px;
-            text-align:center;
-            color:#64748B;
-            font-size:13px;
-            font-weight:750;
-        }
-        .login-foot {
-            margin:26px auto 0;
-            width:min(448px, calc(100vw - 32px));
-            text-align:center;
-            color:#FFFFFF;
-            font-size:14px;
-            line-height:1.7;
-            font-weight:750;
-        }
-        .login-foot strong {
-            display:block;
-            margin-bottom:6px;
-            font-weight:850;
-        }
-        @media (max-width: 560px) {
-            .main .block-container { padding-top:20px; }
-            .login-head { padding:26px 20px 28px; }
-            .st-key-login_form_area { padding:22px 22px 26px; }
-            .login-forus-logo { min-width:152px; }
-            .login-head h1 { font-size:26px; }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def require_login():
-    if st.session_state.get("authenticated"):
-        return True
-    render_login_styles()
-    forus_src = image_data_uri(FORUS_LOGO_PATH)
-    shopify_src = image_data_uri(SHOPIFY_LOGO_PATH)
-    forus_logo = (
-        f'<img src="{forus_src}" alt="FORUS">'
-        if forus_src
-        else '<div class="login-forus-fallback">FORUS<small>CONSUMER FANATIC</small></div>'
-    )
-    shopify_logo = (
-        f'<img src="{shopify_src}" alt="Shopify">'
-        if shopify_src
-        else '<div class="login-shopify-fallback">S</div>'
-    )
-    with st.container(key="login_card"):
-        render_html(
-            f"""
-            <div class="login-head">
-                <div class="login-logo-row">
-                    <div class="login-forus-logo">{forus_logo}</div>
-                    <div class="login-divider"></div>
-                    <div class="login-shopify-logo">{shopify_logo}</div>
-                </div>
-                <h1>Catalogo Control Center</h1>
-                <p>Sistema de gestion de productos</p>
-            </div>
-            """
-        )
-        with st.container(key="login_form_area"):
-            with st.form("login_form"):
-                username = st.text_input("Correo electronico", placeholder="hugo.camara@forus.pe")
-                password = st.text_input("Contrasena", type="password", placeholder="********")
-                submitted = st.form_submit_button("Ingresar", type="primary")
-        render_html(
-            """
-            <div class="login-note">Sistema exclusivo para personal autorizado</div>
-            """
-        )
-    render_html(
-        """
-        <div class="login-foot">
-            <strong>Gestion de catalogos para multiples marcas</strong>
-            Columbia &bull; Hush Puppies &bull; Vans &bull; Patagonia &bull; Mas
-        </div>
-        """
-    )
-    if submitted:
-        users = get_auth_users()
-        expected = users.get(clean_value(username))
-        if expected and hmac.compare_digest(clean_value(password), expected):
-            st.session_state["authenticated"] = True
-            st.session_state["auth_user"] = clean_value(username)
-            st.rerun()
-        st.error("Usuario o contrasena incorrectos.")
-    return False
-
-
-def sidebar_card_choice(key, options, default, icons=None):
-    icons = icons or {}
-    if key not in st.session_state or st.session_state[key] not in options:
-        st.session_state[key] = default
-    selected = st.session_state[key]
-    for option in options:
-        active_class = " active" if option == selected else ""
-        icon = icons.get(option, "")
-        st.sidebar.markdown(
-            f"""
-            <div class="sidebar-choice-preview{active_class}">
-                <span>{escape(icon)}</span>
-                <strong>{escape(option)}</strong>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.sidebar.button(option, key=f"{key}_{slugify(option)}", help=option):
-            st.session_state[key] = option
-            st.rerun()
-    return st.session_state[key]
+    return output_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df
 
 
 def main():
-    st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
-    if not require_login():
-        return
-    bigquery_config = get_bigquery_config()
-    bigquery_ready = is_bigquery_configured(bigquery_config)
+    OUTPUT_DIR.mkdir(exist_ok=True)
 
-    render_sidebar_brand()
-    with st.sidebar.container(key="logout_card"):
-        user_label = clean_value(st.session_state.get("auth_user")) or "Usuario"
-        st.caption(f"Sesion: {user_label}")
-        if st.button("Cerrar sesion"):
-            st.session_state.pop("authenticated", None)
-            st.session_state.pop("auth_user", None)
-            st.rerun()
-    site_options = {config["site_label"]: key for key, config in SITE_CONFIGS.items()}
-    with st.sidebar.container(key="site_picker_card"):
-        selected_site_label = st.selectbox(
-            "Sitio destino",
-            list(site_options),
-            index=0,
-            key="site_picker",
-            label_visibility="collapsed",
-        )
-    selected_site_key = site_options[selected_site_label]
-    brand_config = get_brand_config(selected_site_key)
-    shopify_config = get_shopify_config(selected_site_key)
-    ui_config = get_site_config(brand_config, shopify_config)
-    inject_styles(ui_config)
-    render_allowed_brands_card(brand_config)
-    nav_options = ["KPIs de catalogo", "Carga de catalogo"]
-    with st.sidebar.container(key="operation_nav"):
-        st.markdown('<p class="sidebar-label">Tipo de operacion</p>', unsafe_allow_html=True)
-        operation_area = st.radio(
-            "Tipo de operacion",
-            nav_options,
-            index=0,
-            label_visibility="collapsed",
-            key="operation_area_choice",
-        )
-    operation_mode = "Carga completa"
-    if operation_area == "Carga de catalogo":
-        load_options = ["Carga completa", "Carga parcial"]
-        with st.sidebar.container(key="load_mode_nav"):
-            st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
-            operation_mode = st.radio(
-                "Tipo de carga",
-                load_options,
-                index=0,
-                label_visibility="collapsed",
-                key="operation_mode_choice",
-            )
-    with st.sidebar.container(key="load_refresh_card"):
-        if st.button("Nueva carga / refrescar", key="reset_load_workspace", help="Limpia archivos cargados, previews y resultados para empezar otra carga."):
-            reset_load_workspace()
-            st.rerun()
-    with st.sidebar.container(key="shopify_sidebar_card"):
-        render_sidebar_shopify_card(ui_config, shopify_config)
-        if is_shopify_configured(shopify_config):
-            if st.button("Probar conexion Shopify"):
-                try:
-                    shop = test_connection(shopify_config)
-                    st.success(f"Conectado a {shop.get('name', brand_config['site_label'])}")
-                    st.caption(shop.get("myshopifyDomain") or shopify_config["shop_domain"])
-                    st.caption(f"Origen token: {shop.get('token_source', '')}")
-                except ShopifyApiError as exc:
-                    st.error(str(exc))
-        else:
-            st.warning("API no configurada para este sitio.")
-            st.code(
-                f"""[shopify_sites.{selected_site_key}]
-shop_domain = "tienda.myshopify.com"
-client_id = "..."
-client_secret = "..."
-admin_access_token = "..."
-api_version = "{DEFAULT_API_VERSION}"
-""",
-                language="toml",
-            )
+    template = pd.read_excel(TEMPLATE_PATH, sheet_name="Products", dtype=object)
 
-    render_top_header(ui_config)
-    load_reset_message = st.session_state.pop("load_reset_message", "")
-    if load_reset_message:
-        st.success(load_reset_message)
-    if operation_area == "KPIs de catalogo":
-        render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready)
-        return
+    input_df = pd.read_excel(INPUT_PATH, sheet_name=0, dtype=object)
 
-    render_stepper(ui_config, current_step=current_flow_step())
+    arti, arti_source = read_arti_source()
 
-    if operation_mode == "Carga parcial":
-        operation_labels = {
-            "Centry": "centry",
-            "Tags": "tags",
-            "Fotos 10 vistas": "photos",
-            "Siblings": "siblings",
-            "Titulo": "title",
-            "Body HTML / Material / Cuidado": "body",
-        }
-        st.markdown('<div class="section-card"><h2>Carga parcial</h2>', unsafe_allow_html=True)
-        update_label = st.selectbox("Que quieres actualizar", list(operation_labels), index=0)
-        update_operation = operation_labels[update_label]
-        update_source = st.radio(
-            "Fuente de datos actuales",
-            ["Shopify API", "Respaldo Excel"],
-            index=0 if is_shopify_configured(shopify_config) else 1,
-            help="Shopify API es la referencia operativa. El respaldo Excel solo se usa si la API no esta disponible.",
-        )
-        template_file = None
-        if update_source == "Respaldo Excel":
-            template_file = st.file_uploader(
-                f"1. Subir respaldo operativo de {brand_config['site_label']}",
-                type=["xlsx", "xls"],
-                key="template_update",
-                help="Se usa como respaldo para encontrar ID, Handle, tags actuales, fotos actuales y codigo modelo color.",
-            )
-
-        update_file = None
-        tag_mode = "merge"
-        image_mode = "replace"
-        only_missing_images = True
-        body_mode = "from_input"
-
-        if update_operation == "centry":
-            update_file = st.file_uploader(
-                "2. Subir Excel con codigos modelo-color faltantes",
-                type=["xlsx", "xls"],
-                key="update_centry_codes",
-                help="Puede venir con columna Mod-Col, Codigo Modelo Color, Cod Mod Col, SKU, o una sola columna con los codigos.",
-            )
-            st.caption("La app toma esos codigos, cruza contra Shopify y devuelve el Excel Centry listo para enviar.")
-        elif update_operation == "tags":
-            tag_mode = st.radio("Como aplicar tags", ["merge", "replace"], format_func=lambda v: "Agregar a los tags actuales" if v == "merge" else "Reemplazar todos los tags")
-            update_file = st.file_uploader("2. Subir archivo con Mod-Col y Tags", type=["xlsx", "xls"], key="update_tags")
-        elif update_operation == "photos":
-            image_mode = st.radio("Comando de fotos", ["replace", "merge"], format_func=lambda v: "Reemplazar fotos del producto" if v == "replace" else "Agregar/mezclar fotos")
-            if image_mode == "replace":
-                only_missing_images = False
-                st.caption("REPLACE procesa productos aunque ya tengan fotos: elimina las actuales y sube las 10 vistas nuevas por API.")
-            else:
-                only_missing_images = st.checkbox("Solo productos sin foto en el catalogo", value=False)
-            update_file = st.file_uploader("2. Opcional: subir lista con Mod-Col a corregir", type=["xlsx", "xls"], key="update_photos")
-            st.caption("Si no subes lista, revisa el catalogo completo. Siempre genera 10 URLs por producto.")
-        elif update_operation == "siblings":
-            st.caption("Recalcula siblings para todo el catalogo: todos los productos con el mismo codigo modelo quedan separados por comas.")
-        elif update_operation == "title":
-            update_file = st.file_uploader("2. Subir archivo con Mod-Col y Title", type=["xlsx", "xls"], key="update_title")
-        elif update_operation == "body":
-            body_source = st.radio(
-                "Origen para corregir Body HTML",
-                ["Desde input comercial", "Detectar desde respaldo Excel"],
-                key="body_source",
-            )
-            body_mode = "from_input" if body_source == "Desde input comercial" else "fix_catalog"
-            if body_mode == "from_input":
-                update_file = st.file_uploader(
-                    "2. Subir input con Mod-Col, Body HTML, Caracteristicas, Material y Cuidado",
-                    type=["xlsx", "xls"],
-                    key="update_body",
-                )
-            else:
-                st.caption("Detecta Body HTML con Material/Cuidado mezclados y genera solo los productos afectados.")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        update_ready = update_file or update_operation in ("photos", "siblings") or body_mode == "fix_catalog"
-        if update_source == "Shopify API" and not is_shopify_configured(shopify_config):
-            st.error("Este sitio no tiene Shopify API configurada en Secrets.")
-            update_ready = False
-
-        if update_source == "Shopify API" and update_ready:
-            try:
-                update_df = read_excel(update_file) if update_file else None
-                if update_df is not None and update_operation != "centry":
-                    _, detected_brands, blocked_brands = input_brand_report(update_df, brand_config)
-                    if blocked_brands:
-                        st.error(
-                            f"El archivo tiene marcas no permitidas para {brand_config['site_label']}: "
-                            f"{', '.join(blocked_brands)}."
-                        )
-                        st.stop()
-
-                if update_operation == "centry":
-                    if st.button("Generar Centry", type="primary"):
-                        for state_key in (
-                            "centry_maintainer_df",
-                            "centry_maintainer_sial_df",
-                            "centry_maintainer_issues_df",
-                            "centry_maintainer_codes",
-                        ):
-                            st.session_state.pop(state_key, None)
-                        codes = model_codes_from_excel(update_df)
-                        if not codes:
-                            st.error("El Excel no tiene codigos modelo-color reconocibles. Usa una columna como Mod-Col, Codigo Modelo Color, Cod Mod Col, SKU, o una sola columna con los codigos.")
-                        else:
-                            with st.spinner("Leyendo Shopify, BigQuery y armando Centry..."):
-                                shopify_products = fetch_products(shopify_config)
-                                shopify_matrixify_df = shopify_products_to_matrixify_df(shopify_products)
-                                arti_df, arti_source = read_arti_for_app(brand_config)
-                                centry_matrixify_df, master_issues_df = build_centry_matrixify_from_master(
-                                    codes,
-                                    shopify_matrixify_df,
-                                    arti_df,
-                                    brand_config,
-                                )
-                                centry_df, centry_issues_df = build_centry_from_matrixify(
-                                    centry_matrixify_df,
-                                    brand_config,
-                                    only_codes=codes,
-                                    arti_df=arti_df,
-                                )
-                                centry_sial_df = build_centry_sial_from_matrixify(centry_matrixify_df, brand_config)
-                                centry_issues_df = pd.concat(
-                                    [master_issues_df, centry_issues_df],
-                                    ignore_index=True,
-                                ).drop_duplicates()
-                            st.caption(f"Base maestra usada: {arti_source}")
-                            st.session_state["centry_maintainer_df"] = centry_df
-                            st.session_state["centry_maintainer_sial_df"] = centry_sial_df
-                            st.session_state["centry_maintainer_issues_df"] = centry_issues_df
-                            st.session_state["centry_maintainer_codes"] = codes
-
-                    centry_df = st.session_state.get("centry_maintainer_df")
-                    centry_sial_df = st.session_state.get("centry_maintainer_sial_df", pd.DataFrame())
-                    centry_issues_df = st.session_state.get("centry_maintainer_issues_df", pd.DataFrame())
-                    codes = st.session_state.get("centry_maintainer_codes", [])
-                    if centry_df is not None:
-                        if centry_df.empty:
-                            st.warning("No se encontraron filas Centry para los codigos indicados.")
-                        else:
-                            st.success(f"Centry generado con {len(centry_df):,} filas para {len(codes):,} codigos consultados.")
-                            render_centry_preview(centry_df, centry_issues_df, "Centry generado")
-                            if centry_sial_df is not None and not centry_sial_df.empty:
-                                st.write("Vista previa Carga Sial Centry")
-                                st.dataframe(centry_sial_df.head(100), use_container_width=True, height=320)
-                            missing_ean_count = centry_missing_ean_count(centry_df)
-                            st.download_button(
-                                "Descargar Centry",
-                                data=dataframe_to_excel_bytes(
-                                    {
-                                        "Centry": centry_df,
-                                        "Carga Sial": centry_sial_df if centry_sial_df is not None else pd.DataFrame(),
-                                        "Revision Centry": centry_issues_df if centry_issues_df is not None else pd.DataFrame(),
-                                    }
-                                ),
-                                file_name=f"centry_{brand_config['site_key']}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key=f"download_centry_partial_{brand_config['site_key']}",
-                            )
-                            if missing_ean_count:
-                                st.warning(
-                                    f"Faltan {missing_ean_count:,} EAN. "
-                                    "Revisa la hoja Revision Centry para ver columnas EAN detectadas desde BigQuery."
-                                )
-                    return
-
-                if st.button(f"Analizar carga parcial: {update_label}", type="primary"):
-                    with st.spinner("Leyendo productos actuales desde Shopify..."):
-                        shopify_products = fetch_products(shopify_config)
-                    preview_df, issues_df, matrixify_df = build_shopify_update_preview(
-                        shopify_products,
-                        update_df,
-                        update_operation,
-                        brand_config,
-                        tag_mode=tag_mode,
-                        image_mode=image_mode,
-                        only_missing_images=only_missing_images,
-                        body_mode=body_mode,
-                    )
-                    st.session_state["shopify_preview_df"] = preview_df
-                    st.session_state["shopify_preview_issues_df"] = issues_df
-                    st.session_state["shopify_preview_matrixify_df"] = matrixify_df
-                    st.session_state["shopify_preview_operation"] = update_operation
-
-                preview_df = st.session_state.get("shopify_preview_df")
-                issues_df = st.session_state.get("shopify_preview_issues_df", pd.DataFrame())
-                matrixify_df = st.session_state.get("shopify_preview_matrixify_df", pd.DataFrame())
-                if preview_df is not None:
-                    if preview_df.empty:
-                        st.warning("No se genero ninguna fila de vista previa.")
-                    else:
-                        st.success(f"Vista previa generada con {len(preview_df):,} cambios.")
-                        st.dataframe(preview_df.head(100), use_container_width=True)
-                    if issues_df is not None and not issues_df.empty:
-                        st.warning(f"Hay {len(issues_df):,} observaciones.")
-                        st.dataframe(issues_df, use_container_width=True)
-
-                    excel_bytes = dataframe_to_excel_bytes(
-                        {
-                            "Vista previa": preview_df if preview_df is not None else pd.DataFrame(),
-                            "Revision": issues_df if issues_df is not None else pd.DataFrame(),
-                            "Matrixify fotos": matrixify_df if matrixify_df is not None else pd.DataFrame(),
-                        }
-                    )
-                    st.download_button(
-                        "Descargar estructura Matrixify",
-                        data=excel_bytes,
-                        file_name=f"vista_previa_{update_operation}_{brand_config['site_key']}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-
-                    can_apply = update_operation in ("tags", "title", "body", "siblings", "photos") and preview_df is not None and not preview_df.empty
-                    if update_operation == "photos":
-                        st.info("REPLACE elimina las fotos actuales del producto y sube las 10 URLs nuevas. MERGE agrega las URLs nuevas sin borrar las actuales.")
-                    if can_apply:
-                        confirm_apply = st.checkbox("Confirmo que revise la vista previa y quiero aplicar en Shopify")
-                        if confirm_apply and st.button("Sincronizar Shopify", type="primary"):
-                            with st.spinner("Sincronizando cambios en Shopify..."):
-                                result_df = apply_shopify_preview(shopify_config, preview_df)
-                            st.session_state["shopify_apply_result_df"] = result_df
-                            st.dataframe(result_df, use_container_width=True)
-                            st.download_button(
-                                "Descargar reporte de sincronizacion",
-                                data=dataframe_to_excel_bytes({"Resultado": result_df}),
-                                file_name=f"resultado_shopify_{update_operation}_{brand_config['site_key']}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            )
-            except Exception as exc:
-                st.error("No pude generar o aplicar la carga parcial con Shopify API.")
-                st.exception(exc)
-        elif update_source == "Respaldo Excel" and template_file and update_ready:
-            try:
-                template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
-                if "Vendor" in template_df.columns:
-                    catalog_vendors = {
-                        clean_value(value).lower()
-                        for value in template_df["Vendor"].dropna()
-                        if clean_value(value)
-                    }
-                    expected_vendors = expected_catalog_vendors(brand_config)
-                    if catalog_vendors and catalog_vendors.isdisjoint(expected_vendors):
-                        st.error(
-                            f"El respaldo Excel cargado no parece ser de {brand_config['site_label']}. "
-                            f"Vendors esperados: {', '.join(sorted(expected_vendors))}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
-                        )
-                        st.stop()
-
-                update_df = read_excel(update_file) if update_file else None
-                if update_df is not None:
-                    _, detected_brands, blocked_brands = input_brand_report(update_df, brand_config)
-                    if blocked_brands:
-                        st.error(
-                            f"El archivo tiene marcas no permitidas para {brand_config['site_label']}: "
-                            f"{', '.join(blocked_brands)}."
-                        )
-                        st.stop()
-
-                if st.button(f"Analizar carga parcial: {update_label}", type="primary"):
-                    update_arti_df = None
-                    if update_operation == "photos":
-                        try:
-                            update_arti_df, _ = read_arti_for_app(brand_config)
-                        except Exception:
-                            update_arti_df = None
-                    matrixify_df, issues_df = build_matrixify_updates(
-                        template_df,
-                        update_input_df=update_df,
-                        arti=update_arti_df,
-                        operation=update_operation,
-                        brand_config=brand_config,
-                        tag_mode=tag_mode,
-                        image_mode=image_mode,
-                        only_missing_images=only_missing_images,
-                        body_mode=body_mode,
-                    )
-                    if matrixify_df.empty:
-                        st.warning("No se genero ninguna fila de carga parcial. Revisa la hoja Revision.")
-                    else:
-                        st.success(f"Carga parcial generada con {len(matrixify_df):,} productos.")
-                        st.dataframe(matrixify_df.head(100), use_container_width=True)
-                    if issues_df is not None and not issues_df.empty:
-                        st.warning(f"Hay {len(issues_df):,} observaciones.")
-                        st.dataframe(issues_df, use_container_width=True)
-                    excel_bytes = update_to_excel_bytes(matrixify_df, issues_df)
-                    st.download_button(
-                        "Descargar estructura Matrixify",
-                        data=excel_bytes,
-                        file_name=f"carga_parcial_{update_operation}_{brand_config['site_key']}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-            except Exception as exc:
-                st.error("No pude generar la carga parcial.")
-                st.exception(exc)
-        else:
-            st.info("Sube los archivos requeridos para generar la carga parcial.")
-        return
-
-    with st.container(key="sources_upload_panel"):
-        render_sources_card(
-            ui_config,
-            bigquery_ready,
-            input_count=int(st.session_state.get("input_row_count") or 0),
-            shopify_count=int(st.session_state.get("shopify_product_count") or 0),
-            arti_count=int(st.session_state.get("arti_row_count") or 0),
-        )
-        complete_source = st.radio(
-            "Fuente de datos actuales",
-            ["Shopify API", "Respaldo Excel"],
-            index=0 if is_shopify_configured(shopify_config) else 1,
-            help="Shopify API es la referencia operativa. El respaldo Excel solo se usa si la API no esta disponible.",
-        )
-        template_file = None
-        upload_nonce = int(st.session_state.get("load_reset_nonce") or 0)
-        input_upload_key = f"input_{upload_nonce}"
-        template_upload_key = f"template_{upload_nonce}"
-        upload_left, upload_right = st.columns([3.5, 1.5], gap="large")
-        input_file = st.session_state.get(input_upload_key)
-        with upload_left:
-            if complete_source == "Respaldo Excel" and input_file:
-                st.caption("Input cargado. Ahora sube el Catalogo Matrixify para conservar IDs.")
-            elif complete_source == "Respaldo Excel":
-                st.caption("Primero carga el input comercial. Luego este mismo espacio pedira el Catalogo Matrixify.")
-        with upload_right:
-            if complete_source == "Respaldo Excel" and input_file:
-                with st.container(key="catalog_upload_slot"):
-                    template_file = st.file_uploader(
-                        "Subir Catalogo Matrixify",
-                        type=["xlsx", "xls"],
-                        key=template_upload_key,
-                        label_visibility="collapsed",
-                        help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
-                    )
-            else:
-                with st.container(key="input_upload_slot"):
-                    input_file = st.file_uploader("Cargar input", type=["xlsx", "xls"], key=input_upload_key, label_visibility="collapsed")
-        st.session_state["input_loaded"] = bool(input_file)
-        complete_context = "|".join(
-            [
-                clean_value(brand_config.get("site_key")),
-                clean_value(complete_source),
-                uploaded_file_fingerprint(input_file),
-                uploaded_file_fingerprint(template_file),
-            ]
-        )
-        if st.session_state.get("complete_context") != complete_context:
-            clear_complete_load_state()
-            st.session_state["complete_context"] = complete_context
-
-    setup_rows = [
-        {
-            "Base": "Datos actuales Shopify",
-            "Ruta": "Shopify API" if complete_source == "Shopify API" else f"Respaldo Excel de {brand_config['site_label']}",
-            "Estado": "OK API" if complete_source == "Shopify API" and is_shopify_configured(shopify_config) else ("Obligatorio" if complete_source == "Respaldo Excel" else "Falta API"),
-        },
-        {
-            "Base": "ARTI",
-            "Ruta": "BigQuery" if bigquery_ready else f"{DEFAULT_ARTI_ZIP_PATH} / {DEFAULT_ARTI_CSV_PATH} / {DEFAULT_ARTI_PATH}",
-            "Estado": "OK BigQuery"
-            if bigquery_ready
-            else (
-                "OK ZIP"
-                if Path(DEFAULT_ARTI_ZIP_PATH).exists()
-                else ("OK CSV" if Path(DEFAULT_ARTI_CSV_PATH).exists() else ("OK XLSX" if Path(DEFAULT_ARTI_PATH).exists() else "Falta"))
-            ),
-        },
-        {
-            "Base": "Tipos Shopify",
-            "Ruta": "data/tipos_shopify.xlsx",
-            "Estado": "OK" if Path("data/tipos_shopify.xlsx").exists() else "Opcional",
-        },
-    ]
-    render_base_status_card(setup_rows)
-
-    can_process_complete = input_file and (complete_source == "Shopify API" or template_file)
-    if can_process_complete:
-        try:
-            if complete_source == "Shopify API":
-                if not is_shopify_configured(shopify_config):
-                    st.error("Este sitio no tiene Shopify API configurada en Secrets.")
-                    st.stop()
-                with st.spinner("Leyendo productos y variantes actuales desde Shopify..."):
-                    shopify_products = fetch_products(shopify_config)
-                st.session_state["shopify_product_count"] = len(shopify_products)
-                st.session_state["complete_shopify_products"] = shopify_products
-                template_df = shopify_products_to_matrixify_df(shopify_products)
-                template_source = f"Shopify API ({len(shopify_products):,} productos)"
-            else:
-                template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
-                template_source = f"respaldo operativo cargado para {brand_config['site_label']}"
-                if "Vendor" in template_df.columns:
-                    catalog_vendors = {
-                        clean_value(value).lower()
-                        for value in template_df["Vendor"].dropna()
-                        if clean_value(value)
-                    }
-                    expected_vendors = expected_catalog_vendors(brand_config)
-                    if catalog_vendors and catalog_vendors.isdisjoint(expected_vendors):
-                        st.error(
-                            f"El respaldo Excel cargado no parece ser de {brand_config['site_label']}. "
-                            f"Vendors esperados: {', '.join(sorted(expected_vendors))}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
-                        )
-                        st.stop()
-
-            input_df = read_excel(input_file)
-            st.session_state["input_row_count"] = len(input_df)
-            brand_column, detected_brands, blocked_brands = input_brand_report(input_df, brand_config)
-            if blocked_brands:
-                st.error(
-                    f"El input tiene marcas no permitidas para {brand_config['site_label']}: "
-                    f"{', '.join(blocked_brands)}. Marcas permitidas: {', '.join(brand_config['allowed_arti_brands'])}."
-                )
-                st.stop()
-
-            try:
-                arti_df, arti_source = read_arti_for_app(brand_config)
-            except FileNotFoundError:
-                st.error(
-                    "Falta configurar BigQuery o dejar un respaldo local de ARTI: "
-                    f"{DEFAULT_ARTI_ZIP_PATH}, {DEFAULT_ARTI_CSV_PATH} o {DEFAULT_ARTI_PATH}"
-                )
-                st.stop()
-            except Exception as exc:
-                st.error("No se pudo leer el ARTI desde BigQuery.")
-                st.exception(exc)
-                st.stop()
-
-            st.session_state["arti_row_count"] = len(arti_df)
-            left_col, right_col = st.columns([2, 1], gap="large")
-            analyze_clicked = False
-            with left_col:
-                render_preview_table(input_df)
-                with st.container(key="action_panel"):
-                    render_analyze_card(ui_config)
-                    analyze_clicked = st.button("Analizar input", type="primary", key=f"analyze_input_{brand_config['site_key']}")
-                render_validations_card()
-            with right_col:
-                render_summary_metrics(
-                    [
-                        ("Columnas base", len(template_df.columns)),
-                        ("Filas ARTI BigQuery", len(arti_df)),
-                        ("Productos input", len(input_df)),
-                        ("Marcas detectadas", len(detected_brands)),
-                    ]
-                )
-                render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
-
-            if analyze_clicked:
-                with st.spinner("Analizando input y cruzando contra Shopify/BigQuery..."):
-                    matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
-                        input_df, arti_df, template_df, brand_config=brand_config
-                    )
-                matrixify_df = coalesce_duplicate_columns(matrixify_df)
-                summary_df = coalesce_duplicate_columns(summary_df)
-                issues_df = coalesce_duplicate_columns(issues_df)
-                type_warnings_df = coalesce_duplicate_columns(type_warnings_df)
-                skipped_df = coalesce_duplicate_columns(skipped_df)
-                sial_df = coalesce_duplicate_columns(sial_df)
-                if complete_source == "Shopify API":
-                    matrixify_df = apply_shopify_siblings_to_matrixify(
-                        matrixify_df,
-                        st.session_state.get("complete_shopify_products", []),
-                    )
-                centry_df, centry_issues_df = build_centry_from_matrixify(matrixify_df, brand_config, arti_df=arti_df)
-                st.session_state["complete_matrixify_df"] = matrixify_df
-                st.session_state["complete_summary_df"] = summary_df
-                st.session_state["complete_issues_df"] = issues_df
-                st.session_state["complete_type_warnings_df"] = type_warnings_df
-                st.session_state["complete_skipped_df"] = skipped_df
-                st.session_state["complete_sial_df"] = sial_df
-                st.session_state["complete_centry_df"] = centry_df
-                st.session_state["complete_centry_issues_df"] = centry_issues_df
-                st.session_state["complete_analysis_message"] = (
-                    f"Analisis terminado: {len(matrixify_df):,} filas Matrixify, "
-                    f"{len(issues_df):,} observaciones, {len(skipped_df):,} omitidos sin cambios."
-                )
-
-            matrixify_df = st.session_state.get("complete_matrixify_df")
-            if matrixify_df is not None:
-                summary_df = st.session_state.get("complete_summary_df", pd.DataFrame())
-                issues_df = st.session_state.get("complete_issues_df", pd.DataFrame())
-                type_warnings_df = st.session_state.get("complete_type_warnings_df", pd.DataFrame())
-                skipped_df = st.session_state.get("complete_skipped_df", pd.DataFrame())
-                sial_df = st.session_state.get("complete_sial_df", pd.DataFrame())
-                centry_df = st.session_state.get("complete_centry_df", pd.DataFrame())
-                centry_issues_df = st.session_state.get("complete_centry_issues_df", pd.DataFrame())
-                matrixify_df = coalesce_duplicate_columns(matrixify_df)
-                summary_df = coalesce_duplicate_columns(summary_df)
-                issues_df = coalesce_duplicate_columns(issues_df)
-                type_warnings_df = coalesce_duplicate_columns(type_warnings_df)
-                skipped_df = coalesce_duplicate_columns(skipped_df)
-                sial_df = coalesce_duplicate_columns(sial_df)
-                centry_df = coalesce_duplicate_columns(centry_df)
-                centry_issues_df = coalesce_duplicate_columns(centry_issues_df)
-
-                analysis_message = st.session_state.get("complete_analysis_message")
-                if analysis_message:
-                    st.info(analysis_message)
-                render_matrixify_result_card(ready=not matrixify_df.empty)
-                if matrixify_df.empty:
-                    st.error("No se pudo generar ninguna fila Matrixify.")
-                    if issues_df is not None and not issues_df.empty:
-                        st.warning(f"Hay {len(issues_df):,} observaciones para revisar.")
-                        st.dataframe(issues_df, use_container_width=True)
-                    if skipped_df is not None and not skipped_df.empty:
-                        st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
-                        st.dataframe(skipped_df, use_container_width=True)
-                else:
-                    st.success(f"Vista previa generada con {len(matrixify_df):,} variantes.")
-                    matrixify_tab, centry_tab, revision_tab = st.tabs(["Matrixify", "Centry", "Revision"])
-                    with matrixify_tab:
-                        st.dataframe(summary_df, use_container_width=True)
-                        st.dataframe(matrixify_df.head(100), use_container_width=True, height=360)
-                    with centry_tab:
-                        if centry_df is not None and not centry_df.empty:
-                            render_centry_preview(centry_df, centry_issues_df)
-                        else:
-                            st.warning("No se genero vista previa Centry. Revisa si Matrixify tiene filas validas con SKU, Vendor y talla.")
-                    with revision_tab:
-                        if issues_df is not None and not issues_df.empty:
-                            st.warning(f"Hay {len(issues_df):,} observaciones para revisar.")
-                            st.dataframe(issues_df, use_container_width=True)
-                        else:
-                            st.success("Sin observaciones Matrixify.")
-                        if type_warnings_df is not None and not type_warnings_df.empty:
-                            st.warning("Revisa la hoja Tipos nuevos antes de cargar en Shopify.")
-                            st.dataframe(type_warnings_df, use_container_width=True)
-                        if skipped_df is not None and not skipped_df.empty:
-                            st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
-                            st.dataframe(skipped_df, use_container_width=True)
-                        if sial_df is not None and not sial_df.empty:
-                            st.write("Vista previa Carga Sial")
-                            st.dataframe(sial_df.head(100), use_container_width=True, height=320)
-
-                excel_bytes = columbia_to_excel_bytes(
-                    matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df
-                )
-                st.download_button(
-                    "Descargar estructura Matrixify",
-                    data=excel_bytes,
-                    file_name=brand_config["output_filename"],
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-
-                if complete_source == "Shopify API" and is_shopify_configured(shopify_config) and not matrixify_df.empty:
-                    st.info(
-                        "Sincronizacion directa habilitada: titulo, descripcion, vendor, tipo, tags, metafields, fotos, variantes, precios y SKUs de inventory item."
-                        " Ninguna variante se envia por API sin SKU."
-                    )
-                    confirm_complete = st.checkbox("Confirmo que revise la vista previa y quiero sincronizar productos existentes en Shopify")
-                    if confirm_complete and st.button("Sincronizar Shopify", type="primary"):
-                        with st.spinner("Sincronizando productos existentes en Shopify..."):
-                            result_df = apply_full_product_updates(shopify_config, matrixify_df)
-                        st.session_state["complete_apply_result_df"] = result_df
-                        st.dataframe(result_df, use_container_width=True)
-                    result_df = st.session_state.get("complete_apply_result_df")
-                    if result_df is not None:
-                        st.download_button(
-                            "Descargar reporte de sincronizacion",
-                            data=dataframe_to_excel_bytes({"Resultado": result_df}),
-                            file_name=f"resultado_carga_completa_{brand_config['site_key']}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        )
-            st.markdown("</div>", unsafe_allow_html=True)
-        except Exception as exc:
-            st.error("No pude procesar los archivos.")
-            st.exception(exc)
-    else:
-        st.info("Carga el input comercial para comenzar. Si no usas Shopify API, tambien sube el respaldo Excel del sitio.")
-
-    st.markdown(
-        """
-        <div class="benefits-wrap">
-        <div class="benefits">
-            <div class="benefit"><b>Actualiza con IDs</b><p>Usa Shopify API como referencia operativa para conservar IDs de producto y variante.</p></div>
-            <div class="benefit"><b>Variantes por talla</b><p>Lee ARTI y genera SKUs, barcodes, precios y tallas ordenadas.</p></div>
-            <div class="benefit"><b>Estructura controlada</b><p>Entrega siempre las hojas y columnas necesarias para carga Matrixify.</p></div>
-        </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    output_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
+        input_df, arti, template
     )
+
+    output_path = available_output_path(OUTPUT_PATH)
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        output_df.to_excel(writer, sheet_name="Products", index=False)
+        summary_df.to_excel(writer, sheet_name="Resumen", index=False)
+        issues_df.to_excel(writer, sheet_name="Revision", index=False)
+        sial_df.to_excel(writer, sheet_name="Carga Sial", index=False)
+        type_warnings_df.to_excel(writer, sheet_name="Tipos nuevos", index=False)
+        skipped_df.to_excel(writer, sheet_name="Omitidos sin cambios", index=False)
+
+        for sheet in writer.book.worksheets:
+            sheet.freeze_panes = "A2"
+            for cell in sheet[1]:
+                cell.style = "Headline 4"
+            max_col = min(sheet.max_column, 98)
+            for col_idx in range(1, max_col + 1):
+                sheet.column_dimensions[sheet.cell(1, col_idx).column_letter].width = 18
+
+    print(output_path.resolve())
+    print(f"ARTI usado: {arti_source}")
+    print(summary_df.to_string(index=False))
 
 
 if __name__ == "__main__":

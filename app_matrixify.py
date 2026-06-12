@@ -1549,6 +1549,32 @@ def centry_footwear_cane_from_row(row):
     )
 
 
+def centry_tag_or_column_value(row, *labels):
+    candidates = [centry_tag_value(row, *labels)]
+    for label in labels:
+        candidates.append(row.get(label))
+    return first_non_empty(*candidates)
+
+
+def centry_labeled_characteristics(row, vendor, product_type, color, gender, material, composition, footwear_cane):
+    items = [
+        ("Tipo De Producto", product_type),
+        ("Género", gender),
+        ("Color", color),
+        ("Marca", vendor),
+        ("Ocasión", centry_tag_or_column_value(row, "Ocasión", "Ocasion")),
+        ("Colección", centry_tag_or_column_value(row, "Colección", "Coleccion")),
+        ("Material", material),
+        ("Composición", composition),
+        ("Altura De Taco", footwear_cane),
+    ]
+    return " |".join(
+        f"{label} : {centry_value(value).strip()}"
+        for label, value in items
+        if centry_value(value)
+    )
+
+
 def centry_gender_marketplace(gender):
     if gender == "Masculino":
         return "Hombre"
@@ -1716,7 +1742,7 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         category_probe = pd.Series({"Clase": category_record.get("class"), "Categoría": category_record.get("category"), "Type": product_type})
         arti_item = centry_arti_item_for_row(row, arti_lookup, current_mod_col, raw_size)
         size = centry_display_size(raw_size, centry_output_is_accessory(category_probe) and is_one_size(raw_size))
-        barcode = first_non_empty(row.get("Variant Barcode"), arti_item.get("barcode"))
+        barcode = first_non_empty(arti_item.get("barcode"), row.get("Variant Barcode"))
         tal_value = first_non_empty(arti_item.get("raw_size"), raw_size)
         variant_centry_sku = barcode or variant_sku
         class_name = category_record.get("class") or ("Calzado" if is_footwear else "Vestuario")
@@ -1724,13 +1750,23 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         composition = centry_composition_from_row(row)
         age = centry_age_from_gender(gender)
         footwear_cane = centry_footwear_cane_from_row(row)
+        characteristics = centry_labeled_characteristics(
+            row,
+            vendor,
+            product_type,
+            color,
+            gender,
+            material,
+            composition,
+            footwear_cane,
+        )
         centry_row = {column: "" for column in CENTRY_COLUMNS}
         centry_row.update(
             {
                 "Nombre del Producto": title,
                 "Marca": vendor,
                 "Descripcion": strip_html(row.get("Body HTML")),
-                "Listado de características": centry_value(row.get("Tags")).replace(",", " |"),
+                "Listado de características": characteristics,
                 "Garantía": "3 meses, Garantía del vendedor",
                 "Alto del paquete": first_non_empty(dimensions.get("height"), fallback_package["height"]),
                 "Ancho del paquete": first_non_empty(dimensions.get("width"), fallback_package["width"]),

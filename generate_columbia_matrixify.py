@@ -413,7 +413,9 @@ def normalize_size(value):
         "OS": "O/S",
         "UNICA": "O/S",
         "ÚNICA": "O/S",
+        "ÚNICA": "O/S",
         "TALLA UNICA": "O/S",
+        "TALLA ÚNICA": "O/S",
         "SX": "XS",
         "LXL": "L/XL",
         "SM": "S/M",
@@ -1720,7 +1722,20 @@ def variant_size_lookup_keys(value):
     keys = []
     raw = clean(value).upper()
     normalized = clean(normalize_size(value)).upper()
-    aliases = {"SX": "XS", "XS": "SX"}
+    aliases = {
+        "SX": "XS",
+        "XS": "SX",
+        "OS": "O/S",
+        "O/S": "OS",
+        "UNICA": "O/S",
+        "ÚNICA": "O/S",
+        "ÃšNICA": "O/S",
+        "TALLA UNICA": "O/S",
+        "TALLA ÚNICA": "O/S",
+        "TALLA ÃšNICA": "O/S",
+        "0": "O/S",
+        "000": "O/S",
+    }
     for key in (raw, normalized, aliases.get(raw, ""), aliases.get(normalized, "")):
         if key and key not in keys:
             keys.append(key)

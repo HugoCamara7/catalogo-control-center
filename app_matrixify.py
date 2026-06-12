@@ -1575,6 +1575,25 @@ def centry_labeled_characteristics(row, vendor, product_type, color, gender, mat
     )
 
 
+def centry_color_name_from_row(row, color_code=""):
+    color = first_non_empty(
+        row.get("Color Web"),
+        row.get("Color"),
+        row.get("COLOR"),
+        row.get("Nombre Color"),
+        row.get("Color Nombre"),
+        row.get("Metafield: custom.color_forus [single_line_text_field]"),
+        row.get("Metafield: theme.siblings_color [single_line_text_field]"),
+        row.get("Metafield: custom.siblings_color [single_line_text_field]"),
+        row.get("Metafield: custom.color [single_line_text_field]"),
+        row.get("Option2 Value"),
+        centry_tag_value(row, "Color", "Color Comercial", "Color Web"),
+    )
+    if color and color_code and clean_value(color).upper() == clean_value(color_code).upper():
+        return ""
+    return color
+
+
 def centry_gender_marketplace(gender):
     if gender == "Masculino":
         return "Hombre"
@@ -1732,7 +1751,7 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         title = centry_value(row.get("Title"))
         vendor = centry_value(row.get("Vendor"), brand_config.get("label", ""))
         product_type = centry_value(row.get("Type"))
-        color = first_non_empty(row.get("Option2 Value"), row.get("Metafield: custom.color [single_line_text_field]"), color_code)
+        color = first_non_empty(centry_color_name_from_row(row, color_code), color_code)
         raw_size = first_non_empty(row.get("__CENTRY_RAW_SIZE"), row.get("Option1 Value"))
         gender = centry_gender(row)
         is_footwear = centry_is_footwear(row)
@@ -1899,7 +1918,7 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
         model, color_code = split_model_color(mod_col)
         vendor = centry_value(row.get("Vendor"), brand_config.get("label", ""))
         product_type = centry_value(row.get("Type"))
-        color = first_non_empty(row.get("Option2 Value"), row.get("Metafield: custom.color [single_line_text_field]"), color_code)
+        color = first_non_empty(centry_color_name_from_row(row, color_code), color_code)
         raw_size = first_non_empty(row.get("__CENTRY_RAW_SIZE"), row.get("Option1 Value"))
         gender = centry_gender(row)
         images = centry_split_images(row.get("Image Src"))

@@ -230,8 +230,19 @@ def first_existing_column(df, candidates):
 
 
 def clean_value(value):
-    if pd.isna(value):
+    if value is None:
         return ""
+    if isinstance(value, (list, tuple, set)):
+        parts = [clean_value(item) for item in value]
+        return " | ".join(part for part in parts if part)
+    if isinstance(value, dict):
+        parts = [clean_value(item) for item in value.values()]
+        return " | ".join(part for part in parts if part)
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value).strip()
@@ -1776,7 +1787,10 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         category_record = centry_lookup_category(product_type, gender, vendor, centry_category(row))
         category_probe = pd.Series({"Clase": category_record.get("class"), "CategorÃ­a": category_record.get("category"), "Type": product_type})
         arti_item = centry_arti_item_for_row(row, arti_lookup, current_mod_col, raw_size)
-        size = centry_display_size(raw_size, centry_output_is_accessory(category_probe) and is_one_size(raw_size))
+        size = centry_display_size(
+            raw_size,
+            centry_output_is_accessory(category_probe) and (is_one_size(raw_size) or is_zero_size(raw_size)),
+        )
         barcode = first_non_empty(arti_item.get("barcode"), row.get("Variant Barcode"))
         tal_value = first_non_empty(arti_item.get("raw_size"), raw_size)
         variant_centry_sku = barcode or variant_sku
@@ -1944,7 +1958,10 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
         category_record = centry_lookup_category(product_type, gender, vendor, centry_category(row))
         category = category_record.get("class") or ("CALZADO" if centry_is_footwear(row) else ("ACCESORIOS" if "accesorio" in centry_category(row).lower() else "VESTUARIO"))
         category_probe = pd.Series({"Clase": category, "Categoria ": category, "Type": product_type})
-        size = centry_display_size(raw_size, centry_output_is_accessory(category_probe) and is_one_size(raw_size))
+        size = centry_display_size(
+            raw_size,
+            centry_output_is_accessory(category_probe) and (is_one_size(raw_size) or is_zero_size(raw_size)),
+        )
         tal_value = first_non_empty(row.get("__CENTRY_RAW_SIZE"), raw_size)
         rows.append(
             {
@@ -4266,7 +4283,6 @@ def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
     size_option = _size_option_from_product_data(product_data, requested_option_name)
     option_id = clean_value(size_option.get("id"))
     option_name = clean_value(size_option.get("name")) or requested_option_name
-    existing_sizes = _existing_sizes_from_product_data(product_data, option_name)
     existing_skus = {
         clean_value(variant.get("sku") or (variant.get("inventoryItem") or {}).get("sku")).upper()
         for variant in ((product_data.get("variants") or {}).get("nodes")) or []
@@ -4285,7 +4301,7 @@ def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
         size_keys = _size_lookup_keys(size)
         if sku and (sku in existing_skus or sku in seen_skus):
             continue
-        if any(size_key in existing_sizes or size_key in seen_sizes for size_key in size_keys):
+        if not sku and any(size_key in seen_sizes for size_key in size_keys):
             continue
         payload = _variant_bulk_input_from_row(
             variant_row,

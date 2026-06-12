@@ -29,6 +29,8 @@ from generate_columbia_matrixify import (
     first_non_empty,
     is_internal_k_size,
     is_one_size,
+    limit_words,
+    normalize_brand_name,
     normalize_size as normalize_master_size,
     size_sort_key as master_size_sort_key,
     split_model_color,
@@ -1396,6 +1398,20 @@ def centry_lookup_dimensions(product_type, fallback):
     return record or fallback
 
 
+def centry_sial_dimension_package(row, product_type, fallback):
+    dimensions = centry_lookup_dimensions(product_type, fallback)
+    aliases = {
+        "weight": ("Product Weight", "Package Weight", "Peso del paquete", "Peso (gr)", "Product Weight (gr)"),
+        "length": ("Product Length", "Package Length", "Largo del paquete", "Largo (cm)"),
+        "width": ("Product Width", "Package Width", "Ancho del paquete", "Ancho (cm)"),
+        "height": ("Product Height", "Package Height", "Alto del paquete", "Alto (cm)"),
+    }
+    package = {}
+    for key, columns in aliases.items():
+        package[key] = first_non_empty(*(row.get(column) for column in columns), dimensions.get(key), fallback[key])
+    return package
+
+
 def centry_split_images(value):
     parts = [centry_value(part) for part in re.split(r"[;\n]+", centry_value(value)) if centry_value(part)]
     return parts[:5]
@@ -1924,7 +1940,7 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
         images = centry_split_images(row.get("Image Src"))
         image = images[0] if images else ""
         fallback_package = centry_package_values(row)
-        package = centry_lookup_dimensions(product_type, fallback_package)
+        package = centry_sial_dimension_package(row, product_type, fallback_package)
         category_record = centry_lookup_category(product_type, gender, vendor, centry_category(row))
         category = category_record.get("class") or ("CALZADO" if centry_is_footwear(row) else ("ACCESORIOS" if "accesorio" in centry_category(row).lower() else "VESTUARIO"))
         category_probe = pd.Series({"Clase": category, "Categoria ": category, "Type": product_type})
@@ -1958,8 +1974,8 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
                 "Temporada ": centry_value(row.get("Temporada"), "Verano"),
                 "Modelo": model,
                 "Marca": vendor,
-                "Tecnologias ": first_non_empty(row.get("Metafield: custom.tecnologia [list.single_line_text_field]"), ""),
-                "Caracteristicas": centry_value(row.get("Tags")).replace(",", " |"),
+                "Tecnologias ": limit_words(first_non_empty(row.get("Metafield: custom.tecnologia [list.single_line_text_field]"), ""), 45),
+                "Caracteristicas": limit_words(centry_value(row.get("Tags")).replace(",", " |"), 45),
                 "Tipo de Boardshort": "",
                 "Tipo de Bikini": "",
                 "Iniciativas": "",
@@ -2155,13 +2171,17 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         seen_sizes = set()
         duplicate_skus = []
         duplicate_sizes = []
+        keep_duplicate_visible_sizes = (
+            "MARCA_MA" in variants.columns
+            and variants["MARCA_MA"].map(lambda value: normalize_brand_name(value) == "MOUNTAIN HARDWEAR").any()
+        )
         for variant_index, variant_row in variants.iterrows():
             sku_key = clean_value(variant_row.get("CODINT_MA")).upper()
             size_key = clean_value(display_size_for_site(variant_row.get("__SIZE"), brand_config)).upper()
             if sku_key and sku_key in seen_skus:
                 duplicate_skus.append(f"{sku_key} ({size_key or 'sin talla'})")
                 continue
-            if size_key and size_key in seen_sizes:
+            if size_key and size_key in seen_sizes and not keep_duplicate_visible_sizes:
                 duplicate_sizes.append(f"{size_key} ({sku_key or 'sin SKU'})")
                 continue
             if sku_key:
@@ -4100,13 +4120,18 @@ def _dedupe_product_variant_rows(product_variant_rows):
     seen_sizes = set()
     duplicate_skus = []
     duplicate_sizes = []
+    keep_duplicate_visible_sizes = False
+    if "Vendor" in product_variant_rows.columns:
+        keep_duplicate_visible_sizes = product_variant_rows["Vendor"].map(
+            lambda value: normalize_brand_name(value) == "MOUNTAIN HARDWEAR"
+        ).any()
     for index, row in product_variant_rows.iterrows():
         sku = clean_value(row.get("Variant SKU")).upper()
         size = clean_value(row.get("Option1 Value")).upper()
         if sku and sku in seen_skus:
             duplicate_skus.append(f"{sku} ({size or 'sin talla'})")
             continue
-        if size and size in seen_sizes:
+        if size and size in seen_sizes and not keep_duplicate_visible_sizes:
             duplicate_sizes.append(f"{size} ({sku or 'sin SKU'})")
             continue
         if sku:

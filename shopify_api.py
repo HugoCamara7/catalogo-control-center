@@ -1034,6 +1034,103 @@ def inventory_item_update(config, inventory_item_id, input_data):
     return payload.get("inventoryItem") or {}
 
 
+def fetch_locations(config):
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query LocationsForInventoryActivation($first: Int!, $after: String) {
+      locations(first: $first, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          legacyResourceId
+          name
+          isActive
+        }
+      }
+    }
+    """
+    locations = []
+    after = None
+    while True:
+        data = graphql_request(
+            shop_domain,
+            token,
+            query,
+            {"first": 250, "after": after},
+            api_version=api_version,
+            timeout=45,
+        )
+        connection = data.get("locations") or {}
+        for node in connection.get("nodes") or []:
+            if node.get("isActive") is False:
+                continue
+            locations.append(
+                {
+                    "id": clean(node.get("id")),
+                    "legacyResourceId": clean(node.get("legacyResourceId")),
+                    "name": clean(node.get("name")),
+                    "isActive": bool(node.get("isActive", True)),
+                }
+            )
+        page_info = connection.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+    return locations
+
+
+def inventory_activate(config, inventory_item_id, location_id, available=None):
+    inventory_item_id = clean(inventory_item_id)
+    location_id = clean(location_id)
+    if not inventory_item_id or not location_id:
+        return {}
+    variables = {"inventoryItemId": inventory_item_id, "locationId": location_id}
+    available_line = ""
+    if available is not None:
+        variables["available"] = int(available)
+        available_line = ", available: $available"
+    shop_domain, api_version, token = _client(config)
+    mutation = f"""
+    mutation InventoryActivateForMatrixify($inventoryItemId: ID!, $locationId: ID!{', $available: Int' if available is not None else ''}) {{
+      inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId{available_line}) {{
+        inventoryLevel {{
+          id
+          location {{
+            id
+            name
+          }}
+          item {{
+            id
+            sku
+          }}
+        }}
+        userErrors {{
+          field
+          message
+        }}
+      }}
+    }}
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        variables,
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("inventoryActivate") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        message = json.dumps(errors, ensure_ascii=False)
+        if "already" not in message.lower() and "ya" not in message.lower():
+            raise ShopifyApiError(message)
+    return payload.get("inventoryLevel") or {}
+
+
 def fetch_product_options_and_variants(config, product_id):
     shop_domain, api_version, token = _client(config)
     query = """

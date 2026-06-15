@@ -73,6 +73,8 @@ fetch_product_options_and_variants = _shopify_attr("fetch_product_options_and_va
 fetch_products = _shopify_attr("fetch_products")
 file_create = _shopify_attr("file_create")
 inventory_item_update = _shopify_attr("inventory_item_update", None)
+inventory_activate = _shopify_attr("inventory_activate", None)
+fetch_locations = _shopify_attr("fetch_locations", None)
 metafields_set = _shopify_attr("metafields_set")
 normalize_shop_domain = _shopify_attr("normalize_shop_domain")
 product_create = _shopify_attr("product_create")
@@ -124,7 +126,7 @@ DEFAULT_CENTRY_CODEX_CATEGORY_PATHS = [
 DEFAULT_PRODUCT_MASTER_TABLE = "forus-analitica-prod-datalake.bronze.stg_pe_central_arti"
 FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
-KPI_AUTO_REFRESH_SECONDS = 60 * 60
+KPI_AUTO_REFRESH_SECONDS = 15 * 60
 KPI_CACHE_DIR = Path("outputs/kpi_cache")
 KPI_CACHE_VERSION = "2026-06-15-latest-stock-cutoff-v1"
 
@@ -3641,6 +3643,16 @@ def is_current_kpi_result(result):
     return meta.get("cache_version") == KPI_CACHE_VERSION
 
 
+def is_stale_kpi_result(result, max_age_seconds=KPI_AUTO_REFRESH_SECONDS):
+    if not is_current_kpi_result(result):
+        return True
+    meta = result.get("meta", {}) if isinstance(result.get("meta"), dict) else {}
+    refreshed_at = parse_iso_datetime(meta.get("refreshed_at"))
+    if refreshed_at is None:
+        return True
+    return datetime.now(timezone.utc) - refreshed_at.astimezone(timezone.utc) >= timedelta(seconds=max_age_seconds)
+
+
 def save_cached_catalog_kpi_result(site_key, result):
     if not isinstance(result, dict) or "kpis" not in result:
         return
@@ -4622,6 +4634,171 @@ def _apply_inventory_item_updates(shopify_config, inventory_item_updates):
     return inventory_ok, inventory_errors
 
 
+def _shopify_inventory_target_locations(shopify_config):
+    if fetch_locations is None:
+        raise RuntimeError("Falta actualizar shopify_api.py: no existe fetch_locations.")
+    locations = fetch_locations(shopify_config)
+    configured = clean_value(
+        shopify_config.get("inventory_location_ids")
+        or shopify_config.get("inventory_locations")
+        or shopify_config.get("location_ids")
+    )
+    if configured:
+        requested = {clean_value(value) for value in re.split(r"[,;|\n]+", configured) if clean_value(value)}
+        requested_lower = {value.lower() for value in requested}
+
+        def matches(location):
+            location_values = {
+                clean_value(location.get("id")),
+                clean_value(location.get("legacyResourceId")),
+                clean_value(location.get("name")),
+            }
+            return any(value in requested or value.lower() in requested_lower for value in location_values if value)
+
+        locations = [location for location in locations if matches(location)]
+    return [location for location in locations if clean_value(location.get("id"))]
+
+
+def _inventory_activation_rows_from_product_data(product_data):
+    rows = []
+    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
+        inventory_item = variant.get("inventoryItem") or {}
+        sku = clean_value(inventory_item.get("sku") or variant.get("sku"))
+        inventory_item_id = clean_value(inventory_item.get("id"))
+        if sku and inventory_item_id:
+            rows.append(
+                {
+                    "SKU": sku,
+                    "Variant ID": clean_value(variant.get("legacyResourceId")),
+                    "Variant GID": clean_value(variant.get("id")),
+                    "Inventory Item ID": clean_value(inventory_item.get("legacyResourceId")),
+                    "Inventory Item GID": inventory_item_id,
+                    "Tracked": bool(inventory_item.get("tracked")),
+                }
+            )
+    return rows
+
+
+def _inventory_activation_rows_from_products(shopify_products, only_codes=None, only_skus=None):
+    only_codes = {clean_value(value).upper() for value in (only_codes or []) if clean_value(value)}
+    only_skus = {clean_value(value).upper() for value in (only_skus or []) if clean_value(value)}
+    rows = []
+    for product in shopify_products or []:
+        mod_col = clean_value(product.get("Mod-Col")).upper()
+        handle = clean_value(product.get("Handle"))
+        if only_codes and mod_col not in only_codes and handle.upper() not in only_codes:
+            continue
+        for variant in product.get("Variants") or []:
+            sku = clean_value(variant.get("Variant SKU"))
+            inventory_gid = clean_value(variant.get("Variant Inventory Item GID"))
+            if not sku or not inventory_gid:
+                continue
+            if only_skus and sku.upper() not in only_skus:
+                continue
+            rows.append(
+                {
+                    "Handle": handle,
+                    "Mod-Col": mod_col,
+                    "SKU": sku,
+                    "Variant ID": clean_value(variant.get("Variant ID")),
+                    "Inventory Item ID": clean_value(variant.get("Variant Inventory Item ID")),
+                    "Inventory Item GID": inventory_gid,
+                }
+            )
+    return rows
+
+
+def _activate_inventory_items_in_locations(shopify_config, activation_rows, locations=None, available=None, limit_errors=12):
+    if inventory_activate is None:
+        raise RuntimeError("Falta actualizar shopify_api.py: no existe inventory_activate.")
+    locations = locations if locations is not None else _shopify_inventory_target_locations(shopify_config)
+    if not locations:
+        return pd.DataFrame(
+            [
+                {
+                    "SKU": "",
+                    "Sucursal": "",
+                    "Resultado": "ERROR",
+                    "Mensaje": "No hay sucursales activas configuradas o disponibles.",
+                }
+            ]
+        )
+    unique_items = {}
+    for row in activation_rows or []:
+        inventory_gid = clean_value(row.get("Inventory Item GID") or row.get("inventoryItemId"))
+        sku = clean_value(row.get("SKU") or row.get("sku"))
+        if inventory_gid and sku:
+            unique_items.setdefault(inventory_gid, {**row, "SKU": sku, "Inventory Item GID": inventory_gid})
+
+    results = []
+    for item in unique_items.values():
+        for location in locations:
+            location_id = clean_value(location.get("id"))
+            location_name = clean_value(location.get("name")) or location_id
+            try:
+                inventory_activate(shopify_config, item["Inventory Item GID"], location_id, available=available)
+                results.append(
+                    {
+                        "Handle": clean_value(item.get("Handle")),
+                        "Mod-Col": clean_value(item.get("Mod-Col")),
+                        "SKU": item["SKU"],
+                        "Inventory Item GID": item["Inventory Item GID"],
+                        "Sucursal": location_name,
+                        "Location GID": location_id,
+                        "Resultado": "OK",
+                        "Mensaje": "Inventario activo en sucursal",
+                    }
+                )
+            except Exception as exc:
+                results.append(
+                    {
+                        "Handle": clean_value(item.get("Handle")),
+                        "Mod-Col": clean_value(item.get("Mod-Col")),
+                        "SKU": item["SKU"],
+                        "Inventory Item GID": item["Inventory Item GID"],
+                        "Sucursal": location_name,
+                        "Location GID": location_id,
+                        "Resultado": "ERROR",
+                        "Mensaje": str(exc)[:500],
+                    }
+                )
+                if len([row for row in results if row.get("Resultado") == "ERROR"]) >= limit_errors:
+                    return pd.DataFrame(results)
+    return pd.DataFrame(results)
+
+
+def activate_product_inventory_locations(shopify_config, product_data):
+    rows = _inventory_activation_rows_from_product_data(product_data)
+    result_df = _activate_inventory_items_in_locations(shopify_config, rows)
+    if result_df.empty or "Resultado" not in result_df.columns:
+        return 0, []
+    ok_count = safe_int_value((result_df["Resultado"] == "OK").sum())
+    errors = (
+        result_df.loc[result_df["Resultado"] == "ERROR", "Mensaje"].dropna().map(clean_value).tolist()
+        if "Mensaje" in result_df.columns
+        else []
+    )
+    return ok_count, errors
+
+
+def inventory_activation_filters_from_input(df):
+    if df is None or df.empty:
+        return set(), set()
+    normalized = coalesce_duplicate_columns(df)
+    mod_col_col = first_existing_column(
+        normalized,
+        ["Mod-Col", "COD MOD COL", "Codigo Modelo Color", "Código Modelo Color", "Handle"],
+    )
+    sku_col = first_existing_column(normalized, ["SKU", "Variant SKU", "SKU de la variante", "CODINT_MA", "Cod Int"])
+    codes = set()
+    skus = set()
+    if mod_col_col:
+        codes = {clean_value(value).upper() for value in normalized[mod_col_col].dropna() if clean_value(value)}
+    if sku_col:
+        skus = {clean_value(value).upper() for value in normalized[sku_col].dropna() if clean_value(value)}
+    return codes, skus
+
+
 def _variant_option_values(product_variant_rows):
     values = []
     for _, row in product_variant_rows.iterrows():
@@ -5021,6 +5198,20 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     product_messages.append("Error SKU post-creacion: " + " | ".join(inventory_errors[:5]))
 
             verified_product_data = fetch_product_options_and_variants(shopify_config, product_gid)
+            try:
+                activation_ok, activation_errors = activate_product_inventory_locations(
+                    shopify_config,
+                    verified_product_data,
+                )
+                if activation_ok:
+                    product_messages.append(f"{activation_ok} activaciones de inventario en sucursales")
+                if activation_errors:
+                    product_status = "PARCIAL"
+                    product_messages.append("Error activando inventario: " + " | ".join(activation_errors[:5]))
+            except Exception as exc:
+                product_status = "PARCIAL"
+                product_messages.append(f"Error activacion inventario sucursales: {exc}")
+
             variant_sync_problems = _verify_shopify_variants(product_variant_rows, verified_product_data)
             if variant_sync_problems:
                 product_status = "PARCIAL"
@@ -6785,16 +6976,16 @@ def inject_custom_css(config):
         .kpi-chart-grid {{
             display:grid;
             grid-template-columns:repeat(2,minmax(0,1fr));
-            gap:16px;
-            margin:18px 0;
+            gap:18px;
+            margin:20px 0 22px;
         }}
         .chart-card {{
             min-height:360px;
             border-radius:14px;
             background:#FFFFFF;
             border:1px solid #DDE6F2;
-            box-shadow:0 12px 26px rgba(15,23,42,0.06);
-            padding:18px 20px 20px;
+            box-shadow:0 14px 30px rgba(15,23,42,0.07);
+            padding:20px 20px 18px;
         }}
         .chart-head {{
             display:flex;
@@ -6811,55 +7002,67 @@ def inject_custom_css(config):
             font-size:20px;
             font-weight:950;
         }}
+        .chart-subtitle {{
+            margin:6px 0 0;
+            color:#64748B;
+            font-size:12px;
+            line-height:1.35;
+            font-weight:750;
+        }}
         .chart-action {{
             display:none;
         }}
         .bar-stage {{
-            height:250px;
-            display:flex;
-            align-items:flex-end;
-            gap:12px;
-            padding:16px 8px 4px;
-            border-bottom:1px solid #DDE6F2;
-            background:repeating-linear-gradient(to top, transparent 0, transparent 48px, #E8EEF7 49px);
+            display:grid;
+            gap:11px;
+            padding:4px 0 0;
         }}
         .bar-item {{
-            flex:1;
-            min-width:0;
-            display:flex;
-            flex-direction:column;
+            position:relative;
+            display:grid;
+            grid-template-columns:minmax(120px, 0.7fr) minmax(160px, 1.3fr) auto;
             align-items:center;
-            justify-content:flex-end;
-            gap:7px;
-            height:100%;
+            gap:12px;
+            min-height:34px;
+            padding:6px 8px;
+            border-radius:10px;
+            background:#F8FAFC;
+            border:1px solid #EDF2F7;
         }}
         .bar-value {{
-            color:#0B5CF6;
+            min-width:54px;
+            text-align:right;
+            color:#172554;
             font-size:12px;
             font-weight:950;
         }}
         .bar-fill {{
-            width:64%;
-            min-height:3px;
-            border-radius:7px 7px 0 0;
-            background:linear-gradient(180deg,#2563FF 0%,#0958D9 100%);
-            box-shadow:0 8px 18px rgba(37,99,255,0.22);
+            height:12px;
+            min-width:4px;
+            border-radius:999px;
+            background:linear-gradient(90deg,#2563FF 0%,#0958D9 100%);
+            box-shadow:0 6px 14px rgba(37,99,255,0.18);
         }}
         .bar-fill.purple {{
-            background:linear-gradient(180deg,#6D5BFF 0%,#3D2CCF 100%);
+            background:linear-gradient(90deg,#7C3AED 0%,#4338CA 100%);
         }}
         .bar-label {{
-            min-height:46px;
             display:flex;
-            flex-direction:column;
             align-items:center;
-            justify-content:flex-start;
-            gap:5px;
+            gap:8px;
             color:#172554;
-            font-size:10px;
-            line-height:1.1;
-            text-align:center;
-            font-weight:850;
+            font-size:12px;
+            line-height:1.15;
+            text-align:left;
+            font-weight:900;
+            min-width:0;
+        }}
+        .bar-track {{
+            width:100%;
+            height:12px;
+            border-radius:999px;
+            background:#EAF0F8;
+            overflow:hidden;
         }}
         .table-pager {{
             display:flex;
@@ -6868,19 +7071,27 @@ def inject_custom_css(config):
             gap:12px;
             margin-top:14px;
         }}
+        div[class*="_actions_prev"] button,
+        div[class*="_actions_next"] button,
+        div[class*="_variants_prev"] button,
+        div[class*="_variants_next"] button {{
+            min-width:112px !important;
+            width:112px !important;
+            padding:0 16px !important;
+            justify-content:center !important;
+        }}
         .pager-note {{
             color:#64748B;
             font-size:12px;
             font-weight:750;
         }}
         .bar-item {{
-            position:relative;
             cursor:pointer;
             outline:none;
         }}
         .bar-item:hover .bar-fill,
         .bar-item:focus .bar-fill {{
-            transform:scaleY(1.04);
+            transform:scaleX(1.01);
             filter:saturate(1.2);
             box-shadow:0 12px 28px rgba(37,99,255,0.32);
         }}
@@ -6891,7 +7102,7 @@ def inject_custom_css(config):
         }}
         .bar-fill {{
             transition:transform .18s ease, filter .18s ease, box-shadow .18s ease;
-            transform-origin:bottom;
+            transform-origin:left;
         }}
         .bar-value {{
             transition:transform .18s ease, color .18s ease;
@@ -7613,12 +7824,21 @@ def reset_load_workspace():
         "complete_context",
         "shopify_preview_df",
         "shopify_apply_result_df",
+        "shopify_preview_issues_df",
+        "shopify_preview_matrixify_df",
+        "shopify_preview_operation",
+        "inventory_activation_preview_df",
+        "inventory_activation_rows",
+        "inventory_activation_locations",
+        "inventory_activation_issues_df",
+        "inventory_activation_result_df",
         "template_update",
         "update_centry_codes",
         "update_tags",
         "update_photos",
         "update_title",
         "update_body",
+        "update_inventory_locations",
     ):
         st.session_state.pop(key, None)
     st.session_state["load_reset_nonce"] = int(st.session_state.get("load_reset_nonce") or 0) + 1
@@ -7801,7 +8021,6 @@ def format_kpi_number(value):
 def render_kpi_cards(kpis):
     primary_cards = [
         ("Modelos con stock eComm", kpis["modelos_con_stock"], "blue", "&#9633;"),
-        ("Unidades stock eComm", kpis.get("stock_ecomm_units", 0), "cyan", "U"),
         ("Creados con stock", kpis["modelos_creados_con_stock"], "green", "&#9679;"),
         ("Pendientes por crear", kpis["modelos_pendientes"], "orange", "!"),
         ("Cobertura stock eComm", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
@@ -7824,31 +8043,6 @@ def render_kpi_cards(kpis):
         f"""
         <div class="kpi-section-label">KPIs principales según stock eComm</div>
         <div class="kpi-card-grid">{cards_html(primary_cards)}</div>
-        """
-    )
-
-
-def render_kpi_context_cards(kpis):
-    secondary_cards = [
-        ("Total creados Shopify", kpis["modelos_creados_shopify"], "green", "&#9635;"),
-        ("Creados sin stock eComm", kpis["productos_creados_sin_stock"], "cyan", "&#9636;"),
-    ]
-
-    def cards_html(cards):
-        return "".join(
-            f"""
-            <div class="kpi-card {tone}">
-                <div class="kpi-icon">{icon}</div>
-                <div><span>{label}</span><strong>{format_kpi_number(value)}</strong></div>
-            </div>
-            """
-            for label, value, tone, icon in cards
-        )
-
-    render_html(
-        f"""
-        <div class="kpi-section-label secondary">Contexto Shopify fuera del stock eComm</div>
-        <div class="kpi-card-grid">{cards_html(secondary_cards)}</div>
         """
     )
 
@@ -7925,29 +8119,31 @@ def render_kpi_bar_chart(title, rows, icon="&#9661;", purple=False):
     bars = []
     for row in rows:
         value = safe_float_value(row.get("value"))
-        height = max(3, safe_int_value((value / max_value) * 190)) if value else 3
+        width = max(2, min(100, (value / max_value) * 100)) if value else 2
         label = escape(clean_value(row.get("label")))
         short_label = escape(clean_value(row.get("short")) or clean_value(row.get("label")))
-        label_html = "<br>".join(short_label.split(" "))
         value_text = format_kpi_number(value)
         bar_class = "bar-fill purple" if purple else "bar-fill"
         bars.append(
             f"""
             <div class="bar-item" tabindex="0" aria-label="{label}: {value_text}">
                 <div class="bar-tooltip">{label}<strong>{value_text}</strong></div>
-                <div class="bar-value">{value_text}</div>
-                <div class="{bar_class}" style="height:{height}px;"></div>
                 <div class="bar-label">
                     <span class="bar-label-icon">{row.get("icon", "")}</span>
-                    <span>{label_html}</span>
+                    <span>{short_label}</span>
                 </div>
+                <div class="bar-track"><div class="{bar_class}" style="width:{width:.1f}%;"></div></div>
+                <div class="bar-value">{value_text}</div>
             </div>
             """
         )
     return f"""
     <div class="chart-card">
         <div class="chart-head">
-            <div class="chart-title"><span>{icon}</span><span>{escape(title)}</span></div>
+            <div>
+                <div class="chart-title"><span>{icon}</span><span>{escape(title)}</span></div>
+                <p class="chart-subtitle">Ranking operativo para priorizar acciones y revisar proporciones.</p>
+            </div>
         </div>
         <div class="bar-stage">{''.join(bars)}</div>
     </div>
@@ -8198,11 +8394,11 @@ def render_actions_table(actions_df, key_prefix):
         </div>
         """
     )
-    pager_left, pager_mid, pager_right = st.columns([1.4, 1, 1.4])
+    pager_left, pager_mid, pager_right = st.columns([1.2, 1.8, 1.2])
     with pager_left:
         st.caption(f"Mostrando {len(visible)} de {len(filtered)} resultados filtrados.")
     with pager_mid:
-        c1, c2, c3 = st.columns([1, 1.2, 1])
+        c1, c2, c3 = st.columns([1.3, 0.9, 1.3])
         with c1:
             if st.button("Anterior", key=f"{key_prefix}_actions_prev", disabled=st.session_state[page_key] <= 1):
                 st.session_state[page_key] -= 1
@@ -8306,11 +8502,11 @@ def render_missing_variants_table(missing_variants_df, key_prefix):
         </div>
         """
     )
-    pager_left, pager_mid, pager_right = st.columns([1.4, 1, 1.4])
+    pager_left, pager_mid, pager_right = st.columns([1.2, 1.8, 1.2])
     with pager_left:
         st.caption(f"Mostrando {len(visible)} de {len(filtered)} variantes filtradas. Este detalle no cuenta como KPI principal.")
     with pager_mid:
-        c1, c2, c3 = st.columns([1, 1.2, 1])
+        c1, c2, c3 = st.columns([1.3, 0.9, 1.3])
         with c1:
             if st.button("Anterior", key=f"{key_prefix}_variants_prev", disabled=st.session_state[page_key] <= 1):
                 st.session_state[page_key] -= 1
@@ -8385,6 +8581,15 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         st.info("Cargando dashboard...")
         return
 
+    if is_stale_kpi_result(result):
+        with st.spinner("Actualizando dashboard en vivo..."):
+            try:
+                result = load_catalog_kpi_result(brand_config, shopify_config)
+                st.session_state[run_key] = result
+                save_cached_catalog_kpi_result(brand_config["site_key"], result)
+            except Exception as exc:
+                st.warning(f"No se pudo autoactualizar el dashboard: {exc}")
+
     meta = result.get("meta", {}) if isinstance(result, dict) else {}
     refreshed_at = parse_iso_datetime(meta.get("refreshed_at"))
     refreshed_label = format_datetime_lima(meta.get("refreshed_at"))
@@ -8392,6 +8597,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     with toolbar_left:
         if refreshed_label:
             st.caption(f"Última actualización: {refreshed_label}")
+            st.caption("Actualización automática: cada 15 minutos mientras el dashboard esté abierto.")
         if is_current_kpi_result(result):
             st.caption(
                 "Filtro eComm: "
@@ -8404,25 +8610,21 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         else:
             st.warning("Dashboard con metadatos antiguos. Presiona Actualizar para recalcular el filtro eComm.")
     with toolbar_right:
-        manual_refresh = st.button("Actualizar", type="primary", help="Actualizar dashboard", key=f"{brand_config['site_key']}_refresh_kpis")
+        manual_refresh = st.button(
+            "Actualizar",
+            type="primary",
+            help="Recalcular ahora. Si no lo presionas, la app se autoactualiza cada 15 minutos.",
+            key=f"{brand_config['site_key']}_refresh_kpis",
+        )
     if manual_refresh:
         with st.spinner("Actualizando dashboard..."):
             try:
                 result = load_catalog_kpi_result(brand_config, shopify_config)
                 st.session_state[run_key] = result
                 save_cached_catalog_kpi_result(brand_config["site_key"], result)
+                st.rerun()
             except Exception as exc:
                 st.error(f"No se pudo actualizar el dashboard: {exc}")
-
-    if refreshed_at is not None:
-        refresh_age = datetime.now(timezone.utc) - refreshed_at.astimezone(timezone.utc)
-        if refresh_age >= timedelta(seconds=KPI_AUTO_REFRESH_SECONDS):
-            st.warning(
-                f"Dashboard pendiente de actualizar. Última actualización: {refreshed_label}. "
-                "Haz click en Actualizar."
-            )
-    else:
-        st.warning("Dashboard pendiente de actualizar. Haz click en Actualizar.")
 
     kpis = result["kpis"]
     combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
@@ -8440,7 +8642,6 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
             )
     render_kpi_cards(kpis)
     render_non_visible_combo_table(combo_summary_df)
-    render_kpi_context_cards(kpis)
 
     actions_df = result["actions"]
     non_visible_web_df = result.get("non_visible_web", pd.DataFrame())
@@ -8890,6 +9091,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Siblings": "siblings",
             "Titulo": "title",
             "Body HTML / Material / Cuidado": "body",
+            "Activar inventario en sucursales": "inventory_locations",
         }
         st.markdown('<div class="section-card"><h2>Carga parcial</h2>', unsafe_allow_html=True)
         update_label = st.selectbox("Que quieres actualizar", list(operation_labels), index=0)
@@ -8954,11 +9156,22 @@ api_version = "{DEFAULT_API_VERSION}"
                 )
             else:
                 st.caption("Detecta Body HTML con Material/Cuidado mezclados y genera solo los productos afectados.")
+        elif update_operation == "inventory_locations":
+            update_file = st.file_uploader(
+                "2. Opcional: subir lista de SKUs, Mod-Col o Handles",
+                type=["xlsx", "xls"],
+                key="update_inventory_locations",
+                help="Si no subes archivo, se revisan todas las variantes con SKU del catálogo Shopify.",
+            )
+            st.caption("Activa cada inventory item con SKU en todas las sucursales activas de Shopify o en las locations configuradas en Secrets.")
         st.markdown("</div>", unsafe_allow_html=True)
 
-        update_ready = update_file or update_operation in ("photos", "siblings") or body_mode == "fix_catalog"
+        update_ready = update_file or update_operation in ("photos", "siblings", "inventory_locations") or body_mode == "fix_catalog"
         if update_source == "Shopify API" and not is_shopify_configured(shopify_config):
             st.error("Este sitio no tiene Shopify API configurada en Secrets.")
+            update_ready = False
+        if update_operation == "inventory_locations" and update_source != "Shopify API":
+            st.error("La activación de inventario en sucursales solo se puede ejecutar con Shopify API.")
             update_ready = False
 
         if update_source == "Shopify API" and update_ready:
@@ -9044,6 +9257,96 @@ api_version = "{DEFAULT_API_VERSION}"
                                 st.warning(
                                     f"Faltan {missing_ean_count:,} EAN. "
                                     "Revisa la hoja Revision Centry para ver columnas EAN detectadas desde BigQuery."
+                                )
+                    return
+
+                if update_operation == "inventory_locations":
+                    if st.button("Analizar activación de inventario", type="primary"):
+                        with st.spinner("Leyendo Shopify y preparando activación por sucursal..."):
+                            shopify_products = fetch_products(shopify_config)
+                            codes, skus = inventory_activation_filters_from_input(update_df)
+                            activation_rows = _inventory_activation_rows_from_products(
+                                shopify_products,
+                                only_codes=codes,
+                                only_skus=skus,
+                            )
+                            locations = _shopify_inventory_target_locations(shopify_config)
+                            preview_rows = []
+                            for item in activation_rows:
+                                for location in locations:
+                                    preview_rows.append(
+                                        {
+                                            "Handle": item.get("Handle"),
+                                            "Mod-Col": item.get("Mod-Col"),
+                                            "SKU": item.get("SKU"),
+                                            "Inventory Item GID": item.get("Inventory Item GID"),
+                                            "Sucursal": location.get("name"),
+                                            "Location GID": location.get("id"),
+                                            "Acción": "Activar inventory item en sucursal",
+                                        }
+                                    )
+                            preview_df = pd.DataFrame(preview_rows)
+                            issues = []
+                            if update_df is not None and not codes and not skus:
+                                issues.append(
+                                    {
+                                        "Tipo": "Input",
+                                        "Detalle": "El archivo no tiene columnas reconocibles de SKU, Variant SKU, Mod-Col, COD MOD COL o Handle.",
+                                    }
+                                )
+                            if not locations:
+                                issues.append({"Tipo": "Sucursales", "Detalle": "No se encontraron locations activas en Shopify."})
+                            if not activation_rows:
+                                issues.append({"Tipo": "Variantes", "Detalle": "No se encontraron variantes con SKU e Inventory Item GID."})
+                            st.session_state["inventory_activation_preview_df"] = preview_df
+                            st.session_state["inventory_activation_rows"] = activation_rows
+                            st.session_state["inventory_activation_locations"] = locations
+                            st.session_state["inventory_activation_issues_df"] = pd.DataFrame(issues)
+
+                    preview_df = st.session_state.get("inventory_activation_preview_df")
+                    issues_df = st.session_state.get("inventory_activation_issues_df", pd.DataFrame())
+                    activation_rows = st.session_state.get("inventory_activation_rows", [])
+                    locations = st.session_state.get("inventory_activation_locations", [])
+                    if preview_df is not None:
+                        if preview_df.empty:
+                            st.warning("No se genero vista previa de activación.")
+                        else:
+                            st.success(
+                                f"Vista previa lista: {len(activation_rows):,} variantes con SKU x "
+                                f"{len(locations):,} sucursales = {len(preview_df):,} activaciones."
+                            )
+                            st.dataframe(preview_df.head(200), use_container_width=True, height=360)
+                        if issues_df is not None and not issues_df.empty:
+                            st.warning(f"Hay {len(issues_df):,} observaciones.")
+                            st.dataframe(issues_df, use_container_width=True)
+                        st.download_button(
+                            "Descargar vista previa activación",
+                            data=dataframe_to_excel_bytes(
+                                {
+                                    "Activaciones": preview_df if preview_df is not None else pd.DataFrame(),
+                                    "Revision": issues_df if issues_df is not None else pd.DataFrame(),
+                                }
+                            ),
+                            file_name=f"activacion_inventario_{brand_config['site_key']}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+                        can_apply_activation = bool(activation_rows) and bool(locations)
+                        if can_apply_activation:
+                            confirm_activation = st.checkbox("Confirmo activar estas variantes en las sucursales Shopify")
+                            if confirm_activation and st.button("Activar inventario en Shopify", type="primary"):
+                                with st.spinner("Activando inventory items en sucursales..."):
+                                    result_df = _activate_inventory_items_in_locations(
+                                        shopify_config,
+                                        activation_rows,
+                                        locations=locations,
+                                    )
+                                st.session_state["inventory_activation_result_df"] = result_df
+                                st.dataframe(result_df, use_container_width=True, height=360)
+                                st.download_button(
+                                    "Descargar reporte de activación",
+                                    data=dataframe_to_excel_bytes({"Resultado": result_df}),
+                                    file_name=f"resultado_activacion_inventario_{brand_config['site_key']}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 )
                     return
 

@@ -369,6 +369,11 @@ ARTI_COLUMN_ALIASES_APP = {
     "Mod-Col": ["Mod-Col", "MOD_COL", "mod_col", "codmod_codcol", "modelo_color", "codigo_modelo_color"],
     "TALNUM_MA": ["TALNUM_MA", "talnum_ma", "talla_numero", "talla", "size"],
     "MARCA_MA": ["MARCA_MA", "marca_ma", "marca", "brand", "vendor"],
+    "ColorNombre": [
+        "Color Web", "color_web", "nombre_color", "Nombre Color", "Color Nombre",
+        "color_nombre", "desc_color", "descripcion_color", "des_color", "color_descripcion",
+        "color_desc", "COLOR_WEB", "NOMBRE_COLOR", "DESC_COLOR",
+    ],
     "Precio": ["Precio", "precio_ma", "precio", "price", "precio_venta", "pvp"],
     "CodBarras": [
         "CodBarras", "codbarras", "CODBARRAS", "cod_barras", "codigo_barras", "codigo_barra",
@@ -1537,7 +1542,7 @@ def build_centry_arti_lookup(arti_df):
     if arti_df is None or arti_df.empty:
         return lookup
     df = normalize_arti_columns_for_app(arti_df).copy()
-    for column in ("CODINT_MA", "COD MOD COL", "Mod-Col", "TALNUM_MA", "CodBarras"):
+    for column in ("CODINT_MA", "COD MOD COL", "Mod-Col", "TALNUM_MA", "CodBarras", "ColorNombre"):
         if column not in df.columns:
             df[column] = ""
     for _, row in df.iterrows():
@@ -1546,9 +1551,10 @@ def build_centry_arti_lookup(arti_df):
         raw_size = clean_value(row.get("TALNUM_MA"))
         display_size = normalize_master_size(raw_size)
         barcode = clean_value(row.get("CodBarras"))
+        color_name = clean_value(row.get("ColorNombre"))
         if not barcode and not raw_size:
             continue
-        item = {"barcode": barcode, "raw_size": raw_size, "display_size": display_size}
+        item = {"barcode": barcode, "raw_size": raw_size, "display_size": display_size, "color_name": color_name}
         if sku:
             lookup["by_sku"].setdefault(sku.upper(), item)
         if mod_col:
@@ -1666,7 +1672,19 @@ def centry_labeled_characteristics(row, vendor, product_type, color, gender, mat
     )
 
 
+def centry_looks_like_color_code(value, color_code=""):
+    text = clean_value(value).strip().upper()
+    code = clean_value(color_code).strip().upper()
+    if not text:
+        return False
+    if code and text == code:
+        return True
+    return bool(re.fullmatch(r"[A-Z]{0,3}\d{1,4}[A-Z]{0,3}", text))
+
+
 def centry_color_name_from_row(row, color_code=""):
+    if row is None:
+        return ""
     color = first_non_empty(
         row.get("Color Web"),
         row.get("Color"),
@@ -1680,7 +1698,7 @@ def centry_color_name_from_row(row, color_code=""):
         row.get("Option2 Value"),
         centry_tag_value(row, "Color", "Color Comercial", "Color Web"),
     )
-    if color and color_code and clean_value(color).upper() == clean_value(color_code).upper():
+    if centry_looks_like_color_code(color, color_code):
         return ""
     return color
 
@@ -1842,7 +1860,6 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         title = centry_value(row.get("Title"))
         vendor = centry_value(row.get("Vendor"), brand_config.get("label", ""))
         product_type = centry_value(row.get("Type"))
-        color = first_non_empty(centry_color_name_from_row(row, color_code), color_code)
         raw_size = first_non_empty(row.get("__CENTRY_RAW_SIZE"), row.get("Option1 Value"))
         gender = centry_gender(row)
         is_footwear = centry_is_footwear(row)
@@ -1851,6 +1868,10 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         category_record = centry_lookup_category(product_type, gender, vendor, centry_category(row))
         category_probe = pd.Series({"Clase": category_record.get("class"), "CategorÃ­a": category_record.get("category"), "Type": product_type})
         arti_item = centry_arti_item_for_row(row, arti_lookup, current_mod_col, raw_size)
+        color = first_non_empty(
+            centry_color_name_from_row(row, color_code),
+            "" if centry_looks_like_color_code(arti_item.get("color_name"), color_code) else arti_item.get("color_name"),
+        )
         size = centry_display_size(
             raw_size,
             centry_output_is_accessory(category_probe) and (is_one_size(raw_size) or is_zero_size(raw_size)),
@@ -1956,7 +1977,9 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                     "Problema": f"Sin codigo de barras en SKU {clean_value(missing_row.get('SKU de la variante'))}",
                 }
             )
-    return centry_df, pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
+    return repair_mojibake_dataframe(centry_df), repair_mojibake_dataframe(
+        pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
+    )
 
 
 def centry_package_values(row):
@@ -2012,7 +2035,7 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
         model, color_code = split_model_color(mod_col)
         vendor = centry_value(row.get("Vendor"), brand_config.get("label", ""))
         product_type = centry_value(row.get("Type"))
-        color = first_non_empty(centry_color_name_from_row(row, color_code), color_code)
+        color = centry_color_name_from_row(row, color_code)
         raw_size = first_non_empty(row.get("__CENTRY_RAW_SIZE"), row.get("Option1 Value"))
         gender = centry_gender(row)
         images = centry_split_images(row.get("Image Src"))
@@ -2083,7 +2106,7 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
     sial_df, _ = filter_centry_size_rows(sial_df, [], "Tal", key_column="Mod-Col", output_label="Carga Sial Centry")
     if not sial_df.empty and "Talla Web " in sial_df.columns:
         sial_df["Talla Web "] = sial_df["Tal"].map(centry_display_size)
-    return sial_df
+    return repair_mojibake_dataframe(sial_df)
 
 
 def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"):
@@ -2290,7 +2313,7 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         tags = first_non_empty(product_row.get("Tags") if product_row is not None else "", vendor)
         materiality = first_non_empty(product_row.get("Metafield: custom.materialidad [single_line_text_field]") if product_row is not None else "", "")
         technology = first_non_empty(product_row.get("Metafield: custom.tecnologia [list.single_line_text_field]") if product_row is not None else "", "")
-        color = first_non_empty(product_row.get("Metafield: custom.color [single_line_text_field]") if product_row is not None else "", split_model_color(key)[1])
+        color = centry_color_name_from_row(product_row, split_model_color(key)[1]) if product_row is not None else ""
         if product_row is None:
             issues.append({"Mod-Col": key, "Problema": "No existe en Shopify; se completo Centry con BigQuery/ARTI y fotos S3"})
 

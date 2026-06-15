@@ -71,6 +71,9 @@ Main file path: app_matrixify.py
 [bigquery]
 enabled = true
 project_id = "forus-analitica-prod-datalake"
+# Si la service account no puede crear jobs en el datalake,
+# poner aqui un proyecto donde si tenga BigQuery Job User.
+# job_project_id = "tu-proyecto-de-jobs"
 table = "forus-analitica-prod-datalake.bronze.stg_pe_central_arti"
 # location = "US"
 
@@ -107,6 +110,8 @@ Variant Price = vacio
 ```
 
 Esto es esperado.
+
+La app tambien omite variantes con talla `0` y agrega una hoja `Carga Sial` al Excel descargado.
 
 Cuando cambie la descarga Matrixify base:
 
@@ -152,3 +157,29 @@ No subas ni edites en GitHub:
 ```
 
 Los Secrets reales se mantienen solo en Streamlit Cloud.
+
+## Permisos BigQuery necesarios
+
+La service account debe tener:
+
+```text
+BigQuery Job User
+```
+
+en el proyecto donde se ejecutan los jobs, normalmente el valor de `project_id` o `job_project_id`.
+
+Tambien debe tener permiso de lectura sobre la tabla:
+
+```text
+BigQuery Data Viewer
+```
+
+en el dataset o tabla `forus-analitica-prod-datalake.bronze.stg_pe_central_arti`.
+
+Si aparece este error:
+
+```text
+User does not have bigquery.jobs.create permission
+```
+
+no es un error de codigo. Falta otorgar `BigQuery Job User` a la service account, o cambiar `job_project_id` a un proyecto donde esa cuenta si pueda crear jobs.

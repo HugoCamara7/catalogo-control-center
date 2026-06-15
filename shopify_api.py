@@ -997,6 +997,43 @@ def product_variants_bulk_update(config, product_id, variants):
     return payload.get("productVariants") or []
 
 
+def inventory_item_update(config, inventory_item_id, input_data):
+    inventory_item_id = clean(inventory_item_id)
+    input_data = dict(input_data or {})
+    if not inventory_item_id or not input_data:
+        return {}
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation InventoryItemUpdate($id: ID!, $input: InventoryItemInput!) {
+      inventoryItemUpdate(id: $id, input: $input) {
+        inventoryItem {
+          id
+          legacyResourceId
+          sku
+          tracked
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"id": inventory_item_id, "input": input_data},
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("inventoryItemUpdate") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("inventoryItem") or {}
+
+
 def fetch_product_options_and_variants(config, product_id):
     shop_domain, api_version, token = _client(config)
     query = """
@@ -1022,6 +1059,12 @@ def fetch_product_options_and_variants(config, product_id):
             barcode
             price
             compareAtPrice
+            inventoryItem {
+              id
+              legacyResourceId
+              sku
+              tracked
+            }
             selectedOptions {
               name
               value

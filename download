@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.streamlit/secrets.toml
+
+# Archivos generados por la app
+outputs/
+
+# Bases pesadas originales. La app prioriza data/arti.zip.
+data/arti.xlsx
+data/arti.csv
+
+# Temporales de Excel
+~$*.xlsx

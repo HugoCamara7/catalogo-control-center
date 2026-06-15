@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -106,7 +106,7 @@ except ImportError:
     CENTRY_DIMENSIONS = []
 
 
-APP_TITLE = "Catalogo Control Center"
+APP_TITLE = "Catálogo Control Center"
 DEFAULT_ARTI_PATH = "data/arti.xlsx"
 DEFAULT_ARTI_CSV_PATH = "data/arti.csv"
 DEFAULT_ARTI_ZIP_PATH = "data/arti.zip"
@@ -287,7 +287,12 @@ def repair_mojibake_text(value):
         repaired = repaired.replace(bad, good)
     accent_lower = {"Á": "á", "É": "é", "Í": "í", "Ó": "ó", "Ú": "ú", "Ñ": "ñ"}
     for upper, lower in accent_lower.items():
-        repaired = re.sub(rf"(?<=[a-z]){upper}(?=[a-z])", lower, repaired)
+        repaired = re.sub(rf"(?<=[a-z]){upper}", lower, repaired)
+    repaired = re.sub(
+        r"(?<=[a-záéíóúñ])([A-Z])(?=\b)",
+        lambda match: match.group(1).lower(),
+        repaired,
+    )
     return repaired
 
 
@@ -3488,15 +3493,15 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
 
     action_rows = []
     for _, row in missing_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock no creado", "Accion sugerida": "Pedir input al Brand Manager", "Stock total": row["Stock_total"]})
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock no creado", "Acción sugerida": "Pedir input al Brand Manager", "Stock total": row["Stock_total"]})
     for _, row in no_stock_visible.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Sin stock visible", "Accion sugerida": "Apagar producto en Shopify", "Stock total": row["Stock_total"]})
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Sin stock visible", "Acción sugerida": "Apagar producto en Shopify", "Stock total": row["Stock_total"]})
     for _, row in no_price_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Creado con stock sin precio", "Accion sugerida": "Cargar precio en Shopify", "Stock total": row["Stock_total"]})
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Creado con stock sin precio", "Acción sugerida": "Cargar precio en Shopify", "Stock total": row["Stock_total"]})
     for _, row in no_photo_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock sin foto", "Accion sugerida": "Solicitar fotos al Brand Manager", "Stock total": row["Stock_total"]})
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock sin foto", "Acción sugerida": "Solicitar fotos al Brand Manager", "Stock total": row["Stock_total"]})
     for _, row in no_shopify_stock_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock eComm sin stock Shopify", "Accion sugerida": "Revisar sincronizacion de stock hacia Shopify", "Stock total": row["Stock_total"]})
+        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock eComm sin stock Shopify", "Acción sugerida": "Revisar sincronización de stock hacia Shopify", "Stock total": row["Stock_total"]})
 
     actions_df = pd.DataFrame(action_rows)
     missing_stock_variants_export = (
@@ -5090,6 +5095,7 @@ def brand_logo_path_for_name(brand_name):
 
 
 def render_html(html, sidebar=False):
+    html = repair_mojibake_text(html)
     target = st.sidebar if sidebar else st
     if hasattr(target, "html"):
         target.html(html)
@@ -5618,7 +5624,7 @@ def inject_custom_css(config):
             font-weight:900;
         }}
         .st-key-logout_card .stButton button::before {{
-            content:"â†ª";
+            content:"\\21AA";
             margin-right:12px;
             font-size:20px;
             color:#005AA8;
@@ -6155,7 +6161,7 @@ def inject_custom_css(config):
             display: none !important;
         }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::before {{
-            content: "â‡§";
+            content: "\\21E7";
             font-size: 18px !important;
             color: #FFFFFF !important;
             line-height: 1;
@@ -6168,7 +6174,7 @@ def inject_custom_css(config):
             white-space: nowrap;
         }}
         .st-key-catalog_upload_slot div[data-testid="stFileUploader"] button::after {{
-            content: "Subir Catalogo Matrixify";
+            content: "Subir Catálogo Matrixify";
             font-size: 15px !important;
             color: #FFFFFF !important;
             line-height: 1;
@@ -7382,7 +7388,7 @@ def render_sidebar_shopify_card(config, shopify_config):
             <span class="status-badge">{state}</span>
         </div>
         <div class="shopify-config-box">Configurado:<br>{domain}</div>
-        <p class="shopify-meta">Admin API {config["api_version"]} Â· Token en Secrets</p>
+        <p class="shopify-meta">Admin API {config["api_version"]} &middot; Token en Secrets</p>
         """,
         sidebar=True,
     )
@@ -7407,9 +7413,9 @@ def render_top_header(config):
             <div class="brand-lockup">
                 <div class="brand-logo-card">{brand_html}</div>
                 <div>
-                    <p class="header-eyebrow">Catalogo Control Center</p>
+                    <p class="header-eyebrow">Catálogo Control Center</p>
                     <h1 class="header-title">{config["site_label"]} &rarr; Shopify</h1>
-                    <p class="header-subtitle">Gestiona el catalogo con datos de BigQuery y sincronizacion directa con Shopify.</p>
+                    <p class="header-subtitle">Gestiona el catálogo con datos de BigQuery y sincronización directa con Shopify.</p>
                 </div>
             </div>
             <div class="shopify-lockup">
@@ -7430,8 +7436,8 @@ def render_stepper(config, current_step=1):
     steps = [
         ("Input", "Archivo comercial"),
         ("BigQuery", "Fuente maestra"),
-        ("Validacion", "Reglas y cruces"),
-        ("Shopify", "Sincronizacion final"),
+        ("Validación", "Reglas y cruces"),
+        ("Shopify", "Sincronización final"),
     ]
     items = []
     for index, (title, caption) in enumerate(steps, start=1):
@@ -7604,7 +7610,7 @@ def render_analyze_card(config):
     render_html(
         f"""
         <div class="section-card action-card" style="background:var(--forus-blue);border-color:var(--forus-blue);">
-            <p style="color:#BFDBFE;font-size:12px;font-weight:900;letter-spacing:.22em;text-transform:uppercase;margin:0 0 10px;">Siguiente accion</p>
+            <p style="color:#BFDBFE;font-size:12px;font-weight:900;letter-spacing:.22em;text-transform:uppercase;margin:0 0 10px;">Siguiente acción</p>
             <h2>Analizar y preparar carga</h2>
             <p>Cuando el input este correcto, genera la estructura Matrixify y la hoja Carga Sial.</p>
         </div>
@@ -7697,7 +7703,7 @@ def render_kpi_cards(kpis):
 
     render_html(
         f"""
-        <div class="kpi-section-label">KPIs principales segun stock eComm</div>
+        <div class="kpi-section-label">KPIs principales según stock eComm</div>
         <div class="kpi-card-grid">{cards_html(primary_cards)}</div>
         """
     )
@@ -7833,7 +7839,7 @@ def render_kpi_chart_grid(funnel_rows, pareto_rows):
     render_html(
         f"""
         <div class="kpi-chart-grid">
-            {render_kpi_bar_chart("Funnel de catalogo", funnel_rows, icon="&#9661;")}
+            {render_kpi_bar_chart("Funnel de catálogo", funnel_rows, icon="&#9661;")}
             {render_kpi_bar_chart("Pareto de problemas", pareto_rows, icon="&#9638;", purple=True)}
         </div>
         """
@@ -7846,7 +7852,7 @@ def render_non_visible_combo_table(combo_df):
         """
         <div class="kpi-table-card">
             <div class="kpi-table-head">
-                <div class="kpi-table-title"><span>â—Ž</span><span>Que bloquea a los no visibles en web</span></div>
+                    <div class="kpi-table-title"><span>&#9678;</span><span>Qué bloquea a los no visibles en web</span></div>
             </div>
         </div>
         """
@@ -7946,7 +7952,7 @@ def render_non_visible_combo_table(combo_df):
         <div class="combo-card">
             <div class="combo-card-head">
                 <div>
-                    <div class="combo-title"><span class="combo-title-icon">â—Ž</span> Cruce de bloqueos web</div>
+                    <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Cruce de bloqueos web</div>
                     <p>Combinaciones de estados para explicar los modelos creados con stock BQ que no son visibles en web.</p>
                 </div>
                 <div class="combo-chip">{format_kpi_number(safe_int_value(total_models))} modelo-color</div>
@@ -8121,7 +8127,7 @@ def render_actions_table(actions_df, key_prefix):
         """
         <div class="kpi-table-card">
             <div class="kpi-table-head">
-                <div class="kpi-table-title"><span>â–£</span><span>Pendientes accionables</span></div>
+                <div class="kpi-table-title"><span>&#9635;</span><span>Pendientes accionables</span></div>
             </div>
         </div>
         """
@@ -8195,7 +8201,7 @@ def render_actions_table(actions_df, key_prefix):
                 <td><strong>{escape(clean_value(row.get("Mod-Col")))}</strong></td>
                 <td>{escape(clean_value(row.get("Marca")))}</td>
                 <td><span class="problem-dot"></span>{escape(clean_value(row.get("Problema")))}</td>
-                <td><span class="action-chip">{escape(clean_value(row.get("Accion sugerida")))}</span></td>
+                <td><span class="action-chip">{escape(first_non_empty(row.get("Acción sugerida"), row.get("Accion sugerida")))}</span></td>
                 <td style="text-align:center;"><span class="stock-badge">{format_kpi_number(row.get("Stock total"))}</span></td>
             </tr>
             """
@@ -8210,7 +8216,7 @@ def render_actions_table(actions_df, key_prefix):
                         <th>Mod-Col</th>
                         <th>Marca</th>
                         <th>Problema</th>
-                        <th>Accion sugerida</th>
+                        <th>Acción sugerida</th>
                         <th>Stock total</th>
                     </tr>
                 </thead>
@@ -8225,7 +8231,7 @@ def render_actions_table(actions_df, key_prefix):
     with pager_mid:
         c1, c2, c3 = st.columns([1, 1.2, 1])
         with c1:
-            if st.button("â€¹", key=f"{key_prefix}_actions_prev", disabled=st.session_state[page_key] <= 1):
+            if st.button("Anterior", key=f"{key_prefix}_actions_prev", disabled=st.session_state[page_key] <= 1):
                 st.session_state[page_key] -= 1
                 st.rerun()
         with c2:
@@ -8235,7 +8241,7 @@ def render_actions_table(actions_df, key_prefix):
                 unsafe_allow_html=True,
             )
         with c3:
-            if st.button("â€º", key=f"{key_prefix}_actions_next", disabled=st.session_state[page_key] >= total_pages):
+            if st.button("Siguiente", key=f"{key_prefix}_actions_next", disabled=st.session_state[page_key] >= total_pages):
                 st.session_state[page_key] += 1
                 st.rerun()
     return filtered
@@ -8333,7 +8339,7 @@ def render_missing_variants_table(missing_variants_df, key_prefix):
     with pager_mid:
         c1, c2, c3 = st.columns([1, 1.2, 1])
         with c1:
-            if st.button("â€¹", key=f"{key_prefix}_variants_prev", disabled=st.session_state[page_key] <= 1):
+            if st.button("Anterior", key=f"{key_prefix}_variants_prev", disabled=st.session_state[page_key] <= 1):
                 st.session_state[page_key] -= 1
                 st.rerun()
         with c2:
@@ -8343,7 +8349,7 @@ def render_missing_variants_table(missing_variants_df, key_prefix):
                 unsafe_allow_html=True,
             )
         with c3:
-            if st.button("â€º", key=f"{key_prefix}_variants_next", disabled=st.session_state[page_key] >= total_pages):
+            if st.button("Siguiente", key=f"{key_prefix}_variants_next", disabled=st.session_state[page_key] >= total_pages):
                 st.session_state[page_key] += 1
                 st.rerun()
     return filtered
@@ -8355,7 +8361,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         <div class="kpi-hero">
             <div class="kpi-title">
                 <h2>Dashboard Shopify</h2>
-                <p>Visibilidad ejecutiva del catalogo, stock disponible y estado comercial en Shopify.</p>
+                <p>Visibilidad ejecutiva del catálogo, stock disponible y estado comercial en Shopify.</p>
             </div>
         </div>
         """
@@ -8407,9 +8413,9 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     toolbar_left, toolbar_right = st.columns([0.9, 0.1], vertical_alignment="center")
     with toolbar_left:
         if refreshed_label:
-            st.caption(f"Ultima actualizacion: {refreshed_label}")
+            st.caption(f"Última actualización: {refreshed_label}")
     with toolbar_right:
-        manual_refresh = st.button("â†»", type="primary", help="Actualizar dashboard", key=f"{brand_config['site_key']}_refresh_kpis")
+        manual_refresh = st.button("Actualizar", type="primary", help="Actualizar dashboard", key=f"{brand_config['site_key']}_refresh_kpis")
     if manual_refresh:
         with st.spinner("Actualizando dashboard..."):
             try:
@@ -8423,11 +8429,11 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         refresh_age = datetime.now(timezone.utc) - refreshed_at.astimezone(timezone.utc)
         if refresh_age >= timedelta(seconds=KPI_AUTO_REFRESH_SECONDS):
             st.warning(
-                f"Dashboard pendiente de actualizar. Ultima actualizacion: {refreshed_label}. "
-                "Haz click en el icono de actualizar."
+                f"Dashboard pendiente de actualizar. Última actualización: {refreshed_label}. "
+                "Haz click en Actualizar."
             )
     else:
-        st.warning("Dashboard pendiente de actualizar. Haz click en el icono de actualizar.")
+        st.warning("Dashboard pendiente de actualizar. Haz click en Actualizar.")
 
     kpis = result["kpis"]
     combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())
@@ -8718,7 +8724,7 @@ def require_login():
                     <div class="login-divider"></div>
                     <div class="login-shopify-logo">{shopify_logo}</div>
                 </div>
-                <h1>Catalogo Control Center</h1>
+                <h1>Catálogo Control Center</h1>
                 <p>Sistema de gestion de productos</p>
             </div>
             """
@@ -8736,7 +8742,7 @@ def require_login():
     render_html(
         """
         <div class="login-foot">
-            <strong>Gestion de catalogos para multiples marcas</strong>
+            <strong>Gestión de catálogos para múltiples marcas</strong>
             Columbia &bull; Hush Puppies &bull; Vans &bull; Patagonia &bull; Mas
         </div>
         """
@@ -8805,18 +8811,18 @@ def main():
     ui_config = get_site_config(brand_config, shopify_config)
     inject_styles(ui_config)
     render_allowed_brands_card(brand_config)
-    nav_options = ["KPIs de catalogo", "Carga de catalogo"]
+    nav_options = ["KPIs de catálogo", "Carga de catálogo"]
     with st.sidebar.container(key="operation_nav"):
-        st.markdown('<p class="sidebar-label">Tipo de operacion</p>', unsafe_allow_html=True)
+        st.markdown('<p class="sidebar-label">Tipo de operación</p>', unsafe_allow_html=True)
         operation_area = st.radio(
-            "Tipo de operacion",
+            "Tipo de operación",
             nav_options,
             index=0,
             label_visibility="collapsed",
             key="operation_area_choice",
         )
     operation_mode = "Carga completa"
-    if operation_area == "Carga de catalogo":
+    if operation_area == "Carga de catálogo":
         load_options = ["Carga completa", "Carga parcial"]
         with st.sidebar.container(key="load_mode_nav"):
             st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
@@ -8834,7 +8840,7 @@ def main():
     with st.sidebar.container(key="shopify_sidebar_card"):
         render_sidebar_shopify_card(ui_config, shopify_config)
         if is_shopify_configured(shopify_config):
-            if st.button("Probar conexion Shopify"):
+            if st.button("Probar conexión Shopify"):
                 try:
                     shop = test_connection(shopify_config)
                     st.success(f"Conectado a {shop.get('name', brand_config['site_label'])}")
@@ -8859,7 +8865,7 @@ api_version = "{DEFAULT_API_VERSION}"
     load_reset_message = st.session_state.pop("load_reset_message", "")
     if load_reset_message:
         st.success(load_reset_message)
-    if operation_area == "KPIs de catalogo":
+    if operation_area == "KPIs de catálogo":
         render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready)
         return
 
@@ -8915,11 +8921,11 @@ api_version = "{DEFAULT_API_VERSION}"
                 only_missing_images = False
                 st.caption("REPLACE procesa productos aunque ya tengan fotos: elimina las actuales y sube las 10 vistas nuevas por API.")
             else:
-                only_missing_images = st.checkbox("Solo productos sin foto en el catalogo", value=False)
+                only_missing_images = st.checkbox("Solo productos sin foto en el catálogo", value=False)
             update_file = st.file_uploader("2. Opcional: subir lista con Mod-Col a corregir", type=["xlsx", "xls"], key="update_photos")
-            st.caption("Si no subes lista, revisa el catalogo completo. Siempre genera 10 URLs por producto.")
+            st.caption("Si no subes lista, revisa el catálogo completo. Siempre genera 10 URLs por producto.")
         elif update_operation == "siblings":
-            st.caption("Recalcula siblings para todo el catalogo: todos los productos con el mismo codigo modelo quedan separados por comas.")
+            st.caption("Recalcula siblings para todo el catálogo: todos los productos con el mismo código modelo quedan separados por comas.")
         elif update_operation == "title":
             update_file = st.file_uploader("2. Subir archivo con Mod-Col y Title", type=["xlsx", "xls"], key="update_title")
         elif update_operation == "body":
@@ -8931,7 +8937,7 @@ api_version = "{DEFAULT_API_VERSION}"
             body_mode = "from_input" if body_source == "Desde input comercial" else "fix_catalog"
             if body_mode == "from_input":
                 update_file = st.file_uploader(
-                    "2. Subir input con Mod-Col, Body HTML, Caracteristicas, Material y Cuidado",
+                    "2. Subir input con Mod-Col, Body HTML, Características, Material y Cuidado",
                     type=["xlsx", "xls"],
                     key="update_body",
                 )
@@ -9086,7 +9092,7 @@ api_version = "{DEFAULT_API_VERSION}"
                             st.session_state["shopify_apply_result_df"] = result_df
                             st.dataframe(result_df, use_container_width=True)
                             st.download_button(
-                                "Descargar reporte de sincronizacion",
+                                "Descargar reporte de sincronización",
                                 data=dataframe_to_excel_bytes({"Resultado": result_df}),
                                 file_name=f"resultado_shopify_{update_operation}_{brand_config['site_key']}.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -9183,14 +9189,14 @@ api_version = "{DEFAULT_API_VERSION}"
         input_file = st.session_state.get(input_upload_key)
         with upload_left:
             if complete_source == "Respaldo Excel" and input_file:
-                st.caption("Input cargado. Ahora sube el Catalogo Matrixify para conservar IDs.")
+                st.caption("Input cargado. Ahora sube el Catálogo Matrixify para conservar IDs.")
             elif complete_source == "Respaldo Excel":
-                st.caption("Primero carga el input comercial. Luego este mismo espacio pedira el Catalogo Matrixify.")
+                st.caption("Primero carga el input comercial. Luego este mismo espacio pedirá el Catálogo Matrixify.")
         with upload_right:
             if complete_source == "Respaldo Excel" and input_file:
                 with st.container(key="catalog_upload_slot"):
                     template_file = st.file_uploader(
-                        "Subir Catalogo Matrixify",
+                        "Subir Catálogo Matrixify",
                         type=["xlsx", "xls"],
                         key=template_upload_key,
                         label_visibility="collapsed",
@@ -9421,7 +9427,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     result_df = st.session_state.get("complete_apply_result_df")
                     if result_df is not None:
                         st.download_button(
-                            "Descargar reporte de sincronizacion",
+                            "Descargar reporte de sincronización",
                             data=dataframe_to_excel_bytes({"Resultado": result_df}),
                             file_name=f"resultado_carga_completa_{brand_config['site_key']}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

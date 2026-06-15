@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -126,7 +126,7 @@ FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
 KPI_AUTO_REFRESH_SECONDS = 60 * 60
 KPI_CACHE_DIR = Path("outputs/kpi_cache")
-KPI_CACHE_VERSION = "2026-06-15-ecomm-store-stock-only-v4"
+KPI_CACHE_VERSION = "2026-06-15-latest-stock-cutoff-v1"
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -2789,7 +2789,6 @@ WITH stock_base AS (
   WHERE fecha_corte = (
     SELECT MAX(fecha_corte)
     FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
-    WHERE EXTRACT(YEAR FROM fecha_corte) = EXTRACT(YEAR FROM CURRENT_DATE())
   )
 )
 SELECT
@@ -2817,7 +2816,6 @@ WITH stock_base AS (
   WHERE fecha_corte = (
     SELECT MAX(fecha_corte)
     FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_stock_bi`
-    WHERE EXTRACT(YEAR FROM fecha_corte) = EXTRACT(YEAR FROM CURRENT_DATE())
   )
 )
 SELECT
@@ -2859,10 +2857,10 @@ def read_current_stock_from_bigquery(bigquery_config):
             raise
         df = client.query(STOCK_QUERY_SAFE, job_config=job_config, location=location).to_dataframe()
     df = standardize_stock_columns(df)
-
     for column in ("fecha_corte", "id_producto", "key_producto", "codigo_tienda", "CONCAT_TIENDA", "stock_tiendas", "stock_bodega", "stock_total"):
         if column not in df.columns:
             df[column] = 0 if column.startswith("stock_") else ""
+    df = filter_latest_stock_cutoff(df)
     df["key_producto"] = df["key_producto"].map(lambda value: clean_value(value).upper())
     df["codigo_tienda"] = df["codigo_tienda"].map(normalize_warehouse_code)
     for column in ("stock_tiendas", "stock_bodega", "stock_total"):
@@ -2965,10 +2963,35 @@ def numeric_stock_series(df, column, default=0):
     return pd.to_numeric(values, errors="coerce").fillna(default)
 
 
+def filter_latest_stock_cutoff(df):
+    result = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    if result.empty or "fecha_corte" not in result.columns:
+        return result
+    before_rows = len(result)
+    cutoff_dates = pd.to_datetime(result["fecha_corte"], errors="coerce")
+    if cutoff_dates.notna().any():
+        latest = cutoff_dates.max()
+        filtered = result.loc[cutoff_dates.eq(latest)].copy()
+        filtered.attrs["stock_rows_before_cutoff"] = before_rows
+        filtered.attrs["stock_latest_cutoff"] = latest.isoformat()
+        return filtered
+    cutoff_text = result["fecha_corte"].map(clean_value)
+    cutoff_text = cutoff_text[cutoff_text != ""]
+    if cutoff_text.empty:
+        return result
+    latest_text = cutoff_text.max()
+    filtered = result.loc[result["fecha_corte"].map(clean_value).eq(latest_text)].copy()
+    filtered.attrs["stock_rows_before_cutoff"] = before_rows
+    filtered.attrs["stock_latest_cutoff"] = latest_text
+    return filtered
+
+
 def standardize_stock_columns(df):
     result = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
     rename_map = {}
     candidates_by_target = {
+        "fecha_corte": ["fecha_corte", "fecha corte", "fecha", "cutoff", "fecha_stock", "fecha stock"],
+        "id_producto": ["id_producto", "id producto", "producto_id", "product_id"],
         "key_producto": ["key_producto", "key producto"],
         "codigo_tienda": ["codigo_tienda", "codigo tienda", "cod tda", "cod_tda", "codtda", "codigo_tda", "codigo tda"],
         "CONCAT_TIENDA": ["CONCAT_TIENDA", "concat_tienda", "concat tienda", "CONCAT TIENDA"],
@@ -3576,12 +3599,14 @@ def load_catalog_kpi_result(brand_config, shopify_config):
     result["meta"] = {
         "cache_version": KPI_CACHE_VERSION,
         "arti_source": arti_source,
-        "stock_raw_rows": len(stock_df),
+        "stock_raw_rows": safe_int_value(stock_df.attrs.get("stock_rows_before_cutoff", len(stock_df))),
+        "stock_cutoff_rows": len(stock_df),
         "stock_filtered_rows": result.get("kpis", {}).get("stock_ecomm_rows", 0),
         "ecomm_bodegas_usadas": ", ".join(allowed_ecomm_codes),
         "ecomm_bodegas_count": len(allowed_ecomm_codes),
         "shopify_products": len(shopify_products),
-        "fecha_corte": clean_value(stock_df["fecha_corte"].max()) if not stock_df.empty and "fecha_corte" in stock_df.columns else "",
+        "fecha_corte": clean_value(stock_df.attrs.get("stock_latest_cutoff"))
+        or (clean_value(stock_df["fecha_corte"].max()) if not stock_df.empty and "fecha_corte" in stock_df.columns else ""),
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
     }
     return result
@@ -8371,7 +8396,9 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
             st.caption(
                 "Filtro eComm: "
                 f"{safe_int_value(meta.get('ecomm_bodegas_count'))} bodegas configuradas | "
-                f"filas BigQuery: {format_kpi_number(meta.get('stock_raw_rows'))} | "
+                f"fecha corte stock: {clean_value(meta.get('fecha_corte')) or 'sin fecha'} | "
+                f"filas BigQuery: {format_kpi_number(meta.get('stock_raw_rows'))} -> "
+                f"{format_kpi_number(meta.get('stock_cutoff_rows', meta.get('stock_raw_rows')))} ultimo corte | "
                 f"tallas eComm con stock: {format_kpi_number(meta.get('stock_filtered_rows'))}"
             )
         else:

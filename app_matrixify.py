@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -126,6 +126,7 @@ FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
 KPI_AUTO_REFRESH_SECONDS = 60 * 60
 KPI_CACHE_DIR = Path("outputs/kpi_cache")
+KPI_CACHE_VERSION = "2026-06-15-ecomm-warehouse-filter-v2"
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -3004,6 +3005,15 @@ def load_ecomm_stock_rules(path_text):
     ].copy()
 
 
+def ecomm_stock_rule_codes_for_site(brand_config):
+    rules = load_ecomm_stock_rules(str(DEFAULT_ECOMM_WAREHOUSES_PATH))
+    site_norm = normalize_site_for_stock(brand_config.get("site_label"))
+    if rules.empty:
+        return []
+    site_rules = rules[rules["site_norm"] == site_norm].copy()
+    return sorted(site_rules["bodega_code"].map(clean_value).loc[lambda series: series.ne("")].unique().tolist(), key=safe_int_value)
+
+
 def apply_ecomm_stock_rules(stock_df, brand_config):
     empty_filtered = pd.DataFrame(
         columns=["fecha_corte", "id_producto", "key_producto", "stock_tiendas", "stock_bodega", "stock_total"]
@@ -3011,6 +3021,9 @@ def apply_ecomm_stock_rules(stock_df, brand_config):
     stock = standardize_stock_columns(stock_df)
     if stock.empty:
         return stock
+    for column in ("fecha_corte", "id_producto", "key_producto", "stock_tiendas", "stock_bodega", "stock_total"):
+        if column not in stock.columns:
+            stock[column] = 0 if column.startswith("stock_") else ""
     if "codigo_tienda" not in stock.columns or not stock["codigo_tienda"].map(clean_value).any():
         return empty_filtered
 
@@ -3532,9 +3545,14 @@ def load_catalog_kpi_result(brand_config, shopify_config):
     stock_df = read_current_stock_from_bigquery(get_bigquery_config())
     shopify_products = fetch_products(shopify_config)
     result = build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config)
+    allowed_ecomm_codes = ecomm_stock_rule_codes_for_site(brand_config)
     result["meta"] = {
+        "cache_version": KPI_CACHE_VERSION,
         "arti_source": arti_source,
-        "stock_rows": len(stock_df),
+        "stock_raw_rows": len(stock_df),
+        "stock_filtered_rows": result.get("kpis", {}).get("stock_ecomm_rows", 0),
+        "ecomm_bodegas_usadas": ", ".join(allowed_ecomm_codes),
+        "ecomm_bodegas_count": len(allowed_ecomm_codes),
         "shopify_products": len(shopify_products),
         "fecha_corte": clean_value(stock_df["fecha_corte"].max()) if not stock_df.empty and "fecha_corte" in stock_df.columns else "",
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
@@ -3554,7 +3572,12 @@ def load_cached_catalog_kpi_result(site_key):
     try:
         with path.open("rb") as cache_file:
             result = pickle.load(cache_file)
-        return result if isinstance(result, dict) and "kpis" in result else None
+        if not isinstance(result, dict) or "kpis" not in result:
+            return None
+        meta = result.get("meta", {}) if isinstance(result.get("meta"), dict) else {}
+        if meta.get("cache_version") != KPI_CACHE_VERSION:
+            return None
+        return result
     except Exception:
         return None
 
@@ -8414,6 +8437,13 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     with toolbar_left:
         if refreshed_label:
             st.caption(f"Última actualización: {refreshed_label}")
+        if meta:
+            st.caption(
+                "Filtro eComm: "
+                f"{safe_int_value(meta.get('ecomm_bodegas_count'))} bodegas configuradas | "
+                f"filas BigQuery: {format_kpi_number(meta.get('stock_raw_rows'))} | "
+                f"filas eComm usadas: {format_kpi_number(meta.get('stock_filtered_rows'))}"
+            )
     with toolbar_right:
         manual_refresh = st.button("Actualizar", type="primary", help="Actualizar dashboard", key=f"{brand_config['site_key']}_refresh_kpis")
     if manual_refresh:

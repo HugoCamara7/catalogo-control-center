@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -126,7 +126,7 @@ FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
 KPI_AUTO_REFRESH_SECONDS = 60 * 60
 KPI_CACHE_DIR = Path("outputs/kpi_cache")
-KPI_CACHE_VERSION = "2026-06-15-ecomm-store-stock-only-v3"
+KPI_CACHE_VERSION = "2026-06-15-ecomm-store-stock-only-v4"
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -2940,6 +2940,31 @@ def ecomm_row_stock_units(row, store_column):
     return max(0, value)
 
 
+def ecomm_stock_units_series(stock, store_column):
+    if stock.empty:
+        return pd.Series(dtype=float)
+    store_codes = stock.get(store_column, pd.Series("", index=stock.index)).map(normalize_warehouse_code)
+    stock_tiendas = numeric_stock_series(stock, "stock_tiendas")
+    stock_bodega = numeric_stock_series(stock, "stock_bodega")
+    stock_total = numeric_stock_series(stock, "stock_total")
+    units = stock_tiendas.where(store_codes.ne("320"), stock_tiendas + stock_bodega)
+    units = units.where(~((units <= 0) & (stock_total > 0)), stock_total)
+    if "CONCAT_TIENDA" in stock.columns:
+        fallback_mask = units <= 0
+        if fallback_mask.any():
+            fallback = stock.loc[fallback_mask].apply(
+                lambda row: stock_units_from_concat_tienda(row.get("CONCAT_TIENDA"), normalize_warehouse_code(row.get(store_column))),
+                axis=1,
+            )
+            units.loc[fallback_mask] = fallback
+    return units.clip(lower=0)
+
+
+def numeric_stock_series(df, column, default=0):
+    values = df[column] if column in df.columns else pd.Series(default, index=df.index)
+    return pd.to_numeric(values, errors="coerce").fillna(default)
+
+
 def standardize_stock_columns(df):
     result = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
     rename_map = {}
@@ -3060,8 +3085,8 @@ def apply_ecomm_stock_rules(stock_df, brand_config):
         return empty_filtered
 
     for column in ("stock_tiendas", "stock_bodega", "stock_total", "stock_seguridad"):
-        stock[column] = pd.to_numeric(stock.get(column, 0), errors="coerce").fillna(0)
-    stock["stock_bruto_ecomm"] = stock.apply(lambda row: ecomm_row_stock_units(row, "codigo_tienda_norm"), axis=1)
+        stock[column] = numeric_stock_series(stock, column)
+    stock["stock_bruto_ecomm"] = ecomm_stock_units_series(stock, "codigo_tienda_norm")
     stock["stock_total"] = (stock["stock_bruto_ecomm"] - stock["stock_seguridad"]).clip(lower=0)
     stock["stock_seguridad_aplicado"] = stock["stock_bruto_ecomm"] - stock["stock_total"]
 
@@ -3107,8 +3132,8 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
         if "key_producto" not in stock.columns:
             stock["key_producto"] = ""
         for column in ("stock_tiendas", "stock_bodega", "stock_total"):
-            stock[column] = pd.to_numeric(stock.get(column, 0), errors="coerce").fillna(0)
-        stock["stock_bruto"] = stock.apply(lambda row: ecomm_row_stock_units(row, "bodega_code"), axis=1)
+            stock[column] = numeric_stock_series(stock, column)
+        stock["stock_bruto"] = ecomm_stock_units_series(stock, "bodega_code")
         stock = stock.merge(
             site_rules[["bodega_code", "stock_seguridad"]],
             how="left",
@@ -3251,6 +3276,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     ecomm_stock_match = build_ecomm_stock_match_summary(stock, brand_config)
     stock = apply_ecomm_stock_rules(stock, brand_config)
     stock_ecomm_rows = safe_int_value((pd.to_numeric(stock.get("stock_total", 0), errors="coerce").fillna(0) > 0).sum()) if not stock.empty else 0
+    stock_ecomm_units = safe_int_value(pd.to_numeric(stock.get("stock_total", 0), errors="coerce").fillna(0).sum()) if not stock.empty else 0
     stock_ecomm_models = (
         stock.loc[pd.to_numeric(stock.get("stock_total", 0), errors="coerce").fillna(0) > 0, "key_producto"]
         .map(lambda value: clean_value(value).rsplit("-", 1)[0])
@@ -3485,6 +3511,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "modelos_sin_precio": int(len(no_price_models)),
         "modelos_sin_foto": int(len(no_photo_models)),
         "stock_ecomm_rows": int(stock_ecomm_rows),
+        "stock_ecomm_units": int(stock_ecomm_units),
         "stock_ecomm_models": int(stock_ecomm_models),
     }
     model_stock["Creado_con_stock"] = model_stock["Debe estar visible"] & model_stock["Producto_creado"]
@@ -6313,13 +6340,17 @@ def inject_custom_css(config):
         .kpi-card.red .kpi-icon {{ background:#FEECEF; color:#DC2626; }}
         .kpi-card.slate .kpi-icon {{ background:#EEF2F7; color:#334155; }}
         div[class*="refresh_kpis"] .stButton button {{
-            width:38px;
-            min-width:38px;
-            height:38px;
-            padding:0;
-            border-radius:50%;
-            font-size:20px;
-            line-height:1;
+            width:auto !important;
+            min-width:118px !important;
+            height:auto !important;
+            min-height:42px !important;
+            padding:0 18px !important;
+            border-radius:999px !important;
+            font-size:13px !important;
+            line-height:1.1 !important;
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+            overflow-wrap:normal !important;
         }}
         .combo-card {{
             width:100%;
@@ -7264,6 +7295,38 @@ def inject_custom_css(config):
             border-radius: 18px;
             font-weight: 800;
             border-color: var(--brand-primary);
+            min-height:42px !important;
+            padding:0 18px !important;
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+            overflow-wrap:normal !important;
+            line-height:1.12 !important;
+            display:inline-flex !important;
+            align-items:center !important;
+            justify-content:center !important;
+        }}
+        .stButton button *,
+        .stDownloadButton button * {{
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+            overflow-wrap:normal !important;
+            line-height:1.12 !important;
+        }}
+        button[data-testid^="stBaseButton"] {{
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+            overflow-wrap:normal !important;
+            line-height:1.12 !important;
+        }}
+        button[data-testid^="stBaseButton"] * {{
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+            overflow-wrap:normal !important;
+            line-height:1.12 !important;
+        }}
+        div[data-testid="stMain"] .stButton button,
+        div[data-testid="stMain"] .stDownloadButton button {{
+            min-width:max-content !important;
         }}
         .stButton button[kind="primary"], .stDownloadButton button[kind="primary"] {{
             background: var(--brand-primary);
@@ -7713,6 +7776,7 @@ def format_kpi_number(value):
 def render_kpi_cards(kpis):
     primary_cards = [
         ("Modelos con stock eComm", kpis["modelos_con_stock"], "blue", "&#9633;"),
+        ("Unidades stock eComm", kpis.get("stock_ecomm_units", 0), "cyan", "U"),
         ("Creados con stock", kpis["modelos_creados_con_stock"], "green", "&#9679;"),
         ("Pendientes por crear", kpis["modelos_pendientes"], "orange", "!"),
         ("Cobertura stock eComm", f"{kpis['cobertura_shopify']:.0%}", "purple", "%"),
@@ -7874,152 +7938,6 @@ def render_kpi_chart_grid(funnel_rows, pareto_rows):
         </div>
         """
     )
-
-
-def render_non_visible_combo_table(combo_df):
-    combo_df = combo_df.copy() if isinstance(combo_df, pd.DataFrame) else pd.DataFrame()
-    render_html(
-        """
-        <div class="kpi-table-card">
-            <div class="kpi-table-head">
-                    <div class="kpi-table-title"><span>&#9678;</span><span>Qué bloquea a los no visibles en web</span></div>
-            </div>
-        </div>
-        """
-    )
-    if combo_df.empty:
-        st.success("No hay modelos creados con stock bloqueados para web.")
-        return combo_df
-    display = combo_df.rename(
-        columns={
-            "Bloqueos": "Bloqueos detectados",
-            "Estado operativo": "Estado actual",
-            "Stock_BQ": "Stock BigQuery",
-            "Stock_Shopify": "Stock Shopify",
-        }
-    )
-    st.dataframe(display, use_container_width=True, hide_index=True, height=260)
-    return combo_df
-
-
-def combo_metric_html(value, percent, tone):
-    value_text = format_kpi_number(value)
-    pct_text = f"{percent:.1f}%"
-    return f"""
-    <div class="combo-metric {tone}">
-        <strong>{value_text}</strong>
-        <span>({pct_text})</span>
-        <i><b style="width:{max(2, min(100, percent)):.1f}%"></b></i>
-    </div>
-    """
-
-
-def render_non_visible_combo_table(combo_df):
-    combo_df = combo_df.copy() if isinstance(combo_df, pd.DataFrame) else pd.DataFrame()
-    if combo_df.empty:
-        st.success("No hay modelos creados con stock bloqueados para web.")
-        return combo_df
-
-    total_models = safe_float_value(combo_df["Modelos"].sum())
-    total_bq = safe_float_value(combo_df.get("Stock_BigQuery", combo_df["Modelos"]).sum())
-    total_shopify_raw = safe_float_value(combo_df.get("Stock_Shopify", pd.Series(dtype=float)).sum())
-    total_models_safe = total_models or 1
-    total_bq_safe = total_bq or 1
-    total_shopify_safe = total_shopify_raw or 1
-
-    def pct(value, total):
-        return max(0, min(100, (safe_float_value(value) / total) * 100))
-
-    def soft_class(text):
-        text = clean_value(text)
-        if "Sin stock Shopify" in text and "Sin foto" in text:
-            return "mint"
-        if "Sin stock Shopify" in text:
-            return "blue"
-        if "Sin foto" in text:
-            return "amber"
-        if "Sin precio" in text:
-            return "rose"
-        return "slate"
-
-    def bubble_html(text):
-        blockers = [part.strip() for part in clean_value(text).split("+") if part.strip()]
-        colors = {
-            "Sin stock Shopify": "bubble-blue",
-            "Sin foto": "bubble-amber",
-            "Sin precio": "bubble-rose",
-            "No activo/publicado": "bubble-purple",
-        }
-        bubbles = "".join(
-            f'<span class="combo-bubble {colors.get(blocker, "bubble-slate")}"></span>' for blocker in blockers[:4]
-        )
-        if not bubbles:
-            bubbles = '<span class="combo-bubble bubble-slate"></span>'
-        label = blockers[0] if blockers else clean_value(text)
-        rest = " + ".join(blockers[1:])
-        rest_html = f"<small>+ {escape(rest)}</small>" if rest else ""
-        return f'<div class="combo-blocker">{bubbles}<b>{escape(label)}</b>{rest_html}</div>'
-
-    rows = []
-    for _, row in combo_df.iterrows():
-        models = safe_int_value(row.get("Modelos"))
-        bq = safe_int_value(row.get("Stock_BigQuery"), models)
-        shopify = safe_int_value(row.get("Stock_Shopify"))
-        rows.append(
-            f"""
-            <tr>
-                <td>{bubble_html(row.get("Bloqueos"))}</td>
-                <td><div class="combo-state {soft_class(row.get("Bloqueos"))}">{escape(clean_value(row.get("Estado operativo")))}</div></td>
-                <td>{combo_metric_html(models, pct(models, total_models_safe), "purple")}</td>
-                <td>{combo_metric_html(bq, pct(bq, total_bq_safe), "blue")}</td>
-                <td>{combo_metric_html(shopify, pct(shopify, total_shopify_safe), "green")}</td>
-            </tr>
-            """
-        )
-
-    render_html(
-        f"""
-        <div class="combo-card">
-            <div class="combo-card-head">
-                <div>
-                    <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Cruce de bloqueos web</div>
-                    <p>Combinaciones de estados para explicar los modelos creados con stock BQ que no son visibles en web.</p>
-                </div>
-                <div class="combo-chip">{format_kpi_number(safe_int_value(total_models))} modelo-color</div>
-            </div>
-            <div class="combo-table-wrap">
-                <table class="combo-table">
-                    <colgroup>
-                        <col style="width:26%;">
-                        <col style="width:28%;">
-                        <col style="width:14%;">
-                        <col style="width:16%;">
-                        <col style="width:16%;">
-                    </colgroup>
-                    <thead>
-                        <tr>
-                            <th>Bloqueos detectados</th>
-                            <th>Estado actual</th>
-                            <th>Modelos</th>
-                            <th>Mod-Col BigQuery</th>
-                            <th>Mod-Col con stock Shopify</th>
-                        </tr>
-                    </thead>
-                    <tbody>{''.join(rows)}</tbody>
-                    <tfoot>
-                        <tr>
-                            <td colspan="2"><b>Totales</b><span>{len(combo_df)} combinaciones</span></td>
-                            <td>{format_kpi_number(safe_int_value(total_models))}<small>100%</small></td>
-                            <td>{format_kpi_number(safe_int_value(total_bq))}<small>100%</small></td>
-                            <td>{format_kpi_number(safe_int_value(total_shopify_raw))}<small>100%</small></td>
-                        </tr>
-                    </tfoot>
-                </table>
-            </div>
-        </div>
-        """
-    )
-    return combo_df
 
 
 def render_non_visible_combo_table(combo_df):
@@ -8422,8 +8340,10 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         result = None
     if result is None:
         result = load_cached_catalog_kpi_result(brand_config["site_key"])
-        if result is not None:
+        if result is not None and is_current_kpi_result(result):
             st.session_state[run_key] = result
+        else:
+            result = None
     if result is None:
         spinner_text = (
             "Cargando dashboard actualizado..."
@@ -8452,7 +8372,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 "Filtro eComm: "
                 f"{safe_int_value(meta.get('ecomm_bodegas_count'))} bodegas configuradas | "
                 f"filas BigQuery: {format_kpi_number(meta.get('stock_raw_rows'))} | "
-                f"filas eComm usadas: {format_kpi_number(meta.get('stock_filtered_rows'))}"
+                f"tallas eComm con stock: {format_kpi_number(meta.get('stock_filtered_rows'))}"
             )
         else:
             st.warning("Dashboard con metadatos antiguos. Presiona Actualizar para recalcular el filtro eComm.")
@@ -8706,6 +8626,28 @@ def render_login_styles():
             border-radius:12px;
             background:#2367FF;
             font-weight:950;
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+            overflow-wrap:normal !important;
+            line-height:1.12 !important;
+        }
+        .st-key-login_form_area .stButton button * {
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+            overflow-wrap:normal !important;
+            line-height:1.12 !important;
+        }
+        button[data-testid^="stBaseButton"] {
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+            overflow-wrap:normal !important;
+            line-height:1.12 !important;
+        }
+        button[data-testid^="stBaseButton"] * {
+            white-space:nowrap !important;
+            word-break:keep-all !important;
+            overflow-wrap:normal !important;
+            line-height:1.12 !important;
         }
         .login-note {
             padding:0 32px 32px;

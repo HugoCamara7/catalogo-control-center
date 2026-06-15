@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -3580,6 +3580,13 @@ def load_cached_catalog_kpi_result(site_key):
         return result
     except Exception:
         return None
+
+
+def is_current_kpi_result(result):
+    if not isinstance(result, dict) or "kpis" not in result:
+        return False
+    meta = result.get("meta", {}) if isinstance(result.get("meta"), dict) else {}
+    return meta.get("cache_version") == KPI_CACHE_VERSION
 
 
 def save_cached_catalog_kpi_result(site_key, result):
@@ -8410,6 +8417,9 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
 
     run_key = f"kpi_result_{brand_config['site_key']}"
     result = st.session_state.get(run_key)
+    if result is not None and not is_current_kpi_result(result):
+        st.session_state.pop(run_key, None)
+        result = None
     if result is None:
         result = load_cached_catalog_kpi_result(brand_config["site_key"])
         if result is not None:
@@ -8433,17 +8443,19 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     meta = result.get("meta", {}) if isinstance(result, dict) else {}
     refreshed_at = parse_iso_datetime(meta.get("refreshed_at"))
     refreshed_label = format_datetime_lima(meta.get("refreshed_at"))
-    toolbar_left, toolbar_right = st.columns([0.9, 0.1], vertical_alignment="center")
+    toolbar_left, toolbar_right = st.columns([0.82, 0.18], vertical_alignment="center")
     with toolbar_left:
         if refreshed_label:
             st.caption(f"Última actualización: {refreshed_label}")
-        if meta:
+        if is_current_kpi_result(result):
             st.caption(
                 "Filtro eComm: "
                 f"{safe_int_value(meta.get('ecomm_bodegas_count'))} bodegas configuradas | "
                 f"filas BigQuery: {format_kpi_number(meta.get('stock_raw_rows'))} | "
                 f"filas eComm usadas: {format_kpi_number(meta.get('stock_filtered_rows'))}"
             )
+        else:
+            st.warning("Dashboard con metadatos antiguos. Presiona Actualizar para recalcular el filtro eComm.")
     with toolbar_right:
         manual_refresh = st.button("Actualizar", type="primary", help="Actualizar dashboard", key=f"{brand_config['site_key']}_refresh_kpis")
     if manual_refresh:

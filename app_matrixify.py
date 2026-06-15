@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -126,7 +126,7 @@ FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
 KPI_AUTO_REFRESH_SECONDS = 60 * 60
 KPI_CACHE_DIR = Path("outputs/kpi_cache")
-KPI_CACHE_VERSION = "2026-06-15-ecomm-warehouse-filter-v2"
+KPI_CACHE_VERSION = "2026-06-15-ecomm-store-stock-only-v3"
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -2924,6 +2924,22 @@ def stock_units_from_concat_tienda(value, store_code):
     return max(candidates)
 
 
+def ecomm_row_stock_units(row, store_column):
+    store_code = normalize_warehouse_code(row.get(store_column))
+    stock_tiendas = safe_float_value(row.get("stock_tiendas"))
+    stock_bodega = safe_float_value(row.get("stock_bodega"))
+    stock_total = safe_float_value(row.get("stock_total"))
+    if store_code == "320":
+        value = stock_tiendas + stock_bodega
+    else:
+        value = stock_tiendas
+    if value <= 0 and stock_total > 0:
+        value = stock_total
+    if value <= 0 and "CONCAT_TIENDA" in getattr(row, "index", []):
+        value = stock_units_from_concat_tienda(row.get("CONCAT_TIENDA"), store_code)
+    return max(0, value)
+
+
 def standardize_stock_columns(df):
     result = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
     rename_map = {}
@@ -3045,18 +3061,7 @@ def apply_ecomm_stock_rules(stock_df, brand_config):
 
     for column in ("stock_tiendas", "stock_bodega", "stock_total", "stock_seguridad"):
         stock[column] = pd.to_numeric(stock.get(column, 0), errors="coerce").fillna(0)
-    stock["stock_bruto_ecomm"] = stock["stock_tiendas"] + stock["stock_bodega"]
-    stock.loc[stock["stock_bruto_ecomm"] <= 0, "stock_bruto_ecomm"] = stock.loc[
-        stock["stock_bruto_ecomm"] <= 0, "stock_total"
-    ]
-    if "CONCAT_TIENDA" in stock.columns:
-        concat_units = stock.apply(
-            lambda row: stock_units_from_concat_tienda(row.get("CONCAT_TIENDA"), row.get("codigo_tienda_norm")),
-            axis=1,
-        )
-        stock.loc[stock["stock_bruto_ecomm"] <= 0, "stock_bruto_ecomm"] = concat_units[
-            stock["stock_bruto_ecomm"] <= 0
-        ]
+    stock["stock_bruto_ecomm"] = stock.apply(lambda row: ecomm_row_stock_units(row, "codigo_tienda_norm"), axis=1)
     stock["stock_total"] = (stock["stock_bruto_ecomm"] - stock["stock_seguridad"]).clip(lower=0)
     stock["stock_seguridad_aplicado"] = stock["stock_bruto_ecomm"] - stock["stock_total"]
 
@@ -3099,16 +3104,11 @@ def build_ecomm_stock_match_summary(stock_df, brand_config):
         stock_summary = pd.DataFrame(columns=["bodega_code", "Filas query", "Stock bruto", "Stock efectivo"])
     else:
         stock["bodega_code"] = stock["codigo_tienda"].map(normalize_warehouse_code)
+        if "key_producto" not in stock.columns:
+            stock["key_producto"] = ""
         for column in ("stock_tiendas", "stock_bodega", "stock_total"):
             stock[column] = pd.to_numeric(stock.get(column, 0), errors="coerce").fillna(0)
-        stock["stock_bruto"] = stock["stock_tiendas"] + stock["stock_bodega"]
-        stock.loc[stock["stock_bruto"] <= 0, "stock_bruto"] = stock.loc[stock["stock_bruto"] <= 0, "stock_total"]
-        if "CONCAT_TIENDA" in stock.columns:
-            concat_units = stock.apply(
-                lambda row: stock_units_from_concat_tienda(row.get("CONCAT_TIENDA"), row.get("bodega_code")),
-                axis=1,
-            )
-            stock.loc[stock["stock_bruto"] <= 0, "stock_bruto"] = concat_units[stock["stock_bruto"] <= 0]
+        stock["stock_bruto"] = stock.apply(lambda row: ecomm_row_stock_units(row, "bodega_code"), axis=1)
         stock = stock.merge(
             site_rules[["bodega_code", "stock_seguridad"]],
             how="left",

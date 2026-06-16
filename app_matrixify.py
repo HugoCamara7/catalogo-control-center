@@ -8745,17 +8745,6 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         st.error("Shopify API no esta configurado para este sitio.")
         return
 
-    components.html(
-        f"""
-        <script>
-        window.setTimeout(function() {{
-            window.parent.location.reload();
-        }}, {KPI_AUTO_REFRESH_SECONDS * 1000});
-        </script>
-        """,
-        height=0,
-    )
-
     run_key = f"kpi_result_{brand_config['site_key']}"
     result = st.session_state.get(run_key)
     if result is not None and not is_current_kpi_result(result):
@@ -8783,15 +8772,6 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         st.info("Cargando dashboard...")
         return
 
-    if is_stale_kpi_result(result):
-        with st.spinner("Actualizando dashboard en vivo..."):
-            try:
-                result = load_catalog_kpi_result(brand_config, shopify_config)
-                st.session_state[run_key] = result
-                save_cached_catalog_kpi_result(brand_config["site_key"], result)
-            except Exception as exc:
-                st.warning(f"No se pudo autoactualizar el dashboard: {exc}")
-
     meta = result.get("meta", {}) if isinstance(result, dict) else {}
     refreshed_at = parse_iso_datetime(meta.get("refreshed_at"))
     refreshed_label = format_datetime_lima(meta.get("refreshed_at"))
@@ -8799,7 +8779,8 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     with toolbar_left:
         if refreshed_label:
             st.caption(f"Última actualización: {refreshed_label}")
-            st.caption("Actualización automática: cada 15 minutos mientras el dashboard esté abierto.")
+            if is_stale_kpi_result(result):
+                st.caption("Dashboard en caché. Presiona Actualizar para recalcular BigQuery y Shopify.")
         if is_current_kpi_result(result):
             st.caption(
                 "Filtro eComm: "
@@ -8815,7 +8796,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         manual_refresh = st.button(
             "Actualizar",
             type="primary",
-            help="Recalcular ahora. Si no lo presionas, la app se autoactualiza cada 15 minutos.",
+            help="Recalcular ahora BigQuery y Shopify. La app muestra el caché hasta que decidas actualizar.",
             key=f"{brand_config['site_key']}_refresh_kpis",
         )
     if manual_refresh:

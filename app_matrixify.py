@@ -662,6 +662,9 @@ def get_shopify_config(site_key):
             config.get("admin_access_token") or config.get("access_token") or config.get("token")
         ),
         "api_version": clean_value(config.get("api_version")) or DEFAULT_API_VERSION,
+        "inventory_location_ids": clean_value(config.get("inventory_location_ids")),
+        "inventory_locations": clean_value(config.get("inventory_locations")),
+        "location_ids": clean_value(config.get("location_ids")),
     }
 
 
@@ -9209,6 +9212,16 @@ api_version = "{DEFAULT_API_VERSION}"
                 key="update_inventory_locations",
                 help="Si no subes archivo, se revisan todas las variantes con SKU del catálogo Shopify.",
             )
+            configured_locations = clean_value(
+                shopify_config.get("inventory_location_ids")
+                or shopify_config.get("inventory_locations")
+                or shopify_config.get("location_ids")
+            )
+            if configured_locations:
+                configured_count = len([value for value in re.split(r"[,;|\n]+", configured_locations) if clean_value(value)])
+                st.success(f"Locations configuradas en Secrets detectadas: {configured_count}")
+            else:
+                st.warning("No detecto inventory_location_ids en Secrets; intentare leer locations desde Shopify.")
             st.caption(
                 "Activa cada inventory item con SKU en las sucursales de Shopify. "
                 "Si el token no puede leer locations, configura inventory_location_ids en Secrets."

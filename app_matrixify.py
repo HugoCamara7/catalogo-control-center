@@ -4270,6 +4270,19 @@ def _variant_rows_for_handle(matrixify_df, handle):
     return matrixify_df.loc[matching_indexes].copy() if matching_indexes else pd.DataFrame()
 
 
+def _product_metafield_value(product_row, product_variant_rows, column):
+    value = clean_value(product_row.get(column))
+    if value:
+        return value
+    if product_variant_rows is None or product_variant_rows.empty or column not in product_variant_rows.columns:
+        return ""
+    for item in product_variant_rows[column].tolist():
+        value = clean_value(item)
+        if value:
+            return value
+    return ""
+
+
 def _valid_price(value):
     text = clean_value(value)
     if not text:
@@ -5106,7 +5119,7 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             skipped_metafields = []
             metafield_errors = []
             for column in metafield_columns:
-                value = clean_value(row.get(column))
+                value = _product_metafield_value(row, product_variant_rows, column)
                 if value == "":
                     continue
                 namespace, key = _metafield_namespace_key(column)
@@ -5143,12 +5156,12 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 if metafield_errors:
                     product_status = "PARCIAL"
                     product_messages.append("Errores metafields: " + " | ".join(metafield_errors[:5]))
-                if skipped_metafields:
-                    product_status = "PARCIAL" if product_status == "OK" else product_status
-                    product_messages.append("Metafields omitidos: " + " | ".join(dict.fromkeys(skipped_metafields)))
             elif metafield_errors:
                 product_status = "PARCIAL"
                 product_messages.append("Errores metafields: " + " | ".join(metafield_errors[:5]))
+            if skipped_metafields:
+                product_status = "PARCIAL" if product_status == "OK" else product_status
+                product_messages.append("Metafields omitidos: " + " | ".join(dict.fromkeys(skipped_metafields)))
 
             raw_image_urls = [url.strip() for url in clean_value(row.get("Image Src")).split(";") if url.strip()]
             if raw_image_urls:

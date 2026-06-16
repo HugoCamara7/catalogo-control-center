@@ -2851,13 +2851,23 @@ def read_current_stock_from_bigquery(bigquery_config):
     client = bigquery.Client(project=job_project_id or None, credentials=credentials)
     job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
     location = clean_value(config.get("location")) or None
-    query = clean_value(config.get("stock_query")) or STOCK_QUERY_DEFAULT
+    configured_query = clean_value(config.get("stock_query"))
+    query = configured_query or STOCK_QUERY_DEFAULT
+
+    def run_query(query_text):
+        return client.query(query_text, job_config=job_config, location=location).to_dataframe()
+
     try:
-        df = client.query(query, job_config=job_config, location=location).to_dataframe()
+        df = run_query(query)
     except Exception:
         if query.strip() == STOCK_QUERY_SAFE.strip():
             raise
-        df = client.query(STOCK_QUERY_SAFE, job_config=job_config, location=location).to_dataframe()
+        df = run_query(STOCK_QUERY_SAFE)
+    if df.empty and configured_query:
+        try:
+            df = run_query(STOCK_QUERY_DEFAULT)
+        except Exception:
+            df = run_query(STOCK_QUERY_SAFE)
     df = standardize_stock_columns(df)
     for column in ("fecha_corte", "id_producto", "key_producto", "codigo_tienda", "CONCAT_TIENDA", "stock_tiendas", "stock_bodega", "stock_total"):
         if column not in df.columns:
@@ -3595,6 +3605,10 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
 def load_catalog_kpi_result(brand_config, shopify_config):
     arti_df, arti_source = read_arti_for_app(brand_config)
     stock_df = read_current_stock_from_bigquery(get_bigquery_config())
+    if stock_df.empty:
+        raise RuntimeError(
+            "BigQuery devolvio 0 filas de stock. No se actualizo el dashboard para evitar pisar KPIs validos con ceros."
+        )
     shopify_products = fetch_products(shopify_config)
     result = build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config)
     allowed_ecomm_codes = ecomm_stock_rule_codes_for_site(brand_config)
@@ -3631,6 +3645,8 @@ def load_cached_catalog_kpi_result(site_key):
         meta = result.get("meta", {}) if isinstance(result.get("meta"), dict) else {}
         if meta.get("cache_version") != KPI_CACHE_VERSION:
             return None
+        if safe_int_value(meta.get("stock_cutoff_rows")) <= 0 or not clean_value(meta.get("fecha_corte")):
+            return None
         return result
     except Exception:
         return None
@@ -3640,7 +3656,11 @@ def is_current_kpi_result(result):
     if not isinstance(result, dict) or "kpis" not in result:
         return False
     meta = result.get("meta", {}) if isinstance(result.get("meta"), dict) else {}
-    return meta.get("cache_version") == KPI_CACHE_VERSION
+    return (
+        meta.get("cache_version") == KPI_CACHE_VERSION
+        and safe_int_value(meta.get("stock_cutoff_rows")) > 0
+        and clean_value(meta.get("fecha_corte")) != ""
+    )
 
 
 def is_stale_kpi_result(result, max_age_seconds=KPI_AUTO_REFRESH_SECONDS):

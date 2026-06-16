@@ -607,6 +607,27 @@ def read_excel(uploaded_file):
     return pd.read_excel(uploaded_file, dtype=object).dropna(how="all")
 
 
+def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=None):
+    if not uploaded_file:
+        st.session_state.pop(f"{state_prefix}_fingerprint", None)
+        st.session_state.pop(f"{state_prefix}_df", None)
+        return None
+    fingerprint = uploaded_file_fingerprint(uploaded_file)
+    if (
+        st.session_state.get(f"{state_prefix}_fingerprint") == fingerprint
+        and st.session_state.get(f"{state_prefix}_df") is not None
+    ):
+        return st.session_state[f"{state_prefix}_df"]
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+    df = pd.read_excel(uploaded_file, sheet_name=sheet_name, dtype=object).dropna(how="all")
+    st.session_state[f"{state_prefix}_fingerprint"] = fingerprint
+    st.session_state[f"{state_prefix}_df"] = df
+    return df
+
+
 def read_excel_path(path):
     return pd.read_excel(path, dtype=object).dropna(how="all")
 
@@ -674,6 +695,32 @@ def is_shopify_configured(config):
     return bool(config.get("shop_domain") and (has_token or has_client_credentials))
 
 
+def session_shopify_products(site_key, shopify_config, force_refresh=False):
+    cache_key = f"shopify_products_cache_{clean_value(site_key)}"
+    meta_key = f"{cache_key}_meta"
+    cache_meta = {
+        "shop_domain": clean_value(shopify_config.get("shop_domain")),
+        "api_version": clean_value(shopify_config.get("api_version")),
+    }
+    if (
+        not force_refresh
+        and st.session_state.get(meta_key) == cache_meta
+        and st.session_state.get(cache_key) is not None
+    ):
+        return st.session_state[cache_key]
+    products = fetch_products(shopify_config)
+    st.session_state[cache_key] = products
+    st.session_state[meta_key] = cache_meta
+    st.session_state[f"{cache_key}_loaded_at"] = datetime.now(timezone.utc).isoformat()
+    return products
+
+
+def clear_shopify_products_cache(site_key):
+    cache_key = f"shopify_products_cache_{clean_value(site_key)}"
+    for key in (cache_key, f"{cache_key}_meta", f"{cache_key}_loaded_at"):
+        st.session_state.pop(key, None)
+
+
 def read_arti_for_app(brand_config):
     arti_df, source = read_arti_source(
         bigquery_config=get_bigquery_config(),
@@ -684,6 +731,32 @@ def read_arti_for_app(brand_config):
     arti_df, ean_source = enrich_arti_barcodes_from_bigquery_table(arti_df, get_bigquery_config())
     if ean_source:
         source = f"{source} + {ean_source}"
+    return arti_df, source
+
+
+def session_arti_for_app(brand_config, force_refresh=False):
+    site_key = clean_value(brand_config.get("site_key"))
+    cache_key = f"arti_cache_{site_key}"
+    source_key = f"{cache_key}_source"
+    meta_key = f"{cache_key}_meta"
+    bigquery_config = get_bigquery_config()
+    cache_meta = {
+        "site_key": site_key,
+        "table": clean_value(bigquery_config.get("table")),
+        "dataset": clean_value(bigquery_config.get("dataset")),
+        "project_id": clean_value(bigquery_config.get("project_id")),
+        "query": clean_value(bigquery_config.get("query")),
+    }
+    if (
+        not force_refresh
+        and st.session_state.get(meta_key) == cache_meta
+        and st.session_state.get(cache_key) is not None
+    ):
+        return st.session_state[cache_key], st.session_state.get(source_key, "BigQuery")
+    arti_df, source = read_arti_for_app(brand_config)
+    st.session_state[cache_key] = arti_df
+    st.session_state[source_key] = source
+    st.session_state[meta_key] = cache_meta
     return arti_df, source
 
 
@@ -4715,14 +4788,19 @@ def _shopify_inventory_target_locations(shopify_config):
         raise RuntimeError(
             "No puedo leer sucursales porque falta fetch_locations. Configura inventory_location_ids en Secrets."
         )
-    try:
-        locations = fetch_locations(shopify_config)
-    except Exception as exc:
-        raise RuntimeError(
-            "Shopify no permite leer locations con este token. Configura inventory_location_ids en Secrets "
-            "con los IDs/GIDs de las sucursales a activar, o agrega permisos de lectura de locations al token. "
-            f"Detalle: {exc}"
-        ) from exc
+    location_cache_key = f"shopify_locations_cache_{clean_value(shopify_config.get('shop_domain'))}"
+    if st.session_state.get(location_cache_key) is not None:
+        locations = st.session_state[location_cache_key]
+    else:
+        try:
+            locations = fetch_locations(shopify_config)
+            st.session_state[location_cache_key] = locations
+        except Exception as exc:
+            raise RuntimeError(
+                "Shopify no permite leer locations con este token. Configura inventory_location_ids en Secrets "
+                "con los IDs/GIDs de las sucursales a activar, o agrega permisos de lectura de locations al token. "
+                f"Detalle: {exc}"
+            ) from exc
     if configured:
         requested_lower = {value.lower() for value in requested}
 
@@ -7949,6 +8027,13 @@ def clear_complete_load_state():
         "complete_centry_issues_df",
         "complete_apply_result_df",
         "complete_analysis_message",
+        "complete_input_df",
+        "complete_template_df",
+        "complete_arti_df",
+        "complete_template_source",
+        "complete_detected_brands",
+        "complete_data_context",
+        "complete_excel_bytes",
     ):
         st.session_state.pop(key, None)
 
@@ -8814,20 +8899,42 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-    excel_bytes = dataframe_to_excel_bytes(
-        {
-            "Resumen modelos": result["model_stock"],
-            "Resumen por marca": result.get("brand_summary", pd.DataFrame()),
-            "Match bodegas eComm": result.get("ecomm_stock_match", pd.DataFrame()),
-            "Pendientes accionables": filtered_actions_df if filtered_actions_df is not None else pd.DataFrame(),
-            "Detalle variantes stock": filtered_variants_df if filtered_variants_df is not None else pd.DataFrame(),
-            "Resumen bloqueos web": result.get("non_visible_combo_summary", pd.DataFrame()),
-            "No visibles web": result.get("non_visible_web", pd.DataFrame()),
-            "Sin stock Shopify": result.get("no_shopify_stock_models", pd.DataFrame()),
-            "Sin precio": result["no_price_models"],
-            "Sin foto": result["no_photo_models"],
-        }
+    kpi_excel_key = f"kpi_excel_bytes_{brand_config['site_key']}"
+    kpi_excel_context_key = f"{kpi_excel_key}_context"
+    kpi_excel_context = "|".join(
+        [
+            clean_value(meta.get("refreshed_at")),
+            clean_value(meta.get("fecha_corte")),
+            clean_value(kpis.get("modelos_con_stock")),
+            clean_value(kpis.get("modelos_creados_con_stock")),
+            clean_value(st.session_state.get(f"{brand_config['site_key']}_kpi_actions_search")),
+            clean_value(st.session_state.get(f"{brand_config['site_key']}_kpi_actions_filter")),
+            clean_value(st.session_state.get(f"{brand_config['site_key']}_kpi_actions_brand")),
+            clean_value(st.session_state.get(f"{brand_config['site_key']}_kpi_variants_search")),
+            clean_value(st.session_state.get(f"{brand_config['site_key']}_kpi_variants_brand")),
+            clean_value(len(filtered_actions_df) if filtered_actions_df is not None else 0),
+            clean_value(len(filtered_variants_df) if filtered_variants_df is not None else 0),
+        ]
     )
+    if st.session_state.get(kpi_excel_context_key) == kpi_excel_context and st.session_state.get(kpi_excel_key) is not None:
+        excel_bytes = st.session_state[kpi_excel_key]
+    else:
+        excel_bytes = dataframe_to_excel_bytes(
+            {
+                "Resumen modelos": result["model_stock"],
+                "Resumen por marca": result.get("brand_summary", pd.DataFrame()),
+                "Match bodegas eComm": result.get("ecomm_stock_match", pd.DataFrame()),
+                "Pendientes accionables": filtered_actions_df if filtered_actions_df is not None else pd.DataFrame(),
+                "Detalle variantes stock": filtered_variants_df if filtered_variants_df is not None else pd.DataFrame(),
+                "Resumen bloqueos web": result.get("non_visible_combo_summary", pd.DataFrame()),
+                "No visibles web": result.get("non_visible_web", pd.DataFrame()),
+                "Sin stock Shopify": result.get("no_shopify_stock_models", pd.DataFrame()),
+                "Sin precio": result["no_price_models"],
+                "Sin foto": result["no_photo_models"],
+            }
+        )
+        st.session_state[kpi_excel_key] = excel_bytes
+        st.session_state[kpi_excel_context_key] = kpi_excel_context
     st.download_button(
         "Descargar diagnostico KPIs",
         data=excel_bytes,
@@ -9297,6 +9404,40 @@ api_version = "{DEFAULT_API_VERSION}"
         st.markdown("</div>", unsafe_allow_html=True)
 
         update_ready = update_file or update_operation in ("photos", "siblings", "inventory_locations") or body_mode == "fix_catalog"
+        partial_context = "|".join(
+            [
+                clean_value(brand_config.get("site_key")),
+                clean_value(update_source),
+                clean_value(update_operation),
+                clean_value(tag_mode),
+                clean_value(image_mode),
+                clean_value(body_mode),
+                clean_value(only_missing_images),
+                uploaded_file_fingerprint(update_file),
+                uploaded_file_fingerprint(template_file),
+            ]
+        )
+        if st.session_state.get("partial_context") != partial_context:
+            for state_key in (
+                "shopify_preview_df",
+                "shopify_preview_issues_df",
+                "shopify_preview_matrixify_df",
+                "shopify_preview_operation",
+                "shopify_apply_result_df",
+                "inventory_activation_preview_df",
+                "inventory_activation_rows",
+                "inventory_activation_locations",
+                "inventory_activation_issues_df",
+                "inventory_activation_result_df",
+                "centry_maintainer_df",
+                "centry_maintainer_sial_df",
+                "centry_maintainer_issues_df",
+                "centry_maintainer_codes",
+                "centry_maintainer_excel_bytes",
+                f"shopify_preview_excel_{brand_config['site_key']}_{update_operation}",
+            ):
+                st.session_state.pop(state_key, None)
+            st.session_state["partial_context"] = partial_context
         if update_source == "Shopify API" and not is_shopify_configured(shopify_config):
             st.error("Este sitio no tiene Shopify API configurada en Secrets.")
             update_ready = False
@@ -9306,7 +9447,10 @@ api_version = "{DEFAULT_API_VERSION}"
 
         if update_source == "Shopify API" and update_ready:
             try:
-                update_df = read_excel(update_file) if update_file else None
+                update_df = read_uploaded_excel_cached(
+                    update_file,
+                    f"partial_{brand_config['site_key']}_{update_operation}",
+                ) if update_file else None
                 if update_df is not None and update_operation != "centry":
                     _, detected_brands, blocked_brands = input_brand_report(update_df, brand_config)
                     if blocked_brands:
@@ -9330,9 +9474,9 @@ api_version = "{DEFAULT_API_VERSION}"
                             st.error("El Excel no tiene codigos modelo-color reconocibles. Usa una columna como Mod-Col, Codigo Modelo Color, Cod Mod Col, SKU, o una sola columna con los codigos.")
                         else:
                             with st.spinner("Leyendo Shopify, BigQuery y armando Centry..."):
-                                shopify_products = fetch_products(shopify_config)
+                                shopify_products = session_shopify_products(brand_config["site_key"], shopify_config)
                                 shopify_matrixify_df = shopify_products_to_matrixify_df(shopify_products)
-                                arti_df, arti_source = read_arti_for_app(brand_config)
+                                arti_df, arti_source = session_arti_for_app(brand_config)
                                 centry_matrixify_df, master_issues_df = build_centry_matrixify_from_master(
                                     codes,
                                     shopify_matrixify_df,
@@ -9355,6 +9499,13 @@ api_version = "{DEFAULT_API_VERSION}"
                             st.session_state["centry_maintainer_sial_df"] = centry_sial_df
                             st.session_state["centry_maintainer_issues_df"] = centry_issues_df
                             st.session_state["centry_maintainer_codes"] = codes
+                            st.session_state["centry_maintainer_excel_bytes"] = dataframe_to_excel_bytes(
+                                {
+                                    "Centry": centry_df,
+                                    "Carga Sial": centry_sial_df if centry_sial_df is not None else pd.DataFrame(),
+                                    "Revision Centry": centry_issues_df if centry_issues_df is not None else pd.DataFrame(),
+                                }
+                            )
 
                     centry_df = st.session_state.get("centry_maintainer_df")
                     centry_sial_df = st.session_state.get("centry_maintainer_sial_df", pd.DataFrame())
@@ -9372,7 +9523,8 @@ api_version = "{DEFAULT_API_VERSION}"
                             missing_ean_count = centry_missing_ean_count(centry_df)
                             st.download_button(
                                 "Descargar Centry",
-                                data=dataframe_to_excel_bytes(
+                                data=st.session_state.get("centry_maintainer_excel_bytes")
+                                or dataframe_to_excel_bytes(
                                     {
                                         "Centry": centry_df,
                                         "Carga Sial": centry_sial_df if centry_sial_df is not None else pd.DataFrame(),
@@ -9393,7 +9545,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 if update_operation == "inventory_locations":
                     if st.button("Analizar activación de inventario", type="primary"):
                         with st.spinner("Leyendo Shopify y preparando activación por sucursal..."):
-                            shopify_products = fetch_products(shopify_config)
+                            shopify_products = session_shopify_products(brand_config["site_key"], shopify_config)
                             codes, skus = inventory_activation_filters_from_input(update_df)
                             activation_rows = _inventory_activation_rows_from_products(
                                 shopify_products,
@@ -9474,6 +9626,7 @@ api_version = "{DEFAULT_API_VERSION}"
                                         activation_rows,
                                         locations=locations,
                                     )
+                                clear_shopify_products_cache(brand_config["site_key"])
                                 st.session_state["inventory_activation_result_df"] = result_df
                                 st.dataframe(result_df, use_container_width=True, height=360)
                                 st.download_button(
@@ -9486,7 +9639,7 @@ api_version = "{DEFAULT_API_VERSION}"
 
                 if st.button(f"Analizar carga parcial: {update_label}", type="primary"):
                     with st.spinner("Leyendo productos actuales desde Shopify..."):
-                        shopify_products = fetch_products(shopify_config)
+                        shopify_products = session_shopify_products(brand_config["site_key"], shopify_config)
                     preview_df, issues_df, matrixify_df = build_shopify_update_preview(
                         shopify_products,
                         update_df,
@@ -9501,6 +9654,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     st.session_state["shopify_preview_issues_df"] = issues_df
                     st.session_state["shopify_preview_matrixify_df"] = matrixify_df
                     st.session_state["shopify_preview_operation"] = update_operation
+                    st.session_state.pop(f"shopify_preview_excel_{brand_config['site_key']}_{update_operation}", None)
 
                 preview_df = st.session_state.get("shopify_preview_df")
                 issues_df = st.session_state.get("shopify_preview_issues_df", pd.DataFrame())
@@ -9515,13 +9669,17 @@ api_version = "{DEFAULT_API_VERSION}"
                         st.warning(f"Hay {len(issues_df):,} observaciones.")
                         st.dataframe(issues_df, use_container_width=True)
 
-                    excel_bytes = dataframe_to_excel_bytes(
-                        {
-                            "Vista previa": preview_df if preview_df is not None else pd.DataFrame(),
-                            "Revision": issues_df if issues_df is not None else pd.DataFrame(),
-                            "Matrixify fotos": matrixify_df if matrixify_df is not None else pd.DataFrame(),
-                        }
-                    )
+                    excel_key = f"shopify_preview_excel_{brand_config['site_key']}_{update_operation}"
+                    excel_bytes = st.session_state.get(excel_key)
+                    if excel_bytes is None:
+                        excel_bytes = dataframe_to_excel_bytes(
+                            {
+                                "Vista previa": preview_df if preview_df is not None else pd.DataFrame(),
+                                "Revision": issues_df if issues_df is not None else pd.DataFrame(),
+                                "Matrixify fotos": matrixify_df if matrixify_df is not None else pd.DataFrame(),
+                            }
+                        )
+                        st.session_state[excel_key] = excel_bytes
                     st.download_button(
                         "Descargar estructura Matrixify",
                         data=excel_bytes,
@@ -9537,6 +9695,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         if confirm_apply and st.button("Sincronizar Shopify", type="primary"):
                             with st.spinner("Sincronizando cambios en Shopify..."):
                                 result_df = apply_shopify_preview(shopify_config, preview_df)
+                            clear_shopify_products_cache(brand_config["site_key"])
                             st.session_state["shopify_apply_result_df"] = result_df
                             st.dataframe(result_df, use_container_width=True)
                             st.download_button(
@@ -9550,7 +9709,11 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.exception(exc)
         elif update_source == "Respaldo Excel" and template_file and update_ready:
             try:
-                template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
+                template_df = read_uploaded_excel_cached(
+                    template_file,
+                    f"partial_template_{brand_config['site_key']}_{update_operation}",
+                    sheet_name="Products",
+                )
                 if "Vendor" in template_df.columns:
                     catalog_vendors = {
                         clean_value(value).lower()
@@ -9565,7 +9728,10 @@ api_version = "{DEFAULT_API_VERSION}"
                         )
                         st.stop()
 
-                update_df = read_excel(update_file) if update_file else None
+                update_df = read_uploaded_excel_cached(
+                    update_file,
+                    f"partial_backup_{brand_config['site_key']}_{update_operation}",
+                ) if update_file else None
                 if update_df is not None:
                     _, detected_brands, blocked_brands = input_brand_report(update_df, brand_config)
                     if blocked_brands:
@@ -9579,7 +9745,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     update_arti_df = None
                     if update_operation == "photos":
                         try:
-                            update_arti_df, _ = read_arti_for_app(brand_config)
+                            update_arti_df, _ = session_arti_for_app(brand_config)
                         except Exception:
                             update_arti_df = None
                     matrixify_df, issues_df = build_matrixify_updates(
@@ -9694,57 +9860,80 @@ api_version = "{DEFAULT_API_VERSION}"
     can_process_complete = input_file and (complete_source == "Shopify API" or template_file)
     if can_process_complete:
         try:
-            if complete_source == "Shopify API":
-                if not is_shopify_configured(shopify_config):
-                    st.error("Este sitio no tiene Shopify API configurada en Secrets.")
-                    st.stop()
-                with st.spinner("Leyendo productos y variantes actuales desde Shopify..."):
-                    shopify_products = fetch_products(shopify_config)
-                st.session_state["shopify_product_count"] = len(shopify_products)
-                st.session_state["complete_shopify_products"] = shopify_products
-                template_df = shopify_products_to_matrixify_df(shopify_products)
-                template_source = f"Shopify API ({len(shopify_products):,} productos)"
+            data_ready = (
+                st.session_state.get("complete_data_context") == complete_context
+                and st.session_state.get("complete_input_df") is not None
+                and st.session_state.get("complete_template_df") is not None
+                and st.session_state.get("complete_arti_df") is not None
+            )
+            if data_ready:
+                input_df = st.session_state["complete_input_df"]
+                template_df = st.session_state["complete_template_df"]
+                arti_df = st.session_state["complete_arti_df"]
+                template_source = st.session_state.get("complete_template_source", "")
+                detected_brands = st.session_state.get("complete_detected_brands", [])
             else:
-                template_df = pd.read_excel(template_file, sheet_name="Products", dtype=object)
-                template_source = f"respaldo operativo cargado para {brand_config['site_label']}"
-                if "Vendor" in template_df.columns:
-                    catalog_vendors = {
-                        clean_value(value).lower()
-                        for value in template_df["Vendor"].dropna()
-                        if clean_value(value)
-                    }
-                    expected_vendors = expected_catalog_vendors(brand_config)
-                    if catalog_vendors and catalog_vendors.isdisjoint(expected_vendors):
-                        st.error(
-                            f"El respaldo Excel cargado no parece ser de {brand_config['site_label']}. "
-                            f"Vendors esperados: {', '.join(sorted(expected_vendors))}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
-                        )
+                if complete_source == "Shopify API":
+                    if not is_shopify_configured(shopify_config):
+                        st.error("Este sitio no tiene Shopify API configurada en Secrets.")
                         st.stop()
+                    with st.spinner("Leyendo productos y variantes actuales desde Shopify..."):
+                        shopify_products = session_shopify_products(brand_config["site_key"], shopify_config)
+                    st.session_state["shopify_product_count"] = len(shopify_products)
+                    st.session_state["complete_shopify_products"] = shopify_products
+                    template_df = shopify_products_to_matrixify_df(shopify_products)
+                    template_source = f"Shopify API ({len(shopify_products):,} productos)"
+                else:
+                    template_df = read_uploaded_excel_cached(
+                        template_file,
+                        f"complete_template_{brand_config['site_key']}",
+                        sheet_name="Products",
+                    )
+                    template_source = f"respaldo operativo cargado para {brand_config['site_label']}"
+                    if "Vendor" in template_df.columns:
+                        catalog_vendors = {
+                            clean_value(value).lower()
+                            for value in template_df["Vendor"].dropna()
+                            if clean_value(value)
+                        }
+                        expected_vendors = expected_catalog_vendors(brand_config)
+                        if catalog_vendors and catalog_vendors.isdisjoint(expected_vendors):
+                            st.error(
+                                f"El respaldo Excel cargado no parece ser de {brand_config['site_label']}. "
+                                f"Vendors esperados: {', '.join(sorted(expected_vendors))}. Vendors encontrados: {', '.join(sorted(catalog_vendors))}."
+                            )
+                            st.stop()
 
-            input_df = read_excel(input_file)
-            st.session_state["input_row_count"] = len(input_df)
-            brand_column, detected_brands, blocked_brands = input_brand_report(input_df, brand_config)
-            if blocked_brands:
-                st.error(
-                    f"El input tiene marcas no permitidas para {brand_config['site_label']}: "
-                    f"{', '.join(blocked_brands)}. Marcas permitidas: {', '.join(brand_config['allowed_arti_brands'])}."
-                )
-                st.stop()
+                input_df = read_uploaded_excel_cached(input_file, f"complete_input_{brand_config['site_key']}")
+                st.session_state["input_row_count"] = len(input_df)
+                brand_column, detected_brands, blocked_brands = input_brand_report(input_df, brand_config)
+                if blocked_brands:
+                    st.error(
+                        f"El input tiene marcas no permitidas para {brand_config['site_label']}: "
+                        f"{', '.join(blocked_brands)}. Marcas permitidas: {', '.join(brand_config['allowed_arti_brands'])}."
+                    )
+                    st.stop()
 
-            try:
-                arti_df, arti_source = read_arti_for_app(brand_config)
-            except FileNotFoundError:
-                st.error(
-                    "Falta configurar BigQuery o dejar un respaldo local de ARTI: "
-                    f"{DEFAULT_ARTI_ZIP_PATH}, {DEFAULT_ARTI_CSV_PATH} o {DEFAULT_ARTI_PATH}"
-                )
-                st.stop()
-            except Exception as exc:
-                st.error("No se pudo leer el ARTI desde BigQuery.")
-                st.exception(exc)
-                st.stop()
+                try:
+                    arti_df, arti_source = session_arti_for_app(brand_config)
+                except FileNotFoundError:
+                    st.error(
+                        "Falta configurar BigQuery o dejar un respaldo local de ARTI: "
+                        f"{DEFAULT_ARTI_ZIP_PATH}, {DEFAULT_ARTI_CSV_PATH} o {DEFAULT_ARTI_PATH}"
+                    )
+                    st.stop()
+                except Exception as exc:
+                    st.error("No se pudo leer el ARTI desde BigQuery.")
+                    st.exception(exc)
+                    st.stop()
 
-            st.session_state["arti_row_count"] = len(arti_df)
+                st.session_state["arti_row_count"] = len(arti_df)
+                st.session_state["complete_input_df"] = input_df
+                st.session_state["complete_template_df"] = template_df
+                st.session_state["complete_arti_df"] = arti_df
+                st.session_state["complete_template_source"] = template_source
+                st.session_state["complete_detected_brands"] = detected_brands
+                st.session_state["complete_data_context"] = complete_context
             left_col, right_col = st.columns([2, 1], gap="large")
             analyze_clicked = False
             with left_col:
@@ -9792,6 +9981,9 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.session_state["complete_analysis_message"] = (
                     f"Analisis terminado: {len(matrixify_df):,} filas Matrixify, "
                     f"{len(issues_df):,} observaciones, {len(skipped_df):,} omitidos sin cambios."
+                )
+                st.session_state["complete_excel_bytes"] = columbia_to_excel_bytes(
+                    matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df
                 )
 
             matrixify_df = st.session_state.get("complete_matrixify_df")
@@ -9851,9 +10043,12 @@ api_version = "{DEFAULT_API_VERSION}"
                             st.write("Vista previa Carga Sial")
                             st.dataframe(sial_df.head(100), use_container_width=True, height=320)
 
-                excel_bytes = columbia_to_excel_bytes(
-                    matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df
-                )
+                excel_bytes = st.session_state.get("complete_excel_bytes")
+                if excel_bytes is None:
+                    excel_bytes = columbia_to_excel_bytes(
+                        matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df
+                    )
+                    st.session_state["complete_excel_bytes"] = excel_bytes
                 st.download_button(
                     "Descargar estructura Matrixify",
                     data=excel_bytes,
@@ -9870,6 +10065,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     if confirm_complete and st.button("Sincronizar Shopify", type="primary"):
                         with st.spinner("Sincronizando productos existentes en Shopify..."):
                             result_df = apply_full_product_updates(shopify_config, matrixify_df)
+                        clear_shopify_products_cache(brand_config["site_key"])
                         st.session_state["complete_apply_result_df"] = result_df
                         st.dataframe(result_df, use_container_width=True)
                     result_df = st.session_state.get("complete_apply_result_df")

@@ -4655,9 +4655,6 @@ def _apply_inventory_item_updates(shopify_config, inventory_item_updates):
 
 
 def _shopify_inventory_target_locations(shopify_config):
-    if fetch_locations is None:
-        raise RuntimeError("Falta actualizar shopify_api.py: no existe fetch_locations.")
-    locations = fetch_locations(shopify_config)
     configured = clean_value(
         shopify_config.get("inventory_location_ids")
         or shopify_config.get("inventory_locations")
@@ -4665,6 +4662,35 @@ def _shopify_inventory_target_locations(shopify_config):
     )
     if configured:
         requested = {clean_value(value) for value in re.split(r"[,;|\n]+", configured) if clean_value(value)}
+        if not requested:
+            return []
+        if any(value.startswith("gid://shopify/Location/") for value in requested):
+            return [
+                {
+                    "id": value if value.startswith("gid://shopify/Location/") else f"gid://shopify/Location/{value}",
+                    "legacyResourceId": value.rsplit("/", 1)[-1],
+                    "name": f"Location {value.rsplit('/', 1)[-1]}",
+                }
+                for value in sorted(requested)
+            ]
+        if fetch_locations is None:
+            return [{"id": f"gid://shopify/Location/{value}", "legacyResourceId": value, "name": f"Location {value}"} for value in sorted(requested)]
+    else:
+        requested = set()
+
+    if fetch_locations is None:
+        raise RuntimeError(
+            "No puedo leer sucursales porque falta fetch_locations. Configura inventory_location_ids en Secrets."
+        )
+    try:
+        locations = fetch_locations(shopify_config)
+    except Exception as exc:
+        raise RuntimeError(
+            "Shopify no permite leer locations con este token. Configura inventory_location_ids en Secrets "
+            "con los IDs/GIDs de las sucursales a activar, o agrega permisos de lectura de locations al token. "
+            f"Detalle: {exc}"
+        ) from exc
+    if configured:
         requested_lower = {value.lower() for value in requested}
 
         def matches(location):
@@ -9183,7 +9209,10 @@ api_version = "{DEFAULT_API_VERSION}"
                 key="update_inventory_locations",
                 help="Si no subes archivo, se revisan todas las variantes con SKU del catálogo Shopify.",
             )
-            st.caption("Activa cada inventory item con SKU en todas las sucursales activas de Shopify o en las locations configuradas en Secrets.")
+            st.caption(
+                "Activa cada inventory item con SKU en las sucursales de Shopify. "
+                "Si el token no puede leer locations, configura inventory_location_ids en Secrets."
+            )
         st.markdown("</div>", unsafe_allow_html=True)
 
         update_ready = update_file or update_operation in ("photos", "siblings", "inventory_locations") or body_mode == "fix_catalog"
@@ -9290,7 +9319,12 @@ api_version = "{DEFAULT_API_VERSION}"
                                 only_codes=codes,
                                 only_skus=skus,
                             )
-                            locations = _shopify_inventory_target_locations(shopify_config)
+                            issues = []
+                            try:
+                                locations = _shopify_inventory_target_locations(shopify_config)
+                            except Exception as exc:
+                                locations = []
+                                issues.append({"Tipo": "Sucursales", "Detalle": str(exc)})
                             preview_rows = []
                             for item in activation_rows:
                                 for location in locations:
@@ -9303,10 +9337,9 @@ api_version = "{DEFAULT_API_VERSION}"
                                             "Sucursal": location.get("name"),
                                             "Location GID": location.get("id"),
                                             "Acción": "Activar inventory item en sucursal",
-                                        }
-                                    )
+                                    }
+                                )
                             preview_df = pd.DataFrame(preview_rows)
-                            issues = []
                             if update_df is not None and not codes and not skus:
                                 issues.append(
                                     {

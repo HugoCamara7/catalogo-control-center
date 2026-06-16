@@ -784,6 +784,37 @@ def final_variant_filter(output_df, sial_df, issues_df):
             )
             output_df = output_df[~zero_mask].copy()
 
+        one_size_mask = output_df["Option1 Value"].map(is_one_size)
+        if one_size_mask.any():
+            drop_one_size = output_df.apply(
+                lambda row: is_one_size(row.get("Option1 Value")) and _row_blocks_zero_size(row),
+                axis=1,
+            )
+            if {"Handle", "Option1 Value"}.issubset(output_df.columns):
+                handle_key = output_df["Handle"].map(clean).replace("", pd.NA).ffill().fillna("").str.upper()
+                for _, group in output_df.groupby(handle_key, sort=False):
+                    group_one_size = group["Option1 Value"].map(is_one_size)
+                    if not group_one_size.any():
+                        continue
+                    group_real_size = (
+                        group["Option1 Value"].map(clean).ne("")
+                        & ~group["Option1 Value"].map(is_one_size)
+                        & ~group["Option1 Value"].map(is_zero_size)
+                        & ~group["Option1 Value"].map(is_internal_k_size)
+                    )
+                    if group_real_size.any():
+                        drop_one_size.loc[group.index[group_one_size]] = True
+            if drop_one_size.any():
+                issues.append(
+                    {
+                        "Mod-Col": "Salida final",
+                        "Problema": "Se eliminaron filas finales O/S/Talla Unica porque no corresponde crear talla unica para este producto",
+                        "Fila input": "",
+                        "Cantidad": safe_int(drop_one_size.sum()),
+                    }
+                )
+                output_df = output_df[~drop_one_size].copy()
+
         if "Variant SKU" in output_df.columns:
             missing_sku_mask = output_df["Variant SKU"].map(clean).eq("")
             if missing_sku_mask.any():
@@ -2305,6 +2336,28 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             zero_size_mask = pd.Series(False, index=variants.index)
             internal_k_size_mask = pd.Series(False, index=variants.index)
         has_one_size = bool(one_size_mask.any())
+        real_size_mask = ~(one_size_mask | zero_size_mask | internal_k_size_mask)
+        real_size_count = safe_int(real_size_mask.sum())
+        one_size_count = safe_int(one_size_mask.sum())
+        should_block_one_size = category_blocks_zero_size(product)
+        if one_size_count and (should_block_one_size or real_size_count):
+            variants = variants[~one_size_mask].copy()
+            issues.append(
+                {
+                    "Mod-Col": key,
+                    "Problema": (
+                        "Se omitio O/S/Talla Unica porque vestuario/calzado no debe crear talla unica"
+                        if should_block_one_size
+                        else "Se omitio O/S/Talla Unica porque BigQuery tambien trae tallas reales"
+                    ),
+                    "Fila input": input_index + 2,
+                    "Cantidad": one_size_count,
+                }
+            )
+            one_size_mask = boolean_mask(variants["__SIZE"], is_one_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
+            zero_size_mask = boolean_mask(variants["__SIZE"], is_zero_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
+            internal_k_size_mask = boolean_mask(variants["__SIZE"], is_internal_k_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
+            has_one_size = bool(one_size_mask.any())
         one_size_zero_count = safe_int(zero_size_mask.sum()) if has_one_size else 0
         if one_size_zero_count:
             variants = variants[~zero_size_mask].copy()
@@ -2545,6 +2598,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                         "Metafield: mm-google-shopping.custom_product [boolean]": "FALSE",
                     }
                 )
+                for column in matrixify_columns:
+                    if not str(column).startswith("Metafield: ") or clean(output.get(column)):
+                        continue
+                    source_value = clean(product.get(column))
+                    if source_value:
+                        output[column] = source_value
 
             product_rows.append(output)
             product_sial_rows.append(

@@ -2283,34 +2283,21 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             continue
         kept_indexes = []
         seen_skus = set()
-        seen_sizes = set()
         duplicate_skus = []
-        duplicate_sizes = []
-        keep_duplicate_visible_sizes = (
-            "MARCA_MA" in variants.columns
-            and variants["MARCA_MA"].map(lambda value: normalize_brand_name(value) == "MOUNTAIN HARDWEAR").any()
-        )
         for variant_index, variant_row in variants.iterrows():
             sku_key = clean_value(variant_row.get("CODINT_MA")).upper()
             size_key = clean_value(display_size_for_site(variant_row.get("__SIZE"), brand_config)).upper()
             if sku_key and sku_key in seen_skus:
                 duplicate_skus.append(f"{sku_key} ({size_key or 'sin talla'})")
                 continue
-            if size_key and size_key in seen_sizes and not keep_duplicate_visible_sizes:
-                duplicate_sizes.append(f"{size_key} ({sku_key or 'sin SKU'})")
-                continue
             if sku_key:
                 seen_skus.add(sku_key)
-            if size_key:
-                seen_sizes.add(size_key)
             kept_indexes.append(variant_index)
         variants = variants.loc[kept_indexes].copy()
         if duplicate_skus:
             issues.append({"Mod-Col": key, "Problema": f"Se omitieron {len(duplicate_skus):,} variantes duplicadas por SKU: {', '.join(duplicate_skus[:10])}"})
-        if duplicate_sizes:
-            issues.append({"Mod-Col": key, "Problema": f"Se omitieron {len(duplicate_sizes):,} variantes duplicadas por talla visible: {', '.join(duplicate_sizes[:10])}"})
         if variants.empty:
-            issues.append({"Mod-Col": key, "Problema": "Todas las variantes fueron omitidas por duplicidad de SKU/talla"})
+            issues.append({"Mod-Col": key, "Problema": "Todas las variantes fueron omitidas por duplicidad de SKU"})
             continue
         variants = variants.sort_values("__SIZE", key=lambda series: series.map(master_size_sort_key))
         product_row = product_lookup.get(key)
@@ -4139,6 +4126,7 @@ def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existin
     image_mode = clean_value(image_mode).lower() or "replace"
     product_files = []
     image_errors = []
+    uploaded_count = 0
 
     for image_index, raw_image_url in enumerate(image_urls, start=1):
         try:
@@ -4157,9 +4145,23 @@ def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existin
             image_errors.append(f"foto {image_index}: {exc}")
 
     if not product_files:
-        raise ShopifyApiError("No se pudo subir ninguna foto nueva. " + " | ".join(image_errors[:3]))
-
-    route = _product_set_files_with_fallback(shopify_config, product_gid, product_files)
+        direct_media = product_create_media(shopify_config, product_gid, image_urls)
+        if direct_media:
+            route = "URL directa"
+            uploaded_count = len(direct_media)
+        else:
+            raise ShopifyApiError("No se pudo subir ninguna foto nueva. " + " | ".join(image_errors[:3]))
+    else:
+        try:
+            route = _product_set_files_with_fallback(shopify_config, product_gid, product_files)
+            uploaded_count = len(product_files)
+        except Exception as upload_exc:
+            direct_media = product_create_media(shopify_config, product_gid, image_urls)
+            if direct_media:
+                route = f"URL directa tras fallback staged ({upload_exc})"
+                uploaded_count = len(direct_media)
+            else:
+                raise
     deleted_count = 0
     delete_note = ""
     if image_mode == "replace" and existing_media_ids:
@@ -4176,9 +4178,9 @@ def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existin
 
     message = (
         f"{deleted_count} fotos anteriores eliminadas. "
-        f"{len(product_files)} fotos nuevas inyectadas por API ({route})."
+        f"{uploaded_count} fotos nuevas inyectadas por API ({route})."
         if image_mode == "replace"
-        else f"{len(product_files)} fotos nuevas agregadas por API ({route})."
+        else f"{uploaded_count} fotos nuevas agregadas por API ({route})."
     )
     if delete_note:
         message += delete_note
@@ -4343,38 +4345,21 @@ def _dedupe_product_variant_rows(product_variant_rows):
         return product_variant_rows, []
     kept_indexes = []
     seen_skus = set()
-    seen_sizes = set()
     duplicate_skus = []
-    duplicate_sizes = []
-    keep_duplicate_visible_sizes = False
-    if "Vendor" in product_variant_rows.columns:
-        keep_duplicate_visible_sizes = product_variant_rows["Vendor"].map(
-            lambda value: normalize_brand_name(value) == "MOUNTAIN HARDWEAR"
-        ).any()
     for index, row in product_variant_rows.iterrows():
         sku = clean_value(row.get("Variant SKU")).upper()
         size = clean_value(row.get("Option1 Value")).upper()
         if sku and sku in seen_skus:
             duplicate_skus.append(f"{sku} ({size or 'sin talla'})")
             continue
-        if size and size in seen_sizes and not keep_duplicate_visible_sizes:
-            duplicate_sizes.append(f"{size} ({sku or 'sin SKU'})")
-            continue
         if sku:
             seen_skus.add(sku)
-        if size:
-            seen_sizes.add(size)
         kept_indexes.append(index)
     messages = []
     if duplicate_skus:
         messages.append(
             f"Se omitieron {len(duplicate_skus)} variantes duplicadas por SKU: "
             + ", ".join(duplicate_skus[:10])
-        )
-    if duplicate_sizes:
-        messages.append(
-            f"Se omitieron {len(duplicate_sizes)} variantes duplicadas por talla: "
-            + ", ".join(duplicate_sizes[:10])
         )
     return product_variant_rows.loc[kept_indexes].copy(), messages
 
@@ -4498,6 +4483,8 @@ def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
         if clean_value(variant.get("sku") or (variant.get("inventoryItem") or {}).get("sku"))
     }
     fallback_price, fallback_compare_at_price = _price_fallback_from_product_data(product_data)
+    if not fallback_price:
+        fallback_price, fallback_compare_at_price = _price_fallback_from_rows(product_variant_rows)
 
     variants = []
     seen_sizes = set()
@@ -4525,6 +4512,36 @@ def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
             if sku:
                 seen_skus.add(sku)
     return variants
+
+
+def _expected_variant_skus(product_variant_rows):
+    if product_variant_rows is None or product_variant_rows.empty:
+        return []
+    skus = []
+    seen = set()
+    for _, row in product_variant_rows.iterrows():
+        sku = clean_value(row.get("Variant SKU")).upper()
+        size = clean_value(row.get("Option1 Value"))
+        if not sku or not size or sku in seen:
+            continue
+        seen.add(sku)
+        skus.append(sku)
+    return skus
+
+
+def _actual_variant_skus(product_data):
+    skus = set()
+    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
+        inventory_item = variant.get("inventoryItem") or {}
+        sku = clean_value(variant.get("sku") or inventory_item.get("sku")).upper()
+        if sku:
+            skus.add(sku)
+    return skus
+
+
+def _missing_expected_variant_skus(product_variant_rows, product_data):
+    actual = _actual_variant_skus(product_data)
+    return [sku for sku in _expected_variant_skus(product_variant_rows) if sku not in actual]
 
 
 def _variant_update_payload_from_row(row, variant_id, fallback_price=None, fallback_compare_at_price=None):
@@ -4799,6 +4816,12 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                     }
                 )
             except Exception as exc:
+                error_message = clean_value(exc)
+                if "ACCESS_DENIED" in error_message or "Access denied" in error_message or "nego activar inventario" in error_message:
+                    error_message = (
+                        "Shopify nego activar inventario. El token necesita permiso de escritura de inventario "
+                        "(write_inventory / Inventory management). Actualiza los permisos del token o crea un token nuevo con ese scope."
+                    )
                 results.append(
                     {
                         "Handle": clean_value(item.get("Handle")),
@@ -4808,9 +4831,11 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                         "Sucursal": location_name,
                         "Location GID": location_id,
                         "Resultado": "ERROR",
-                        "Mensaje": str(exc)[:500],
+                        "Mensaje": error_message[:500],
                     }
                 )
+                if "permiso de escritura de inventario" in error_message:
+                    return pd.DataFrame(results)
                 if len([row for row in results if row.get("Resultado") == "ERROR"]) >= limit_errors:
                     return pd.DataFrame(results)
     return pd.DataFrame(results)
@@ -5154,8 +5179,22 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                         except Exception as exc:
                             image_errors.append(f"foto {image_index}: {exc}")
                     if product_files:
-                        route = _product_set_files_with_fallback(shopify_config, product_gid, product_files)
-                        product_messages.append(f"{len(product_files)} fotos enviadas por {route}")
+                        try:
+                            route = _product_set_files_with_fallback(shopify_config, product_gid, product_files)
+                            product_messages.append(f"{len(product_files)} fotos enviadas por {route}")
+                        except Exception as upload_exc:
+                            direct_media = product_create_media(shopify_config, product_gid, raw_image_urls[:10])
+                            if direct_media:
+                                product_messages.append(
+                                    f"{len(direct_media)} fotos enviadas por URL directa tras fallback. "
+                                    f"Ruta staged fallo: {upload_exc}"
+                                )
+                            else:
+                                raise
+                    elif raw_image_urls:
+                        direct_media = product_create_media(shopify_config, product_gid, raw_image_urls[:10])
+                        if direct_media:
+                            product_messages.append(f"{len(direct_media)} fotos enviadas por URL directa")
                     if image_errors:
                         product_status = "PARCIAL"
                         product_messages.append(
@@ -5230,6 +5269,36 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     product_messages.append(f"Error variantes: {exc}")
 
             product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
+            still_missing_skus = _missing_expected_variant_skus(product_variant_rows, product_data_for_variants)
+            if still_missing_skus:
+                retry_rows = product_variant_rows[
+                    product_variant_rows["Variant SKU"].map(lambda value: clean_value(value).upper()).isin(still_missing_skus)
+                ].copy()
+                retry_missing_variants = _missing_variant_inputs_from_shopify(
+                    retry_rows,
+                    product_data_for_variants,
+                )
+                if retry_missing_variants:
+                    try:
+                        retry_created = product_variants_bulk_create(
+                            shopify_config,
+                            product_gid,
+                            retry_missing_variants,
+                            strategy=None,
+                        )
+                        product_messages.append(
+                            f"Reintento variantes: {len(retry_created)} creadas de {len(retry_missing_variants)} faltantes"
+                        )
+                        product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
+                        still_missing_skus = _missing_expected_variant_skus(product_variant_rows, product_data_for_variants)
+                    except Exception as exc:
+                        product_status = "PARCIAL"
+                        product_messages.append(f"Error reintento variantes: {exc}")
+                if still_missing_skus:
+                    product_status = "PARCIAL"
+                    product_messages.append(
+                        "SKUs de variantes no creados en Shopify: " + ", ".join(still_missing_skus[:20])
+                    )
             post_create_inventory_updates = _existing_inventory_item_updates_from_shopify(
                 product_variant_rows,
                 product_data_for_variants,
@@ -7838,9 +7907,17 @@ def render_stepper(config, current_step=1):
 
 
 def current_flow_step():
-    if st.session_state.get("complete_apply_result_df") is not None or st.session_state.get("shopify_apply_result_df") is not None:
+    if (
+        st.session_state.get("complete_apply_result_df") is not None
+        or st.session_state.get("shopify_apply_result_df") is not None
+        or st.session_state.get("inventory_activation_result_df") is not None
+    ):
         return 4
-    if st.session_state.get("complete_matrixify_df") is not None or st.session_state.get("shopify_preview_df") is not None:
+    if (
+        st.session_state.get("complete_matrixify_df") is not None
+        or st.session_state.get("shopify_preview_df") is not None
+        or st.session_state.get("inventory_activation_preview_df") is not None
+    ):
         return 3
     if st.session_state.get("input_loaded") or st.session_state.get("input") is not None or st.session_state.get("input_row_count"):
         return 2
@@ -7864,34 +7941,15 @@ def clear_complete_load_state():
 
 
 def reset_load_workspace():
-    clear_complete_load_state()
-    for key in (
-        "input_loaded",
-        "input_row_count",
-        "shopify_product_count",
-        "complete_shopify_products",
-        "complete_context",
-        "shopify_preview_df",
-        "shopify_apply_result_df",
-        "shopify_preview_issues_df",
-        "shopify_preview_matrixify_df",
-        "shopify_preview_operation",
-        "inventory_activation_preview_df",
-        "inventory_activation_rows",
-        "inventory_activation_locations",
-        "inventory_activation_issues_df",
-        "inventory_activation_result_df",
-        "template_update",
-        "update_centry_codes",
-        "update_tags",
-        "update_photos",
-        "update_title",
-        "update_body",
-        "update_inventory_locations",
-    ):
-        st.session_state.pop(key, None)
-    st.session_state["load_reset_nonce"] = int(st.session_state.get("load_reset_nonce") or 0) + 1
-    st.session_state["load_reset_message"] = "Listo. La pantalla quedo limpia para una nueva carga."
+    keep_keys = {"authenticated", "auth_user", "site_picker"}
+    preserved = {key: st.session_state.get(key) for key in keep_keys if key in st.session_state}
+    for key in list(st.session_state.keys()):
+        if key not in keep_keys:
+            st.session_state.pop(key, None)
+    for key, value in preserved.items():
+        st.session_state[key] = value
+    st.session_state["load_reset_nonce"] = 1
+    st.session_state["load_reset_message"] = "Listo. La app se reinicio como una sesion nueva."
 
 
 def uploaded_file_fingerprint(uploaded_file):

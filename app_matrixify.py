@@ -607,7 +607,7 @@ def read_excel(uploaded_file):
     return pd.read_excel(uploaded_file, dtype=object).dropna(how="all")
 
 
-def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=None):
+def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=0):
     if not uploaded_file:
         st.session_state.pop(f"{state_prefix}_fingerprint", None)
         st.session_state.pop(f"{state_prefix}_df", None)
@@ -622,7 +622,10 @@ def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=None):
         uploaded_file.seek(0)
     except Exception:
         pass
-    df = pd.read_excel(uploaded_file, sheet_name=sheet_name, dtype=object).dropna(how="all")
+    df = pd.read_excel(uploaded_file, sheet_name=sheet_name, dtype=object)
+    if isinstance(df, dict):
+        df = next(iter(df.values()), pd.DataFrame())
+    df = df.dropna(how="all")
     st.session_state[f"{state_prefix}_fingerprint"] = fingerprint
     st.session_state[f"{state_prefix}_df"] = df
     return df
@@ -10078,5 +10081,17 @@ api_version = "{DEFAULT_API_VERSION}"
     )
 
 
+def run_app():
+    try:
+        main()
+    except Exception as exc:
+        st.error("La app no pudo iniciar correctamente en este entorno.")
+        st.warning(
+            "Esto suele deberse a Secrets, permisos, dependencias o una respuesta externa de BigQuery/Shopify. "
+            "Abre Manage app > Logs en Streamlit Cloud para ver el traceback completo."
+        )
+        st.code(f"{type(exc).__name__}: {exc}")
+
+
 if __name__ == "__main__":
-    main()
+    run_app()

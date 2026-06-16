@@ -7955,12 +7955,9 @@ def clear_complete_load_state():
 
 def reset_load_workspace():
     keep_keys = {"authenticated", "auth_user", "site_picker"}
-    preserved = {key: st.session_state.get(key) for key in keep_keys if key in st.session_state}
     for key in list(st.session_state.keys()):
         if key not in keep_keys:
             st.session_state.pop(key, None)
-    for key, value in preserved.items():
-        st.session_state[key] = value
     st.session_state["load_reset_nonce"] = 1
     st.session_state["load_reset_message"] = "Listo. La app se reinicio como una sesion nueva."
 

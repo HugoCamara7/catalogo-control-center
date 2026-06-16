@@ -90,6 +90,19 @@ auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
 client_x509_cert_url = "..."
 ```
 
+Para la carga parcial **Activar inventario en sucursales**, el token de Shopify debe poder leer `locations` y escribir inventario. Si el token no tiene permiso para leer `locations`, agrega las sucursales manualmente en cada sitio:
+
+```toml
+[shopify_sites.columbia]
+inventory_location_ids = "gid://shopify/Location/123456789,gid://shopify/Location/987654321"
+```
+
+Tambien acepta IDs numericos separados por coma:
+
+```toml
+inventory_location_ids = "123456789,987654321"
+```
+
 7. Compartir el link generado con el equipo.
 
 ## Actualizar bases

@@ -4938,7 +4938,7 @@ def _inventory_activation_rows_from_products(shopify_products, only_codes=None, 
     return rows
 
 
-def _activate_inventory_items_in_locations(shopify_config, activation_rows, locations=None, available=None, limit_errors=12):
+def _activate_inventory_items_in_locations(shopify_config, activation_rows, locations=None, available=None):
     if inventory_activate is None:
         raise RuntimeError("Falta actualizar shopify_api.py: no existe inventory_activate.")
     locations = locations if locations is not None else _shopify_inventory_target_locations(shopify_config)
@@ -4998,9 +4998,15 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                         "Mensaje": error_message[:500],
                     }
                 )
-                if "permiso de escritura de inventario" in error_message:
-                    return pd.DataFrame(results)
-                if len([row for row in results if row.get("Resultado") == "ERROR"]) >= limit_errors:
+                fatal_error = (
+                    "permiso de escritura de inventario" in error_message
+                    or "ACCESS_DENIED" in error_message
+                    or "Access denied" in error_message
+                    or "@idempotent directive" in error_message
+                    or "Invalid API key" in error_message
+                    or "Unauthorized" in error_message
+                )
+                if fatal_error:
                     return pd.DataFrame(results)
     return pd.DataFrame(results)
 

@@ -6246,9 +6246,11 @@ def inject_custom_css(config):
             object-fit:contain !important;
         }}
         section[data-testid="stSidebar"] .sidebar-label {{
-            margin:14px 0 8px !important;
+            display:block !important;
+            margin:18px 0 9px !important;
             color:#0B1B46 !important;
             font-size:13px !important;
+            line-height:1.2 !important;
             font-weight:950 !important;
         }}
         section[data-testid="stSidebar"] .st-key-operation_nav,
@@ -6258,9 +6260,11 @@ def inject_custom_css(config):
             min-height:auto !important;
         }}
         section[data-testid="stSidebar"] .nav-disabled-note {{
-            margin:-2px 0 8px !important;
+            display:block !important;
+            margin:0 0 10px !important;
             color:#64748B !important;
-            font-size:12px !important;
+            font-size:11.5px !important;
+            line-height:1.35 !important;
             font-weight:750 !important;
         }}
         section[data-testid="stSidebar"] {{
@@ -6300,11 +6304,15 @@ def inject_custom_css(config):
         div.st-key-operation_nav_catalog button,
         div.st-key-load_mode_complete button,
         div.st-key-load_mode_partial button {{
-            display:flex !important;
+            display:grid !important;
+            grid-template-columns:28px minmax(0, 1fr) !important;
+            align-items:center !important;
+            column-gap:10px !important;
             min-height:46px !important;
             width:100% !important;
-            justify-content:flex-start !important;
-            padding:10px 18px !important;
+            justify-content:stretch !important;
+            text-align:left !important;
+            padding:9px 14px !important;
             border-radius:14px !important;
             border:1px solid #DDE6F2 !important;
             background:#FFFFFF !important;
@@ -6318,6 +6326,27 @@ def inject_custom_css(config):
             line-height:1.15 !important;
             margin:0 0 8px !important;
         }}
+        div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
+        div.st-key-operation_nav_catalog button [data-testid="stMarkdownContainer"],
+        div.st-key-load_mode_complete button [data-testid="stMarkdownContainer"],
+        div.st-key-load_mode_partial button [data-testid="stMarkdownContainer"] {{
+            width:100% !important;
+            min-width:0 !important;
+            text-align:left !important;
+        }}
+        div.st-key-operation_nav_kpis button p,
+        div.st-key-operation_nav_catalog button p,
+        div.st-key-load_mode_complete button p,
+        div.st-key-load_mode_partial button p {{
+            width:100% !important;
+            margin:0 !important;
+            text-align:left !important;
+            color:#0B1B46 !important;
+            font-size:14px !important;
+            line-height:1.15 !important;
+            font-weight:900 !important;
+            white-space:normal !important;
+        }}
         div.st-key-operation_nav_kpis button::before {{ content:"K"; }}
         div.st-key-operation_nav_catalog button::before {{ content:"C"; }}
         div.st-key-load_mode_complete button::before {{ content:"T"; }}
@@ -6329,7 +6358,7 @@ def inject_custom_css(config):
             width:28px !important;
             height:28px !important;
             min-width:28px !important;
-            margin-right:10px !important;
+            margin:0 !important;
             border-radius:9px !important;
             display:inline-grid !important;
             place-items:center !important;
@@ -9326,7 +9355,7 @@ def main():
         st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
         if operation_area != "Carga de catálogo":
             st.markdown(
-                '<p class="nav-disabled-note">Selecciona Carga de catálogo para usar estos modos.</p>',
+                '<p class="nav-disabled-note">Disponibles al entrar a Carga de catálogo.</p>',
                 unsafe_allow_html=True,
             )
         sidebar_nav_button(

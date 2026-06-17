@@ -6247,27 +6247,28 @@ def inject_custom_css(config):
         }}
         section[data-testid="stSidebar"] .sidebar-label {{
             display:block !important;
-            margin:14px 0 9px !important;
+            clear:both !important;
+            margin:18px 0 10px !important;
             color:#0B1B46 !important;
             font-size:13px !important;
             line-height:1.2 !important;
             font-weight:950 !important;
         }}
         section[data-testid="stSidebar"] .st-key-operation_nav,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav {{
+        section[data-testid="stSidebar"] .st-key-load_mode_nav,
+        section[data-testid="stSidebar"] .st-key-sidebar_actions {{
             display:block !important;
-            margin:10px 0 14px !important;
+            margin:0 0 20px !important;
+            padding:0 0 6px !important;
             min-height:auto !important;
+            border-bottom:1px solid #E2E8F0 !important;
         }}
-        section[data-testid="stSidebar"] .st-key-operation_nav {{
-            margin-bottom:8px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-load_mode_nav .sidebar-label {{
-            margin-top:8px !important;
+        section[data-testid="stSidebar"] .st-key-load_mode_nav {{
+            margin-top:4px !important;
         }}
         section[data-testid="stSidebar"] .nav-disabled-note {{
             display:block !important;
-            margin:0 0 10px !important;
+            margin:-2px 0 12px !important;
             color:#64748B !important;
             font-size:11.5px !important;
             line-height:1.35 !important;
@@ -6278,7 +6279,8 @@ def inject_custom_css(config):
             border-right:1px solid #DCE6F2 !important;
         }}
         section[data-testid="stSidebar"] > div {{
-            padding:20px 14px 18px !important;
+            padding:18px 14px 24px !important;
+            overflow-x:hidden !important;
         }}
         .forus-sidebar {{
             margin:0 0 18px !important;
@@ -6316,11 +6318,11 @@ def inject_custom_css(config):
             grid-template-columns:32px minmax(0, 1fr) !important;
             align-items:center !important;
             column-gap:12px !important;
-            min-height:52px !important;
+            min-height:50px !important;
             width:100% !important;
             justify-content:stretch !important;
             text-align:left !important;
-            padding:11px 15px !important;
+            padding:10px 14px !important;
             border-radius:16px !important;
             border:1px solid #DDE6F2 !important;
             background:#FFFFFF !important;
@@ -6332,7 +6334,7 @@ def inject_custom_css(config):
             visibility:visible !important;
             white-space:normal !important;
             line-height:1.15 !important;
-            margin:0 0 10px !important;
+            margin:0 0 11px !important;
             transition:background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease !important;
         }}
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
@@ -7041,9 +7043,19 @@ def inject_custom_css(config):
         }}
         .commercial-summary-grid {{
             display:grid;
-            grid-template-columns:repeat(4, minmax(150px, 1fr));
+            grid-template-columns:1fr 1fr 1.25fr;
             gap:14px;
-            padding:0 24px 18px;
+            padding:0 24px 14px;
+        }}
+        .commercial-summary-grid.detail {{
+            grid-template-columns:repeat(3, minmax(0, 1fr));
+            padding-top:0;
+        }}
+        .commercial-subtitle {{
+            margin:2px 24px 12px;
+            color:#334155;
+            font-size:13px;
+            font-weight:950;
         }}
         .commercial-summary-tile {{
             min-height:72px;
@@ -7057,6 +7069,14 @@ def inject_custom_css(config):
             padding:14px 16px;
             box-sizing:border-box;
         }}
+        .commercial-summary-tile:hover {{
+            transform:translateY(-1px);
+            transition:transform .16s ease, box-shadow .16s ease;
+            box-shadow:0 12px 24px rgba(15,23,42,0.07);
+        }}
+        .commercial-summary-grid:not(.detail) .commercial-summary-tile {{
+            min-height:84px;
+        }}
         .commercial-summary-tile span {{
             color:#334155;
             font-size:13px;
@@ -7064,7 +7084,7 @@ def inject_custom_css(config):
         }}
         .commercial-summary-tile strong {{
             color:#0B1B46;
-            font-size:18px;
+            font-size:22px;
             font-weight:950;
         }}
         .commercial-summary-tile b {{
@@ -7090,10 +7110,20 @@ def inject_custom_css(config):
         }}
         .commercial-summary-tile.bad b {{ background:#DC2626; }}
         .commercial-summary-tile.ready {{
-            background:#EFF6FF;
-            border-color:#BFDBFE;
+            background:linear-gradient(135deg,#ECFDF5 0%,#EFF6FF 100%);
+            border-color:#86EFAC;
+            box-shadow:0 16px 30px rgba(22,163,74,0.10);
         }}
-        .commercial-summary-tile.ready b {{ background:#2563EB; }}
+        .commercial-summary-tile.ready span {{ color:#166534; }}
+        .commercial-summary-tile.ready strong {{ color:#14532D; font-size:26px; }}
+        .commercial-summary-tile.ready b {{ background:#16A34A; }}
+        .commercial-summary-tile.ready small {{
+            grid-column:1 / -1;
+            color:#166534;
+            font-size:12px;
+            font-weight:850;
+            line-height:1.3;
+        }}
         .commercial-summary-tile.total {{
             background:#F8FAFC;
             border-color:#CBD5E1;
@@ -8483,11 +8513,11 @@ def render_non_visible_combo_table(combo_df):
                     </div>
                     <div class="combo-chip">{format_kpi_number(ready_to_publish)} listos para prender</div>
                 </div>
+                <div class="commercial-subtitle">Resumen de visibilidad</div>
                 <div class="commercial-summary-grid">
-                    <div class="commercial-summary-tile total"><span>No visibles en web</span><b>=</b><strong>{format_kpi_number(operational_total)}</strong></div>
-                    <div class="commercial-summary-tile ok"><span>Bloqueo comercial</span><b>&#10003;</b><strong>0</strong></div>
-                    <div class="commercial-summary-tile ready"><span>Listos para prender</span><b>&#9658;</b><strong>{format_kpi_number(ready_to_publish)}</strong></div>
-                    <div class="commercial-summary-tile ok"><span>Stock + precio + imagen</span><b>&#10003;</b><strong>OK</strong></div>
+                    <div class="commercial-summary-tile total" title="Total de modelo-color creados con stock eComm que hoy no se ven en la web."><span>No visibles en web</span><b>=</b><strong>{format_kpi_number(operational_total)}</strong></div>
+                    <div class="commercial-summary-tile ok" title="Modelo-color que no tienen bloqueo de stock, precio o imagen."><span>Bloqueo comercial</span><b>&#10003;</b><strong>0</strong></div>
+                    <div class="commercial-summary-tile ready" title="Tienen stock, precio e imagen. Requieren activar/publicar en Shopify para prender en web."><span>Listos para prender</span><b>&#9658;</b><strong>{format_kpi_number(ready_to_publish)}</strong><small>Activar/publicar en Shopify</small></div>
                 </div>
             </div>
             """
@@ -8529,14 +8559,23 @@ def render_non_visible_combo_table(combo_df):
         </div>
         """
 
-    def count_tile(label, value, tone, icon):
+    def count_tile(label, value, tone, icon, help_text="", subtitle=""):
+        help_attr = f' title="{escape(help_text)}"' if help_text else ""
+        subtitle_html = f"<small>{escape(subtitle)}</small>" if subtitle else ""
         return f"""
-        <div class="commercial-summary-tile {tone}">
+        <div class="commercial-summary-tile {tone}"{help_attr}>
             <span>{escape(label)}</span>
             <b>{icon}</b>
             <strong>{format_kpi_number(value)}</strong>
+            {subtitle_html}
         </div>
         """
+
+    other_note = (
+        f" {format_kpi_number(other_blocked)} quedan en otros estados operativos."
+        if other_blocked
+        else ""
+    )
 
     rows = []
     for _, row in combo_view.iterrows():
@@ -8569,23 +8608,29 @@ def render_non_visible_combo_table(combo_df):
             <div class="combo-card-head">
                 <div>
                     <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Checklist comercial web</div>
-                    <p>No visibles en web = bloqueo comercial + listos para prender. Base: modelo-color creados con stock eComm.</p>
+                    <p>No visibles en web = bloqueo comercial + listos para prender.</p>
                 </div>
                 <div class="combo-chip">{format_kpi_number(blocked_total)} bloqueo comercial</div>
             </div>
+            <div class="commercial-subtitle">Resumen de visibilidad</div>
             <div class="commercial-summary-grid">
-                {count_tile("No visibles en web", operational_total, "total", "=")}
-                {count_tile("Bloqueo comercial", blocked_total, "bad" if blocked_total else "ok", "&#10005;" if blocked_total else "&#10003;")}
-                {count_tile("Listos para prender", ready_to_publish, "ready", "&#9658;")}
-                {count_tile("Otros estados", other_blocked, "total", "...")}
+                {count_tile("No visibles en web", operational_total, "total", "=", "Total de modelo-color creados con stock eComm que hoy no se ven en la web.")}
+                {count_tile("Bloqueo comercial", blocked_total, "bad" if blocked_total else "ok", "&#10005;" if blocked_total else "&#10003;", "Faltan stock Shopify, precio o imagen. Requiere correccion comercial.")}
+                {count_tile("Listos para prender", ready_to_publish, "ready", "&#9658;", "Tienen stock, precio e imagen. Requieren activar/publicar en Shopify para prender en web.", "Activar/publicar en Shopify")}
+            </div>
+            <div class="commercial-subtitle">Detalle del bloqueo comercial</div>
+            <div class="commercial-summary-grid detail">
                 {summary_tile("Stock", stock_missing, "OK")}
                 {summary_tile("Precio", price_missing, "OK")}
                 {summary_tile("Imagen", image_missing, "OK")}
             </div>
             <p class="kpi-note">
+                Formula: {format_kpi_number(operational_total)} no visibles =
+                {format_kpi_number(blocked_total)} bloqueo comercial +
+                {format_kpi_number(ready_to_publish)} listos para prender +
+                {format_kpi_number(other_blocked)} otros estados.
                 Lectura: {format_kpi_number(blocked_total)} necesitan correccion de data comercial.
-                {format_kpi_number(ready_to_publish)} ya tienen stock, precio e imagen y deberian prender al activar/publicar en Shopify.
-                {format_kpi_number(other_blocked)} quedan en otros estados operativos.
+                {format_kpi_number(ready_to_publish)} ya tienen stock, precio e imagen y deberian prender al activar/publicar en Shopify.{other_note}
             </p>
             <div class="combo-table-wrap compact">
                 <table class="combo-table compact">

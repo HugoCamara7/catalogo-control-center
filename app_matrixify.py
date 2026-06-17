@@ -6246,25 +6246,50 @@ def inject_custom_css(config):
             object-fit:contain !important;
         }}
         section[data-testid="stSidebar"] .sidebar-label {{
+            position:relative !important;
             display:block !important;
             clear:both !important;
-            margin:18px 0 10px !important;
+            margin:2px 0 12px !important;
+            padding-left:30px !important;
             color:#0B1B46 !important;
             font-size:13px !important;
             line-height:1.2 !important;
             font-weight:950 !important;
         }}
+        section[data-testid="stSidebar"] .sidebar-label::before {{
+            content:"" !important;
+            position:absolute !important;
+            left:0 !important;
+            top:50% !important;
+            transform:translateY(-50%) !important;
+            width:20px !important;
+            height:20px !important;
+            border-radius:7px !important;
+            background:#EEF2FF no-repeat center / 13px 13px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav .sidebar-label::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V5'/%3E%3Cpath d='M4 19h16'/%3E%3Cpath d='M8 16v-5'/%3E%3Cpath d='M12 16V8'/%3E%3Cpath d='M16 16v-9'/%3E%3C/svg%3E") !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-load_mode_nav .sidebar-label::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 16V7'/%3E%3Cpath d='m8 11 4-4 4 4'/%3E%3Cpath d='M20 16.5A4.5 4.5 0 0 0 15.5 12h-.6A6 6 0 1 0 4 15.5'/%3E%3C/svg%3E") !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-sidebar_actions .sidebar-label::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z'/%3E%3Cpath d='M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6l-.06.06a2 2 0 1 1-3-2.65 1.7 1.7 0 0 0-.6-1A1.7 1.7 0 0 0 9 15'/%3E%3C/svg%3E") !important;
+        }}
         section[data-testid="stSidebar"] .st-key-operation_nav,
         section[data-testid="stSidebar"] .st-key-load_mode_nav,
         section[data-testid="stSidebar"] .st-key-sidebar_actions {{
             display:block !important;
-            margin:0 0 20px !important;
-            padding:0 0 6px !important;
+            margin:0 0 16px !important;
+            padding:12px 12px 4px !important;
             min-height:auto !important;
-            border-bottom:1px solid #E2E8F0 !important;
+            border:1px solid #E2E8F0 !important;
+            border-radius:18px !important;
+            background:rgba(255,255,255,0.64) !important;
+            box-shadow:0 10px 22px rgba(15,23,42,0.035) !important;
         }}
         section[data-testid="stSidebar"] .st-key-load_mode_nav {{
-            margin-top:4px !important;
+            margin-top:0 !important;
         }}
         section[data-testid="stSidebar"] .nav-disabled-note {{
             display:block !important;
@@ -7129,6 +7154,153 @@ def inject_custom_css(config):
             border-color:#CBD5E1;
         }}
         .commercial-summary-tile.total b {{ background:#475569; }}
+        .commercial-flow {{
+            margin:0 24px 18px;
+            display:grid;
+            grid-template-columns:1fr 1.25fr;
+            gap:18px;
+            align-items:stretch;
+        }}
+        .flow-total {{
+            min-height:210px;
+            border-radius:18px;
+            background:linear-gradient(180deg,#FFFFFF 0%,#F8FAFC 100%);
+            border:1px solid #CBD5E1;
+            display:flex;
+            flex-direction:column;
+            justify-content:center;
+            align-items:center;
+            text-align:center;
+            box-shadow:0 16px 34px rgba(15,23,42,0.07);
+        }}
+        .flow-total span {{
+            color:#475569;
+            font-size:12px;
+            font-weight:950;
+            letter-spacing:.08em;
+            text-transform:uppercase;
+        }}
+        .flow-total strong {{
+            margin-top:10px;
+            color:#0B1B46;
+            font-size:56px;
+            line-height:.95;
+            font-weight:950;
+        }}
+        .flow-total small {{
+            margin-top:12px;
+            color:#64748B;
+            font-size:13px;
+            font-weight:800;
+        }}
+        .flow-split {{
+            display:grid;
+            grid-template-columns:1fr 1fr;
+            gap:14px;
+        }}
+        .flow-node {{
+            min-height:128px;
+            border-radius:18px;
+            border:1px solid #DDE6F2;
+            padding:18px 18px;
+            display:flex;
+            flex-direction:column;
+            justify-content:space-between;
+            box-sizing:border-box;
+        }}
+        .flow-node.danger {{
+            background:#FEF2F2;
+            border-color:#FCA5A5;
+        }}
+        .flow-node.ready {{
+            background:linear-gradient(135deg,#ECFDF5 0%,#EFF6FF 100%);
+            border-color:#86EFAC;
+            box-shadow:0 18px 34px rgba(22,163,74,0.10);
+        }}
+        .flow-node span {{
+            color:#334155;
+            font-size:13px;
+            font-weight:950;
+        }}
+        .flow-node strong {{
+            color:#0B1B46;
+            font-size:38px;
+            line-height:1;
+            font-weight:950;
+        }}
+        .flow-node.ready strong {{ color:#14532D; }}
+        .flow-node small {{
+            color:#475569;
+            font-size:12px;
+            line-height:1.35;
+            font-weight:800;
+        }}
+        .flow-node.ready small {{ color:#166534; }}
+        .flow-cause-grid {{
+            margin:0 24px 16px;
+            display:grid;
+            grid-template-columns:repeat(3, minmax(0,1fr));
+            gap:12px;
+        }}
+        .flow-cause {{
+            min-height:72px;
+            border-radius:14px;
+            border:1px solid #FECACA;
+            background:#FFF7F7;
+            padding:14px 16px;
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            box-sizing:border-box;
+        }}
+        .flow-cause span {{
+            color:#0B1B46;
+            font-size:13px;
+            font-weight:950;
+        }}
+        .flow-cause strong {{
+            color:#991B1B;
+            font-size:24px;
+            font-weight:950;
+        }}
+        .flow-actions {{
+            margin:0 24px 20px;
+            padding:16px 18px;
+            border-radius:16px;
+            background:#F8FAFC;
+            border:1px solid #DDE6F2;
+        }}
+        .flow-actions b {{
+            display:block;
+            color:#0B1B46;
+            font-size:14px;
+            font-weight:950;
+            margin-bottom:10px;
+        }}
+        .flow-actions ul {{
+            margin:0;
+            padding-left:18px;
+            display:grid;
+            grid-template-columns:repeat(2,minmax(0,1fr));
+            gap:8px 18px;
+            color:#334155;
+            font-size:13px;
+            line-height:1.35;
+            font-weight:800;
+        }}
+        @media (max-width: 1100px) {{
+            .commercial-flow {{
+                grid-template-columns:1fr;
+            }}
+            .flow-total {{
+                min-height:150px;
+            }}
+            .flow-cause-grid,
+            .flow-actions ul {{
+                grid-template-columns:1fr;
+            }}
+        }}
         .combo-model-metric {{
             text-align:left;
             min-width:180px;
@@ -8509,15 +8681,32 @@ def render_non_visible_combo_table(combo_df):
                 <div class="combo-card-head">
                     <div>
                         <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Checklist comercial web</div>
-                        <p>No visibles en web = bloqueo comercial + listos para prender. No hay bloqueo comercial de stock, precio o imagen.</p>
+                        <p>Lectura ejecutiva del bloqueo de venta web y las oportunidades listas para activar.</p>
                     </div>
                     <div class="combo-chip">{format_kpi_number(ready_to_publish)} listos para prender</div>
                 </div>
-                <div class="commercial-subtitle">Resumen de visibilidad</div>
-                <div class="commercial-summary-grid">
-                    <div class="commercial-summary-tile total" title="Total de modelo-color creados con stock eComm que hoy no se ven en la web."><span>No visibles en web</span><b>=</b><strong>{format_kpi_number(operational_total)}</strong></div>
-                    <div class="commercial-summary-tile ok" title="Modelo-color que no tienen bloqueo de stock, precio o imagen."><span>Bloqueo comercial</span><b>&#10003;</b><strong>0</strong></div>
-                    <div class="commercial-summary-tile ready" title="Tienen stock, precio e imagen. Requieren activar/publicar en Shopify para prender en web."><span>Listos para prender</span><b>&#9658;</b><strong>{format_kpi_number(ready_to_publish)}</strong><small>Activar/publicar en Shopify</small></div>
+                <div class="commercial-flow">
+                    <div class="flow-total" title="Total de modelo-color creados con stock eComm que hoy no se ven en la web.">
+                        <span>No visibles en web</span>
+                        <strong>{format_kpi_number(operational_total)}</strong>
+                        <small>Universo que requiere accion comercial u operativa</small>
+                    </div>
+                    <div class="flow-split">
+                        <div class="flow-node danger" title="No hay faltantes de stock Shopify, precio o imagen.">
+                            <span>Bloqueados comercialmente</span>
+                            <strong>0</strong>
+                            <small>Sin bloqueo de data comercial</small>
+                        </div>
+                        <div class="flow-node ready" title="Tienen stock, precio e imagen. Requieren activar/publicar en Shopify para prender en web.">
+                            <span>Listos para prender</span>
+                            <strong>{format_kpi_number(ready_to_publish)}</strong>
+                            <small>Activar/publicar en Shopify</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="flow-actions">
+                    <b>Accion recomendada</b>
+                    <ul><li>Activar/publicar {format_kpi_number(ready_to_publish)} listos para prender.</li></ul>
                 </div>
             </div>
             """
@@ -8546,36 +8735,15 @@ def render_non_visible_combo_table(combo_df):
         </div>
         """
 
-    def summary_tile(label, value, ok_label):
-        is_ok = safe_int_value(value) == 0
-        state_class = "ok" if is_ok else "bad"
-        icon = "&#10003;" if is_ok else "&#10005;"
-        value_text = ok_label if is_ok else f"{format_kpi_number(value)} falta"
-        return f"""
-        <div class="commercial-summary-tile {state_class}">
-            <span>{escape(label)}</span>
-            <b>{icon}</b>
-            <strong>{escape(value_text)}</strong>
-        </div>
-        """
-
-    def count_tile(label, value, tone, icon, help_text="", subtitle=""):
-        help_attr = f' title="{escape(help_text)}"' if help_text else ""
-        subtitle_html = f"<small>{escape(subtitle)}</small>" if subtitle else ""
-        return f"""
-        <div class="commercial-summary-tile {tone}"{help_attr}>
-            <span>{escape(label)}</span>
-            <b>{icon}</b>
-            <strong>{format_kpi_number(value)}</strong>
-            {subtitle_html}
-        </div>
-        """
-
-    other_note = (
-        f" {format_kpi_number(other_blocked)} quedan en otros estados operativos."
-        if other_blocked
-        else ""
-    )
+    action_items = [
+        f"Corregir stock en {format_kpi_number(stock_missing)} modelo-color.",
+        f"Corregir imagenes en {format_kpi_number(image_missing)} modelo-color.",
+        f"Corregir precios en {format_kpi_number(price_missing)} modelo-color.",
+        f"Activar/publicar {format_kpi_number(ready_to_publish)} listos para prender.",
+    ]
+    if other_blocked:
+        action_items.append(f"Revisar {format_kpi_number(other_blocked)} en otros estados operativos.")
+    action_html = "".join(f"<li>{escape(item)}</li>" for item in action_items)
 
     rows = []
     for _, row in combo_view.iterrows():
@@ -8608,30 +8776,39 @@ def render_non_visible_combo_table(combo_df):
             <div class="combo-card-head">
                 <div>
                     <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Checklist comercial web</div>
-                    <p>No visibles en web = bloqueo comercial + listos para prender.</p>
+                    <p>Lectura ejecutiva del bloqueo de venta web y las oportunidades listas para activar.</p>
                 </div>
                 <div class="combo-chip">{format_kpi_number(blocked_total)} bloqueo comercial</div>
             </div>
-            <div class="commercial-subtitle">Resumen de visibilidad</div>
-            <div class="commercial-summary-grid">
-                {count_tile("No visibles en web", operational_total, "total", "=", "Total de modelo-color creados con stock eComm que hoy no se ven en la web.")}
-                {count_tile("Bloqueo comercial", blocked_total, "bad" if blocked_total else "ok", "&#10005;" if blocked_total else "&#10003;", "Faltan stock Shopify, precio o imagen. Requiere correccion comercial.")}
-                {count_tile("Listos para prender", ready_to_publish, "ready", "&#9658;", "Tienen stock, precio e imagen. Requieren activar/publicar en Shopify para prender en web.", "Activar/publicar en Shopify")}
+            <div class="commercial-flow">
+                <div class="flow-total" title="Total de modelo-color creados con stock eComm que hoy no se ven en la web.">
+                    <span>No visibles en web</span>
+                    <strong>{format_kpi_number(operational_total)}</strong>
+                    <small>Universo que requiere accion comercial u operativa</small>
+                </div>
+                <div class="flow-split">
+                    <div class="flow-node danger" title="Faltan stock Shopify, precio o imagen. Requiere correccion de data comercial.">
+                        <span>Bloqueados comercialmente</span>
+                        <strong>{format_kpi_number(blocked_total)}</strong>
+                        <small>Falta stock, precio o imagen</small>
+                    </div>
+                    <div class="flow-node ready" title="Tienen stock, precio e imagen. Requieren activar/publicar en Shopify para prender en web.">
+                        <span>Listos para prender</span>
+                        <strong>{format_kpi_number(ready_to_publish)}</strong>
+                        <small>Activar/publicar en Shopify</small>
+                    </div>
+                </div>
             </div>
-            <div class="commercial-subtitle">Detalle del bloqueo comercial</div>
-            <div class="commercial-summary-grid detail">
-                {summary_tile("Stock", stock_missing, "OK")}
-                {summary_tile("Precio", price_missing, "OK")}
-                {summary_tile("Imagen", image_missing, "OK")}
+            <div class="commercial-subtitle">Causas del bloqueo comercial</div>
+            <div class="flow-cause-grid">
+                <div class="flow-cause"><span>Stock faltante</span><strong>{format_kpi_number(stock_missing)}</strong></div>
+                <div class="flow-cause"><span>Imagen faltante</span><strong>{format_kpi_number(image_missing)}</strong></div>
+                <div class="flow-cause"><span>Precio faltante</span><strong>{format_kpi_number(price_missing)}</strong></div>
             </div>
-            <p class="kpi-note">
-                Formula: {format_kpi_number(operational_total)} no visibles =
-                {format_kpi_number(blocked_total)} bloqueo comercial +
-                {format_kpi_number(ready_to_publish)} listos para prender +
-                {format_kpi_number(other_blocked)} otros estados.
-                Lectura: {format_kpi_number(blocked_total)} necesitan correccion de data comercial.
-                {format_kpi_number(ready_to_publish)} ya tienen stock, precio e imagen y deberian prender al activar/publicar en Shopify.{other_note}
-            </p>
+            <div class="flow-actions">
+                <b>Accion recomendada</b>
+                <ul>{action_html}</ul>
+            </div>
             <div class="combo-table-wrap compact">
                 <table class="combo-table compact">
                     <colgroup>
@@ -9426,7 +9603,7 @@ def main():
     if st.session_state.get("operation_area_choice") not in nav_options:
         st.session_state["operation_area_choice"] = nav_options[0]
     with st.sidebar.container(key="operation_nav"):
-        st.markdown('<p class="sidebar-label">Tipo de operación</p>', unsafe_allow_html=True)
+        st.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
         sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
         sidebar_nav_button("Carga de catálogo", "operation_area_choice", "Carga de catálogo", "operation_nav_catalog")
         operation_area = st.session_state.get("operation_area_choice", nav_options[0])
@@ -9435,12 +9612,7 @@ def main():
     if st.session_state.get("operation_mode_choice") not in load_options:
         st.session_state["operation_mode_choice"] = load_options[0]
     with st.sidebar.container(key="load_mode_nav"):
-        st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
-        if operation_area != "Carga de catálogo":
-            st.markdown(
-                '<p class="nav-disabled-note">Disponibles al entrar a Carga de catálogo.</p>',
-                unsafe_allow_html=True,
-            )
+        st.markdown('<p class="sidebar-label">Modos de carga</p>', unsafe_allow_html=True)
         sidebar_nav_button(
             "Carga completa",
             "operation_mode_choice",

@@ -6256,7 +6256,7 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-operation_nav,
         section[data-testid="stSidebar"] .st-key-load_mode_nav {{
             display:block !important;
-            margin:12px 0 16px !important;
+            margin:12px 0 22px !important;
             min-height:auto !important;
         }}
         section[data-testid="stSidebar"] .nav-disabled-note {{
@@ -6303,33 +6303,38 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button,
         div.st-key-operation_nav_catalog button,
         div.st-key-load_mode_complete button,
-        div.st-key-load_mode_partial button {{
+        div.st-key-load_mode_partial button,
+        div.st-key-reset_load_workspace button,
+        div.st-key-test_shopify_connection button {{
             display:grid !important;
-            grid-template-columns:28px minmax(0, 1fr) !important;
+            grid-template-columns:32px minmax(0, 1fr) !important;
             align-items:center !important;
-            column-gap:10px !important;
-            min-height:46px !important;
+            column-gap:12px !important;
+            min-height:52px !important;
             width:100% !important;
             justify-content:stretch !important;
             text-align:left !important;
-            padding:9px 14px !important;
-            border-radius:14px !important;
+            padding:11px 15px !important;
+            border-radius:16px !important;
             border:1px solid #DDE6F2 !important;
             background:#FFFFFF !important;
             color:#0B1B46 !important;
             font-size:14px !important;
             font-weight:900 !important;
-            box-shadow:0 8px 16px rgba(15,23,42,0.045) !important;
+            box-shadow:0 10px 20px rgba(15,23,42,0.045) !important;
             opacity:1 !important;
             visibility:visible !important;
             white-space:normal !important;
             line-height:1.15 !important;
-            margin:0 0 8px !important;
+            margin:0 0 10px !important;
+            transition:background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease !important;
         }}
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_catalog button [data-testid="stMarkdownContainer"],
         div.st-key-load_mode_complete button [data-testid="stMarkdownContainer"],
-        div.st-key-load_mode_partial button [data-testid="stMarkdownContainer"] {{
+        div.st-key-load_mode_partial button [data-testid="stMarkdownContainer"],
+        div.st-key-reset_load_workspace button [data-testid="stMarkdownContainer"],
+        div.st-key-test_shopify_connection button [data-testid="stMarkdownContainer"] {{
             width:100% !important;
             min-width:0 !important;
             text-align:left !important;
@@ -6337,7 +6342,9 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button p,
         div.st-key-operation_nav_catalog button p,
         div.st-key-load_mode_complete button p,
-        div.st-key-load_mode_partial button p {{
+        div.st-key-load_mode_partial button p,
+        div.st-key-reset_load_workspace button p,
+        div.st-key-test_shopify_connection button p {{
             width:100% !important;
             margin:0 !important;
             text-align:left !important;
@@ -6347,33 +6354,54 @@ def inject_custom_css(config):
             font-weight:900 !important;
             white-space:normal !important;
         }}
-        div.st-key-operation_nav_kpis button::before {{ content:"K"; }}
-        div.st-key-operation_nav_catalog button::before {{ content:"C"; }}
-        div.st-key-load_mode_complete button::before {{ content:"T"; }}
-        div.st-key-load_mode_partial button::before {{ content:"P"; }}
         div.st-key-operation_nav_kpis button::before,
         div.st-key-operation_nav_catalog button::before,
         div.st-key-load_mode_complete button::before,
-        div.st-key-load_mode_partial button::before {{
-            width:28px !important;
-            height:28px !important;
-            min-width:28px !important;
+        div.st-key-load_mode_partial button::before,
+        div.st-key-reset_load_workspace button::before,
+        div.st-key-test_shopify_connection button::before {{
+            content:"" !important;
+            width:32px !important;
+            height:32px !important;
+            min-width:32px !important;
             margin:0 !important;
-            border-radius:9px !important;
+            border-radius:11px !important;
             display:inline-grid !important;
             place-items:center !important;
             background:#EEF2FF !important;
-            color:#2563EB !important;
-            font-size:13px !important;
-            font-weight:950 !important;
+            background-repeat:no-repeat !important;
+            background-position:center !important;
+            background-size:18px 18px !important;
+        }}
+        div.st-key-operation_nav_kpis button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V5'/%3E%3Cpath d='M4 19h16'/%3E%3Cpath d='M8 16v-5'/%3E%3Cpath d='M12 16V8'/%3E%3Cpath d='M16 16v-9'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-operation_nav_catalog button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21 8-9-5-9 5 9 5 9-5Z'/%3E%3Cpath d='M3 8v8l9 5 9-5V8'/%3E%3Cpath d='M12 13v8'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-load_mode_complete button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 16V7'/%3E%3Cpath d='m8 11 4-4 4 4'/%3E%3Cpath d='M20 16.5A4.5 4.5 0 0 0 15.5 12h-.6A6 6 0 1 0 4 15.5'/%3E%3Cpath d='M4 18h16'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-load_mode_partial button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17 1l4 4-4 4'/%3E%3Cpath d='M3 11V9a4 4 0 0 1 4-4h14'/%3E%3Cpath d='M7 23l-4-4 4-4'/%3E%3Cpath d='M21 13v2a4 4 0 0 1-4 4H3'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-reset_load_workspace button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-3-6.7'/%3E%3Cpath d='M21 3v6h-6'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-test_shopify_connection button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22v-5'/%3E%3Cpath d='M9 7V2'/%3E%3Cpath d='M15 7V2'/%3E%3Cpath d='M6 7h12v5a6 6 0 0 1-12 0V7Z'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-operation_nav_kpis button:hover,
         div.st-key-operation_nav_catalog button:hover,
         div.st-key-load_mode_complete button:hover,
-        div.st-key-load_mode_partial button:hover {{
+        div.st-key-load_mode_partial button:hover,
+        div.st-key-reset_load_workspace button:hover,
+        div.st-key-test_shopify_connection button:hover {{
             border-color:#93C5FD !important;
             background:#F8FBFF !important;
             color:#0B1B46 !important;
+            transform:translateY(-1px) !important;
+            box-shadow:0 14px 26px rgba(37,99,235,0.10) !important;
         }}
         .st-key-shopify_sidebar_card {{
             margin:18px 0 0 !important;
@@ -9298,6 +9326,10 @@ def sidebar_nav_button(label, state_key, value, button_key, extra_state=None):
                 box-shadow:0 0 0 1px #BFDBFE, 0 12px 24px rgba(37,99,235,0.10) !important;
                 color:#0B1B46 !important;
             }}
+            div.st-key-{button_key} button::before {{
+                background-color:#DBEAFE !important;
+                box-shadow:inset 0 0 0 1px #BFDBFE !important;
+            }}
             </style>
             """,
             unsafe_allow_html=True,
@@ -9373,17 +9405,16 @@ def main():
             extra_state={"operation_area_choice": "Carga de catálogo"},
         )
         operation_mode = st.session_state.get("operation_mode_choice", load_options[0])
-    with st.sidebar.container(key="load_refresh_card"):
+    with st.sidebar.container(key="sidebar_actions"):
+        st.markdown('<p class="sidebar-label">Acciones</p>', unsafe_allow_html=True)
         st.button(
             "Nueva carga / refrescar",
             key="reset_load_workspace",
             help="Limpia archivos cargados, previews y resultados para empezar otra carga.",
             on_click=reset_load_workspace,
         )
-    with st.sidebar.container(key="shopify_sidebar_card"):
-        render_sidebar_shopify_card(ui_config, shopify_config)
         if is_shopify_configured(shopify_config):
-            if st.button("Probar conexión Shopify"):
+            if st.button("Probar conexión Shopify", key="test_shopify_connection"):
                 try:
                     shop = test_connection(shopify_config)
                     st.success(f"Conectado a {shop.get('name', brand_config['site_label'])}")
@@ -9391,7 +9422,9 @@ def main():
                     st.caption(f"Origen token: {shop.get('token_source', '')}")
                 except ShopifyApiError as exc:
                     st.error(str(exc))
-        else:
+    with st.sidebar.container(key="shopify_sidebar_card"):
+        render_sidebar_shopify_card(ui_config, shopify_config)
+        if not is_shopify_configured(shopify_config):
             st.warning("API no configurada para este sitio.")
             st.code(
                 f"""[shopify_sites.{selected_site_key}]

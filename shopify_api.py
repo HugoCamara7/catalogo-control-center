@@ -76,7 +76,7 @@ def resolve_access_token(config):
     return token, "client_credentials"
 
 
-def graphql_request(shop_domain, access_token, query, variables=None, api_version=DEFAULT_API_VERSION, timeout=20):
+def graphql_request(shop_domain, access_token, query, variables=None, api_version=DEFAULT_API_VERSION, timeout=20, max_retries=2):
     shop_domain = normalize_shop_domain(shop_domain)
     access_token = clean(access_token)
     api_version = clean(api_version) or DEFAULT_API_VERSION
@@ -95,19 +95,40 @@ def graphql_request(shop_domain, access_token, query, variables=None, api_versio
         },
         method="POST",
     )
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise ShopifyApiError(f"Shopify respondio HTTP {exc.code}: {detail}") from exc
-    except URLError as exc:
-        raise ShopifyApiError(f"No se pudo conectar a Shopify: {exc.reason}") from exc
-
-    data = json.loads(body)
-    if data.get("errors"):
-        raise ShopifyApiError(json.dumps(data["errors"], ensure_ascii=False))
-    return data.get("data", {})
+    attempts = max(1, int(max_retries or 0) + 1)
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                body = response.read().decode("utf-8")
+            data = json.loads(body)
+            if data.get("errors"):
+                error_message = json.dumps(data["errors"], ensure_ascii=False)
+                retryable = "THROTTLED" in error_message or "throttled" in error_message.lower()
+                if retryable and attempt < attempts:
+                    time.sleep(1.5 * attempt)
+                    continue
+                raise ShopifyApiError(error_message)
+            return data.get("data", {})
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            last_error = ShopifyApiError(f"Shopify respondio HTTP {exc.code}: {detail}")
+            retry_after = clean(exc.headers.get("Retry-After") if exc.headers else "")
+            retryable = exc.code == 429 or 500 <= int(exc.code) <= 599
+            if retryable and attempt < attempts:
+                delay = float(retry_after) if retry_after.replace(".", "", 1).isdigit() else 1.5 * attempt
+                time.sleep(min(delay, 10))
+                continue
+            raise last_error from exc
+        except URLError as exc:
+            last_error = ShopifyApiError(f"No se pudo conectar a Shopify: {exc.reason}")
+            if attempt < attempts:
+                time.sleep(1.5 * attempt)
+                continue
+            raise last_error from exc
+    if last_error:
+        raise last_error
+    raise ShopifyApiError("Shopify no devolvio respuesta.")
 
 
 def test_connection(config):

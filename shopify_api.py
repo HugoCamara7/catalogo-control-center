@@ -1,4 +1,5 @@
 import json
+import uuid
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -1088,14 +1089,17 @@ def inventory_activate(config, inventory_item_id, location_id, available=None):
     if not inventory_item_id or not location_id:
         return {}
     variables = {"inventoryItemId": inventory_item_id, "locationId": location_id}
+    variables["idempotencyKey"] = str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"matrixify-inventory-activate:{inventory_item_id}:{location_id}:{available}")
+    )
     available_line = ""
     if available is not None:
         variables["available"] = int(available)
         available_line = ", available: $available"
     shop_domain, api_version, token = _client(config)
     mutation = f"""
-    mutation InventoryActivateForMatrixify($inventoryItemId: ID!, $locationId: ID!{', $available: Int' if available is not None else ''}) {{
-      inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId{available_line}) {{
+    mutation InventoryActivateForMatrixify($inventoryItemId: ID!, $locationId: ID!, $idempotencyKey: String!{', $available: Int' if available is not None else ''}) {{
+      inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId{available_line}) @idempotent(key: $idempotencyKey) {{
         inventoryLevel {{
           id
           location {{
@@ -1114,14 +1118,23 @@ def inventory_activate(config, inventory_item_id, location_id, available=None):
       }}
     }}
     """
-    data = graphql_request(
-        shop_domain,
-        token,
-        mutation,
-        variables,
-        api_version=api_version,
-        timeout=45,
-    )
+    try:
+        data = graphql_request(
+            shop_domain,
+            token,
+            mutation,
+            variables,
+            api_version=api_version,
+            timeout=45,
+        )
+    except ShopifyApiError as exc:
+        message = str(exc)
+        if "ACCESS_DENIED" in message or "Access denied" in message:
+            raise ShopifyApiError(
+                "Shopify nego activar inventario. El token necesita permiso de escritura de inventario "
+                "(write_inventory / Inventory management). Actualiza los permisos del token o crea un token nuevo con ese scope."
+            ) from exc
+        raise
     payload = data.get("inventoryActivate") or {}
     errors = payload.get("userErrors") or []
     if errors:

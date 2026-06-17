@@ -4,6 +4,7 @@ import hmac
 import json
 import pickle
 import re
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -2708,13 +2709,94 @@ def build_shopify_update_preview(
     return pd.DataFrame(rows), pd.DataFrame(issues), pd.DataFrame(matrixify_rows)
 
 
-def apply_shopify_preview(shopify_config, preview_df):
+def _sync_result_summary(result_df):
+    if result_df is None or result_df.empty or "Resultado" not in result_df.columns:
+        return {"total": 0, "ok": 0, "partial": 0, "errors": 0, "skipped": 0}
+    result = result_df["Resultado"].map(lambda value: clean_value(value).upper())
+    return {
+        "total": int(len(result_df)),
+        "ok": int((result == "OK").sum()),
+        "partial": int((result == "PARCIAL").sum()),
+        "errors": int((result == "ERROR").sum()),
+        "skipped": int((result == "OMITIDO").sum()),
+    }
+
+
+def render_sync_result_summary(result_df, label="sincronizacion"):
+    summary = _sync_result_summary(result_df)
+    if not summary["total"]:
+        st.warning(f"No se genero resultado de {label}.")
+        return
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Procesados", f"{summary['total']:,}")
+    c2.metric("OK", f"{summary['ok']:,}")
+    c3.metric("Parcial/Omitido", f"{summary['partial'] + summary['skipped']:,}")
+    c4.metric("Errores", f"{summary['errors']:,}")
+    if summary["errors"]:
+        st.error(f"{summary['errors']:,} filas terminaron con error. Revisa el reporte de sincronizacion.")
+    elif summary["partial"] or summary["skipped"]:
+        st.warning("La sincronizacion termino con observaciones. Revisa el reporte antes de cerrar.")
+    else:
+        st.success("Sincronizacion finalizada correctamente.")
+
+
+def sync_error_result(stage, exc):
+    return pd.DataFrame(
+        [
+            {
+                "Handle": "",
+                "ID": "",
+                "Resultado": "ERROR",
+                "Etapa": stage,
+                "Mensaje": clean_value(exc),
+            }
+        ]
+    )
+
+
+def make_sync_progress_callback(label="Sincronizacion"):
+    started_at = time.perf_counter()
+    progress_bar = st.progress(0)
+    status_box = st.empty()
+    log_box = st.empty()
+    events = []
+
+    def progress_callback(current, total, handle, stage, message=""):
+        total = max(int(total or 0), 1)
+        current = max(0, min(int(current or 0), total))
+        percent = min(1.0, current / total)
+        elapsed = round(time.perf_counter() - started_at, 1)
+        progress_bar.progress(percent)
+        status_box.info(
+            f"{label}: {current:,}/{total:,} | {stage}"
+            + (f" | {handle}" if clean_value(handle) else "")
+            + f" | {elapsed}s"
+        )
+        events.append(
+            {
+                "N": len(events) + 1,
+                "Producto": clean_value(handle),
+                "Etapa": clean_value(stage),
+                "Detalle": clean_value(message)[:260],
+                "Segundos": elapsed,
+            }
+        )
+        log_box.dataframe(pd.DataFrame(events[-12:]), use_container_width=True, height=220)
+
+    return progress_callback
+
+
+def apply_shopify_preview(shopify_config, preview_df, progress_callback=None):
     results = []
-    for _, row in preview_df.iterrows():
+    total_rows = len(preview_df) if preview_df is not None else 0
+    for position, (_, row) in enumerate(preview_df.iterrows(), start=1):
         status = "OK"
         message = ""
+        handle = clean_value(row.get("Handle"))
+        operation = clean_value(row.get("Operacion"))
+        if progress_callback:
+            progress_callback(position, total_rows, handle, f"Aplicando {operation or 'cambio'}")
         try:
-            operation = clean_value(row.get("Operacion"))
             product_id = clean_value(row.get("Product ID"))
             if operation == "tags":
                 product_update(shopify_config, product_id, tags=_split_tags(row.get("Valor nuevo")))
@@ -2776,6 +2858,8 @@ def apply_shopify_preview(shopify_config, preview_df):
                 "Mensaje": message,
             }
         )
+        if progress_callback:
+            progress_callback(position, total_rows, handle, f"Resultado {status}", message)
     return pd.DataFrame(results)
 
 
@@ -5192,9 +5276,10 @@ def _reorder_product_sizes(shopify_config, product_gid, product_variant_rows):
     return "orden obligatorio de variantes confirmado"
 
 
-def apply_full_product_updates(shopify_config, matrixify_df):
+def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=None):
     rows = []
     product_rows = _top_product_rows(matrixify_df)
+    total_products = len(product_rows)
     metafield_columns = [
         column
         for column in matrixify_df.columns
@@ -5207,12 +5292,15 @@ def apply_full_product_updates(shopify_config, matrixify_df):
     if brand_metafield_column not in metafield_columns:
         metafield_columns.append(brand_metafield_column)
 
-    for _, row in product_rows.iterrows():
+    for position, (_, row) in enumerate(product_rows.iterrows(), start=1):
         handle = clean_value(row.get("Handle"))
         product_id = clean_value(row.get("ID"))
         product_gid = _product_gid(product_id)
         product_messages = []
         product_status = "OK"
+        product_started_at = time.perf_counter()
+        if progress_callback:
+            progress_callback(position, total_products, handle, "Preparando producto")
         product_variant_rows = _variant_rows_for_handle(matrixify_df, handle)
         product_variant_rows, dedupe_messages = _dedupe_product_variant_rows(product_variant_rows)
         expected_variant_skus = _expected_variant_skus(product_variant_rows)
@@ -5238,6 +5326,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 shopify_status = None
 
             if product_gid:
+                if progress_callback:
+                    progress_callback(position, total_products, handle, "Actualizando producto base")
                 product_update(
                     shopify_config,
                     product_gid,
@@ -5250,6 +5340,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 )
                 product_messages.append("Producto actualizado")
             else:
+                if progress_callback:
+                    progress_callback(position, total_products, handle, "Creando producto")
                 created_product = product_create(
                     shopify_config,
                     title=clean_value(row.get("Title")) or handle,
@@ -5269,6 +5361,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             publish_date = publication_date_from_row(row)
             if shopify_status != "DRAFT":
                 try:
+                    if progress_callback:
+                        progress_callback(position, total_products, handle, "Publicando producto")
                     publishable_publish(shopify_config, product_gid, publish_date=publish_date)
                     if publish_date:
                         product_messages.append(f"Publicacion programada: {publish_date}")
@@ -5309,6 +5403,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     }
                 )
             if metafields:
+                if progress_callback:
+                    progress_callback(position, total_products, handle, f"Actualizando {len(metafields)} metafields")
                 metafield_ok = 0
                 for metafield in metafields:
                     try:
@@ -5331,6 +5427,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             raw_image_urls = [url.strip() for url in clean_value(row.get("Image Src")).split(";") if url.strip()]
             if raw_image_urls:
                 try:
+                    if progress_callback:
+                        progress_callback(position, total_products, handle, f"Procesando {min(len(raw_image_urls), 10)} fotos")
                     existing_media_ids = [
                         media_id.strip()
                         for media_id in clean_value(row.get("Media IDs")).split(";")
@@ -5383,6 +5481,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     product_status = "PARCIAL"
                     product_messages.append(f"Error fotos: {exc}")
 
+            if progress_callback:
+                progress_callback(position, total_products, handle, "Leyendo variantes Shopify")
             product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
             existing_variant_updates = _existing_variant_updates_from_shopify(
                 product_variant_rows,
@@ -5390,6 +5490,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             )
             if existing_variant_updates:
                 try:
+                    if progress_callback:
+                        progress_callback(position, total_products, handle, f"Actualizando {len(existing_variant_updates)} variantes")
                     if product_variants_bulk_update is None:
                         raise RuntimeError("Falta actualizar shopify_api.py: no existe product_variants_bulk_update.")
                     updated_variants = product_variants_bulk_update(
@@ -5410,6 +5512,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 product_data_for_variants,
             )
             if inventory_item_updates:
+                if progress_callback:
+                    progress_callback(position, total_products, handle, f"Actualizando {len(inventory_item_updates)} inventory items")
                 inventory_ok, inventory_errors = _apply_inventory_item_updates(
                     shopify_config,
                     inventory_item_updates,
@@ -5427,6 +5531,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             )
             if missing_variants:
                 try:
+                    if progress_callback:
+                        progress_callback(position, total_products, handle, f"Creando {len(missing_variants)} variantes faltantes")
                     try:
                         created_variants = product_variants_bulk_create(
                             shopify_config,
@@ -5465,6 +5571,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     product_status = "PARCIAL"
                     product_messages.append(f"Error variantes: {exc}")
 
+            if progress_callback:
+                progress_callback(position, total_products, handle, "Verificando variantes creadas")
             product_data_for_variants = fetch_product_options_and_variants(shopify_config, product_gid)
             still_missing_skus = _missing_expected_variant_skus(product_variant_rows, product_data_for_variants)
             if still_missing_skus:
@@ -5502,6 +5610,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 product_data_for_variants,
             )
             if post_create_inventory_updates:
+                if progress_callback:
+                    progress_callback(position, total_products, handle, f"Reforzando {len(post_create_inventory_updates)} inventory items")
                 inventory_ok, inventory_errors = _apply_inventory_item_updates(
                     shopify_config,
                     post_create_inventory_updates,
@@ -5513,6 +5623,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     product_status = "PARCIAL"
                     product_messages.append("Error SKU post-creacion: " + " | ".join(inventory_errors[:5]))
 
+            if progress_callback:
+                progress_callback(position, total_products, handle, "Confirmando producto en Shopify")
             verified_product_data = fetch_product_options_and_variants(shopify_config, product_gid)
             actual_variant_skus = _actual_variant_skus(verified_product_data)
             if expected_variant_skus:
@@ -5521,6 +5633,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     f"Variantes confirmadas Shopify: {confirmed_count}/{len(expected_variant_skus)}"
                 )
             try:
+                if progress_callback:
+                    progress_callback(position, total_products, handle, "Activando inventario en sucursales")
                 activation_ok, activation_errors = activate_product_inventory_locations(
                     shopify_config,
                     verified_product_data,
@@ -5540,6 +5654,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 product_messages.append("Verificacion variantes: " + " | ".join(variant_sync_problems[:8]))
 
             try:
+                if progress_callback:
+                    progress_callback(position, total_products, handle, "Ordenando tallas")
                 reorder_message = _reorder_product_sizes(shopify_config, product_gid, product_variant_rows)
                 if reorder_message:
                     product_messages.append(reorder_message)
@@ -5552,11 +5668,24 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     "Handle": handle,
                     "ID": product_id,
                     "Resultado": product_status,
+                    "Duracion segundos": round(time.perf_counter() - product_started_at, 2),
                     "Mensaje": ". ".join(product_messages) or "Sin cambios aplicados",
                 }
             )
+            if progress_callback:
+                progress_callback(position, total_products, handle, f"Finalizado {product_status}", " | ".join(product_messages[-3:]))
         except Exception as exc:
-            rows.append({"Handle": handle, "ID": product_id, "Resultado": "ERROR", "Mensaje": str(exc)})
+            rows.append(
+                {
+                    "Handle": handle,
+                    "ID": product_id,
+                    "Resultado": "ERROR",
+                    "Duracion segundos": round(time.perf_counter() - product_started_at, 2),
+                    "Mensaje": str(exc),
+                }
+            )
+            if progress_callback:
+                progress_callback(position, total_products, handle, "Error", str(exc))
     return pd.DataFrame(rows)
 
 
@@ -10045,10 +10174,34 @@ api_version = "{DEFAULT_API_VERSION}"
                     if can_apply:
                         confirm_apply = st.checkbox("Confirmo que revise la vista previa y quiero aplicar en Shopify")
                         if confirm_apply and st.button("Sincronizar Shopify", type="primary"):
-                            with st.spinner("Sincronizando cambios en Shopify..."):
-                                result_df = apply_shopify_preview(shopify_config, preview_df)
-                            clear_shopify_products_cache(brand_config["site_key"])
+                            sync_started = datetime.now(timezone(timedelta(hours=-5)))
+                            st.session_state["shopify_apply_status"] = {
+                                "estado": "EN_PROCESO",
+                                "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
+                            }
+                            progress_callback = make_sync_progress_callback("Carga parcial Shopify")
+                            try:
+                                result_df = apply_shopify_preview(
+                                    shopify_config,
+                                    preview_df,
+                                    progress_callback=progress_callback,
+                                )
+                                clear_shopify_products_cache(brand_config["site_key"])
+                                st.session_state["shopify_apply_status"] = {
+                                    "estado": "FINALIZADO",
+                                    "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
+                                    "fin": datetime.now(timezone(timedelta(hours=-5))).strftime("%d/%m/%Y %H:%M:%S"),
+                                }
+                            except Exception as exc:
+                                result_df = sync_error_result("Carga parcial Shopify", exc)
+                                st.session_state["shopify_apply_status"] = {
+                                    "estado": "ERROR",
+                                    "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
+                                    "fin": datetime.now(timezone(timedelta(hours=-5))).strftime("%d/%m/%Y %H:%M:%S"),
+                                    "error": clean_value(exc),
+                                }
                             st.session_state["shopify_apply_result_df"] = result_df
+                            render_sync_result_summary(result_df, "carga parcial")
                             st.dataframe(result_df, use_container_width=True)
                             st.download_button(
                                 "Descargar reporte de sincronización",
@@ -10415,13 +10568,37 @@ api_version = "{DEFAULT_API_VERSION}"
                     )
                     confirm_complete = st.checkbox("Confirmo que revise la vista previa y quiero sincronizar productos existentes en Shopify")
                     if confirm_complete and st.button("Sincronizar Shopify", type="primary"):
-                        with st.spinner("Sincronizando productos existentes en Shopify..."):
-                            result_df = apply_full_product_updates(shopify_config, matrixify_df)
-                        clear_shopify_products_cache(brand_config["site_key"])
+                        sync_started = datetime.now(timezone(timedelta(hours=-5)))
+                        st.session_state["complete_apply_status"] = {
+                            "estado": "EN_PROCESO",
+                            "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
+                        }
+                        progress_callback = make_sync_progress_callback("Carga completa Shopify")
+                        try:
+                            result_df = apply_full_product_updates(
+                                shopify_config,
+                                matrixify_df,
+                                progress_callback=progress_callback,
+                            )
+                            clear_shopify_products_cache(brand_config["site_key"])
+                            st.session_state["complete_apply_status"] = {
+                                "estado": "FINALIZADO",
+                                "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
+                                "fin": datetime.now(timezone(timedelta(hours=-5))).strftime("%d/%m/%Y %H:%M:%S"),
+                            }
+                        except Exception as exc:
+                            result_df = sync_error_result("Carga completa Shopify", exc)
+                            st.session_state["complete_apply_status"] = {
+                                "estado": "ERROR",
+                                "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
+                                "fin": datetime.now(timezone(timedelta(hours=-5))).strftime("%d/%m/%Y %H:%M:%S"),
+                                "error": clean_value(exc),
+                            }
                         st.session_state["complete_apply_result_df"] = result_df
                         st.dataframe(result_df, use_container_width=True)
                     result_df = st.session_state.get("complete_apply_result_df")
                     if result_df is not None:
+                        render_sync_result_summary(result_df, "carga completa")
                         st.download_button(
                             "Descargar reporte de sincronización",
                             data=dataframe_to_excel_bytes({"Resultado": result_df}),

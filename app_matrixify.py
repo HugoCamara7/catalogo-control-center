@@ -6253,148 +6253,15 @@ def inject_custom_css(config):
         }}
         section[data-testid="stSidebar"] .st-key-operation_nav,
         section[data-testid="stSidebar"] .st-key-load_mode_nav {{
-            margin:12px 0 16px;
+            display:block !important;
+            margin:12px 0 16px !important;
+            min-height:auto !important;
         }}
-        section[data-testid="stSidebar"] .sidebar-choice-preview {{
-            min-height:58px;
-            display:flex;
-            align-items:center;
-            gap:14px;
-            padding:12px 16px;
-            margin:9px 0 -58px;
-            border-radius:16px;
-            border:1px solid #DDE6F2;
-            background:#FFFFFF;
-            box-shadow:0 10px 20px rgba(15,23,42,0.05);
-            box-sizing:border-box;
-            pointer-events:none;
-            position:relative;
-            z-index:1;
-        }}
-        section[data-testid="stSidebar"] .sidebar-choice-preview.active {{
-            border-color:#60A5FA;
-            background:#EFF6FF;
-            box-shadow:0 0 0 1px #BFDBFE, 0 12px 24px rgba(37,99,235,0.10);
-        }}
-        section[data-testid="stSidebar"] .sidebar-choice-preview span {{
-            width:32px;
-            height:32px;
-            border-radius:10px;
-            display:grid;
-            place-items:center;
-            background:#EEF2FF;
-            color:#2563EB !important;
-            font-size:18px;
-            font-weight:950;
-        }}
-        section[data-testid="stSidebar"] .sidebar-choice-preview.active span {{
-            background:#2563EB;
-            color:#FFFFFF !important;
-        }}
-        section[data-testid="stSidebar"] .sidebar-choice-preview strong {{
-            color:#0B1B46;
-            font-size:15px;
-            line-height:1.1;
-            font-weight:950;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav .stButton button,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav .stButton button {{
-            min-height:58px !important;
-            width:100%;
-            margin:0 0 9px;
-            border-radius:16px !important;
-            opacity:0;
-            position:relative;
-            z-index:2;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label {{
-            border:0 !important;
-            box-shadow:none !important;
-            background:transparent !important;
-            min-height:46px !important;
-            border-radius:9px !important;
-            padding:0 14px !important;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {{
-            background:#FFFFFF !important;
-            border:1px solid #93C5FD !important;
-            box-shadow:0 0 0 1px #BFDBFE !important;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label [data-testid="stMarkdownContainer"] p {{
-            color:#172554 !important;
-            font-size:15px !important;
-            font-weight:900 !important;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label input,
-        section[data-testid="stSidebar"] div[role="radiogroup"] label > div:first-child {{
-            display:none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav .sidebar-choice-preview,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav .sidebar-choice-preview {{
-            display:none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"],
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] {{
-            display:grid !important;
-            gap:10px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label {{
-            min-height:60px !important;
-            display:flex !important;
-            align-items:center !important;
-            gap:12px !important;
-            padding:12px 16px !important;
-            margin:0 !important;
-            border-radius:16px !important;
-            border:1px solid #DDE6F2 !important;
-            background:#FFFFFF !important;
-            box-shadow:0 10px 20px rgba(15,23,42,0.05) !important;
-            box-sizing:border-box !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:has(input:checked),
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:has(input:checked) {{
-            background:#EFF6FF !important;
-            border-color:#60A5FA !important;
-            box-shadow:0 0 0 1px #BFDBFE, 0 12px 24px rgba(37,99,235,0.10) !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label::before,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label::before {{
-            width:32px;
-            height:32px;
-            min-width:32px;
-            border-radius:10px;
-            display:grid;
-            place-items:center;
-            background:#EEF2FF;
-            color:#2563EB;
-            font-size:16px;
-            font-weight:950;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:nth-of-type(1)::before {{
-            content:"K";
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:nth-of-type(2)::before {{
-            content:"C";
-        }}
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:nth-of-type(1)::before {{
-            content:"T";
-        }}
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:nth-of-type(2)::before {{
-            content:"P";
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label:has(input:checked)::before,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label:has(input:checked)::before {{
-            background:#2563EB;
-            color:#FFFFFF;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label p,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label p {{
-            margin:0 !important;
-            color:#0B1B46 !important;
-            font-size:15px !important;
-            line-height:1.1 !important;
-            font-weight:950 !important;
+        section[data-testid="stSidebar"] .nav-disabled-note {{
+            margin:-2px 0 8px !important;
+            color:#64748B !important;
+            font-size:12px !important;
+            font-weight:750 !important;
         }}
         section[data-testid="stSidebar"] {{
             background:#F4F7FB !important;
@@ -6429,15 +6296,12 @@ def inject_custom_css(config):
             font-size:16px !important;
             margin-right:8px !important;
         }}
-        section[data-testid="stSidebar"] .st-key-operation_nav,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav {{
-            margin:10px 0 14px !important;
-        }}
         div.st-key-operation_nav_kpis button,
         div.st-key-operation_nav_catalog button,
         div.st-key-load_mode_complete button,
         div.st-key-load_mode_partial button {{
-            min-height:44px !important;
+            display:flex !important;
+            min-height:46px !important;
             width:100% !important;
             justify-content:flex-start !important;
             padding:10px 18px !important;
@@ -6446,29 +6310,41 @@ def inject_custom_css(config):
             background:#FFFFFF !important;
             color:#0B1B46 !important;
             font-size:14px !important;
-            font-weight:850 !important;
+            font-weight:900 !important;
             box-shadow:0 8px 16px rgba(15,23,42,0.045) !important;
+            opacity:1 !important;
+            visibility:visible !important;
+            white-space:normal !important;
+            line-height:1.15 !important;
+            margin:0 0 8px !important;
         }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"],
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] {{
-            gap:8px !important;
+        div.st-key-operation_nav_kpis button::before {{ content:"K"; }}
+        div.st-key-operation_nav_catalog button::before {{ content:"C"; }}
+        div.st-key-load_mode_complete button::before {{ content:"T"; }}
+        div.st-key-load_mode_partial button::before {{ content:"P"; }}
+        div.st-key-operation_nav_kpis button::before,
+        div.st-key-operation_nav_catalog button::before,
+        div.st-key-load_mode_complete button::before,
+        div.st-key-load_mode_partial button::before {{
+            width:28px !important;
+            height:28px !important;
+            min-width:28px !important;
+            margin-right:10px !important;
+            border-radius:9px !important;
+            display:inline-grid !important;
+            place-items:center !important;
+            background:#EEF2FF !important;
+            color:#2563EB !important;
+            font-size:13px !important;
+            font-weight:950 !important;
         }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label {{
-            min-height:44px !important;
-            padding:10px 12px !important;
-            border-radius:14px !important;
-            box-shadow:0 8px 16px rgba(15,23,42,0.045) !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label::before,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label::before {{
-            content:none !important;
-            display:none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"] label p,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] label p {{
-            font-size:14px !important;
-            font-weight:850 !important;
+        div.st-key-operation_nav_kpis button:hover,
+        div.st-key-operation_nav_catalog button:hover,
+        div.st-key-load_mode_complete button:hover,
+        div.st-key-load_mode_partial button:hover {{
+            border-color:#93C5FD !important;
+            background:#F8FBFF !important;
+            color:#0B1B46 !important;
         }}
         .st-key-shopify_sidebar_card {{
             margin:18px 0 0 !important;
@@ -7102,7 +6978,7 @@ def inject_custom_css(config):
         }}
         .commercial-summary-grid {{
             display:grid;
-            grid-template-columns:repeat(3, minmax(160px, 1fr));
+            grid-template-columns:repeat(4, minmax(150px, 1fr));
             gap:14px;
             padding:0 24px 18px;
         }}
@@ -7150,6 +7026,16 @@ def inject_custom_css(config):
             border-color:#FECACA;
         }}
         .commercial-summary-tile.bad b {{ background:#DC2626; }}
+        .commercial-summary-tile.ready {{
+            background:#EFF6FF;
+            border-color:#BFDBFE;
+        }}
+        .commercial-summary-tile.ready b {{ background:#2563EB; }}
+        .commercial-summary-tile.total {{
+            background:#F8FAFC;
+            border-color:#CBD5E1;
+        }}
+        .commercial-summary-tile.total b {{ background:#475569; }}
         .combo-model-metric {{
             text-align:left;
             min-width:180px;
@@ -8514,6 +8400,9 @@ def render_non_visible_combo_table(combo_df):
 
     status_df = combo_df.apply(commercial_status, axis=1)
     commercial_df = pd.concat([combo_df, status_df], axis=1)
+    operational_total = safe_int_value(combo_df["Modelos"].sum()) if "Modelos" in combo_df.columns else 0
+    ready_mask = commercial_df["Stock"] & commercial_df["Precio"] & commercial_df["Imagen"]
+    ready_to_publish = safe_int_value(commercial_df.loc[ready_mask, "Modelos"].sum())
     combo_view = (
         commercial_df.groupby(["Stock", "Precio", "Imagen"], as_index=False)
         .agg(Modelos=("Modelos", "sum"))
@@ -8521,12 +8410,30 @@ def render_non_visible_combo_table(combo_df):
     )
     combo_view = combo_view[~(combo_view["Stock"] & combo_view["Precio"] & combo_view["Imagen"])].copy()
     if combo_view.empty:
-        st.success("No hay bloqueos comerciales de stock, precio o imagen.")
+        render_html(
+            f"""
+            <div class="combo-card">
+                <div class="combo-card-head">
+                    <div>
+                        <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Checklist comercial web</div>
+                        <p>No visibles en web = bloqueo comercial + listos para prender. No hay bloqueo comercial de stock, precio o imagen.</p>
+                    </div>
+                    <div class="combo-chip">{format_kpi_number(ready_to_publish)} listos para prender</div>
+                </div>
+                <div class="commercial-summary-grid">
+                    <div class="commercial-summary-tile total"><span>No visibles en web</span><b>=</b><strong>{format_kpi_number(operational_total)}</strong></div>
+                    <div class="commercial-summary-tile ok"><span>Bloqueo comercial</span><b>&#10003;</b><strong>0</strong></div>
+                    <div class="commercial-summary-tile ready"><span>Listos para prender</span><b>&#9658;</b><strong>{format_kpi_number(ready_to_publish)}</strong></div>
+                    <div class="commercial-summary-tile ok"><span>Stock + precio + imagen</span><b>&#10003;</b><strong>OK</strong></div>
+                </div>
+            </div>
+            """
+        )
         return combo_df
-    total_models = safe_float_value(combo_view["Modelos"].sum())
+    blocked_total = safe_int_value(combo_view["Modelos"].sum())
+    total_models = safe_float_value(blocked_total)
     total_models_safe = total_models or 1
-    operational_total = safe_int_value(combo_df["Modelos"].sum()) if "Modelos" in combo_df.columns else safe_int_value(total_models)
-    other_blocked = max(0, operational_total - safe_int_value(total_models))
+    other_blocked = max(0, operational_total - blocked_total - ready_to_publish)
     stock_missing = safe_int_value(combo_view.loc[~combo_view["Stock"], "Modelos"].sum())
     price_missing = safe_int_value(combo_view.loc[~combo_view["Precio"], "Modelos"].sum())
     image_missing = safe_int_value(combo_view.loc[~combo_view["Imagen"], "Modelos"].sum())
@@ -8559,6 +8466,15 @@ def render_non_visible_combo_table(combo_df):
         </div>
         """
 
+    def count_tile(label, value, tone, icon):
+        return f"""
+        <div class="commercial-summary-tile {tone}">
+            <span>{escape(label)}</span>
+            <b>{icon}</b>
+            <strong>{format_kpi_number(value)}</strong>
+        </div>
+        """
+
     rows = []
     for _, row in combo_view.iterrows():
         models = safe_int_value(row.get("Modelos"))
@@ -8576,7 +8492,7 @@ def render_non_visible_combo_table(combo_df):
                 <td>
                     <div class="combo-model-metric">
                         <strong>{format_kpi_number(models)}</strong>
-                        <span>{pct_value:.1f}% del bloqueo</span>
+                        <span>{pct_value:.1f}% del bloqueo comercial</span>
                         <i><b style="width:{max(2, min(100, pct_value)):.1f}%"></b></i>
                     </div>
                 </td>
@@ -8590,19 +8506,23 @@ def render_non_visible_combo_table(combo_df):
             <div class="combo-card-head">
                 <div>
                     <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Checklist comercial web</div>
-                    <p>Base: modelo-color creados con stock eComm que no estan listos por stock Shopify, precio o imagen.</p>
+                    <p>No visibles en web = bloqueo comercial + listos para prender. Base: modelo-color creados con stock eComm.</p>
                 </div>
-                <div class="combo-chip">{format_kpi_number(safe_int_value(total_models))} bloqueo comercial</div>
+                <div class="combo-chip">{format_kpi_number(blocked_total)} bloqueo comercial</div>
             </div>
             <div class="commercial-summary-grid">
+                {count_tile("No visibles en web", operational_total, "total", "=")}
+                {count_tile("Bloqueo comercial", blocked_total, "bad" if blocked_total else "ok", "&#10005;" if blocked_total else "&#10003;")}
+                {count_tile("Listos para prender", ready_to_publish, "ready", "&#9658;")}
+                {count_tile("Otros estados", other_blocked, "total", "...")}
                 {summary_tile("Stock", stock_missing, "OK")}
                 {summary_tile("Precio", price_missing, "OK")}
                 {summary_tile("Imagen", image_missing, "OK")}
             </div>
             <p class="kpi-note">
-                Total no visibles operativos: {format_kpi_number(operational_total)} modelo-color.
-                Este checklist muestra {format_kpi_number(safe_int_value(total_models))} con bloqueo comercial.
-                {format_kpi_number(other_blocked)} quedan fuera del checklist por estado activo/publicado u otros motivos no comerciales.
+                Lectura: {format_kpi_number(blocked_total)} necesitan correccion de data comercial.
+                {format_kpi_number(ready_to_publish)} ya tienen stock, precio e imagen y deberian prender al activar/publicar en Shopify.
+                {format_kpi_number(other_blocked)} quedan en otros estados operativos.
             </p>
             <div class="combo-table-wrap compact">
                 <table class="combo-table compact">
@@ -9337,7 +9257,7 @@ def sidebar_card_choice(key, options, default, icons=None):
     return st.session_state[key]
 
 
-def sidebar_nav_button(label, state_key, value, button_key):
+def sidebar_nav_button(label, state_key, value, button_key, extra_state=None):
     selected = st.session_state.get(state_key) == value
     if selected:
         st.markdown(
@@ -9355,6 +9275,8 @@ def sidebar_nav_button(label, state_key, value, button_key):
         )
     if st.button(label, key=button_key, use_container_width=True):
         st.session_state[state_key] = value
+        for extra_key, extra_value in (extra_state or {}).items():
+            st.session_state[extra_key] = extra_value
         st.rerun()
 
 
@@ -9397,15 +9319,31 @@ def main():
         sidebar_nav_button("Carga de catálogo", "operation_area_choice", "Carga de catálogo", "operation_nav_catalog")
         operation_area = st.session_state.get("operation_area_choice", nav_options[0])
     operation_mode = "Carga completa"
-    if operation_area == "Carga de catálogo":
-        load_options = ["Carga completa", "Carga parcial"]
-        if st.session_state.get("operation_mode_choice") not in load_options:
-            st.session_state["operation_mode_choice"] = load_options[0]
-        with st.sidebar.container(key="load_mode_nav"):
-            st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
-            sidebar_nav_button("Carga completa", "operation_mode_choice", "Carga completa", "load_mode_complete")
-            sidebar_nav_button("Carga parcial", "operation_mode_choice", "Carga parcial", "load_mode_partial")
-            operation_mode = st.session_state.get("operation_mode_choice", load_options[0])
+    load_options = ["Carga completa", "Carga parcial"]
+    if st.session_state.get("operation_mode_choice") not in load_options:
+        st.session_state["operation_mode_choice"] = load_options[0]
+    with st.sidebar.container(key="load_mode_nav"):
+        st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
+        if operation_area != "Carga de catálogo":
+            st.markdown(
+                '<p class="nav-disabled-note">Selecciona Carga de catálogo para usar estos modos.</p>',
+                unsafe_allow_html=True,
+            )
+        sidebar_nav_button(
+            "Carga completa",
+            "operation_mode_choice",
+            "Carga completa",
+            "load_mode_complete",
+            extra_state={"operation_area_choice": "Carga de catálogo"},
+        )
+        sidebar_nav_button(
+            "Carga parcial",
+            "operation_mode_choice",
+            "Carga parcial",
+            "load_mode_partial",
+            extra_state={"operation_area_choice": "Carga de catálogo"},
+        )
+        operation_mode = st.session_state.get("operation_mode_choice", load_options[0])
     with st.sidebar.container(key="load_refresh_card"):
         st.button(
             "Nueva carga / refrescar",

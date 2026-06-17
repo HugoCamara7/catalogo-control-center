@@ -6249,44 +6249,28 @@ def inject_custom_css(config):
             position:relative !important;
             display:block !important;
             clear:both !important;
-            margin:2px 0 12px !important;
-            padding-left:30px !important;
+            margin:18px 0 8px !important;
+            padding-left:0 !important;
             color:#0B1B46 !important;
             font-size:13px !important;
             line-height:1.2 !important;
             font-weight:950 !important;
         }}
         section[data-testid="stSidebar"] .sidebar-label::before {{
-            content:"" !important;
-            position:absolute !important;
-            left:0 !important;
-            top:50% !important;
-            transform:translateY(-50%) !important;
-            width:20px !important;
-            height:20px !important;
-            border-radius:7px !important;
-            background:#EEF2FF no-repeat center / 13px 13px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav .sidebar-label::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V5'/%3E%3Cpath d='M4 19h16'/%3E%3Cpath d='M8 16v-5'/%3E%3Cpath d='M12 16V8'/%3E%3Cpath d='M16 16v-9'/%3E%3C/svg%3E") !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-load_mode_nav .sidebar-label::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 16V7'/%3E%3Cpath d='m8 11 4-4 4 4'/%3E%3Cpath d='M20 16.5A4.5 4.5 0 0 0 15.5 12h-.6A6 6 0 1 0 4 15.5'/%3E%3C/svg%3E") !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-sidebar_actions .sidebar-label::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z'/%3E%3Cpath d='M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6l-.06.06a2 2 0 1 1-3-2.65 1.7 1.7 0 0 0-.6-1A1.7 1.7 0 0 0 9 15'/%3E%3C/svg%3E") !important;
+            display:none !important;
         }}
         section[data-testid="stSidebar"] .st-key-operation_nav,
         section[data-testid="stSidebar"] .st-key-load_mode_nav,
         section[data-testid="stSidebar"] .st-key-sidebar_actions {{
             display:block !important;
-            margin:0 0 16px !important;
-            padding:12px 12px 4px !important;
+            margin:0 0 12px !important;
+            padding:0 0 10px !important;
             min-height:auto !important;
-            border:1px solid #E2E8F0 !important;
-            border-radius:18px !important;
-            background:rgba(255,255,255,0.64) !important;
-            box-shadow:0 10px 22px rgba(15,23,42,0.035) !important;
+            border:0 !important;
+            border-bottom:1px solid #E2E8F0 !important;
+            border-radius:0 !important;
+            background:transparent !important;
+            box-shadow:none !important;
         }}
         section[data-testid="stSidebar"] .st-key-load_mode_nav {{
             margin-top:0 !important;
@@ -6334,36 +6318,34 @@ def inject_custom_css(config):
             margin-right:8px !important;
         }}
         div.st-key-operation_nav_kpis button,
-        div.st-key-operation_nav_catalog button,
         div.st-key-load_mode_complete button,
         div.st-key-load_mode_partial button,
         div.st-key-reset_load_workspace button,
         div.st-key-test_shopify_connection button {{
             display:grid !important;
-            grid-template-columns:32px minmax(0, 1fr) !important;
+            grid-template-columns:30px minmax(0, 1fr) !important;
             align-items:center !important;
-            column-gap:12px !important;
-            min-height:50px !important;
+            column-gap:10px !important;
+            min-height:44px !important;
             width:100% !important;
             justify-content:stretch !important;
             text-align:left !important;
-            padding:10px 14px !important;
-            border-radius:16px !important;
+            padding:8px 12px !important;
+            border-radius:14px !important;
             border:1px solid #DDE6F2 !important;
             background:#FFFFFF !important;
             color:#0B1B46 !important;
             font-size:14px !important;
             font-weight:900 !important;
-            box-shadow:0 10px 20px rgba(15,23,42,0.045) !important;
+            box-shadow:0 8px 16px rgba(15,23,42,0.035) !important;
             opacity:1 !important;
             visibility:visible !important;
             white-space:normal !important;
             line-height:1.15 !important;
-            margin:0 0 11px !important;
+            margin:0 0 9px !important;
             transition:background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease !important;
         }}
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
-        div.st-key-operation_nav_catalog button [data-testid="stMarkdownContainer"],
         div.st-key-load_mode_complete button [data-testid="stMarkdownContainer"],
         div.st-key-load_mode_partial button [data-testid="stMarkdownContainer"],
         div.st-key-reset_load_workspace button [data-testid="stMarkdownContainer"],
@@ -6373,7 +6355,6 @@ def inject_custom_css(config):
             text-align:left !important;
         }}
         div.st-key-operation_nav_kpis button p,
-        div.st-key-operation_nav_catalog button p,
         div.st-key-load_mode_complete button p,
         div.st-key-load_mode_partial button p,
         div.st-key-reset_load_workspace button p,
@@ -6388,15 +6369,14 @@ def inject_custom_css(config):
             white-space:normal !important;
         }}
         div.st-key-operation_nav_kpis button::before,
-        div.st-key-operation_nav_catalog button::before,
         div.st-key-load_mode_complete button::before,
         div.st-key-load_mode_partial button::before,
         div.st-key-reset_load_workspace button::before,
         div.st-key-test_shopify_connection button::before {{
             content:"" !important;
-            width:32px !important;
-            height:32px !important;
-            min-width:32px !important;
+            width:30px !important;
+            height:30px !important;
+            min-width:30px !important;
             margin:0 !important;
             border-radius:11px !important;
             display:inline-grid !important;
@@ -6408,9 +6388,6 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V5'/%3E%3Cpath d='M4 19h16'/%3E%3Cpath d='M8 16v-5'/%3E%3Cpath d='M12 16V8'/%3E%3Cpath d='M16 16v-9'/%3E%3C/svg%3E") !important;
-        }}
-        div.st-key-operation_nav_catalog button::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21 8-9-5-9 5 9 5 9-5Z'/%3E%3Cpath d='M3 8v8l9 5 9-5V8'/%3E%3Cpath d='M12 13v8'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-load_mode_complete button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 16V7'/%3E%3Cpath d='m8 11 4-4 4 4'/%3E%3Cpath d='M20 16.5A4.5 4.5 0 0 0 15.5 12h-.6A6 6 0 1 0 4 15.5'/%3E%3Cpath d='M4 18h16'/%3E%3C/svg%3E") !important;
@@ -6425,7 +6402,6 @@ def inject_custom_css(config):
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22v-5'/%3E%3Cpath d='M9 7V2'/%3E%3Cpath d='M15 7V2'/%3E%3Cpath d='M6 7h12v5a6 6 0 0 1-12 0V7Z'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-operation_nav_kpis button:hover,
-        div.st-key-operation_nav_catalog button:hover,
         div.st-key-load_mode_complete button:hover,
         div.st-key-load_mode_partial button:hover,
         div.st-key-reset_load_workspace button:hover,
@@ -7155,15 +7131,15 @@ def inject_custom_css(config):
         }}
         .commercial-summary-tile.total b {{ background:#475569; }}
         .commercial-flow {{
-            margin:0 24px 18px;
+            margin:0 24px 14px;
             display:grid;
-            grid-template-columns:1fr 1.25fr;
-            gap:18px;
+            grid-template-columns:.9fr 1.1fr;
+            gap:14px;
             align-items:stretch;
         }}
         .flow-total {{
-            min-height:210px;
-            border-radius:18px;
+            min-height:132px;
+            border-radius:16px;
             background:linear-gradient(180deg,#FFFFFF 0%,#F8FAFC 100%);
             border:1px solid #CBD5E1;
             display:flex;
@@ -7171,7 +7147,7 @@ def inject_custom_css(config):
             justify-content:center;
             align-items:center;
             text-align:center;
-            box-shadow:0 16px 34px rgba(15,23,42,0.07);
+            box-shadow:0 12px 26px rgba(15,23,42,0.055);
         }}
         .flow-total span {{
             color:#475569;
@@ -7181,16 +7157,16 @@ def inject_custom_css(config):
             text-transform:uppercase;
         }}
         .flow-total strong {{
-            margin-top:10px;
+            margin-top:6px;
             color:#0B1B46;
-            font-size:56px;
+            font-size:42px;
             line-height:.95;
             font-weight:950;
         }}
         .flow-total small {{
-            margin-top:12px;
+            margin-top:8px;
             color:#64748B;
-            font-size:13px;
+            font-size:12px;
             font-weight:800;
         }}
         .flow-split {{
@@ -7199,23 +7175,23 @@ def inject_custom_css(config):
             gap:14px;
         }}
         .flow-node {{
-            min-height:128px;
-            border-radius:18px;
+            min-height:132px;
+            border-radius:16px;
             border:1px solid #DDE6F2;
-            padding:18px 18px;
+            padding:16px 16px;
             display:flex;
             flex-direction:column;
             justify-content:space-between;
             box-sizing:border-box;
         }}
         .flow-node.danger {{
-            background:#FEF2F2;
-            border-color:#FCA5A5;
+            background:#FFF7F7;
+            border-color:#FECACA;
         }}
         .flow-node.ready {{
-            background:linear-gradient(135deg,#ECFDF5 0%,#EFF6FF 100%);
-            border-color:#86EFAC;
-            box-shadow:0 18px 34px rgba(22,163,74,0.10);
+            background:#F0FDF4;
+            border-color:#BBF7D0;
+            box-shadow:0 12px 26px rgba(22,163,74,0.08);
         }}
         .flow-node span {{
             color:#334155;
@@ -7224,7 +7200,7 @@ def inject_custom_css(config):
         }}
         .flow-node strong {{
             color:#0B1B46;
-            font-size:38px;
+            font-size:34px;
             line-height:1;
             font-weight:950;
         }}
@@ -7237,17 +7213,17 @@ def inject_custom_css(config):
         }}
         .flow-node.ready small {{ color:#166534; }}
         .flow-cause-grid {{
-            margin:0 24px 16px;
+            margin:0 24px 12px;
             display:grid;
             grid-template-columns:repeat(3, minmax(0,1fr));
-            gap:12px;
+            gap:10px;
         }}
         .flow-cause {{
-            min-height:72px;
-            border-radius:14px;
-            border:1px solid #FECACA;
-            background:#FFF7F7;
-            padding:14px 16px;
+            min-height:54px;
+            border-radius:12px;
+            border:1px solid #E2E8F0;
+            background:#FFFFFF;
+            padding:10px 14px;
             display:flex;
             align-items:center;
             justify-content:space-between;
@@ -7256,37 +7232,38 @@ def inject_custom_css(config):
         }}
         .flow-cause span {{
             color:#0B1B46;
-            font-size:13px;
+            font-size:12.5px;
             font-weight:950;
         }}
         .flow-cause strong {{
-            color:#991B1B;
-            font-size:24px;
+            color:#0B1B46;
+            font-size:20px;
             font-weight:950;
         }}
         .flow-actions {{
-            margin:0 24px 20px;
-            padding:16px 18px;
-            border-radius:16px;
-            background:#F8FAFC;
-            border:1px solid #DDE6F2;
+            margin:0 24px 18px;
+            padding:0;
+            border-radius:0;
+            background:transparent;
+            border:0;
         }}
         .flow-actions b {{
             display:block;
             color:#0B1B46;
             font-size:14px;
             font-weight:950;
-            margin-bottom:10px;
+            margin-bottom:8px;
         }}
         .flow-actions ul {{
             margin:0;
-            padding-left:18px;
-            display:grid;
-            grid-template-columns:repeat(2,minmax(0,1fr));
-            gap:8px 18px;
+            padding:12px 16px 12px 34px;
+            display:block;
+            border-radius:12px;
+            background:#F8FAFC;
+            border:1px solid #E2E8F0;
             color:#334155;
             font-size:13px;
-            line-height:1.35;
+            line-height:1.5;
             font-weight:800;
         }}
         @media (max-width: 1100px) {{
@@ -8736,10 +8713,8 @@ def render_non_visible_combo_table(combo_df):
         """
 
     action_items = [
-        f"Corregir stock en {format_kpi_number(stock_missing)} modelo-color.",
-        f"Corregir imagenes en {format_kpi_number(image_missing)} modelo-color.",
-        f"Corregir precios en {format_kpi_number(price_missing)} modelo-color.",
-        f"Activar/publicar {format_kpi_number(ready_to_publish)} listos para prender.",
+        f"Corregir stock, imagen y precio en los {format_kpi_number(blocked_total)} bloqueados comercialmente.",
+        f"Activar/publicar los {format_kpi_number(ready_to_publish)} listos para prender.",
     ]
     if other_blocked:
         action_items.append(f"Revisar {format_kpi_number(other_blocked)} en otros estados operativos.")
@@ -9605,14 +9580,13 @@ def main():
     with st.sidebar.container(key="operation_nav"):
         st.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
         sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
-        sidebar_nav_button("Carga de catálogo", "operation_area_choice", "Carga de catálogo", "operation_nav_catalog")
         operation_area = st.session_state.get("operation_area_choice", nav_options[0])
     operation_mode = "Carga completa"
     load_options = ["Carga completa", "Carga parcial"]
     if st.session_state.get("operation_mode_choice") not in load_options:
         st.session_state["operation_mode_choice"] = load_options[0]
     with st.sidebar.container(key="load_mode_nav"):
-        st.markdown('<p class="sidebar-label">Modos de carga</p>', unsafe_allow_html=True)
+        st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
         sidebar_nav_button(
             "Carga completa",
             "operation_mode_choice",

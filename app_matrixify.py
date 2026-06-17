@@ -6247,7 +6247,7 @@ def inject_custom_css(config):
         }}
         section[data-testid="stSidebar"] .sidebar-label {{
             display:block !important;
-            margin:18px 0 9px !important;
+            margin:14px 0 9px !important;
             color:#0B1B46 !important;
             font-size:13px !important;
             line-height:1.2 !important;
@@ -6256,8 +6256,14 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-operation_nav,
         section[data-testid="stSidebar"] .st-key-load_mode_nav {{
             display:block !important;
-            margin:12px 0 22px !important;
+            margin:10px 0 14px !important;
             min-height:auto !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-operation_nav {{
+            margin-bottom:8px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-load_mode_nav .sidebar-label {{
+            margin-top:8px !important;
         }}
         section[data-testid="stSidebar"] .nav-disabled-note {{
             display:block !important;

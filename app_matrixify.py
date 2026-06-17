@@ -4401,16 +4401,38 @@ def _valid_price(value):
     return text
 
 
-def _variant_bulk_input_from_row(row, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
+def _variant_create_price(value):
+    text = clean_value(value)
+    if not text:
+        return ""
+    try:
+        number = float(text.replace(",", "."))
+    except Exception:
+        return text
+    if number < 0:
+        return ""
+    if number == 0:
+        return "0"
+    return text
+
+
+def _variant_bulk_input_from_row(
+    row,
+    option_id=None,
+    option_name=None,
+    fallback_price=None,
+    fallback_compare_at_price=None,
+    force_option_name=False,
+):
     size = clean_value(row.get("Option1 Value"))
     sku = clean_value(row.get("Variant SKU"))
-    price = _valid_price(row.get("Variant Price")) or _valid_price(fallback_price)
-    if not size or not sku or not price:
+    price = _variant_create_price(row.get("Variant Price")) or _variant_create_price(fallback_price)
+    if not size or not sku:
         return None
 
     option_name = clean_value(option_name) or clean_value(row.get("Option1 Name")) or "Talla"
     option_value = {"name": size}
-    if clean_value(option_id):
+    if clean_value(option_id) and not force_option_name:
         option_value["optionId"] = clean_value(option_id)
     else:
         option_value["optionName"] = option_name
@@ -4419,7 +4441,8 @@ def _variant_bulk_input_from_row(row, option_id=None, option_name=None, fallback
     }
     compare_at_price = _valid_price(row.get("Variant Compare At Price")) or _valid_price(fallback_compare_at_price)
     barcode = clean_value(row.get("Variant Barcode"))
-    variant["price"] = price
+    if price:
+        variant["price"] = price
     if compare_at_price:
         variant["compareAtPrice"] = compare_at_price
     if barcode:
@@ -4483,7 +4506,14 @@ def _dedupe_product_variant_rows(product_variant_rows):
     return product_variant_rows.loc[kept_indexes].copy(), messages
 
 
-def _missing_variant_inputs(product_variant_rows, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
+def _missing_variant_inputs(
+    product_variant_rows,
+    option_id=None,
+    option_name=None,
+    fallback_price=None,
+    fallback_compare_at_price=None,
+    force_option_name=False,
+):
     if product_variant_rows.empty:
         return []
 
@@ -4521,6 +4551,7 @@ def _missing_variant_inputs(product_variant_rows, option_id=None, option_name=No
             option_name=option_name,
             fallback_price=fallback_price,
             fallback_compare_at_price=fallback_compare_at_price,
+            force_option_name=force_option_name,
         )
         if payload:
             variants.append(payload)
@@ -4528,7 +4559,14 @@ def _missing_variant_inputs(product_variant_rows, option_id=None, option_name=No
     return variants
 
 
-def _all_variant_inputs(product_variant_rows, option_id=None, option_name=None, fallback_price=None, fallback_compare_at_price=None):
+def _all_variant_inputs(
+    product_variant_rows,
+    option_id=None,
+    option_name=None,
+    fallback_price=None,
+    fallback_compare_at_price=None,
+    force_option_name=False,
+):
     variants = []
     seen_keys = set()
     for _, variant_row in product_variant_rows.iterrows():
@@ -4545,6 +4583,7 @@ def _all_variant_inputs(product_variant_rows, option_id=None, option_name=None, 
             option_name=option_name,
             fallback_price=fallback_price,
             fallback_compare_at_price=fallback_compare_at_price,
+            force_option_name=force_option_name,
         )
         if payload:
             variants.append(payload)
@@ -4589,7 +4628,7 @@ def _price_fallback_from_rows(product_variant_rows):
     return "", ""
 
 
-def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
+def _missing_variant_inputs_from_shopify(product_variant_rows, product_data, force_option_name=False):
     if product_variant_rows.empty:
         return []
     requested_option_name = clean_value(product_variant_rows.iloc[0].get("Option1 Name")) or "Talla"
@@ -4624,6 +4663,7 @@ def _missing_variant_inputs_from_shopify(product_variant_rows, product_data):
             option_name=option_name,
             fallback_price=fallback_price,
             fallback_compare_at_price=fallback_compare_at_price,
+            force_option_name=force_option_name,
         )
         if payload:
             variants.append(payload)
@@ -5169,6 +5209,7 @@ def apply_full_product_updates(shopify_config, matrixify_df):
         product_status = "OK"
         product_variant_rows = _variant_rows_for_handle(matrixify_df, handle)
         product_variant_rows, dedupe_messages = _dedupe_product_variant_rows(product_variant_rows)
+        expected_variant_skus = _expected_variant_skus(product_variant_rows)
         if dedupe_messages:
             product_status = "PARCIAL"
             product_messages.extend(dedupe_messages)
@@ -5179,6 +5220,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             if variant_input_issues:
                 product_status = "PARCIAL"
                 product_messages.append("Variantes incompletas no se enviaran completas: " + " | ".join(variant_input_issues[:8]))
+            if expected_variant_skus:
+                product_messages.append(f"Variantes esperadas BigQuery: {len(expected_variant_skus)}")
 
             status = clean_value(row.get("Status")).upper()
             if status == "ACTIVE":
@@ -5378,12 +5421,31 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             )
             if missing_variants:
                 try:
-                    created_variants = product_variants_bulk_create(
-                        shopify_config,
-                        product_gid,
-                        missing_variants,
-                        strategy="REMOVE_STANDALONE_VARIANT" if was_new_product else None,
-                    )
+                    try:
+                        created_variants = product_variants_bulk_create(
+                            shopify_config,
+                            product_gid,
+                            missing_variants,
+                            strategy="REMOVE_STANDALONE_VARIANT" if was_new_product else None,
+                        )
+                    except Exception as first_variant_exc:
+                        fallback_missing_variants = _missing_variant_inputs_from_shopify(
+                            product_variant_rows,
+                            product_data_for_variants,
+                            force_option_name=True,
+                        )
+                        if not fallback_missing_variants:
+                            raise
+                        created_variants = product_variants_bulk_create(
+                            shopify_config,
+                            product_gid,
+                            fallback_missing_variants,
+                            strategy="REMOVE_STANDALONE_VARIANT" if was_new_product else None,
+                        )
+                        product_messages.append(
+                            f"Variantes creadas con fallback por nombre de opcion tras error inicial: {first_variant_exc}"
+                        )
+                        missing_variants = fallback_missing_variants
                     if created_variants:
                         product_messages.append(
                             f"{len(created_variants)} variantes creadas de {len(missing_variants)} faltantes"
@@ -5406,6 +5468,7 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                 retry_missing_variants = _missing_variant_inputs_from_shopify(
                     retry_rows,
                     product_data_for_variants,
+                    force_option_name=True,
                 )
                 if retry_missing_variants:
                     try:
@@ -5445,6 +5508,12 @@ def apply_full_product_updates(shopify_config, matrixify_df):
                     product_messages.append("Error SKU post-creacion: " + " | ".join(inventory_errors[:5]))
 
             verified_product_data = fetch_product_options_and_variants(shopify_config, product_gid)
+            actual_variant_skus = _actual_variant_skus(verified_product_data)
+            if expected_variant_skus:
+                confirmed_count = len([sku for sku in expected_variant_skus if sku in actual_variant_skus])
+                product_messages.append(
+                    f"Variantes confirmadas Shopify: {confirmed_count}/{len(expected_variant_skus)}"
+                )
             try:
                 activation_ok, activation_errors = activate_product_inventory_locations(
                     shopify_config,

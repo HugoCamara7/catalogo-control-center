@@ -675,6 +675,18 @@ def get_shopify_config(site_key):
         shopify_sites = st.secrets.get("shopify_sites", {})
         if site_key in shopify_sites:
             config.update(dict(shopify_sites[site_key]))
+        inventory_config = dict(st.secrets.get("inventory", {}))
+        inventory_locations_config = dict(st.secrets.get("inventory_locations", {}))
+        for source in (inventory_config, inventory_locations_config):
+            for field in ("inventory_location_ids", "inventory_locations", "location_ids"):
+                if config.get(field):
+                    continue
+                config[field] = (
+                    source.get(f"{site_key}_{field}")
+                    or source.get(site_key)
+                    or source.get(field)
+                    or config.get(field)
+                )
     except Exception:
         return {}
 
@@ -756,7 +768,12 @@ def session_arti_for_app(brand_config, force_refresh=False):
         and st.session_state.get(cache_key) is not None
     ):
         return st.session_state[cache_key], st.session_state.get(source_key, "BigQuery")
-    arti_df, source = read_arti_for_app(brand_config)
+    try:
+        arti_df, source = read_arti_for_app(brand_config)
+    except Exception:
+        for key in (cache_key, source_key, meta_key):
+            st.session_state.pop(key, None)
+        raise
     st.session_state[cache_key] = arti_df
     st.session_state[source_key] = source
     st.session_state[meta_key] = cache_meta
@@ -2790,6 +2807,19 @@ def shopify_products_to_matrixify_df(shopify_products):
     except Exception:
         pass
     for column in (
+        "Metafield: custom.marca [single_line_text_field]",
+        "Metafield: custom.materialidad [single_line_text_field]",
+        "Metafield: custom.tecnologia [list.single_line_text_field]",
+        "Metafield: custom.logo [list.metaobject_reference]",
+        "Metafield: custom.color_forus [single_line_text_field]",
+        "Metafield: custom.grupo_color [single_line_text_field]",
+        "Metafield: custom.genero [single_line_text_field]",
+        "Metafield: custom.tipo [single_line_text_field]",
+        "Metafield: custom.categoria [single_line_text_field]",
+        "Metafield: custom.sub_categoria [single_line_text_field]",
+        "Metafield: custom.nombre_corto [single_line_text_field]",
+        "Metafield: custom.descripcion_corta [single_line_text_field]",
+        "Metafield: custom.pais_de_fabricacion [single_line_text_field]",
         "Metafield: theme.siblings [single_line_text_field]",
         "Metafield: theme.siblings_color [single_line_text_field]",
         "Metafield: custom.siblings [single_line_text_field]",
@@ -5127,6 +5157,9 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             "Metafield: custom.guia_de_tallas [page_reference]",
         )
     ]
+    brand_metafield_column = "Metafield: custom.marca [single_line_text_field]"
+    if brand_metafield_column not in metafield_columns:
+        metafield_columns.append(brand_metafield_column)
 
     for _, row in product_rows.iterrows():
         handle = clean_value(row.get("Handle"))
@@ -5201,6 +5234,8 @@ def apply_full_product_updates(shopify_config, matrixify_df):
             metafield_errors = []
             for column in metafield_columns:
                 value = _product_metafield_value(row, product_variant_rows, column)
+                if column == brand_metafield_column and value == "":
+                    value = clean_value(row.get("Vendor"))
                 if value == "":
                     continue
                 namespace, key = _metafield_namespace_key(column)
@@ -6329,6 +6364,22 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-load_mode_nav {{
             margin:10px 0 14px !important;
         }}
+        div.st-key-operation_nav_kpis button,
+        div.st-key-operation_nav_catalog button,
+        div.st-key-load_mode_complete button,
+        div.st-key-load_mode_partial button {{
+            min-height:44px !important;
+            width:100% !important;
+            justify-content:flex-start !important;
+            padding:10px 18px !important;
+            border-radius:14px !important;
+            border:1px solid #DDE6F2 !important;
+            background:#FFFFFF !important;
+            color:#0B1B46 !important;
+            font-size:14px !important;
+            font-weight:850 !important;
+            box-shadow:0 8px 16px rgba(15,23,42,0.045) !important;
+        }}
         section[data-testid="stSidebar"] .st-key-operation_nav div[role="radiogroup"],
         section[data-testid="stSidebar"] .st-key-load_mode_nav div[role="radiogroup"] {{
             gap:8px !important;
@@ -7297,6 +7348,13 @@ def inject_custom_css(config):
             font-size:12px;
             font-weight:750;
         }}
+        .kpi-note {{
+            margin:10px 0 14px;
+            color:#64748B;
+            font-size:12px;
+            line-height:1.45;
+            font-weight:750;
+        }}
         .bar-item {{
             cursor:pointer;
             outline:none;
@@ -8046,8 +8104,10 @@ def reset_load_workspace():
     for key in list(st.session_state.keys()):
         if key not in keep_keys:
             st.session_state.pop(key, None)
-    st.session_state["load_reset_nonce"] = 1
-    st.session_state["load_reset_message"] = "Listo. La app se reinicio como una sesion nueva."
+    st.session_state["operation_area_choice"] = "KPIs de catálogo"
+    st.session_state["operation_mode_choice"] = "Carga completa"
+    st.session_state["load_reset_nonce"] = int(datetime.now(timezone.utc).timestamp())
+    st.session_state["load_reset_message"] = "Listo. La app esta limpia y lista para una nueva carga."
 
 
 def uploaded_file_fingerprint(uploaded_file):
@@ -8396,6 +8456,8 @@ def render_non_visible_combo_table(combo_df):
         return combo_df
     total_models = safe_float_value(combo_view["Modelos"].sum())
     total_models_safe = total_models or 1
+    operational_total = safe_int_value(combo_df["Modelos"].sum()) if "Modelos" in combo_df.columns else safe_int_value(total_models)
+    other_blocked = max(0, operational_total - safe_int_value(total_models))
     stock_missing = safe_int_value(combo_view.loc[~combo_view["Stock"], "Modelos"].sum())
     price_missing = safe_int_value(combo_view.loc[~combo_view["Precio"], "Modelos"].sum())
     image_missing = safe_int_value(combo_view.loc[~combo_view["Imagen"], "Modelos"].sum())
@@ -8459,15 +8521,20 @@ def render_non_visible_combo_table(combo_df):
             <div class="combo-card-head">
                 <div>
                     <div class="combo-title"><span class="combo-title-icon">&#9678;</span> Checklist comercial web</div>
-                    <p>Estado de las bases comerciales necesarias para que los modelos esten listos para venta.</p>
+                    <p>Base: modelo-color creados con stock eComm que no estan listos por stock Shopify, precio o imagen.</p>
                 </div>
-                <div class="combo-chip">{format_kpi_number(safe_int_value(total_models))} modelo-color</div>
+                <div class="combo-chip">{format_kpi_number(safe_int_value(total_models))} bloqueo comercial</div>
             </div>
             <div class="commercial-summary-grid">
                 {summary_tile("Stock", stock_missing, "OK")}
                 {summary_tile("Precio", price_missing, "OK")}
                 {summary_tile("Imagen", image_missing, "OK")}
             </div>
+            <p class="kpi-note">
+                Total no visibles operativos: {format_kpi_number(operational_total)} modelo-color.
+                Este checklist muestra {format_kpi_number(safe_int_value(total_models))} con bloqueo comercial.
+                {format_kpi_number(other_blocked)} quedan fuera del checklist por estado activo/publicado u otros motivos no comerciales.
+            </p>
             <div class="combo-table-wrap compact">
                 <table class="combo-table compact">
                     <colgroup>
@@ -9201,6 +9268,27 @@ def sidebar_card_choice(key, options, default, icons=None):
     return st.session_state[key]
 
 
+def sidebar_nav_button(label, state_key, value, button_key):
+    selected = st.session_state.get(state_key) == value
+    if selected:
+        st.markdown(
+            f"""
+            <style>
+            div.st-key-{button_key} button {{
+                background:#EFF6FF !important;
+                border-color:#60A5FA !important;
+                box-shadow:0 0 0 1px #BFDBFE, 0 12px 24px rgba(37,99,235,0.10) !important;
+                color:#0B1B46 !important;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+    if st.button(label, key=button_key, use_container_width=True):
+        st.session_state[state_key] = value
+        st.rerun()
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
     if not require_login():
@@ -9232,31 +9320,30 @@ def main():
     inject_styles(ui_config)
     render_allowed_brands_card(brand_config)
     nav_options = ["KPIs de catálogo", "Carga de catálogo"]
+    if st.session_state.get("operation_area_choice") not in nav_options:
+        st.session_state["operation_area_choice"] = nav_options[0]
     with st.sidebar.container(key="operation_nav"):
         st.markdown('<p class="sidebar-label">Tipo de operación</p>', unsafe_allow_html=True)
-        operation_area = st.radio(
-            "Tipo de operación",
-            nav_options,
-            index=0,
-            label_visibility="collapsed",
-            key="operation_area_choice",
-        )
+        sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
+        sidebar_nav_button("Carga de catálogo", "operation_area_choice", "Carga de catálogo", "operation_nav_catalog")
+        operation_area = st.session_state.get("operation_area_choice", nav_options[0])
     operation_mode = "Carga completa"
     if operation_area == "Carga de catálogo":
         load_options = ["Carga completa", "Carga parcial"]
+        if st.session_state.get("operation_mode_choice") not in load_options:
+            st.session_state["operation_mode_choice"] = load_options[0]
         with st.sidebar.container(key="load_mode_nav"):
             st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
-            operation_mode = st.radio(
-                "Tipo de carga",
-                load_options,
-                index=0,
-                label_visibility="collapsed",
-                key="operation_mode_choice",
-            )
+            sidebar_nav_button("Carga completa", "operation_mode_choice", "Carga completa", "load_mode_complete")
+            sidebar_nav_button("Carga parcial", "operation_mode_choice", "Carga parcial", "load_mode_partial")
+            operation_mode = st.session_state.get("operation_mode_choice", load_options[0])
     with st.sidebar.container(key="load_refresh_card"):
-        if st.button("Nueva carga / refrescar", key="reset_load_workspace", help="Limpia archivos cargados, previews y resultados para empezar otra carga."):
-            reset_load_workspace()
-            st.rerun()
+        st.button(
+            "Nueva carga / refrescar",
+            key="reset_load_workspace",
+            help="Limpia archivos cargados, previews y resultados para empezar otra carga.",
+            on_click=reset_load_workspace,
+        )
     with st.sidebar.container(key="shopify_sidebar_card"):
         render_sidebar_shopify_card(ui_config, shopify_config)
         if is_shopify_configured(shopify_config):

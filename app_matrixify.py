@@ -6249,12 +6249,13 @@ def inject_custom_css(config):
             position:relative !important;
             display:block !important;
             clear:both !important;
-            margin:18px 0 8px !important;
+            margin:18px 0 9px !important;
             padding-left:0 !important;
             color:#0B1B46 !important;
             font-size:13px !important;
             line-height:1.2 !important;
             font-weight:950 !important;
+            z-index:4 !important;
         }}
         section[data-testid="stSidebar"] .sidebar-label::before {{
             display:none !important;
@@ -6263,8 +6264,8 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-load_mode_nav,
         section[data-testid="stSidebar"] .st-key-sidebar_actions {{
             display:block !important;
-            margin:0 0 12px !important;
-            padding:0 0 10px !important;
+            margin:0 0 14px !important;
+            padding:0 0 12px !important;
             min-height:auto !important;
             border:0 !important;
             border-bottom:1px solid #E2E8F0 !important;
@@ -6790,8 +6791,9 @@ def inject_custom_css(config):
             display:flex;
             align-items:center;
             gap:16px;
+            height:96px;
             min-height:96px;
-            padding:18px 20px;
+            padding:16px 20px;
             border-radius:14px;
             background:#FFFFFF;
             border:1px solid #DDE6F2;
@@ -6811,13 +6813,15 @@ def inject_custom_css(config):
             display:block;
             color:#334155;
             font-size:13px;
+            line-height:1.25;
             font-weight:900;
             margin-bottom:5px;
+            min-height:32px;
         }}
         .kpi-card strong {{
             display:block;
             color:#0F172A;
-            font-size:30px;
+            font-size:29px;
             line-height:1;
             font-weight:950;
         }}
@@ -6846,48 +6850,50 @@ def inject_custom_css(config):
             width:100%;
             max-width:100%;
             box-sizing:border-box;
-            margin:18px 0 28px;
+            margin:16px 0 24px;
             background:#FFFFFF;
             border:1px solid #DDE6F2;
             border-radius:18px;
-            box-shadow:0 18px 40px rgba(15,23,42,0.08);
+            box-shadow:0 12px 28px rgba(15,23,42,0.06);
             overflow:hidden;
         }}
         .combo-card-head {{
             display:flex;
             justify-content:space-between;
             align-items:flex-start;
-            gap:18px;
-            padding:24px 26px 18px;
+            gap:16px;
+            padding:20px 24px 14px;
         }}
         .combo-title {{
             display:flex;
             align-items:center;
-            gap:14px;
+            gap:12px;
             color:#0B1B46;
-            font-size:1.5rem;
+            font-size:1.28rem;
             font-weight:950;
         }}
         .combo-title-icon {{
             display:inline-grid;
             place-items:center;
-            width:44px;
-            height:44px;
-            border-radius:12px;
+            width:36px;
+            height:36px;
+            border-radius:10px;
             background:#EAF2FF;
             color:#2563EB;
             box-shadow:inset 0 0 0 1px #BFDBFE;
         }}
         .combo-card-head p {{
-            margin:8px 0 0 58px;
+            margin:6px 0 0 48px;
             color:#64748B;
+            font-size:13px;
             font-weight:750;
         }}
         .combo-chip {{
-            padding:10px 14px;
+            padding:8px 12px;
             border:1px solid #DDE6F2;
-            border-radius:12px;
+            border-radius:10px;
             color:#172554;
+            font-size:13px;
             font-weight:900;
             background:#F8FAFC;
             white-space:nowrap;
@@ -6895,7 +6901,7 @@ def inject_custom_css(config):
         .combo-table-wrap {{
             width:100%;
             max-width:100%;
-            padding:0 24px 18px;
+            padding:0 24px 14px;
             box-sizing:border-box;
             overflow-x:auto;
         }}
@@ -6914,16 +6920,16 @@ def inject_custom_css(config):
             min-width:0;
         }}
         .combo-table th {{
-            padding:16px 14px;
+            padding:12px 14px;
             text-align:left;
             background:#F8FAFC;
             color:#475569;
             font-weight:950;
-            font-size:13px;
+            font-size:12px;
             border-bottom:1px solid #DDE6F2;
         }}
         .combo-table td {{
-            padding:16px 14px;
+            padding:12px 14px;
             border-bottom:1px solid #E6EDF7;
             border-right:1px solid #E6EDF7;
             vertical-align:middle;
@@ -6989,41 +6995,41 @@ def inject_custom_css(config):
         }}
         .commercial-status-grid {{
             display:grid;
-            grid-template-columns:repeat(3, minmax(120px, 1fr));
-            gap:12px;
+            grid-template-columns:repeat(3, minmax(96px, 1fr));
+            gap:8px;
             width:100%;
         }}
         .commercial-status-tile {{
-            min-height:70px;
-            border-radius:10px;
+            min-height:50px;
+            border-radius:9px;
             border:1px solid #DDE6F2;
             display:grid;
-            grid-template-columns:1fr 34px;
+            grid-template-columns:1fr 28px;
             grid-template-rows:auto auto;
             align-items:center;
-            gap:4px 10px;
-            padding:12px 14px;
+            gap:2px 8px;
+            padding:9px 10px;
             box-sizing:border-box;
         }}
         .commercial-status-tile span {{
             color:#0B1B46;
-            font-size:14px;
+            font-size:12px;
             font-weight:950;
         }}
         .commercial-status-tile b {{
             grid-row:1 / span 2;
             grid-column:2;
-            width:34px;
-            height:34px;
-            border-radius:8px;
+            width:28px;
+            height:28px;
+            border-radius:7px;
             display:grid;
             place-items:center;
-            font-size:20px;
+            font-size:16px;
             font-weight:950;
         }}
         .commercial-status-tile small {{
             color:#475569;
-            font-size:12px;
+            font-size:11px;
             font-weight:850;
         }}
         .commercial-status-tile.ok {{
@@ -7131,15 +7137,16 @@ def inject_custom_css(config):
         }}
         .commercial-summary-tile.total b {{ background:#475569; }}
         .commercial-flow {{
-            margin:0 24px 14px;
+            margin:0 24px 12px;
             display:grid;
-            grid-template-columns:.9fr 1.1fr;
-            gap:14px;
+            grid-template-columns:1fr 2fr;
+            gap:12px;
             align-items:stretch;
         }}
         .flow-total {{
-            min-height:132px;
-            border-radius:16px;
+            height:96px;
+            min-height:96px;
+            border-radius:14px;
             background:linear-gradient(180deg,#FFFFFF 0%,#F8FAFC 100%);
             border:1px solid #CBD5E1;
             display:flex;
@@ -7151,22 +7158,22 @@ def inject_custom_css(config):
         }}
         .flow-total span {{
             color:#475569;
-            font-size:12px;
+            font-size:11px;
             font-weight:950;
             letter-spacing:.08em;
             text-transform:uppercase;
         }}
         .flow-total strong {{
-            margin-top:6px;
+            margin-top:5px;
             color:#0B1B46;
-            font-size:42px;
+            font-size:30px;
             line-height:.95;
             font-weight:950;
         }}
         .flow-total small {{
-            margin-top:8px;
+            margin-top:6px;
             color:#64748B;
-            font-size:12px;
+            font-size:11px;
             font-weight:800;
         }}
         .flow-split {{
@@ -7175,10 +7182,11 @@ def inject_custom_css(config):
             gap:14px;
         }}
         .flow-node {{
-            min-height:132px;
-            border-radius:16px;
+            height:96px;
+            min-height:96px;
+            border-radius:14px;
             border:1px solid #DDE6F2;
-            padding:16px 16px;
+            padding:14px 15px;
             display:flex;
             flex-direction:column;
             justify-content:space-between;
@@ -7195,19 +7203,20 @@ def inject_custom_css(config):
         }}
         .flow-node span {{
             color:#334155;
-            font-size:13px;
+            font-size:12px;
+            line-height:1.25;
             font-weight:950;
         }}
         .flow-node strong {{
             color:#0B1B46;
-            font-size:34px;
+            font-size:26px;
             line-height:1;
             font-weight:950;
         }}
         .flow-node.ready strong {{ color:#14532D; }}
         .flow-node small {{
             color:#475569;
-            font-size:12px;
+            font-size:11px;
             line-height:1.35;
             font-weight:800;
         }}
@@ -7219,7 +7228,7 @@ def inject_custom_css(config):
             gap:10px;
         }}
         .flow-cause {{
-            min-height:54px;
+            min-height:50px;
             border-radius:12px;
             border:1px solid #E2E8F0;
             background:#FFFFFF;
@@ -7237,7 +7246,7 @@ def inject_custom_css(config):
         }}
         .flow-cause strong {{
             color:#0B1B46;
-            font-size:20px;
+            font-size:17px;
             font-weight:950;
         }}
         .flow-actions {{
@@ -7280,27 +7289,27 @@ def inject_custom_css(config):
         }}
         .combo-model-metric {{
             text-align:left;
-            min-width:180px;
+            min-width:140px;
         }}
         .combo-model-metric strong {{
             display:block;
             color:#7C3AED;
-            font-size:2rem;
+            font-size:1.45rem;
             line-height:1;
             font-weight:950;
         }}
         .combo-model-metric span {{
             display:block;
-            margin-top:7px;
+            margin-top:5px;
             color:#0B1B46;
-            font-size:.95rem;
+            font-size:.82rem;
             font-weight:850;
         }}
         .combo-model-metric i {{
             display:block;
-            height:8px;
-            margin-top:12px;
-            width:min(180px, 100%);
+            height:6px;
+            margin-top:9px;
+            width:min(140px, 100%);
             border-radius:999px;
             background:#E8EEF7;
             overflow:hidden;
@@ -7351,13 +7360,13 @@ def inject_custom_css(config):
         .combo-table tfoot td {{
             background:#EFF6FF;
             color:#0B1B46;
-            font-size:1.1rem;
+            font-size:.95rem;
             font-weight:950;
         }}
         .combo-table tfoot td:first-child span {{
-            margin-left:20px;
+            margin-left:14px;
             color:#475569;
-            font-size:1rem;
+            font-size:.85rem;
             font-weight:800;
         }}
         .combo-table tfoot small {{
@@ -9577,16 +9586,16 @@ def main():
     nav_options = ["KPIs de catálogo", "Carga de catálogo"]
     if st.session_state.get("operation_area_choice") not in nav_options:
         st.session_state["operation_area_choice"] = nav_options[0]
+    st.sidebar.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
     with st.sidebar.container(key="operation_nav"):
-        st.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
         sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
         operation_area = st.session_state.get("operation_area_choice", nav_options[0])
     operation_mode = "Carga completa"
     load_options = ["Carga completa", "Carga parcial"]
     if st.session_state.get("operation_mode_choice") not in load_options:
         st.session_state["operation_mode_choice"] = load_options[0]
+    st.sidebar.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
     with st.sidebar.container(key="load_mode_nav"):
-        st.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
         sidebar_nav_button(
             "Carga completa",
             "operation_mode_choice",
@@ -9602,8 +9611,8 @@ def main():
             extra_state={"operation_area_choice": "Carga de catálogo"},
         )
         operation_mode = st.session_state.get("operation_mode_choice", load_options[0])
+    st.sidebar.markdown('<p class="sidebar-label">Acciones</p>', unsafe_allow_html=True)
     with st.sidebar.container(key="sidebar_actions"):
-        st.markdown('<p class="sidebar-label">Acciones</p>', unsafe_allow_html=True)
         st.button(
             "Nueva carga / refrescar",
             key="reset_load_workspace",

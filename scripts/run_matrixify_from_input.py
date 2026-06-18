@@ -1,10 +1,15 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from app_matrixify import (
     apply_shopify_siblings_to_matrixify,
@@ -65,7 +70,10 @@ def shopify_config_from_env(site_key):
     prefixes = SITE_ENV_PREFIXES.get(site_key, [site_key.upper()])
     domain = first_env([f"{prefix}_SHOP_DOMAIN" for prefix in prefixes])
     token = first_env(
-        [f"{prefix}_ADMIN_API_ACCESS_TOKEN" for prefix in prefixes]
+        [
+            f"{prefix}_ADMIN_API_ACCESS_TOKEN"
+            for prefix in prefixes
+        ]
         + [f"{prefix}_ADMIN_ACCESS_TOKEN" for prefix in prefixes]
         + [f"{prefix}_ACCESS_TOKEN" for prefix in prefixes]
     )
@@ -100,22 +108,20 @@ def main():
     parser = argparse.ArgumentParser(
         description="Genera Matrixify/Centry/Sial desde un input comercial, sin SQLite ni FastAPI."
     )
-    parser.add_argument("--site-key", required=True)
-    parser.add_argument("--input-file", required=True)
-    parser.add_argument("--template-file", default="")
-    parser.add_argument("--output-dir", default="job_outputs")
-    parser.add_argument("--output-name", default="")
+    parser.add_argument("--site-key", required=True, help="columbia, rockford, hush_puppies o vans")
+    parser.add_argument("--input-file", required=True, help="Ruta del Excel comercial dentro del repo")
+    parser.add_argument("--template-file", default="", help="Opcional: respaldo Matrixify con hoja Products")
+    parser.add_argument("--output-dir", default="job_outputs", help="Carpeta de salida")
+    parser.add_argument("--output-name", default="", help="Nombre del Excel generado")
     args = parser.parse_args()
 
     site_key = normalize_site_key(args.site_key)
     brand_config = get_brand_config(site_key)
-
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     input_df = read_excel_first_sheet(args.input_file)
     template_df, shopify_products = load_matrixify_context(args, site_key)
-
     arti_df, arti_source = read_arti_source(
         allow_local_fallback=False,
         brand_config=brand_config,
@@ -146,7 +152,6 @@ def main():
 
     output_name = clean(args.output_name) or brand_config.get("output_filename") or f"matrixify_{site_key}.xlsx"
     output_path = output_dir / output_name
-
     excel_buffer = columbia_to_excel_bytes(
         matrixify_df,
         summary_df,
@@ -173,11 +178,7 @@ def main():
         "skipped": int(len(skipped_df)),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-
-    (output_dir / "run_summary.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    (output_dir / "run_summary.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

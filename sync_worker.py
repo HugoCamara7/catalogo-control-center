@@ -1,21 +1,43 @@
-import argparse
+name: Catalog Control Center
 
-from catalog_engine import run_shopify_sync_job
-from job_store import add_event, update_job
+on:
+workflow_dispatch:
+inputs:
+job:
+description: "Proceso a ejecutar"
+required: true
+default: "sync_worker"
 
+jobs:
+run-job:
+runs-on: ubuntu-latest
+timeout-minutes: 360
 
-def main():
-    parser = argparse.ArgumentParser(description="Ejecuta un job de sincronizacion Shopify.")
-    parser.add_argument("--job-id", required=True)
-    args = parser.parse_args()
+```
+env:
+  SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+  SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+  GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
 
-    try:
-        run_shopify_sync_job(args.job_id)
-    except Exception as exc:
-        update_job(args.job_id, status="error", error=str(exc), message=str(exc))
-        add_event(args.job_id, stage="Error", detail=str(exc))
-        raise
+steps:
+  - name: Descargar repo
+    uses: actions/checkout@v4
 
+  - name: Configurar Python
+    uses: actions/setup-python@v5
+    with:
+      python-version: "3.11"
 
-if __name__ == "__main__":
-    main()
+  - name: Instalar dependencias
+    run: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+
+  - name: Crear credenciales Google
+    run: |
+      echo "$GOOGLE_CREDENTIALS_JSON" > credentials.json
+
+  - name: Ejecutar proceso pesado
+    run: |
+      python sync_worker.py --job-id github-actions-${{ github.run_id }}
+```

@@ -76,6 +76,11 @@ def ensure_bigquery_credentials_env():
     credentials_path = Path("credentials.json")
     if credentials_path.exists():
         os.environ["BIGQUERY_SERVICE_ACCOUNT_JSON"] = credentials_path.read_text(encoding="utf-8")
+        return
+    raise RuntimeError(
+        "Falta credencial BigQuery. Crea el secret BIGQUERY_SERVICE_ACCOUNT_JSON en GitHub "
+        "y mapealo en el workflow como BIGQUERY_SERVICE_ACCOUNT_JSON: ${{ secrets.BIGQUERY_SERVICE_ACCOUNT_JSON }}."
+    )
 
 
 def shopify_config_from_env(site_key):

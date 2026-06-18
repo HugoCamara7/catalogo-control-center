@@ -1,0 +1,9 @@
+pandas
+openpyxl
+google-cloud-bigquery
+google-auth
+db-dtypes
+fastapi
+uvicorn[standard]
+python-multipart
+streamlit

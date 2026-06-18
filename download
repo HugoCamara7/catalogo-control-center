@@ -8,6 +8,8 @@ outputs/
 # Bases pesadas originales. La app prioriza data/arti.zip.
 data/arti.xlsx
 data/arti.csv
+data/jobs.sqlite
+data/jobs.sqlite-*
 
 # Temporales de Excel
 ~$*.xlsx

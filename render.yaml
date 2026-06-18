@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: catalogo-control-center
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements-api.txt
+    startCommand: uvicorn api_main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: API_VERSION
+        value: "2026-04"

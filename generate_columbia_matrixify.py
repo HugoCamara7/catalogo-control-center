@@ -1698,6 +1698,7 @@ def prepare_matrixify_context(matrixify_source):
     if end_column in matrixify_columns:
         matrixify_columns = matrixify_columns[: matrixify_columns.index(end_column) + 1]
     required_columns = [
+        *CRITICAL_PRODUCT_METAFIELD_COLUMNS,
         SIBLINGS_COLUMN,
         SIBLINGS_COLOR_COLUMN,
         CUSTOM_SIBLINGS_COLUMN,
@@ -1986,6 +1987,21 @@ SIBLINGS_COLUMN = "Metafield: theme.siblings [single_line_text_field]"
 SIBLINGS_COLOR_COLUMN = "Metafield: theme.siblings_color [single_line_text_field]"
 CUSTOM_SIBLINGS_COLUMN = "Metafield: custom.siblings [single_line_text_field]"
 CUSTOM_SIBLINGS_COLOR_COLUMN = "Metafield: custom.siblings_color [single_line_text_field]"
+CRITICAL_PRODUCT_METAFIELD_COLUMNS = [
+    "Metafield: custom.marca [single_line_text_field]",
+    "Metafield: custom.materialidad [single_line_text_field]",
+    "Metafield: custom.tecnologia [list.single_line_text_field]",
+    "Metafield: custom.logo [list.metaobject_reference]",
+    "Metafield: custom.color_forus [single_line_text_field]",
+    "Metafield: custom.grupo_color [single_line_text_field]",
+    "Metafield: custom.genero [single_line_text_field]",
+    "Metafield: custom.tipo [single_line_text_field]",
+    "Metafield: custom.categoria [single_line_text_field]",
+    "Metafield: custom.sub_categoria [single_line_text_field]",
+    "Metafield: custom.nombre_corto [single_line_text_field]",
+    "Metafield: custom.descripcion_corta [single_line_text_field]",
+    "Metafield: custom.pais_de_fabricacion [single_line_text_field]",
+]
 PUBLICATION_DATE_COLUMN = "Publication Publish Date"
 PUBLICATION_DATE_CANDIDATES = [
     "Publication Publish Date",

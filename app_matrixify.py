@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -5276,7 +5276,7 @@ def _reorder_product_sizes(shopify_config, product_gid, product_variant_rows):
     return "orden obligatorio de variantes confirmado"
 
 
-def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=None):
+def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=None, activate_inventory_locations=True):
     rows = []
     product_rows = _top_product_rows(matrixify_df)
     total_products = len(product_rows)
@@ -5632,21 +5632,24 @@ def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=N
                 product_messages.append(
                     f"Variantes confirmadas Shopify: {confirmed_count}/{len(expected_variant_skus)}"
                 )
-            try:
-                if progress_callback:
-                    progress_callback(position, total_products, handle, "Activando inventario en sucursales")
-                activation_ok, activation_errors = activate_product_inventory_locations(
-                    shopify_config,
-                    verified_product_data,
-                )
-                if activation_ok:
-                    product_messages.append(f"{activation_ok} activaciones de inventario en sucursales")
-                if activation_errors:
+            if activate_inventory_locations:
+                try:
+                    if progress_callback:
+                        progress_callback(position, total_products, handle, "Activando inventario en sucursales")
+                    activation_ok, activation_errors = activate_product_inventory_locations(
+                        shopify_config,
+                        verified_product_data,
+                    )
+                    if activation_ok:
+                        product_messages.append(f"{activation_ok} activaciones de inventario en sucursales")
+                    if activation_errors:
+                        product_status = "PARCIAL"
+                        product_messages.append("Error activando inventario: " + " | ".join(activation_errors[:5]))
+                except Exception as exc:
                     product_status = "PARCIAL"
-                    product_messages.append("Error activando inventario: " + " | ".join(activation_errors[:5]))
-            except Exception as exc:
-                product_status = "PARCIAL"
-                product_messages.append(f"Error activacion inventario sucursales: {exc}")
+                    product_messages.append(f"Error activacion inventario sucursales: {exc}")
+            else:
+                product_messages.append("Activacion de sucursales omitida en esta sincronizacion; ejecutar carga parcial de inventario despues")
 
             variant_sync_problems = _verify_shopify_variants(product_variant_rows, verified_product_data)
             if variant_sync_problems:

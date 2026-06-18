@@ -103,6 +103,8 @@ Tambien acepta IDs numericos separados por coma:
 inventory_location_ids = "123456789,987654321"
 ```
 
+Si al ejecutar aparece un mensaje de permiso de escritura de inventario, el token debe recrearse o actualizarse con scope de inventario, por ejemplo `write_inventory` / Inventory management.
+
 7. Compartir el link generado con el equipo.
 
 ## Actualizar bases

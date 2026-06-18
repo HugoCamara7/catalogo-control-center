@@ -66,9 +66,21 @@ def first_env(names):
     return ""
 
 
+def ensure_bigquery_credentials_env():
+    if clean(os.getenv("BIGQUERY_SERVICE_ACCOUNT_JSON")):
+        return
+    google_json = clean(os.getenv("GOOGLE_CREDENTIALS_JSON") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
+    if google_json:
+        os.environ["BIGQUERY_SERVICE_ACCOUNT_JSON"] = google_json
+        return
+    credentials_path = Path("credentials.json")
+    if credentials_path.exists():
+        os.environ["BIGQUERY_SERVICE_ACCOUNT_JSON"] = credentials_path.read_text(encoding="utf-8")
+
+
 def shopify_config_from_env(site_key):
     prefixes = SITE_ENV_PREFIXES.get(site_key, [site_key.upper()])
-    domain = first_env([f"{prefix}_SHOP_DOMAIN" for prefix in prefixes])
+    domain = first_env([f"{prefix}_SHOP_DOMAIN" for prefix in prefixes] + ["SHOPIFY_STORE", "SHOPIFY_SHOP_DOMAIN"])
     token = first_env(
         [
             f"{prefix}_ADMIN_API_ACCESS_TOKEN"
@@ -76,6 +88,7 @@ def shopify_config_from_env(site_key):
         ]
         + [f"{prefix}_ADMIN_ACCESS_TOKEN" for prefix in prefixes]
         + [f"{prefix}_ACCESS_TOKEN" for prefix in prefixes]
+        + ["SHOPIFY_TOKEN", "SHOPIFY_ADMIN_API_ACCESS_TOKEN", "SHOPIFY_ADMIN_ACCESS_TOKEN"]
     )
     location_ids = first_env(
         [f"{prefix}_INVENTORY_LOCATION_IDS" for prefix in prefixes]
@@ -122,6 +135,7 @@ def main():
 
     input_df = read_excel_first_sheet(args.input_file)
     template_df, shopify_products = load_matrixify_context(args, site_key)
+    ensure_bigquery_credentials_env()
     arti_df, arti_source = read_arti_source(
         allow_local_fallback=False,
         brand_config=brand_config,

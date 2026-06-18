@@ -25,7 +25,7 @@ def shopify_config_from_env(site_key):
 
     return {
         "shop_domain": pick("SHOP_DOMAIN") or pick("SHOPIFY_SHOP_DOMAIN"),
-        "admin_api_access_token": pick("ADMIN_API_ACCESS_TOKEN") or pick("SHOPIFY_ADMIN_API_ACCESS_TOKEN"),
+        "admin_access_token": pick("ADMIN_API_ACCESS_TOKEN") or pick("SHOPIFY_ADMIN_API_ACCESS_TOKEN"),
         "api_version": pick("API_VERSION", "2026-04") or "2026-04",
         "inventory_location_ids": pick("INVENTORY_LOCATION_IDS") or pick("SHOPIFY_INVENTORY_LOCATION_IDS"),
     }
@@ -67,7 +67,7 @@ def run_shopify_sync_job(job_id):
         raise RuntimeError("El Excel Matrixify no tiene filas para sincronizar.")
 
     config = shopify_config_from_env(site_key)
-    if not config.get("shop_domain") or not config.get("admin_api_access_token"):
+    if not config.get("shop_domain") or not config.get("admin_access_token"):
         raise RuntimeError(
             "Faltan credenciales Shopify en variables de entorno: SHOP_DOMAIN/ADMIN_API_ACCESS_TOKEN "
             "o sus variantes por sitio."
@@ -89,7 +89,10 @@ def run_shopify_sync_job(job_id):
     summary = summarize_result(result_df)
 
     result_path = OUTPUT_DIR / f"{job_id}_resultado.xlsx"
-    result_path.write_bytes(dataframe_to_excel_bytes({"Resultado": result_df}))
+    excel_payload = dataframe_to_excel_bytes({"Resultado": result_df})
+    if hasattr(excel_payload, "getvalue"):
+        excel_payload = excel_payload.getvalue()
+    result_path.write_bytes(excel_payload)
 
     update_job(
         job_id,

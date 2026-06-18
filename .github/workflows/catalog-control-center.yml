@@ -3,20 +3,46 @@ name: Catalog Control Center
 on:
   workflow_dispatch:
     inputs:
-      job:
-        description: "Proceso a ejecutar"
+      site_key:
+        description: "Sitio destino"
         required: true
-        default: "sync_worker"
+        default: "columbia"
+        type: choice
+        options:
+          - columbia
+          - rockford
+          - hush_puppies
+          - vans
+
+      input_file:
+        description: "Ruta del Excel comercial dentro del repo"
+        required: true
+        default: "job_inputs/input.xlsx"
 
 jobs:
-  run-job:
+  generate-matrixify:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     env:
-      SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
-      SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
-      GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+      API_VERSION: "2026-04"
+
+      COLUMBIA_SHOP_DOMAIN: ${{ secrets.COLUMBIA_SHOP_DOMAIN }}
+      COLUMBIA_ADMIN_API_ACCESS_TOKEN: ${{ secrets.COLUMBIA_ADMIN_API_ACCESS_TOKEN }}
+
+      ROCKFORD_SHOP_DOMAIN: ${{ secrets.ROCKFORD_SHOP_DOMAIN }}
+      ROCKFORD_ADMIN_API_ACCESS_TOKEN: ${{ secrets.ROCKFORD_ADMIN_API_ACCESS_TOKEN }}
+
+      HUSHPUPPIES_SHOP_DOMAIN: ${{ secrets.HUSHPUPPIES_SHOP_DOMAIN }}
+      HUSHPUPPIES_ADMIN_API_ACCESS_TOKEN: ${{ secrets.HUSHPUPPIES_ADMIN_API_ACCESS_TOKEN }}
+
+      VANS_SHOP_DOMAIN: ${{ secrets.VANS_SHOP_DOMAIN }}
+      VANS_ADMIN_API_ACCESS_TOKEN: ${{ secrets.VANS_ADMIN_API_ACCESS_TOKEN }}
+
+      BIGQUERY_ENABLED: "true"
+      BIGQUERY_PROJECT_ID: ${{ secrets.BIGQUERY_PROJECT_ID }}
+      BIGQUERY_TABLE: ${{ secrets.BIGQUERY_TABLE }}
+      BIGQUERY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
 
     steps:
       - name: Descargar repo
@@ -30,8 +56,16 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Crear credenciales Google
-        run: echo "$GOOGLE_CREDENTIALS_JSON" > credentials.json
+      - name: Generar Matrixify
+        run: >
+          python scripts/run_matrixify_from_input.py
+          --site-key "${{ inputs.site_key }}"
+          --input-file "${{ inputs.input_file }}"
 
-      - name: Ejecutar proceso pesado
-        run: python sync_worker.py
+      - name: Subir resultado
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-control-center-result
+          path: job_outputs/
+          if-no-files-found: error
+          retention-days: 14

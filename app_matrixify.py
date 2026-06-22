@@ -10146,7 +10146,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Fotos 10 vistas": "photos",
             "Siblings": "siblings",
             "Titulo": "title",
-            "Body HTML / Material / Cuidado": "body",
+            "Mantenedor Body HTML": "body",
             "Tecnologías / Logos": "technologies",
             "Activar inventario en sucursales": "inventory_locations",
         }
@@ -10199,12 +10199,16 @@ api_version = "{DEFAULT_API_VERSION}"
         elif update_operation == "title":
             update_file = st.file_uploader("2. Subir archivo con Mod-Col y Title", type=["xlsx", "xls"], key="update_title")
         elif update_operation == "body":
+            st.info(
+                "Mantenedor Body HTML: arma o corrige el contenido con secciones limpias de "
+                "Descripcion, Caracteristicas, Materiales y Cuidados."
+            )
             body_source = st.radio(
-                "Origen para corregir Body HTML",
-                ["Desde input comercial", "Detectar desde respaldo Excel"],
+                "Modo de mantenimiento",
+                ["Construir desde input comercial", "Normalizar Body HTML del catalogo actual"],
                 key="body_source",
             )
-            body_mode = "from_input" if body_source == "Desde input comercial" else "fix_catalog"
+            body_mode = "from_input" if body_source == "Construir desde input comercial" else "fix_catalog"
             if body_mode == "from_input":
                 update_file = st.file_uploader(
                     "2. Subir input con Mod-Col, Body HTML, Características, Material y Cuidado",
@@ -10212,7 +10216,10 @@ api_version = "{DEFAULT_API_VERSION}"
                     key="update_body",
                 )
             else:
-                st.caption("Detecta Body HTML con Material/Cuidado mezclados y genera solo los productos afectados.")
+                st.caption(
+                    "Revisa Shopify, detecta Body HTML con Material/Cuidado mezclados o sin estructura "
+                    "y genera solo los productos que necesitan correccion."
+                )
         elif update_operation == "technologies":
             update_file = st.file_uploader(
                 "2. Opcional: subir input comercial para detectar tecnologías",

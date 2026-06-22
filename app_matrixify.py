@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -2522,6 +2522,239 @@ def normalize_photo_update_input(df):
     return pd.DataFrame({"Mod-Col": values})
 
 
+TECHNOLOGY_MAINTAINER = [
+    {
+        "brand": "Columbia",
+        "name": "Omni-Tech",
+        "keywords": ["omni-tech", "omni tech", "omnitech"],
+        "logo": "logo.omni-tech-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni-Heat",
+        "keywords": ["omni-heat", "omni heat", "omniheat"],
+        "logo": "logo.omni-heat-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni-Heat Infinity",
+        "keywords": ["omni-heat infinity", "omni heat infinity", "omniheat infinity"],
+        "logo": "logo.omni-heat-infinity-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni-Shade",
+        "keywords": ["omni-shade", "omni shade", "omnishade"],
+        "logo": "logo.omni-shade-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni-Wick",
+        "keywords": ["omni-wick", "omni wick", "omniwick"],
+        "logo": "logo.omni-wick-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni-Shield",
+        "keywords": ["omni-shield", "omni shield", "omnishield"],
+        "logo": "logo.omni-shield-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni-Grip",
+        "keywords": ["omni-grip", "omni grip", "omnigrip"],
+        "logo": "logo.omni-grip-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni-Max",
+        "keywords": ["omni-max", "omni max", "omnimax"],
+        "logo": "logo.omni-max-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "OutDry",
+        "keywords": ["outdry", "out-dry", "out dry"],
+        "logo": "logo.out-dry-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Techlite",
+        "keywords": ["techlite", "tech-lite", "tech lite"],
+        "logo": "logo.tech-lite-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Adapt Trax",
+        "keywords": ["adapt trax", "adapt-trax", "adapttrax"],
+        "logo": "logo.adapt-trax-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Navic Fit",
+        "keywords": ["navic fit", "navic-fit", "navicfit"],
+        "logo": "logo.navic-fit-clb",
+        "active": True,
+    },
+]
+
+
+TECHNOLOGY_SOURCE_COLUMNS = [
+    "Metafield: custom.tecnologia [list.single_line_text_field]",
+    "Tecnologias ",
+    "Tecnologias",
+    "Tecnología",
+    "Tecnologia",
+    "METAFIELD TECNOLOGÍAS",
+    "METAFIELD TECNOLOGIAS",
+    "Title",
+    "Titulo",
+    "Nombre",
+    "Body HTML",
+    "Description",
+    "Descripcion",
+    "Descripción",
+    "Caracteristicas",
+    "Características",
+    "Tags",
+]
+
+
+def _technology_text_from_records(*records):
+    pieces = []
+    for record in records:
+        if record is None:
+            continue
+        for column in TECHNOLOGY_SOURCE_COLUMNS:
+            try:
+                value = record.get(column)
+            except Exception:
+                value = ""
+            value = clean_value(strip_html(value))
+            if value:
+                pieces.append(value)
+    return " | ".join(pieces)
+
+
+def _explicit_technology_items(*records):
+    from generate_columbia_matrixify import split_technology_items
+
+    explicit_columns = TECHNOLOGY_SOURCE_COLUMNS[:7]
+    items = []
+    seen = set()
+    for record in records:
+        if record is None:
+            continue
+        for column in explicit_columns:
+            try:
+                value = record.get(column)
+            except Exception:
+                value = ""
+            for item in split_technology_items(value):
+                key = clean_value(item).lower()
+                if key and key not in seen:
+                    items.append(item)
+                    seen.add(key)
+    return items
+
+
+def detect_product_technologies(source_row=None, shopify_product=None, brand_config=None):
+    from generate_columbia_matrixify import format_technology_logos, split_technology_items
+
+    site_brand = clean_value((brand_config or {}).get("brand_name") or (brand_config or {}).get("site_label")).lower()
+    text = _technology_text_from_records(source_row, shopify_product).lower()
+    explicit_items = _explicit_technology_items(source_row, shopify_product)
+    detected_names = []
+    detected_logos = []
+    seen_names = set()
+    seen_logos = set()
+
+    def add_detected(name, logo):
+        name = clean_value(name)
+        logo = clean_value(logo)
+        name_key = name.lower()
+        if any(
+            existing.startswith(f"{name_key} ") or existing.startswith(f"{name_key}-")
+            for existing in seen_names
+        ):
+            return
+        if name and name_key not in seen_names:
+            detected_names.append(name)
+            seen_names.add(name_key)
+        if logo and logo not in seen_logos:
+            detected_logos.append(logo)
+            seen_logos.add(logo)
+
+    for tech in sorted(
+        TECHNOLOGY_MAINTAINER,
+        key=lambda item: max([len(clean_value(keyword)) for keyword in item.get("keywords", [])] or [0]),
+        reverse=True,
+    ):
+        if not tech.get("active", True):
+            continue
+        tech_brand = clean_value(tech.get("brand")).lower()
+        if tech_brand and site_brand and tech_brand not in site_brand and site_brand not in tech_brand:
+            continue
+        keywords = [clean_value(item).lower() for item in tech.get("keywords", []) if clean_value(item)]
+        explicit_match = any(
+            clean_value(item).lower() == clean_value(tech.get("name")).lower()
+            or clean_value(tech.get("name")).lower() in clean_value(item).lower()
+            for item in explicit_items
+        )
+        if explicit_match or any(keyword and keyword in text for keyword in keywords):
+            add_detected(tech.get("name"), tech.get("logo"))
+
+    for item in explicit_items:
+        logos = format_technology_logos(item)
+        for parsed in split_technology_items(item):
+            if parsed:
+                add_detected(parsed, "")
+        for logo in _split_tags(logos):
+            if logo and logo not in seen_logos:
+                detected_logos.append(logo)
+                seen_logos.add(logo)
+
+    return detected_names, detected_logos
+
+
+def partial_preview_summary(preview_df, issues_df=None):
+    preview = preview_df if isinstance(preview_df, pd.DataFrame) else pd.DataFrame()
+    issues = issues_df if isinstance(issues_df, pd.DataFrame) else pd.DataFrame()
+    if preview.empty:
+        return pd.DataFrame(
+            [
+                {"Indicador": "Productos procesados", "Valor": 0},
+                {"Indicador": "Errores u observaciones", "Valor": len(issues)},
+            ]
+        )
+    operation = preview["Operacion"].map(clean_value).str.lower() if "Operacion" in preview.columns else pd.Series([], dtype=object)
+    html_count = int((operation == "body").sum()) if not operation.empty else 0
+    tech_count = int((operation == "technologies").sum()) if not operation.empty else 0
+    logo_count = 0
+    if "Valor nuevo logos" in preview.columns:
+        logo_count = int(preview["Valor nuevo logos"].map(lambda value: len(_split_tags(value))).sum())
+    return pd.DataFrame(
+        [
+            {"Indicador": "Productos procesados", "Valor": int(preview["Handle"].map(clean_value).nunique() if "Handle" in preview.columns else len(preview))},
+            {"Indicador": "HTML normalizado", "Valor": html_count},
+            {"Indicador": "Tecnologías detectadas", "Valor": tech_count},
+            {"Indicador": "Logos inyectados", "Valor": logo_count},
+            {"Indicador": "Errores u observaciones", "Valor": len(issues)},
+        ]
+    )
+
+
 def build_shopify_update_preview(
     shopify_products,
     update_input_df,
@@ -2584,7 +2817,9 @@ def build_shopify_update_preview(
     if operation == "photos":
         update_input_df = normalize_photo_update_input(update_input_df)
     source_df = update_input_df.dropna(how="all").copy() if update_input_df is not None else pd.DataFrame()
-    if operation == "photos" and source_df.empty:
+    if operation in ("photos", "technologies") and source_df.empty:
+        source_df = pd.DataFrame(shopify_products)
+    if operation == "body" and body_mode == "fix_catalog" and source_df.empty:
         source_df = pd.DataFrame(shopify_products)
 
     matrixify_rows = []
@@ -2651,8 +2886,23 @@ def build_shopify_update_preview(
                     issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No hay contenido para Body HTML"})
                     continue
             else:
-                issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "Correccion desde catalogo todavia requiere Matrixify local"})
-                continue
+                from generate_columbia_matrixify import _body_needs_material_care_fix, _split_labeled_body_text, build_body_html
+
+                current_body = clean_value(product.get("Body HTML"))
+                if not _body_needs_material_care_fix(current_body):
+                    continue
+                features, material, care = _split_labeled_body_text(current_body)
+                new_body = build_body_html(
+                    {
+                        "Body HTML": "",
+                        "Caracteristicas": features,
+                        "Material": material,
+                        "Cuidado": care,
+                    }
+                )
+                if not new_body:
+                    issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No pude normalizar Body HTML"})
+                    continue
             rows.append(
                 {
                     "Accion": "Actualizar",
@@ -2665,7 +2915,43 @@ def build_shopify_update_preview(
                     "Valor actual": product.get("Body HTML"),
                     "Valor nuevo": new_body,
                     "Estado": "OK",
-                    "Observacion": "Incluye Caracteristicas, Material y Cuidado separados",
+                    "Observacion": "HTML normalizado con Caracteristicas, Material y Cuidado separados",
+                }
+            )
+        elif operation == "technologies":
+            from generate_columbia_matrixify import format_technology
+
+            technology_names, logo_refs = detect_product_technologies(row, product, brand_config)
+            if not technology_names:
+                issues.append(
+                    {
+                        "Mod-Col": product_key,
+                        "Handle": product.get("Handle"),
+                        "Problema": "No se detectaron tecnologias en input, titulo, descripcion, tags o metafields",
+                        "Fila": input_index + 2,
+                    }
+                )
+                continue
+            technology_value = format_technology(", ".join(technology_names))
+            logo_value = ", ".join(dict.fromkeys(clean_value(value) for value in logo_refs if clean_value(value)))
+            current_technology = clean_value(product.get("Metafield: custom.tecnologia [list.single_line_text_field]"))
+            current_logo = clean_value(product.get("Metafield: custom.logo [list.metaobject_reference]"))
+            rows.append(
+                {
+                    "Accion": "Actualizar",
+                    "Sitio": brand_config["site_label"],
+                    "Operacion": "technologies",
+                    "Mod-Col": product_key,
+                    "Product ID": product_id,
+                    "Handle": product.get("Handle"),
+                    "Campo": "Metafield: custom.tecnologia + Metafield: custom.logo",
+                    "Valor actual": f"tecnologia: {current_technology} | logo: {current_logo}",
+                    "Valor nuevo": technology_value,
+                    "Valor nuevo logos": logo_value,
+                    "Metafield: custom.tecnologia [list.single_line_text_field]": technology_value,
+                    "Metafield: custom.logo [list.metaobject_reference]": logo_value,
+                    "Estado": "OK",
+                    "Observacion": f"{len(technology_names)} tecnologia(s), {len(_split_tags(logo_value))} logo(s)",
                 }
             )
         elif operation == "photos":
@@ -2816,6 +3102,58 @@ def apply_shopify_preview(shopify_config, preview_df, progress_callback=None):
                     image_mode=image_mode,
                     alt_text=clean_value(row.get("Handle")) or clean_value(row.get("Mod-Col")),
                 )
+            elif operation == "technologies":
+                technology_value = clean_value(
+                    row.get("Valor nuevo") or row.get("Metafield: custom.tecnologia [list.single_line_text_field]")
+                )
+                logo_value = clean_value(
+                    row.get("Valor nuevo logos") or row.get("Metafield: custom.logo [list.metaobject_reference]")
+                )
+                updated_parts = []
+                failed_parts = []
+                if technology_value:
+                    try:
+                        metafields_set(
+                            shopify_config,
+                            [
+                                {
+                                    "ownerId": product_id,
+                                    "namespace": "custom",
+                                    "key": "tecnologia",
+                                    "type": "list.single_line_text_field",
+                                    "value": _list_text_metafield_value(technology_value),
+                                }
+                            ],
+                        )
+                        updated_parts.append("tecnologia")
+                    except Exception as exc:
+                        failed_parts.append(f"tecnologia: {exc}")
+                if logo_value:
+                    try:
+                        metafields_set(
+                            shopify_config,
+                            [
+                                {
+                                    "ownerId": product_id,
+                                    "namespace": "custom",
+                                    "key": "logo",
+                                    "type": "list.metaobject_reference",
+                                    "value": _metafield_value_for_api(
+                                        "Metafield: custom.logo [list.metaobject_reference]",
+                                        logo_value,
+                                        shopify_config,
+                                    ),
+                                }
+                            ],
+                        )
+                        updated_parts.append("logo")
+                    except Exception as exc:
+                        failed_parts.append(f"logo: {exc}")
+                if failed_parts:
+                    status = "PARCIAL" if updated_parts else "ERROR"
+                    message = " | ".join(failed_parts)
+                else:
+                    message = f"Actualizado: {', '.join(updated_parts)}" if updated_parts else "Sin tecnologias/logos para actualizar"
             elif operation == "siblings":
                 sibling_value = clean_value(row.get("Valor nuevo"))
                 custom_sibling_value = clean_value(
@@ -2830,8 +3168,8 @@ def apply_shopify_preview(shopify_config, preview_df, progress_callback=None):
                             "ownerId": product_id,
                             "namespace": "theme",
                             "key": "siblings",
-                            "type": "single_line_text_field",
-                            "value": sibling_value,
+                            "type": "list.single_line_text_field",
+                            "value": _list_text_metafield_value(sibling_value),
                         },
                         {
                             "ownerId": product_id,
@@ -4423,6 +4761,16 @@ def _metafield_value_for_api(column, value, shopify_config=None):
         if lowered in ("false", "0", "no"):
             return "false"
     return text
+
+
+def _list_text_metafield_value(value):
+    text = clean_value(value)
+    if not text:
+        return "[]"
+    if text.startswith("["):
+        return text
+    items = [item.strip() for item in text.split(",") if item.strip()]
+    return json.dumps(items, ensure_ascii=False)
 
 
 def _metafield_namespace_key(column):
@@ -9799,6 +10147,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Siblings": "siblings",
             "Titulo": "title",
             "Body HTML / Material / Cuidado": "body",
+            "Tecnologías / Logos": "technologies",
             "Activar inventario en sucursales": "inventory_locations",
         }
         st.markdown('<div class="section-card"><h2>Carga parcial</h2>', unsafe_allow_html=True)
@@ -9864,6 +10213,17 @@ api_version = "{DEFAULT_API_VERSION}"
                 )
             else:
                 st.caption("Detecta Body HTML con Material/Cuidado mezclados y genera solo los productos afectados.")
+        elif update_operation == "technologies":
+            update_file = st.file_uploader(
+                "2. Opcional: subir input comercial para detectar tecnologías",
+                type=["xlsx", "xls"],
+                key="update_technologies",
+                help="Si no subes archivo, se revisa el catalogo Shopify con titulo, body, tags y metacampos disponibles.",
+            )
+            st.caption(
+                "Detecta tecnologias desde input, titulo, descripcion, tags y metacampos. "
+                "Luego actualiza custom.tecnologia y custom.logo sin borrar otros metacampos."
+            )
         elif update_operation == "inventory_locations":
             update_file = st.file_uploader(
                 "2. Opcional: subir lista de SKUs, Mod-Col o Handles",
@@ -9887,7 +10247,7 @@ api_version = "{DEFAULT_API_VERSION}"
             )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        update_ready = update_file or update_operation in ("photos", "siblings", "inventory_locations") or body_mode == "fix_catalog"
+        update_ready = update_file or update_operation in ("photos", "siblings", "technologies", "inventory_locations") or body_mode == "fix_catalog"
         partial_context = "|".join(
             [
                 clean_value(brand_config.get("site_key")),
@@ -10148,6 +10508,9 @@ api_version = "{DEFAULT_API_VERSION}"
                         st.warning("No se genero ninguna fila de vista previa.")
                     else:
                         st.success(f"Vista previa generada con {len(preview_df):,} cambios.")
+                        summary_df = partial_preview_summary(preview_df, issues_df)
+                        st.write("Resumen de carga parcial")
+                        st.dataframe(summary_df, use_container_width=True, hide_index=True)
                         st.dataframe(preview_df.head(100), use_container_width=True)
                     if issues_df is not None and not issues_df.empty:
                         st.warning(f"Hay {len(issues_df):,} observaciones.")
@@ -10158,6 +10521,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     if excel_bytes is None:
                         excel_bytes = dataframe_to_excel_bytes(
                             {
+                                "Resumen": partial_preview_summary(preview_df, issues_df),
                                 "Vista previa": preview_df if preview_df is not None else pd.DataFrame(),
                                 "Revision": issues_df if issues_df is not None else pd.DataFrame(),
                                 "Matrixify fotos": matrixify_df if matrixify_df is not None else pd.DataFrame(),
@@ -10171,9 +10535,11 @@ api_version = "{DEFAULT_API_VERSION}"
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
-                    can_apply = update_operation in ("tags", "title", "body", "siblings", "photos") and preview_df is not None and not preview_df.empty
+                    can_apply = update_operation in ("tags", "title", "body", "siblings", "photos", "technologies") and preview_df is not None and not preview_df.empty
                     if update_operation == "photos":
                         st.info("REPLACE elimina las fotos actuales del producto y sube las 10 URLs nuevas. MERGE agrega las URLs nuevas sin borrar las actuales.")
+                    if update_operation == "technologies":
+                        st.info("Se actualizaran los metacampos custom.tecnologia y custom.logo. Los logos se resuelven contra los metaobjetos definidos en Shopify.")
                     if can_apply:
                         confirm_apply = st.checkbox("Confirmo que revise la vista previa y quiero aplicar en Shopify")
                         if confirm_apply and st.button("Sincronizar Shopify", type="primary"):

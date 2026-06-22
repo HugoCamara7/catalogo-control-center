@@ -468,19 +468,25 @@ def size_sort_key(value):
     return (9, 9999, size)
 
 
-def format_technology(value):
+def split_technology_items(value):
     text = clean(value)
     if not text:
-        return ""
+        return []
     if text.startswith("[") and text.endswith("]"):
         try:
             parsed = json.loads(text)
             if isinstance(parsed, list):
-                items = [clean(item) for item in parsed if clean(item)]
-                return json.dumps(items, ensure_ascii=False)
+                return [clean(item) for item in parsed if clean(item)]
         except Exception:
             pass
-    items = [item.strip() for item in text.split(",") if item.strip()]
+    items = [item.strip() for item in re.split(r"[,;|\n]+", text) if item.strip()]
+    return list(dict.fromkeys(items))
+
+
+def format_technology(value):
+    items = split_technology_items(value)
+    if not items:
+        return ""
     return json.dumps(items, ensure_ascii=False)
 
 
@@ -517,12 +523,9 @@ def technology_logo_slug(value):
 
 
 def format_technology_logos(value):
-    text = clean(value)
-    if not text:
-        return ""
     logos = []
     seen = set()
-    for item in [part.strip() for part in text.split(",") if part.strip()]:
+    for item in split_technology_items(value):
         logo = technology_logo_slug(item)
         if logo and logo not in seen:
             logos.append(logo)

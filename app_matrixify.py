@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -2481,12 +2481,99 @@ def _product_lookup_from_shopify(records):
     return by_key, by_handle
 
 
+UPDATE_KEY_COLUMNS = [
+    "Mod-Col",
+    "Mod Col",
+    "MOD COL",
+    "MOD-COL",
+    "COD MOD COL",
+    "Cod Mod Col",
+    "Cod-Mod-Col",
+    "COD_MOD_COL",
+    "cod_mod_col",
+    "Codigo Modelo Color",
+    "Código Modelo Color",
+    "CÃ³digo Modelo Color",
+    "codigo_modelo_color",
+    "Codigo Modelo-Color",
+    "Código Modelo-Color",
+    "Modelo Color",
+    "Modelo-Color",
+    "Modelo + Color",
+    "Cod Modelo Color",
+    "Código Modelo Color Shopify",
+    "Metafield: custom.codigo_modelo_color [id]",
+    "custom.codigo_modelo_color",
+]
+
+
+TAG_UPDATE_COLUMNS = [
+    "Tags",
+    "Tag",
+    "tags",
+    "tag",
+    "Etiquetas",
+    "Etiqueta",
+    "Nueva etiqueta",
+    "Nuevo tag",
+    "Nuevo Tag",
+    "Nuevo Tags",
+    "Tag nuevo",
+    "Tags nuevos",
+    "New Tag",
+    "New Tags",
+]
+
+
+HANDLE_UPDATE_COLUMNS = [
+    "Handle",
+    "handle",
+    "Product Handle",
+    "Handle Shopify",
+    "Shopify Handle",
+    "URL",
+    "Url",
+    "Slug",
+]
+
+
 def _source_key_for_update(row):
-    for column in ("Mod-Col", "COD MOD COL", "Metafield: custom.codigo_modelo_color [id]"):
+    for column in UPDATE_KEY_COLUMNS:
         value = clean_value(row.get(column))
         if value:
             return value.upper()
     return ""
+
+
+def normalize_partial_update_input(df, operation=""):
+    if df is None:
+        return pd.DataFrame()
+    source = df.dropna(how="all").copy()
+    if source.empty:
+        return source
+
+    key_col = first_existing_column(source, UPDATE_KEY_COLUMNS)
+    if key_col and key_col != "Mod-Col":
+        source["Mod-Col"] = source[key_col]
+
+    if operation == "tags":
+        tags_col = first_existing_column(source, TAG_UPDATE_COLUMNS)
+        if tags_col and tags_col != "Tags":
+            source["Tags"] = source[tags_col]
+
+    handle_col = first_existing_column(source, HANDLE_UPDATE_COLUMNS)
+    if handle_col and handle_col != "Handle":
+        source["Handle"] = source[handle_col]
+
+    if not key_col and len(source.columns) == 1:
+        first_column = source.columns[0]
+        if looks_like_mod_col(first_column):
+            values = [first_column]
+            values.extend(source[first_column].dropna().tolist())
+            source = pd.DataFrame({"Mod-Col": [clean_value(value).upper() for value in values if clean_value(value)]})
+        elif operation == "tags":
+            source["Tags"] = source[first_column]
+    return source
 
 
 def normalize_photo_update_input(df):
@@ -2553,9 +2640,30 @@ TECHNOLOGY_MAINTAINER = [
     },
     {
         "brand": "Columbia",
+        "name": "Omni Shade Broad Spectrum",
+        "keywords": ["omni shade broad spectrum", "omni-shade broad spectrum", "omni shade upf"],
+        "logo": "Omni Shade Broad Spectrum",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
         "name": "Omni-Wick",
         "keywords": ["omni-wick", "omni wick", "omniwick"],
         "logo": "logo.omni-wick-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni Wick Evap",
+        "keywords": ["omni wick evap", "omni-wick evap", "omniwick evap"],
+        "logo": "Omni Wick Evap",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni Wind Block",
+        "keywords": ["omni wind block", "omni-wind block", "omniwind block"],
+        "logo": "Omni Wind Block",
         "active": True,
     },
     {
@@ -2570,6 +2678,13 @@ TECHNOLOGY_MAINTAINER = [
         "name": "Omni-Grip",
         "keywords": ["omni-grip", "omni grip", "omnigrip"],
         "logo": "logo.omni-grip-clb",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni Grip LT",
+        "keywords": ["omni grip lt", "omni-grip lt", "omnigrip lt"],
+        "logo": "Omni Grip LT",
         "active": True,
     },
     {
@@ -2595,6 +2710,53 @@ TECHNOLOGY_MAINTAINER = [
     },
     {
         "brand": "Columbia",
+        "name": "TechLite Plus",
+        "keywords": ["techlite plus", "tech-lite plus", "tech lite plus"],
+        "logo": "TechLite Plus",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Thermarator",
+        "keywords": ["thermarator"],
+        "logo": "Thermarator",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Waterproof",
+        "keywords": ["waterproof", "water proof"],
+        "logo": "Waterproof",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Water Repellent",
+        "keywords": ["water repellent", "water-repellent"],
+        "logo": "Water Repellent",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni Freeze Zero Ice",
+        "keywords": ["omni freeze zero ice", "omni-freeze zero ice", "omnifreeze zero ice"],
+        "logo": "Omni Freeze Zero Ice",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
+        "name": "Omni Heat Thermal Insulation",
+        "keywords": [
+            "omni heat thermal insulation",
+            "omni-heat thermal insulation",
+            "omni heat thermal insulaion",
+            "omni-heat thermal insulaion",
+        ],
+        "logo": "Omni Heat Thermal Insulation",
+        "active": True,
+    },
+    {
+        "brand": "Columbia",
         "name": "Adapt Trax",
         "keywords": ["adapt trax", "adapt-trax", "adapttrax"],
         "logo": "logo.adapt-trax-clb",
@@ -2608,6 +2770,41 @@ TECHNOLOGY_MAINTAINER = [
         "active": True,
     },
 ]
+
+
+TECHNOLOGY_LOGO_ALIASES = {
+    "omni-tech": ["Omni Tech", "Omni-Tech", "logo.omni-tech-clb"],
+    "omni-heat": ["Omni Heat", "Omni-Heat", "logo.omni-heat-clb"],
+    "omni-heat-infinity": ["Omni Heat Infinity", "Omni-Heat Infinity", "logo.omni-heat-infinity-clb"],
+    "omni-shade": ["Omni Shade", "Omni-Shade", "logo.omni-shade-clb"],
+    "omni-shade-broad-spectrum": [
+        "Omni Shade Broad Spectrum",
+        "Omni-Shade Broad Spectrum",
+        "logo.omni-shade-broad-spectrum-clb",
+    ],
+    "omni-wick": ["Omni Wick", "Omni-Wick", "logo.omni-wick-clb"],
+    "omni-wick-evap": ["Omni Wick Evap", "Omni-Wick Evap", "logo.omni-wick-evap-clb"],
+    "omni-wind-block": ["Omni Wind Block", "Omni-Wind Block", "logo.omni-wind-block-clb"],
+    "omni-shield": ["Omni Shield", "Omni-Shield", "logo.omni-shield-clb"],
+    "omni-grip": ["Omni Grip", "Omni-Grip", "logo.omni-grip-clb"],
+    "omni-grip-lt": ["Omni Grip LT", "Omni-Grip LT", "logo.omni-grip-lt-clb"],
+    "omni-max": ["Omni Max", "Omni-Max", "logo.omni-max-clb"],
+    "out-dry": ["OutDry", "Out Dry", "Out-Dry", "logo.out-dry-clb"],
+    "techlite": ["Techlite", "Tech Lite", "Tech-Lite", "logo.tech-lite-clb"],
+    "techlite-plus": ["TechLite Plus", "Techlite Plus", "Tech Lite Plus", "logo.tech-lite-plus-clb"],
+    "adapt-trax": ["Adapt Trax", "Adapt-Trax", "logo.adapt-trax-clb"],
+    "navic-fit": ["Navic Fit", "Navic-Fit", "logo.navic-fit-clb"],
+    "thermarator": ["Thermarator", "logo.thermarator-clb"],
+    "waterproof": ["Waterproof", "logo.waterproof-clb"],
+    "water-repellent": ["Water Repellent", "Water-Repellent", "logo.water-repellent-clb"],
+    "omni-freeze-zero-ice": ["Omni Freeze Zero Ice", "logo.omni-freeze-zero-ice-clb"],
+    "omni-heat-thermal-insulation": [
+        "Omni Heat Thermal Insulation",
+        "Omni-Heat Thermal Insulation",
+        "Omni Heat Thermal Insulaion",
+        "logo.omni-heat-thermal-insulation-clb",
+    ],
+}
 
 
 TECHNOLOGY_SOURCE_COLUMNS = [
@@ -2736,6 +2933,17 @@ def detect_product_technologies(source_row=None, shopify_product=None, brand_con
     seen_names = set()
     seen_logos = set()
 
+    def logo_aliases_for_value(value):
+        text_value = clean_value(value)
+        normalized = re.sub(r"[^a-z0-9]+", "-", text_value.lower()).strip("-")
+        if normalized.startswith("logo-"):
+            normalized = normalized[5:]
+        if normalized.endswith("-clb"):
+            normalized = normalized[:-4]
+        aliases = [text_value]
+        aliases.extend(TECHNOLOGY_LOGO_ALIASES.get(normalized, []))
+        return [clean_value(item) for item in aliases if clean_value(item)]
+
     def add_detected(name, logo):
         name = clean_value(name)
         logo = clean_value(logo)
@@ -2748,9 +2956,11 @@ def detect_product_technologies(source_row=None, shopify_product=None, brand_con
         if name and name_key not in seen_names:
             detected_names.append(name)
             seen_names.add(name_key)
-        if logo and logo not in seen_logos:
-            detected_logos.append(logo)
-            seen_logos.add(logo)
+        for logo_item in logo_aliases_for_value(logo or name):
+            logo_key = logo_item.lower()
+            if logo_item and logo_key not in seen_logos:
+                detected_logos.append(logo_item)
+                seen_logos.add(logo_key)
 
     for tech in sorted(
         TECHNOLOGY_MAINTAINER,
@@ -2874,7 +3084,11 @@ def build_shopify_update_preview(
 
     if operation == "photos":
         update_input_df = normalize_photo_update_input(update_input_df)
-    source_df = update_input_df.dropna(how="all").copy() if update_input_df is not None else pd.DataFrame()
+    source_df = (
+        normalize_partial_update_input(update_input_df, operation)
+        if operation != "photos"
+        else (update_input_df.dropna(how="all").copy() if update_input_df is not None else pd.DataFrame())
+    )
     if operation in ("photos", "technologies") and source_df.empty:
         source_df = pd.DataFrame(shopify_products)
     if operation == "body" and body_mode == "fix_catalog" and source_df.empty:
@@ -2886,15 +3100,35 @@ def build_shopify_update_preview(
         handle = clean_value(row.get("Handle"))
         product = by_key.get(key) or by_key.get(product_lookup_key(key)) or by_handle.get(handle)
         if not product:
-            issues.append({"Mod-Col": key, "Handle": handle, "Problema": "No se encontro producto en Shopify", "Fila": input_index + 2})
+            raw_key_values = [
+                clean_value(row.get(column))
+                for column in UPDATE_KEY_COLUMNS
+                if clean_value(row.get(column))
+            ]
+            issues.append(
+                {
+                    "Mod-Col": key or "Sin Mod-Col detectado",
+                    "Handle": handle,
+                    "Problema": "No se encontro producto en Shopify",
+                    "Detalle": f"Columnas leidas: {', '.join(raw_key_values[:3])}" if raw_key_values else "No se detecto columna Mod-Col/Handle reconocible",
+                    "Fila": input_index + 2,
+                }
+            )
             continue
 
         product_id = product.get("Product ID")
         product_key = key or clean_value(product.get("Mod-Col")).upper()
         if operation == "tags":
-            tags_col = first_existing_column(source_df, ["Tags", "tags", "Etiquetas"])
+            tags_col = first_existing_column(source_df, TAG_UPDATE_COLUMNS)
             if not tags_col:
-                issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No se encontro columna Tags"})
+                issues.append(
+                    {
+                        "Mod-Col": product_key,
+                        "Handle": product.get("Handle"),
+                        "Problema": "No se encontro columna Tags",
+                        "Detalle": f"Columnas recibidas: {', '.join(clean_value(column) for column in source_df.columns[:12])}",
+                    }
+                )
                 continue
             current_tags = _split_tags(product.get("Tags"))
             incoming_tags = _split_tags(row.get(tags_col))
@@ -4440,17 +4674,31 @@ def _logo_reference_candidates(reference, handle=""):
             normalized = re.sub(r"[^a-z0-9]+", "-", base).strip("-")
             compact = re.sub(r"[^a-z0-9]+", "", base)
             spaced = normalized.replace("-", " ")
+            alias_values = set()
+            if normalized.startswith("logo-"):
+                normalized = normalized[5:]
+            alias_values.update(TECHNOLOGY_LOGO_ALIASES.get(normalized, []))
             for item in (base, normalized, compact, spaced):
                 if item:
                     candidates.add(item)
                     candidates.add(f"logo.{item}")
                     candidates.add(f"{item}-clb")
                     candidates.add(f"logo.{item}-clb")
+            for alias in alias_values:
+                alias_text = clean_value(alias).lower()
+                alias_normalized = re.sub(r"[^a-z0-9]+", "-", alias_text).strip("-")
+                alias_compact = re.sub(r"[^a-z0-9]+", "", alias_text)
+                for item in (alias_text, alias_normalized, alias_compact):
+                    if item:
+                        candidates.add(item)
+                        candidates.add(f"logo.{item}")
+                        candidates.add(f"{item}-clb")
+                        candidates.add(f"logo.{item}-clb")
     return {candidate.lower() for candidate in candidates if candidate}
 
 
 def _metaobject_gid_lookup(shopify_config, metaobject_type):
-    cache_key = f"metaobject_lookup_{clean_value(metaobject_type)}"
+    cache_key = f"metaobject_lookup_v2_{clean_value(metaobject_type)}"
     if cache_key not in st.session_state:
         records = fetch_metaobjects(shopify_config, metaobject_type)
         lookup = {}
@@ -4465,7 +4713,7 @@ def _metaobject_gid_lookup(shopify_config, metaobject_type):
 
 
 def _all_metaobject_gid_lookup(shopify_config):
-    cache_key = "metaobject_lookup_all"
+    cache_key = "metaobject_lookup_all_v2"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
@@ -4523,7 +4771,7 @@ def _metaobject_definition_ids_from_metafield(shopify_config, namespace, key):
 
 
 def _metaobject_gid_lookup_for_metafield(shopify_config, namespace, key):
-    cache_key = f"metaobject_lookup_metafield_{namespace}_{key}"
+    cache_key = f"metaobject_lookup_metafield_v2_{namespace}_{key}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
@@ -4559,14 +4807,15 @@ def _resolve_metaobject_reference_value(shopify_config, column, value):
         if reference.startswith("gid://shopify/Metaobject/"):
             gids.append(reference)
             continue
-        if "." not in reference:
-            missing.append(reference)
-            continue
-        metaobject_type, handle = reference.split(".", 1)
-        try:
-            lookup = _metaobject_gid_lookup(shopify_config, metaobject_type)
-        except Exception:
-            lookup = {}
+        metaobject_type = ""
+        handle = reference
+        lookup = {}
+        if "." in reference:
+            metaobject_type, handle = reference.split(".", 1)
+            try:
+                lookup = _metaobject_gid_lookup(shopify_config, metaobject_type)
+            except Exception:
+                lookup = {}
         gid = ""
         for candidate in _logo_reference_candidates(reference, handle):
             gid = lookup.get(candidate)
@@ -4586,7 +4835,8 @@ def _resolve_metaobject_reference_value(shopify_config, column, value):
                 if gid:
                     break
         if gid:
-            gids.append(gid)
+            if gid not in gids:
+                gids.append(gid)
         else:
             missing.append(reference)
 

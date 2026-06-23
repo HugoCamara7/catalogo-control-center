@@ -4187,12 +4187,30 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock eComm sin stock Shopify", "Acción sugerida": "Revisar sincronización de stock hacia Shopify", "Stock total": row["Stock_total"]})
 
     actions_df = pd.DataFrame(action_rows)
+    missing_model_keys = {clean_value(value) for value in missing_models.get("Mod-Col KPI", pd.Series(dtype=object))}
+    stock_web_blocker_keys = missing_model_keys | no_shopify_stock_keys
     missing_stock_variants_export = (
-        missing_stock_variants[["Mod-Col KPI", "MARCA_MA", "Talla KPI", "SKU", "stock_total"]]
+        missing_stock_variants[
+            missing_stock_variants["Mod-Col KPI"].map(lambda value: clean_value(value) in stock_web_blocker_keys)
+        ][["Mod-Col KPI", "MARCA_MA", "Talla KPI", "SKU", "stock_total"]]
         .rename(columns={"Mod-Col KPI": "Mod-Col", "Talla KPI": "Talla", "stock_total": "Stock total"})
         if not missing_stock_variants.empty
         else pd.DataFrame(columns=["Mod-Col", "MARCA_MA", "Talla", "SKU", "Stock total"])
     )
+    if not missing_stock_variants_export.empty:
+        missing_stock_variants_export["Motivo web"] = missing_stock_variants_export["Mod-Col"].map(
+            lambda value: (
+                "Modelo con stock no creado"
+                if clean_value(value) in missing_model_keys
+                else "Modelo con stock eComm sin stock Shopify"
+                if clean_value(value) in no_shopify_stock_keys
+                else "Revisar stock web"
+            )
+        )
+    else:
+        missing_stock_variants_export = pd.DataFrame(
+            columns=["Mod-Col", "MARCA_MA", "Talla", "SKU", "Stock total", "Motivo web"]
+        )
     return {
         "kpis": kpis,
         "model_stock": model_stock,
@@ -9582,6 +9600,7 @@ def render_missing_variants_table(missing_variants_df, key_prefix):
                 <td>{escape(clean_value(row.get("MARCA_MA")))}</td>
                 <td>{escape(clean_value(row.get("Talla")))}</td>
                 <td>{escape(clean_value(row.get("SKU")))}</td>
+                <td>{escape(clean_value(row.get("Motivo web")))}</td>
                 <td style="text-align:center;"><span class="stock-badge">{format_kpi_number(row.get("Stock total"))}</span></td>
             </tr>
             """
@@ -9590,7 +9609,7 @@ def render_missing_variants_table(missing_variants_df, key_prefix):
         f"""
         <div class="kpi-table-card">
             <div class="kpi-table-head">
-                <div class="kpi-table-title"><span>&#9635;</span><span>Detalle de variantes con stock incompletas</span></div>
+                <div class="kpi-table-title"><span>&#9635;</span><span>Detalle de variantes no visibles por stock</span></div>
             </div>
             <table class="kpi-table">
                 <thead>
@@ -9600,6 +9619,7 @@ def render_missing_variants_table(missing_variants_df, key_prefix):
                         <th>Marca</th>
                         <th>Talla</th>
                         <th>SKU</th>
+                        <th>Motivo web</th>
                         <th>Stock total</th>
                     </tr>
                 </thead>
@@ -9610,7 +9630,7 @@ def render_missing_variants_table(missing_variants_df, key_prefix):
     )
     pager_left, pager_mid, pager_right = st.columns([1.2, 1.8, 1.2])
     with pager_left:
-        st.caption(f"Mostrando {len(visible)} de {len(filtered)} variantes filtradas. Este detalle no cuenta como KPI principal.")
+        st.caption(f"Mostrando {len(visible)} de {len(filtered)} variantes de Mod-Col no visibles por stock.")
     with pager_mid:
         c1, c2, c3 = st.columns([1.3, 0.9, 1.3])
         with c1:

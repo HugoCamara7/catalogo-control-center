@@ -162,6 +162,9 @@ def _client(config):
 
 def _product_node_to_record(node):
     metafield = node.get("codigoModeloColor") or {}
+    materialidad = node.get("materialidad") or {}
+    tecnologia = node.get("tecnologia") or {}
+    logo = node.get("logo") or {}
     siblings = node.get("siblings") or {}
     siblings_color = node.get("siblingsColor") or {}
     custom_siblings = node.get("customSiblings") or {}
@@ -210,6 +213,9 @@ def _product_node_to_record(node):
         "Status": clean(node.get("status")),
         "Online Store URL": clean(node.get("onlineStoreUrl")),
         "Mod-Col": clean(metafield.get("value")).upper(),
+        "Metafield: custom.materialidad [single_line_text_field]": clean(materialidad.get("value")),
+        "Metafield: custom.tecnologia [list.single_line_text_field]": clean(tecnologia.get("value")),
+        "Metafield: custom.logo [list.metaobject_reference]": clean(logo.get("value")),
         "Siblings": clean(siblings.get("value")),
         "Siblings Color": clean(siblings_color.get("value")),
         "Custom Siblings": clean(custom_siblings.get("value")),
@@ -241,6 +247,15 @@ def fetch_products(config, max_products=5000):
           status
           onlineStoreUrl
           codigoModeloColor: metafield(namespace: "custom", key: "codigo_modelo_color") {
+            value
+          }
+          materialidad: metafield(namespace: "custom", key: "materialidad") {
+            value
+          }
+          tecnologia: metafield(namespace: "custom", key: "tecnologia") {
+            value
+          }
+          logo: metafield(namespace: "custom", key: "logo") {
             value
           }
           siblings: metafield(namespace: "theme", key: "siblings") {

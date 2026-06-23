@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -2631,6 +2631,62 @@ TECHNOLOGY_SOURCE_COLUMNS = [
 ]
 
 
+MATERIAL_RECOVERY_COLUMNS = [
+    "Metafield: custom.materialidad [single_line_text_field]",
+    "Material",
+    "Tipo de Material",
+    "Materialidad",
+    "MATERIALIDAD",
+    "Composición",
+    "Composicion",
+    "COMPOSICION",
+    "ComposiciÃ³n",
+    "Material principal",
+    "MATERIAL",
+]
+
+
+def material_recovery_by_key(arti_df):
+    if arti_df is None or not isinstance(arti_df, pd.DataFrame) or arti_df.empty:
+        return {}
+    key_col = first_existing_column(
+        arti_df,
+        [
+            "Mod-Col",
+            "COD MOD COL",
+            "COD_MOD_COL",
+            "Codigo Modelo Color",
+            "Código Modelo Color",
+            "codigo_modelo_color",
+            "CONCA",
+            "conca",
+        ],
+    )
+    if not key_col:
+        return {}
+    value_cols = [column for column in MATERIAL_RECOVERY_COLUMNS if column in arti_df.columns]
+    if not value_cols:
+        return {}
+    recovered = {}
+    for _, item in arti_df.iterrows():
+        key = clean_value(item.get(key_col)).upper()
+        if not key or key in recovered:
+            continue
+        for column in value_cols:
+            value = clean_value(item.get(column))
+            if value:
+                try:
+                    from generate_columbia_matrixify import valid_body_section_text
+
+                    value = valid_body_section_text(value)
+                except Exception:
+                    pass
+            if value:
+                recovered[key] = value
+                break
+    return recovered
+
+
 def _technology_text_from_records(*records):
     pieces = []
     for record in records:
@@ -2760,6 +2816,7 @@ def build_shopify_update_preview(
     update_input_df,
     operation,
     brand_config,
+    arti_df=None,
     tag_mode="merge",
     image_mode="replace",
     only_missing_images=True,
@@ -2769,6 +2826,7 @@ def build_shopify_update_preview(
     rows = []
     issues = []
     operation = clean_value(operation)
+    arti_material_lookup = material_recovery_by_key(arti_df) if operation == "body" else {}
 
     if operation == "siblings":
         products_df = pd.DataFrame(shopify_products)
@@ -2886,17 +2944,32 @@ def build_shopify_update_preview(
                     issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No hay contenido para Body HTML"})
                     continue
             else:
-                from generate_columbia_matrixify import _body_needs_material_care_fix, _split_labeled_body_text, build_body_html
+                from generate_columbia_matrixify import _body_needs_material_care_fix, _split_labeled_body_text, build_body_html, valid_body_section_text
 
                 current_body = clean_value(product.get("Body HTML"))
                 if not _body_needs_material_care_fix(current_body):
                     continue
                 features, material, care = _split_labeled_body_text(current_body)
-                technology_names, _ = detect_product_technologies(product, product, brand_config)
+                body_material = valid_body_section_text(material)
+                shopify_material = valid_body_section_text(product.get("Metafield: custom.materialidad [single_line_text_field]"))
+                arti_material = valid_body_section_text(
+                    arti_material_lookup.get(product_key)
+                    or arti_material_lookup.get(product_lookup_key(product_key))
+                    or arti_material_lookup.get(clean_value(product.get("Mod-Col")).upper())
+                )
+                material = body_material or shopify_material or arti_material
+                if not material and "nweb__materiales" in clean_value(current_body).lower():
+                    issues.append(
+                        {
+                            "Mod-Col": product_key,
+                            "Handle": product.get("Handle"),
+                            "Problema": "Material invalido en Body HTML y no encontre respaldo en Shopify/ARTI. No se sobrescribe.",
+                        }
+                    )
+                    continue
                 new_body = build_body_html(
                     {
                         "Body HTML": "",
-                        "Tecnologias ": ", ".join(technology_names),
                         "Caracteristicas": features,
                         "Material": material,
                         "Cuidado": care,
@@ -3279,6 +3352,21 @@ def shopify_products_to_matrixify_df(shopify_products):
                     "Option2 Name": variant.get("Option2 Name", ""),
                     "Option2 Value": variant.get("Option2 Value", ""),
                     "Metafield: custom.codigo_modelo_color [id]": product.get("Mod-Col") if index == 0 else "",
+                    "Metafield: custom.materialidad [single_line_text_field]": (
+                        product.get("Metafield: custom.materialidad [single_line_text_field]")
+                    )
+                    if index == 0
+                    else "",
+                    "Metafield: custom.tecnologia [list.single_line_text_field]": (
+                        product.get("Metafield: custom.tecnologia [list.single_line_text_field]")
+                    )
+                    if index == 0
+                    else "",
+                    "Metafield: custom.logo [list.metaobject_reference]": (
+                        product.get("Metafield: custom.logo [list.metaobject_reference]")
+                    )
+                    if index == 0
+                    else "",
                     "Metafield: theme.siblings [single_line_text_field]": product.get("Siblings") if index == 0 else "",
                     "Metafield: theme.siblings_color [single_line_text_field]": product.get("Siblings Color") if index == 0 else "",
                     "Metafield: custom.siblings [single_line_text_field]": (
@@ -10483,11 +10571,16 @@ api_version = "{DEFAULT_API_VERSION}"
                 if st.button(f"Analizar carga parcial: {update_label}", type="primary"):
                     with st.spinner("Leyendo productos actuales desde Shopify..."):
                         shopify_products = session_shopify_products(brand_config["site_key"], shopify_config)
+                    preview_arti_df = None
+                    if update_operation == "body":
+                        with st.spinner("Leyendo BigQuery/ARTI para recuperar materiales..."):
+                            preview_arti_df, _ = session_arti_for_app(brand_config)
                     preview_df, issues_df, matrixify_df = build_shopify_update_preview(
                         shopify_products,
                         update_df,
                         update_operation,
                         brand_config,
+                        arti_df=preview_arti_df,
                         tag_mode=tag_mode,
                         image_mode=image_mode,
                         only_missing_images=only_missing_images,

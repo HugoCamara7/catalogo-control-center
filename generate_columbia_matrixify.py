@@ -989,25 +989,38 @@ def html_list(value):
     text = clean(value)
     if not text:
         return ""
-    items = [item.strip() for item in re.split(r"[\n\r]+", text) if item.strip()]
+    text = re.sub(r"\s*[•·]\s*", "\n", text)
+    items = [item.strip(" -") for item in re.split(r"[\n\r]+", text) if item.strip(" -")]
     if not items:
         items = [text]
     return "<ul>" + "".join(f"<li>{item}</li>" for item in items) + "</ul>"
 
 
+def valid_body_section_text(value):
+    text = clean(value)
+    if not text:
+        return ""
+    if re.fullmatch(r"[\W_]+", text):
+        return ""
+    if len(re.sub(r"[^A-Za-zÁÉÍÓÚáéíóúÑñ0-9]+", "", text)) < 3:
+        return ""
+    return text
+
+
+def strip_body_heading_prefix(value, headings):
+    text = clean(value)
+    for heading in headings:
+        text = re.sub(rf"^\s*{heading}\s*:?\s*", "", text, flags=re.IGNORECASE)
+    return text.strip(" :-")
+
+
 def build_body_html(row):
     description = clean(row.get("Body HTML.1")) or clean(row.get("Body HTML"))
-    features = clean(row.get("Caracteristicas"))
-    material = clean(row.get("Material"))
-    care = clean(row.get("Cuidado"))
+    features = valid_body_section_text(strip_body_heading_prefix(row.get("Caracteristicas"), ["Características", "Caracteristicas"])) or valid_body_section_text(strip_body_heading_prefix(description, ["Descripción", "Descripcion"]))
+    material = valid_body_section_text(strip_body_heading_prefix(row.get("Material"), ["Materiales", "Material", "Composición", "Composicion"]))
+    care = valid_body_section_text(strip_body_heading_prefix(row.get("Cuidado"), ["Cuidados", "Cuidado"]))
 
     parts = []
-    if description:
-        parts.append(
-            '<section class="nweb" data-titulo="Nombre Web" id="nombre-web-section">'
-            "<h3>Descripción</h3>"
-            f"<p>{description}</p>"
-        )
     if features:
         parts.append(
             '<div class="nweb__Caracteristicas" data-titulo="Características">'
@@ -1029,9 +1042,9 @@ def build_body_html(row):
             f'{html_list(care)}'
             "</div>"
         )
-    if description:
-        parts.append("</section>")
-    return "".join(parts) if parts else ""
+    if not parts:
+        return ""
+    return '<section class="nweb" data-titulo="Información del producto" id="nombre-web-section">' + "".join(parts) + "</section>"
 
 
 def first_existing(df, candidates):
@@ -2076,7 +2089,30 @@ def _split_labeled_body_text(text):
     )
     matches = list(pattern.finditer(text))
     if not matches:
-        return text, "", ""
+        pieces = [
+            piece.strip(" :-")
+            for piece in re.split(r"[\n\r]+|(?<=\.)\s+(?=[A-ZÁÉÍÓÚÑ])", text)
+            if piece.strip(" :-")
+        ]
+        sections = {"features": [], "material": [], "care": []}
+        material_words = (
+            "material", "materiales", "composicion", "composición", "exterior", "forro",
+            "aislamiento", "relleno", "poliester", "poliéster", "algodon", "algodón",
+            "nylon", "elastano", "cuero", "textil", "caucho", "spandex", "%"
+        )
+        care_words = (
+            "cuidado", "cuidados", "lavar", "lavado", "secado", "secar", "planchar",
+            "blanqueador", "cloro", "limpieza", "temperatura", "no usar", "no lavar"
+        )
+        for piece in pieces:
+            normalized_piece = normalize_text(piece)
+            if any(word in normalized_piece for word in care_words):
+                sections["care"].append(piece)
+            elif any(word in normalized_piece for word in material_words):
+                sections["material"].append(piece)
+            else:
+                sections["features"].append(piece)
+        return "\n".join(sections["features"]), "\n".join(sections["material"]), "\n".join(sections["care"])
 
     sections = {"features": "", "material": "", "care": ""}
     for index, match in enumerate(matches):
@@ -2084,7 +2120,7 @@ def _split_labeled_body_text(text):
         start = match.end()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         value = text[start:end].strip(" :-")
-        if "material" in label:
+        if "material" in label or "composicion" in label:
             sections["material"] = value
         elif "cuidado" in label:
             sections["care"] = value
@@ -2102,6 +2138,10 @@ def _body_needs_material_care_fix(value):
     has_material = "material" in text or "materiales" in text
     has_care = "cuidado" in text or "cuidados" in text
     has_sections = "nweb__materiales" in clean(value).lower() and "nweb__cuidados" in clean(value).lower()
+    material_match = re.search(r"materiales?\s*(.*?)(?:cuidados?|$)", strip_html(value), flags=re.IGNORECASE | re.DOTALL)
+    material_text = material_match.group(1).strip(" :-") if material_match else ""
+    if "nweb__materiales" in clean(value).lower() and not valid_body_section_text(material_text):
+        return True
     return (has_material or has_care) and not has_sections
 
 

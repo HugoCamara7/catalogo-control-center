@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -10146,12 +10146,17 @@ api_version = "{DEFAULT_API_VERSION}"
             "Fotos 10 vistas": "photos",
             "Siblings": "siblings",
             "Titulo": "title",
-            "Mantenedor Body HTML": "body",
-            "Tecnologías / Logos": "technologies",
+            "Mantención tecnologías": "technologies",
+            "Mantención Body HTML": "body",
             "Activar inventario en sucursales": "inventory_locations",
         }
         st.markdown('<div class="section-card"><h2>Carga parcial</h2>', unsafe_allow_html=True)
-        update_label = st.selectbox("Que quieres actualizar", list(operation_labels), index=0)
+        update_label = st.selectbox(
+            "Que quieres actualizar",
+            list(operation_labels),
+            index=0,
+            key=f"partial_operation_select_{brand_config['site_key']}_v3",
+        )
         update_operation = operation_labels[update_label]
         update_source = st.radio(
             "Fuente de datos actuales",
@@ -10200,26 +10205,14 @@ api_version = "{DEFAULT_API_VERSION}"
             update_file = st.file_uploader("2. Subir archivo con Mod-Col y Title", type=["xlsx", "xls"], key="update_title")
         elif update_operation == "body":
             st.info(
-                "Mantenedor Body HTML: arma o corrige el contenido con secciones limpias de "
-                "Descripcion, Caracteristicas, Materiales y Cuidados."
+                "Mantención Body HTML: revisa el catálogo actual de Shopify y corrige solamente "
+                "Body HTML donde Materiales y Cuidados estén mezclados o mal estructurados."
             )
-            body_source = st.radio(
-                "Modo de mantenimiento",
-                ["Construir desde input comercial", "Normalizar Body HTML del catalogo actual"],
-                key="body_source",
+            body_mode = "fix_catalog"
+            st.caption(
+                "No requiere archivo. Usa Shopify API como fuente, genera vista previa y luego permite sincronizar "
+                "solo los productos afectados."
             )
-            body_mode = "from_input" if body_source == "Construir desde input comercial" else "fix_catalog"
-            if body_mode == "from_input":
-                update_file = st.file_uploader(
-                    "2. Subir input con Mod-Col, Body HTML, Características, Material y Cuidado",
-                    type=["xlsx", "xls"],
-                    key="update_body",
-                )
-            else:
-                st.caption(
-                    "Revisa Shopify, detecta Body HTML con Material/Cuidado mezclados o sin estructura "
-                    "y genera solo los productos que necesitan correccion."
-                )
         elif update_operation == "technologies":
             update_file = st.file_uploader(
                 "2. Opcional: subir input comercial para detectar tecnologías",
@@ -10228,7 +10221,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 help="Si no subes archivo, se revisa el catalogo Shopify con titulo, body, tags y metacampos disponibles.",
             )
             st.caption(
-                "Detecta tecnologias desde input, titulo, descripcion, tags y metacampos. "
+                "Mantención tecnologías: detecta tecnologías desde input, titulo, descripcion, tags y metacampos. "
                 "Luego actualiza custom.tecnologia y custom.logo sin borrar otros metacampos."
             )
         elif update_operation == "inventory_locations":

@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -2892,9 +2892,11 @@ def build_shopify_update_preview(
                 if not _body_needs_material_care_fix(current_body):
                     continue
                 features, material, care = _split_labeled_body_text(current_body)
+                technology_names, _ = detect_product_technologies(product, product, brand_config)
                 new_body = build_body_html(
                     {
                         "Body HTML": "",
+                        "Tecnologias ": ", ".join(technology_names),
                         "Caracteristicas": features,
                         "Material": material,
                         "Cuidado": care,
@@ -10214,15 +10216,12 @@ api_version = "{DEFAULT_API_VERSION}"
                 "solo los productos afectados."
             )
         elif update_operation == "technologies":
-            update_file = st.file_uploader(
-                "2. Opcional: subir input comercial para detectar tecnologías",
-                type=["xlsx", "xls"],
-                key="update_technologies",
-                help="Si no subes archivo, se revisa el catalogo Shopify con titulo, body, tags y metacampos disponibles.",
-            )
+            update_file = None
+            st.success("No requiere archivo: se analiza el catálogo actual de Shopify.")
             st.caption(
-                "Mantención tecnologías: detecta tecnologías desde input, titulo, descripcion, tags y metacampos. "
-                "Luego actualiza custom.tecnologia y custom.logo sin borrar otros metacampos."
+                "Mantención tecnologías: detecta tecnologías principalmente desde Tags, y también desde título, "
+                "descripción y metacampos disponibles. Luego actualiza custom.tecnologia y custom.logo sin borrar "
+                "otros metacampos."
             )
         elif update_operation == "inventory_locations":
             update_file = st.file_uploader(

@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -3149,7 +3149,21 @@ def build_shopify_update_preview(
                 }
             )
         elif operation == "title":
-            title_col = first_existing_column(source_df, ["Title", "Titulo", "TÃ­tulo", "Nombre"])
+            title_col = first_existing_column(
+                source_df,
+                [
+                    "Title",
+                    "Product Title",
+                    "Product Name",
+                    "Nombre del Producto",
+                    "Nombre Producto",
+                    "Nombre Web",
+                    "Titulo",
+                    "TÃ­tulo",
+                    "Título",
+                    "Nombre",
+                ],
+            )
             if not title_col:
                 issues.append({"Mod-Col": product_key, "Handle": product.get("Handle"), "Problema": "No se encontro columna Title"})
                 continue

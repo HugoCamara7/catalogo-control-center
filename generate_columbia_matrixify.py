@@ -914,9 +914,9 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
     brand_label = clean(brand_label) or brand_config["label"]
     display_size = sial_size_value(variant.get("__SIAL_SIZE") or variant["__SIZE"])
     model, color = split_model_color(key)
-    product_type = clean(product.get("Type"))
-    color_web = clean(product.get("Color Web"))
-    title = clean(product.get("Title"))
+    product_type = row_alias_value(product, TYPE_COLUMNS)
+    color_web = row_alias_value(product, COLOR_WEB_COLUMNS)
+    title = row_alias_value(product, TITLE_COLUMNS)
     body_html = build_body_html(product)
     existing_id = clean(existing_product.get("ID"))
     dimension_defaults = sial_dimension_defaults(product)
@@ -930,7 +930,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
             product.get("Product Bullets"),
             sial_product_bullets(product, product_type, color_web, tech_col, brand_config, brand_label),
         ),
-        "Product Description": first_non_empty(product.get("Product Description"), strip_html(body_html)),
+        "Product Description": first_non_empty(row_alias_value(product, DESCRIPTION_COLUMNS), strip_html(body_html)),
         "Image URL": "",
         "Product Weight": sial_dimension_value(product, "weight", dimension_defaults["weight"]),
         "Product Length": sial_dimension_value(product, "length", dimension_defaults["length"]),
@@ -952,11 +952,11 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Modelo": clean(product.get("Modelo")),
         "Marca": brand_label,
         "Tecnologias ": technology,
-        "Caracteristicas": sial_short_features(product.get("Caracteristicas")),
+        "Caracteristicas": sial_short_features(row_alias_value(product, FEATURE_COLUMNS)),
         "Tipo de Boardshort": clean(product.get("Tipo de Boardshort")),
         "Tipo de Bikini": clean(product.get("Tipo de Bikini")),
         "Iniciativas": clean(product.get("Iniciativas")),
-        "Tipo de Material": clean(product.get("Tipo de Material")),
+        "Tipo de Material": row_alias_value(product, MATERIAL_COLUMNS),
         "1": clean(product.get("1")),
         "Tipo de Prenda": clean(product.get("Tipo de Prenda")),
         "Adicional 2 ": clean(product.get("Adicional 2 ")),
@@ -1014,11 +1014,87 @@ def strip_body_heading_prefix(value, headings):
     return text.strip(" :-")
 
 
+TITLE_COLUMNS = [
+    "Title", "Product Title", "Product Name", "Nombre del Producto", "Nombre Producto",
+    "Nombre", "Titulo", "Título", "Producto", "Nombre Web", "Nombre Corto", "Nombre corto",
+    "Metafield: custom.nombre_corto [single_line_text_field]",
+]
+
+DESCRIPTION_COLUMNS = [
+    "Body HTML.1", "Body HTML", "Product Description", "Description", "Descripcion", "Descripción",
+    "Descripcion larga", "Descripción larga", "Long Description", "Detalle", "Descripción Web",
+    "Descripcion Web", "Descripcion del Producto", "Descripción del Producto", "Product Long Description",
+]
+
+FEATURE_COLUMNS = [
+    "Caracteristicas", "Características", "Caracteristicas ", "Características ", "Product Bullets",
+    "Bullets", "Features", "Feature", "Beneficios", "Descripcion Caracteristicas",
+    "Descripción Características", "Listado de características", "Listado de caracteristicas",
+    "Metafield: custom.descripcion_corta [single_line_text_field]",
+]
+
+MATERIAL_COLUMNS = [
+    "Material", "Materiales", "Materialidad", "Tipo de Material", "Composicion", "Composición",
+    "Composition", "Composicion del Producto", "Composición del Producto", "Material principal",
+    "Material Principal", "Metafield: custom.materialidad [single_line_text_field]",
+]
+
+CARE_COLUMNS = [
+    "Cuidado", "Cuidados", "Care", "Care Instructions", "Instrucciones de cuidado",
+    "Instrucciones De Cuidado", "Lavado", "Mantenimiento", "Indicaciones de cuidado",
+]
+
+TYPE_COLUMNS = [
+    "Type", "Product Type", "Tipo", "Tipo de Producto", "Tipo Producto", "Categoria", "Categoría",
+    "Categoria ", "Category", "Sub Categoria", "Sub Categoría",
+    "Metafield: custom.tipo [single_line_text_field]",
+]
+
+COLOR_WEB_COLUMNS = [
+    "Color Web", "Color", "Color Name", "Color Nombre", "Nombre Color", "Color Comercial",
+    "Grupo Color", "Metafield: custom.grupo_color [single_line_text_field]",
+]
+
+TAG_COLUMNS = ["Tags", "Etiquetas", "Product Tags", "Shopify Tags", "Tag"]
+
+
+def row_alias_value(row, columns):
+    for column in columns:
+        value = clean(row.get(column))
+        if value:
+            return value
+    by_normalized = {normalize_header_key(column): column for column in getattr(row, "index", [])}
+    for column in columns:
+        found = by_normalized.get(normalize_header_key(column))
+        if found is not None:
+            value = clean(row.get(found))
+            if value:
+                return value
+    return ""
+
+
 def build_body_html(row):
-    description = clean(row.get("Body HTML.1")) or clean(row.get("Body HTML"))
-    features = valid_body_section_text(strip_body_heading_prefix(row.get("Caracteristicas"), ["Características", "Caracteristicas"])) or valid_body_section_text(strip_body_heading_prefix(description, ["Descripción", "Descripcion"]))
-    material = valid_body_section_text(strip_body_heading_prefix(row.get("Material"), ["Materiales", "Material", "Composición", "Composicion"]))
-    care = valid_body_section_text(strip_body_heading_prefix(row.get("Cuidado"), ["Cuidados", "Cuidado"]))
+    description = row_alias_value(row, DESCRIPTION_COLUMNS)
+    features = valid_body_section_text(
+        strip_body_heading_prefix(
+            row_alias_value(row, FEATURE_COLUMNS),
+            ["Características", "Caracteristicas", "Features", "Beneficios"],
+        )
+    ) or valid_body_section_text(
+        strip_body_heading_prefix(description, ["Descripción", "Descripcion", "Description"])
+    )
+    material = valid_body_section_text(
+        strip_body_heading_prefix(
+            row_alias_value(row, MATERIAL_COLUMNS),
+            ["Materiales", "Material", "Composición", "Composicion", "Composition"],
+        )
+    )
+    care = valid_body_section_text(
+        strip_body_heading_prefix(
+            row_alias_value(row, CARE_COLUMNS),
+            ["Cuidados", "Cuidado", "Care", "Care Instructions"],
+        )
+    )
 
     parts = []
     if features:
@@ -2284,7 +2360,20 @@ def build_matrixify_updates(
                 )
             )
         elif operation == "title":
-            title_col = first_existing(source_df, ["Title", "Titulo", "Título", "Nombre"])
+            title_col = first_existing(
+                source_df,
+                [
+                    "Title",
+                    "Product Title",
+                    "Product Name",
+                    "Nombre del Producto",
+                    "Nombre Producto",
+                    "Nombre Web",
+                    "Titulo",
+                    "Título",
+                    "Nombre",
+                ],
+            )
             if not title_col:
                 issues.append({"Mod-Col": key, "Handle": catalog_handle, "Problema": "No se encontro columna Title"})
                 continue
@@ -2506,15 +2595,15 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     "Fila input": input_index + 2,
                 }
             )
-        title = clean(product.get("Title"))
+        title = row_alias_value(product, TITLE_COLUMNS)
         body_html = build_body_html(product)
-        tags = clean(product.get("Tags"))
-        product_type = clean(product.get("Type"))
+        tags = row_alias_value(product, TAG_COLUMNS)
+        product_type = row_alias_value(product, TYPE_COLUMNS)
         technology_value = row_first_existing(
             product,
             [tech_col, "METAFIELD TECNOLOGÍAS", "METAFIELD TECNOLOGIAS", "Tecnologias ", "Tecnologías"],
         )
-        color_web = clean(product.get("Color Web"))
+        color_web = row_alias_value(product, COLOR_WEB_COLUMNS)
         product_brand_label = brand_display_name(product_brand_raw, brand_config["label"])
         publication_date = product_publication_date(product)
         siblings_value = siblings_by_model.get(product["__MODEL"], handle)

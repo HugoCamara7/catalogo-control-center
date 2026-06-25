@@ -29,10 +29,10 @@ MAX_IMAGES_PER_PRODUCT = 10
 VALIDATE_IMAGES = False
 
 BRAND_IMAGE_FOLDERS = {
-    "ACCESORIOS HP": "HUSH PUPPIES",
+    "ACCESORIOS HP": "HUSHPUPPIES",
     "COLUMBIA": "COLUMBIA",
-    "HUSH PUPPIES": "HUSH PUPPIES",
-    "HUSH PUPPIES KIDS": "HUSH PUPPIES",
+    "HUSH PUPPIES": "HUSHPUPPIES",
+    "HUSH PUPPIES KIDS": "HUSHPUPPIES",
     "KEDS": "KEDS",
     "MOUNTAIN HARDWEAR": "MOUNTAINHARDWEAR",
     "PATAGONIA": "PATAGONIA",
@@ -134,7 +134,7 @@ SITE_CONFIGS = {
         "vendor": "hushpuppiespe",
         "legacy_vendors": ["hushpuppiespe"],
         "store_domain": "HushPuppies.pe",
-        "image_folder": "HUSH PUPPIES",
+        "image_folder": "HUSHPUPPIES",
         "output_filename": "matrixify_hush_puppies_generado.xlsx",
         "sial_tail_columns": SIAL_TAIL_HUSH,
         "sial_active_columns": ["2", "13"],

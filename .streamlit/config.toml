@@ -1,16 +1,31 @@
-[server]
-maxUploadSize = 200
-
-[theme]
-primaryColor = "#1F4E78"
-base = "light"
-
 [bigquery]
 enabled = true
 project_id = "PROYECTO_DONDE_SE_EJECUTA_EL_JOB"
 job_project_id = "PROYECTO_DONDE_SE_EJECUTA_EL_JOB"
 table = "PROYECTO_DONDE_ESTA_LA_TABLA.DATASET.TABLA_ARTI"
 # location = "US"
+
+# Fuente obligatoria para completar EAN en Centry.
+# Opcion A: tabla del Maestro Productos con columnas SKU/CODINT_MA y EAN/barcode.
+product_master_table = "forus-analitica-prod-datalake.bronze.stg_pe_central_arti"
+
+# Opcion B: query del Maestro Productos. Debe devolver al menos CODINT_MA y CodBarras
+# product_master_query = """
+# SELECT
+#   CAST(CODINT_MA AS STRING) AS CODINT_MA,
+#   CAST(EAN AS STRING) AS CodBarras
+# FROM `forus-analitica-prod-datalake.bronze.stg_pe_central_arti`
+# """
+
+[app_auth]
+# Puedes usar username/password para un solo usuario:
+username = "admin"
+password = "CAMBIAR_ESTA_CLAVE"
+
+# O varios usuarios:
+# [app_auth.users]
+# hugo.camara@forus.pe = "CAMBIAR_ESTA_CLAVE"
+# luis.nunez@forus.pe = "CAMBIAR_ESTA_CLAVE"
 
 [gcp_service_account]
 type = "service_account"
@@ -30,6 +45,9 @@ client_id = "..."
 client_secret = "..."
 admin_access_token = "..."
 api_version = "2026-04"
+# Opcional pero recomendado si el token no tiene permiso para leer locations.
+# Separar varias sucursales por coma. Acepta GID o ID numerico.
+# inventory_location_ids = "gid://shopify/Location/123456789,gid://shopify/Location/987654321"
 
 [shopify_sites.rockford]
 shop_domain = "rockfordpe.myshopify.com"
@@ -37,6 +55,7 @@ client_id = "..."
 client_secret = "..."
 admin_access_token = "..."
 api_version = "2026-04"
+# inventory_location_ids = "gid://shopify/Location/123456789"
 
 [shopify_sites.hush_puppies]
 shop_domain = "hushpuppiespe.myshopify.com"
@@ -44,3 +63,4 @@ client_id = "..."
 client_secret = "..."
 admin_access_token = "..."
 api_version = "2026-04"
+# inventory_location_ids = "gid://shopify/Location/123456789"

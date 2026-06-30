@@ -1119,6 +1119,64 @@ def fetch_locations(config):
     return locations
 
 
+def inventory_item_active_locations(config, inventory_item_id):
+    inventory_item_id = clean(inventory_item_id)
+    if not inventory_item_id:
+        return []
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query InventoryItemActiveLocations($id: ID!, $first: Int!, $after: String) {
+      inventoryItem(id: $id) {
+        id
+        sku
+        inventoryLevels(first: $first, after: $after) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            id
+            location {
+              id
+              legacyResourceId
+              name
+            }
+          }
+        }
+      }
+    }
+    """
+    locations = []
+    after = None
+    while True:
+        data = graphql_request(
+            shop_domain,
+            token,
+            query,
+            {"id": inventory_item_id, "first": 250, "after": after},
+            api_version=api_version,
+            timeout=45,
+            max_retries=3,
+        )
+        item = data.get("inventoryItem") or {}
+        connection = item.get("inventoryLevels") or {}
+        for node in connection.get("nodes") or []:
+            location = node.get("location") or {}
+            if clean(location.get("id")):
+                locations.append(
+                    {
+                        "id": clean(location.get("id")),
+                        "legacyResourceId": clean(location.get("legacyResourceId")),
+                        "name": clean(location.get("name")),
+                    }
+                )
+        page_info = connection.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+    return locations
+
+
 def inventory_activate(config, inventory_item_id, location_id, available=None):
     inventory_item_id = clean(inventory_item_id)
     location_id = clean(location_id)

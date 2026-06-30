@@ -1,10 +1,11 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
 import pickle
 import re
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -75,6 +76,7 @@ fetch_products = _shopify_attr("fetch_products")
 file_create = _shopify_attr("file_create")
 inventory_item_update = _shopify_attr("inventory_item_update", None)
 inventory_activate = _shopify_attr("inventory_activate", None)
+inventory_item_active_locations = _shopify_attr("inventory_item_active_locations", None)
 fetch_locations = _shopify_attr("fetch_locations", None)
 metafields_set = _shopify_attr("metafields_set")
 normalize_shop_domain = _shopify_attr("normalize_shop_domain")
@@ -128,7 +130,9 @@ DEFAULT_PRODUCT_MASTER_TABLE = "forus-analitica-prod-datalake.bronze.stg_pe_cent
 FORUS_LOGO_PATH = Path("assets/forus_logo.png")
 SHOPIFY_LOGO_PATH = Path("assets/shopify_logo.png")
 KPI_AUTO_REFRESH_SECONDS = 15 * 60
-KPI_CACHE_DIR = Path("outputs/kpi_cache")
+OUTPUT_DIR = Path("outputs")
+KPI_CACHE_DIR = OUTPUT_DIR / "kpi_cache"
+SYNC_JOB_DIR = OUTPUT_DIR / "sync_jobs"
 KPI_CACHE_VERSION = "2026-06-15-latest-stock-cutoff-v1"
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
@@ -5744,7 +5748,102 @@ def _inventory_activation_rows_from_products(shopify_products, only_codes=None, 
     return rows
 
 
-def _activate_inventory_items_in_locations(shopify_config, activation_rows, locations=None, available=None):
+def _inventory_activation_progress_path(shopify_config):
+    site = clean_value(shopify_config.get("site_key") or shopify_config.get("shop_domain") or "shopify")
+    safe_site = re.sub(r"[^a-zA-Z0-9_-]+", "_", site) or "shopify"
+    return OUTPUT_DIR / f"inventory_activation_progress_{safe_site}.json"
+
+
+def _load_inventory_activation_progress(shopify_config):
+    path = _inventory_activation_progress_path(shopify_config)
+    if not path.exists():
+        return {"done": [], "errors": []}
+    try:
+        with path.open("r", encoding="utf-8") as progress_file:
+            data = json.load(progress_file)
+        if not isinstance(data, dict):
+            return {"done": [], "errors": []}
+        data.setdefault("done", [])
+        data.setdefault("errors", [])
+        return data
+    except Exception:
+        return {"done": [], "errors": []}
+
+
+def _save_inventory_activation_progress(shopify_config, progress):
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    progress = dict(progress or {})
+    progress["updated_at"] = datetime.now(timezone.utc).isoformat()
+    with _inventory_activation_progress_path(shopify_config).open("w", encoding="utf-8") as progress_file:
+        json.dump(progress, progress_file, ensure_ascii=False, indent=2)
+
+
+def _inventory_activation_pair_key(inventory_gid, location_id):
+    return f"{clean_value(inventory_gid)}|{clean_value(location_id)}"
+
+
+def _location_lookup_keys(location):
+    values = {
+        clean_value(location.get("id")),
+        clean_value(location.get("legacyResourceId")),
+        clean_value(location.get("name")),
+    }
+    return {value.lower() for value in values if value}
+
+
+def _active_location_keys_for_inventory_item(shopify_config, inventory_gid):
+    cache_key = f"inventory_active_locations_{clean_value(shopify_config.get('shop_domain'))}_{clean_value(inventory_gid)}"
+    if st.session_state.get(cache_key) is not None:
+        return st.session_state[cache_key]
+    if inventory_item_active_locations is None:
+        return set()
+    locations = inventory_item_active_locations(shopify_config, inventory_gid)
+    keys = set()
+    for location in locations:
+        keys.update(_location_lookup_keys(location))
+    st.session_state[cache_key] = keys
+    return keys
+
+
+def _activate_inventory_with_retries(shopify_config, inventory_gid, location_id, available=None, max_attempts=3):
+    last_error = None
+    for attempt in range(1, max(1, max_attempts) + 1):
+        try:
+            return inventory_activate(shopify_config, inventory_gid, location_id, available=available)
+        except Exception as exc:
+            last_error = exc
+            message = clean_value(exc)
+            retryable = any(
+                needle in message.lower()
+                for needle in ("timeout", "timed out", "throttled", "429", "temporarily", "502", "503", "504")
+            )
+            fatal = any(
+                needle in message
+                for needle in ("ACCESS_DENIED", "Access denied", "Unauthorized", "Invalid API key", "@idempotent directive")
+            )
+            if fatal or not retryable or attempt >= max_attempts:
+                raise
+            time.sleep(min(2 * attempt, 8))
+    if last_error:
+        raise last_error
+    return {}
+
+
+def _inventory_activation_summary_df(result_df):
+    if result_df is None or result_df.empty or "Resultado" not in result_df.columns:
+        return pd.DataFrame()
+    return pd.DataFrame(
+        [
+            {"Metrica": "Variantes revisadas", "Valor": safe_int_value(result_df["Inventory Item GID"].nunique()) if "Inventory Item GID" in result_df.columns else 0},
+            {"Metrica": "Sucursales ya activas", "Valor": safe_int_value((result_df["Resultado"] == "ACTIVO").sum())},
+            {"Metrica": "Sucursales activadas correctamente", "Valor": safe_int_value((result_df["Resultado"] == "OK").sum())},
+            {"Metrica": "Errores", "Valor": safe_int_value((result_df["Resultado"] == "ERROR").sum())},
+            {"Metrica": "Omitidas", "Valor": safe_int_value((result_df["Resultado"] == "OMITIDO").sum())},
+        ]
+    )
+
+
+def _activate_inventory_items_in_locations(shopify_config, activation_rows, locations=None, available=None, batch_size=100, max_actions=None):
     if inventory_activate is None:
         raise RuntimeError("Falta actualizar shopify_api.py: no existe inventory_activate.")
     locations = locations if locations is not None else _shopify_inventory_target_locations(shopify_config)
@@ -5766,13 +5865,43 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
         if inventory_gid and sku:
             unique_items.setdefault(inventory_gid, {**row, "SKU": sku, "Inventory Item GID": inventory_gid})
 
+    progress = _load_inventory_activation_progress(shopify_config)
+    done_keys = set(progress.get("done") or [])
+    max_actions = safe_int_value(
+        max_actions
+        or shopify_config.get("inventory_activation_max_actions")
+        or st.session_state.get("inventory_activation_max_actions")
+        or 1500
+    )
+    batch_size = max(1, safe_int_value(batch_size or shopify_config.get("inventory_activation_batch_size") or 100))
     results = []
+    activated_this_run = 0
     for item in unique_items.values():
+        try:
+            active_location_keys = _active_location_keys_for_inventory_item(shopify_config, item["Inventory Item GID"])
+        except Exception as exc:
+            active_location_keys = set()
+            results.append(
+                {
+                    "Handle": clean_value(item.get("Handle")),
+                    "Mod-Col": clean_value(item.get("Mod-Col")),
+                    "SKU": item["SKU"],
+                    "Inventory Item GID": item["Inventory Item GID"],
+                    "Sucursal": "",
+                    "Location GID": "",
+                    "Estado actual": "NO VALIDADO",
+                    "Acción requerida": "REVISAR",
+                    "Resultado": "ERROR",
+                    "Mensaje": f"No se pudo consultar locations activas: {clean_value(exc)[:500]}",
+                }
+            )
+            continue
         for location in locations:
             location_id = clean_value(location.get("id"))
             location_name = clean_value(location.get("name")) or location_id
-            try:
-                inventory_activate(shopify_config, item["Inventory Item GID"], location_id, available=available)
+            pair_key = _inventory_activation_pair_key(item["Inventory Item GID"], location_id)
+            location_keys = _location_lookup_keys(location)
+            if pair_key in done_keys:
                 results.append(
                     {
                         "Handle": clean_value(item.get("Handle")),
@@ -5781,10 +5910,67 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                         "Inventory Item GID": item["Inventory Item GID"],
                         "Sucursal": location_name,
                         "Location GID": location_id,
+                        "Estado actual": "ACTIVO",
+                        "Acción requerida": "OMITIR",
+                        "Resultado": "ACTIVO",
+                        "Mensaje": "Ya procesado en una ejecucion anterior",
+                    }
+                )
+                continue
+            if active_location_keys and location_keys.intersection(active_location_keys):
+                done_keys.add(pair_key)
+                results.append(
+                    {
+                        "Handle": clean_value(item.get("Handle")),
+                        "Mod-Col": clean_value(item.get("Mod-Col")),
+                        "SKU": item["SKU"],
+                        "Inventory Item GID": item["Inventory Item GID"],
+                        "Sucursal": location_name,
+                        "Location GID": location_id,
+                        "Estado actual": "ACTIVO",
+                        "Acción requerida": "OMITIR",
+                        "Resultado": "ACTIVO",
+                        "Mensaje": "Inventory item ya estaba activo en sucursal",
+                    }
+                )
+                continue
+            if max_actions and activated_this_run >= max_actions:
+                results.append(
+                    {
+                        "Handle": clean_value(item.get("Handle")),
+                        "Mod-Col": clean_value(item.get("Mod-Col")),
+                        "SKU": item["SKU"],
+                        "Inventory Item GID": item["Inventory Item GID"],
+                        "Sucursal": location_name,
+                        "Location GID": location_id,
+                        "Estado actual": "NO ACTIVO",
+                        "Acción requerida": "ACTIVAR",
+                        "Resultado": "PENDIENTE",
+                        "Mensaje": f"Lote pausado al llegar a {max_actions:,} activaciones. Ejecuta nuevamente para continuar.",
+                    }
+                )
+                continue
+            try:
+                _activate_inventory_with_retries(shopify_config, item["Inventory Item GID"], location_id, available=available)
+                activated_this_run += 1
+                done_keys.add(pair_key)
+                results.append(
+                    {
+                        "Handle": clean_value(item.get("Handle")),
+                        "Mod-Col": clean_value(item.get("Mod-Col")),
+                        "SKU": item["SKU"],
+                        "Inventory Item GID": item["Inventory Item GID"],
+                        "Sucursal": location_name,
+                        "Location GID": location_id,
+                        "Estado actual": "NO ACTIVO",
+                        "Acción requerida": "ACTIVAR",
                         "Resultado": "OK",
                         "Mensaje": "Inventario activo en sucursal",
                     }
                 )
+                if activated_this_run % batch_size == 0:
+                    progress["done"] = sorted(done_keys)
+                    _save_inventory_activation_progress(shopify_config, progress)
             except Exception as exc:
                 error_message = clean_value(exc)
                 if "ACCESS_DENIED" in error_message or "Access denied" in error_message or "nego activar inventario" in error_message:
@@ -5800,10 +5986,24 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                         "Inventory Item GID": item["Inventory Item GID"],
                         "Sucursal": location_name,
                         "Location GID": location_id,
+                        "Estado actual": "NO ACTIVO",
+                        "Acción requerida": "ACTIVAR",
                         "Resultado": "ERROR",
                         "Mensaje": error_message[:500],
                     }
                 )
+                progress.setdefault("errors", []).append(
+                    {
+                        "sku": item["SKU"],
+                        "inventory_item_gid": item["Inventory Item GID"],
+                        "location_gid": location_id,
+                        "location": location_name,
+                        "error": error_message[:500],
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+                progress["done"] = sorted(done_keys)
+                _save_inventory_activation_progress(shopify_config, progress)
                 fatal_error = (
                     "permiso de escritura de inventario" in error_message
                     or "ACCESS_DENIED" in error_message
@@ -5814,6 +6014,8 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                 )
                 if fatal_error:
                     return pd.DataFrame(results)
+    progress["done"] = sorted(done_keys)
+    _save_inventory_activation_progress(shopify_config, progress)
     return pd.DataFrame(results)
 
 
@@ -6412,6 +6614,431 @@ def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=N
             if progress_callback:
                 progress_callback(position, total_products, handle, "Error", str(exc))
     return pd.DataFrame(rows)
+
+
+def _now_lima_text():
+    return datetime.now(timezone(timedelta(hours=-5))).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _sync_job_safe_id(value):
+    text = clean_value(value).lower()
+    text = re.sub(r"[^a-z0-9_-]+", "-", text).strip("-")
+    return text or "job"
+
+
+def _sync_job_path(job_id):
+    return SYNC_JOB_DIR / f"{_sync_job_safe_id(job_id)}.json"
+
+
+def _sync_job_data_path(job_id):
+    return SYNC_JOB_DIR / f"{_sync_job_safe_id(job_id)}.pkl"
+
+
+def _sync_job_product_key_series(df, mode="full"):
+    if df is None or df.empty:
+        return pd.Series(dtype=object)
+    if clean_value(mode).startswith("partial"):
+        handle = df.get("Handle", pd.Series("", index=df.index)).map(clean_value)
+        mod_col = df.get("Mod-Col", pd.Series("", index=df.index)).map(clean_value)
+        product_id = df.get("Product ID", pd.Series("", index=df.index)).map(clean_value)
+        key = handle.where(handle != "", mod_col)
+        key = key.where(key != "", product_id)
+        key = key.where(key != "", pd.Series([f"fila-{idx}" for idx in df.index], index=df.index))
+        return key.map(clean_value)
+    if "Handle" not in df.columns:
+        return pd.Series([f"fila-{idx}" for idx in df.index], index=df.index, dtype=object)
+    handle = df["Handle"].map(clean_value)
+    mod_col_column = "Metafield: custom.codigo_modelo_color [id]"
+    mod_col = df.get(mod_col_column, pd.Series("", index=df.index)).map(clean_value)
+    key = handle.where(handle != "", mod_col)
+    key = key.replace("", pd.NA).ffill().fillna("")
+    key = key.where(key != "", pd.Series([f"fila-{idx}" for idx in df.index], index=df.index))
+    return key.map(clean_value)
+
+
+def _sync_job_product_keys(df, mode="full"):
+    if df is None or df.empty:
+        return []
+    keys = _sync_job_product_key_series(df, mode=mode)
+    return list(dict.fromkeys([key for key in keys.tolist() if clean_value(key)]))
+
+
+def _sync_job_subset_df(df, product_key, mode="full"):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    keys = _sync_job_product_key_series(df, mode=mode)
+    subset = df.loc[keys == product_key].copy()
+    return subset
+
+
+def _save_sync_job(job):
+    SYNC_JOB_DIR.mkdir(parents=True, exist_ok=True)
+    job["updated_at"] = _now_lima_text()
+    with _sync_job_path(job["id"]).open("w", encoding="utf-8") as job_file:
+        json.dump(job, job_file, ensure_ascii=False, indent=2)
+
+
+def _load_sync_job(job_id):
+    path = _sync_job_path(job_id)
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as job_file:
+            return json.load(job_file)
+    except Exception:
+        return None
+
+
+def _load_sync_job_df(job_id):
+    path = _sync_job_data_path(job_id)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        with path.open("rb") as data_file:
+            return pickle.load(data_file)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _create_sync_job(site_key, mode, source_df, batch_size=20, activate_inventory_locations=True):
+    SYNC_JOB_DIR.mkdir(parents=True, exist_ok=True)
+    product_keys = _sync_job_product_keys(source_df, mode=mode)
+    job_id = (
+        f"{_sync_job_safe_id(site_key)}_{_sync_job_safe_id(mode)}_"
+        f"{datetime.now(timezone(timedelta(hours=-5))).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    )
+    batch_size = max(1, int(batch_size or 20))
+    job = {
+        "id": job_id,
+        "site_key": clean_value(site_key),
+        "mode": clean_value(mode),
+        "status": "pending",
+        "batch_size": batch_size,
+        "total_products": len(product_keys),
+        "processed_products": 0,
+        "ok_products": 0,
+        "partial_products": 0,
+        "error_products": 0,
+        "current_block": 0,
+        "total_blocks": int((len(product_keys) + batch_size - 1) / batch_size) if product_keys else 0,
+        "product_keys": product_keys,
+        "completed_keys": [],
+        "error_keys": [],
+        "pending_keys": product_keys,
+        "result_rows": [],
+        "events": [],
+        "activate_inventory_locations": bool(activate_inventory_locations),
+        "created_at": _now_lima_text(),
+        "updated_at": _now_lima_text(),
+    }
+    with _sync_job_data_path(job_id).open("wb") as data_file:
+        pickle.dump(source_df.copy(), data_file)
+    _save_sync_job(job)
+    return job
+
+
+def _latest_sync_job(site_key, mode):
+    if not SYNC_JOB_DIR.exists():
+        return None
+    safe_site = clean_value(site_key)
+    safe_mode = clean_value(mode)
+    candidates = []
+    for path in SYNC_JOB_DIR.glob("*.json"):
+        job = _load_sync_job(path.stem)
+        if not job:
+            continue
+        if clean_value(job.get("site_key")) == safe_site and clean_value(job.get("mode")) == safe_mode:
+            candidates.append(job)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: clean_value(item.get("updated_at")), reverse=True)
+    return candidates[0]
+
+
+def _sync_job_result_df(job):
+    rows = job.get("result_rows") or []
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def _sync_job_summary_df(job):
+    total = int(job.get("total_products") or 0)
+    processed = int(job.get("processed_products") or 0)
+    errors = int(job.get("error_products") or 0)
+    pending = max(total - processed, 0)
+    return pd.DataFrame(
+        [
+            {"Indicador": "Job ID", "Valor": job.get("id")},
+            {"Indicador": "Estado", "Valor": job.get("status")},
+            {"Indicador": "Total productos", "Valor": total},
+            {"Indicador": "Procesados", "Valor": processed},
+            {"Indicador": "Pendientes", "Valor": pending},
+            {"Indicador": "OK", "Valor": int(job.get("ok_products") or 0)},
+            {"Indicador": "Parciales", "Valor": int(job.get("partial_products") or 0)},
+            {"Indicador": "Errores", "Valor": errors},
+            {"Indicador": "Bloque actual", "Valor": f"{int(job.get('current_block') or 0)} / {int(job.get('total_blocks') or 0)}"},
+            {"Indicador": "Actualizado", "Valor": job.get("updated_at")},
+        ]
+    )
+
+
+def _is_transient_sync_error(message):
+    text = clean_value(message).lower()
+    transient_terms = (
+        "timeout",
+        "timed out",
+        "rate limit",
+        "throttle",
+        "throttled",
+        "too many requests",
+        "429",
+        "502",
+        "503",
+        "504",
+        "temporarily",
+        "connection reset",
+        "remote end closed",
+    )
+    return any(term in text for term in transient_terms)
+
+
+def _sync_job_run_one_product(shopify_config, source_df, product_key, mode, activate_inventory_locations, progress_callback=None):
+    product_df = _sync_job_subset_df(source_df, product_key, mode=mode)
+    if product_df.empty:
+        return pd.DataFrame(
+            [
+                {
+                    "Handle": product_key,
+                    "Resultado": "ERROR",
+                    "Mensaje": "No se encontro el producto dentro del snapshot del job.",
+                }
+            ]
+        )
+    if clean_value(mode).startswith("partial"):
+        return apply_shopify_preview(shopify_config, product_df, progress_callback=progress_callback)
+    return apply_full_product_updates(
+        shopify_config,
+        product_df,
+        progress_callback=progress_callback,
+        activate_inventory_locations=activate_inventory_locations,
+    )
+
+
+def _append_sync_job_event(job, product_key, stage, detail=""):
+    events = job.setdefault("events", [])
+    events.append(
+        {
+            "Fecha": _now_lima_text(),
+            "Producto": clean_value(product_key),
+            "Etapa": clean_value(stage),
+            "Detalle": clean_value(detail)[:500],
+        }
+    )
+    if len(events) > 250:
+        job["events"] = events[-250:]
+
+
+def process_sync_job_next_block(job_id, shopify_config, max_retries=2, progress_callback=None):
+    job = _load_sync_job(job_id)
+    if not job:
+        raise RuntimeError(f"No se encontro el job {job_id}")
+    source_df = _load_sync_job_df(job_id)
+    if source_df.empty:
+        raise RuntimeError("No se encontro el snapshot de datos del job. Crea nuevamente el job.")
+    pending_keys = [key for key in job.get("pending_keys", []) if key not in set(job.get("completed_keys", []))]
+    if not pending_keys:
+        job["status"] = "completed" if not job.get("error_keys") else "completed_with_errors"
+        _save_sync_job(job)
+        return job
+
+    batch_size = max(1, int(job.get("batch_size") or 20))
+    block_keys = pending_keys[:batch_size]
+    job["status"] = "running"
+    job["current_block"] = int(job.get("current_block") or 0) + 1
+    _append_sync_job_event(job, "", "Inicio bloque", f"{len(block_keys)} productos")
+    _save_sync_job(job)
+
+    for block_position, product_key in enumerate(block_keys, start=1):
+        last_error = ""
+        product_result_df = pd.DataFrame()
+        for attempt in range(1, max(1, int(max_retries or 1)) + 1):
+            try:
+                if progress_callback:
+                    progress_callback(block_position, len(block_keys), product_key, f"Procesando intento {attempt}")
+                product_result_df = _sync_job_run_one_product(
+                    shopify_config,
+                    source_df,
+                    product_key,
+                    job.get("mode"),
+                    bool(job.get("activate_inventory_locations")),
+                    progress_callback=progress_callback,
+                )
+                result_text = ""
+                message_text = ""
+                if product_result_df is not None and not product_result_df.empty:
+                    result_text = " ".join(product_result_df.get("Resultado", pd.Series(dtype=object)).map(clean_value).tolist()).upper()
+                    message_text = " | ".join(product_result_df.get("Mensaje", pd.Series(dtype=object)).map(clean_value).tolist())
+                if "ERROR" not in result_text:
+                    break
+                last_error = message_text or "Resultado ERROR"
+                if not _is_transient_sync_error(last_error) or attempt >= max_retries:
+                    break
+                time.sleep(min(2 * attempt, 8))
+            except Exception as exc:
+                last_error = clean_value(exc)
+                if not _is_transient_sync_error(last_error) or attempt >= max_retries:
+                    product_result_df = sync_error_result(product_key, exc)
+                    break
+                time.sleep(min(2 * attempt, 8))
+
+        if product_result_df is None or product_result_df.empty:
+            product_result_df = pd.DataFrame(
+                [{"Handle": product_key, "Resultado": "ERROR", "Mensaje": last_error or "Sin resultado"}]
+            )
+        result_records = product_result_df.to_dict("records")
+        job.setdefault("result_rows", []).extend(result_records)
+        result_values = [clean_value(row.get("Resultado")).upper() for row in result_records]
+        if any(value == "ERROR" for value in result_values):
+            if product_key not in job["error_keys"]:
+                job["error_keys"].append(product_key)
+            job["error_products"] = int(job.get("error_products") or 0) + 1
+            _append_sync_job_event(job, product_key, "Error", last_error)
+        elif any(value == "PARCIAL" for value in result_values):
+            job["partial_products"] = int(job.get("partial_products") or 0) + 1
+            _append_sync_job_event(job, product_key, "Parcial", "")
+        else:
+            job["ok_products"] = int(job.get("ok_products") or 0) + 1
+            _append_sync_job_event(job, product_key, "OK", "")
+
+        if product_key not in job["completed_keys"]:
+            job["completed_keys"].append(product_key)
+        job["pending_keys"] = [key for key in job.get("pending_keys", []) if key != product_key]
+        job["processed_products"] = len(job.get("completed_keys", []))
+        _save_sync_job(job)
+
+    job["status"] = "completed" if not job.get("pending_keys") and not job.get("error_keys") else ("completed_with_errors" if not job.get("pending_keys") else "pending")
+    _append_sync_job_event(job, "", "Fin bloque", job["status"])
+    _save_sync_job(job)
+    return job
+
+
+def _reset_sync_job_errors(job_id):
+    job = _load_sync_job(job_id)
+    if not job:
+        return None
+    retry_keys = list(dict.fromkeys(job.get("error_keys") or []))
+    if retry_keys:
+        job["pending_keys"] = list(dict.fromkeys(retry_keys + job.get("pending_keys", [])))
+        job["completed_keys"] = [key for key in job.get("completed_keys", []) if key not in set(retry_keys)]
+        job["error_keys"] = []
+        job["error_products"] = 0
+        job["processed_products"] = len(job.get("completed_keys", []))
+        job["status"] = "pending"
+        _append_sync_job_event(job, "", "Reintento", f"{len(retry_keys)} productos con error vuelven a pendiente")
+        _save_sync_job(job)
+    return job
+
+
+def render_persistent_sync_job_panel(
+    shopify_config,
+    brand_config,
+    source_df,
+    mode,
+    label,
+    activate_inventory_locations=True,
+    session_key=None,
+):
+    if source_df is None or source_df.empty:
+        st.warning("No hay datos para sincronizar.")
+        return
+    site_key = brand_config["site_key"]
+    session_key = session_key or f"sync_job_{site_key}_{mode}"
+    product_total = len(_sync_job_product_keys(source_df, mode=mode))
+    st.markdown("#### Sincronizacion recuperable por bloques")
+    st.caption(
+        "La app procesa un bloque por ejecucion y guarda avance en disco. Si Streamlit se refresca, puedes continuar desde el ultimo pendiente."
+    )
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        batch_size = st.selectbox(
+            "Productos por bloque",
+            [10, 20, 30, 50],
+            index=1,
+            key=f"{session_key}_batch_size",
+        )
+    with c2:
+        st.metric("Productos detectados", f"{product_total:,}")
+    with c3:
+        latest_job = _latest_sync_job(site_key, mode)
+        if latest_job and st.button("Retomar ultimo job", key=f"{session_key}_resume"):
+            st.session_state[session_key] = latest_job["id"]
+
+    job_id = st.session_state.get(session_key)
+    job = _load_sync_job(job_id) if job_id else None
+    if not job:
+        if st.button("Crear job y procesar primer bloque", type="primary", key=f"{session_key}_create"):
+            job = _create_sync_job(
+                site_key,
+                mode,
+                source_df,
+                batch_size=batch_size,
+                activate_inventory_locations=activate_inventory_locations,
+            )
+            st.session_state[session_key] = job["id"]
+            progress_callback = make_sync_progress_callback(label)
+            job = process_sync_job_next_block(job["id"], shopify_config, progress_callback=progress_callback)
+            clear_shopify_products_cache(site_key)
+            st.success("Primer bloque procesado. Puedes continuar con el siguiente bloque o salir y retomarlo luego.")
+        else:
+            return
+
+    total = int(job.get("total_products") or 0)
+    processed = int(job.get("processed_products") or 0)
+    pending = max(total - processed, 0)
+    progress = processed / total if total else 0
+    status = clean_value(job.get("status")) or "pending"
+    st.progress(min(max(progress, 0), 1))
+    status_cols = st.columns(5)
+    status_cols[0].metric("Procesados", f"{processed:,}/{total:,}")
+    status_cols[1].metric("Pendientes", f"{pending:,}")
+    status_cols[2].metric("OK", f"{int(job.get('ok_products') or 0):,}")
+    status_cols[3].metric("Parciales", f"{int(job.get('partial_products') or 0):,}")
+    status_cols[4].metric("Errores", f"{int(job.get('error_products') or 0):,}")
+    st.info(
+        f"Job {job['id']} | estado: {status} | bloque {int(job.get('current_block') or 0)} de {int(job.get('total_blocks') or 0)} | actualizado: {job.get('updated_at')}"
+    )
+
+    action_cols = st.columns([1, 1, 1, 2])
+    if pending and action_cols[0].button("Continuar siguiente bloque", type="primary", key=f"{session_key}_continue"):
+        progress_callback = make_sync_progress_callback(label)
+        job = process_sync_job_next_block(job["id"], shopify_config, progress_callback=progress_callback)
+        clear_shopify_products_cache(site_key)
+        st.success("Bloque procesado y avance guardado.")
+    if job.get("error_keys") and action_cols[1].button("Reintentar errores", key=f"{session_key}_retry"):
+        job = _reset_sync_job_errors(job["id"])
+        st.warning("Errores devueltos a pendiente. Presiona Continuar siguiente bloque para reintentarlos.")
+    if action_cols[2].button("Crear nuevo job", key=f"{session_key}_new"):
+        st.session_state.pop(session_key, None)
+        st.rerun()
+
+    result_df = _sync_job_result_df(job)
+    if not result_df.empty:
+        render_sync_result_summary(result_df, label)
+        st.dataframe(result_df.tail(100), use_container_width=True)
+    event_df = pd.DataFrame(job.get("events") or [])
+    report_bytes = dataframe_to_excel_bytes(
+        {
+            "Resumen": _sync_job_summary_df(job),
+            "Resultado": result_df,
+            "Eventos": event_df,
+        }
+    )
+    st.download_button(
+        "Descargar reporte del job",
+        data=report_bytes,
+        file_name=f"resultado_job_{mode}_{site_key}_{job['id']}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"{session_key}_download",
+    )
 
 
 SITE_UI_CONFIG = {
@@ -10126,7 +10753,11 @@ def get_auth_users():
     password = clean_value(auth_config.get("password"))
     if username and password:
         return {username: password}
-    return {"admin": "forus2026", "hugo.camara@forus.pe": "forus2026"}
+    return {
+        "admin": "forus2026",
+        "hugo.camara@forus.pe": "forus2026",
+        "luis.nunez@forus.pe": "Forus2026*",
+    }
 
 
 def render_login_styles():
@@ -10777,16 +11408,14 @@ api_version = "{DEFAULT_API_VERSION}"
                                 issues.append({"Tipo": "Sucursales", "Detalle": str(exc)})
                             preview_rows = []
                             for item in activation_rows:
-                                for location in locations:
-                                    preview_rows.append(
-                                        {
-                                            "Handle": item.get("Handle"),
-                                            "Mod-Col": item.get("Mod-Col"),
-                                            "SKU": item.get("SKU"),
-                                            "Inventory Item GID": item.get("Inventory Item GID"),
-                                            "Sucursal": location.get("name"),
-                                            "Location GID": location.get("id"),
-                                            "Acción": "Activar inventory item en sucursal",
+                                preview_rows.append(
+                                    {
+                                        "Handle": item.get("Handle"),
+                                        "Mod-Col": item.get("Mod-Col"),
+                                        "SKU": item.get("SKU"),
+                                        "Inventory Item GID": item.get("Inventory Item GID"),
+                                        "Sucursales objetivo": len(locations),
+                                        "Acción": "Validar diferencial al ejecutar",
                                     }
                                 )
                             preview_df = pd.DataFrame(preview_rows)
@@ -10814,9 +11443,11 @@ api_version = "{DEFAULT_API_VERSION}"
                         if preview_df.empty:
                             st.warning("No se genero vista previa de activación.")
                         else:
+                            estimated_pairs = len(activation_rows) * len(locations)
                             st.success(
                                 f"Vista previa lista: {len(activation_rows):,} variantes con SKU x "
-                                f"{len(locations):,} sucursales = {len(preview_df):,} activaciones."
+                                f"{len(locations):,} sucursales = {estimated_pairs:,} pares potenciales. "
+                                "La ejecución solo activará las sucursales faltantes."
                             )
                             st.dataframe(preview_df.head(200), use_container_width=True, height=360)
                         if issues_df is not None and not issues_df.empty:
@@ -10835,6 +11466,16 @@ api_version = "{DEFAULT_API_VERSION}"
                         )
                         can_apply_activation = bool(activation_rows) and bool(locations)
                         if can_apply_activation:
+                            default_batch_limit = safe_int_value(st.session_state.get("inventory_activation_max_actions") or 1500)
+                            activation_limit = st.number_input(
+                                "Máximo de activaciones por ejecución",
+                                min_value=50,
+                                max_value=10000,
+                                value=max(50, default_batch_limit),
+                                step=50,
+                                help="La app guarda avance. Si quedan pendientes, vuelve a ejecutar para continuar sin repetir lo ya activo.",
+                            )
+                            st.session_state["inventory_activation_max_actions"] = activation_limit
                             confirm_activation = st.checkbox("Confirmo activar estas variantes en las sucursales Shopify")
                             if confirm_activation and st.button("Activar inventario en Shopify", type="primary"):
                                 with st.spinner("Activando inventory items en sucursales..."):
@@ -10842,16 +11483,34 @@ api_version = "{DEFAULT_API_VERSION}"
                                         shopify_config,
                                         activation_rows,
                                         locations=locations,
+                                        max_actions=activation_limit,
                                     )
                                 clear_shopify_products_cache(brand_config["site_key"])
                                 st.session_state["inventory_activation_result_df"] = result_df
+                                summary_df = _inventory_activation_summary_df(result_df)
+                                if summary_df is not None and not summary_df.empty:
+                                    st.dataframe(summary_df, use_container_width=True, hide_index=True)
                                 st.dataframe(result_df, use_container_width=True, height=360)
                                 st.download_button(
                                     "Descargar reporte de activación",
-                                    data=dataframe_to_excel_bytes({"Resultado": result_df}),
+                                    data=dataframe_to_excel_bytes(
+                                        {
+                                            "Resumen": summary_df if summary_df is not None else pd.DataFrame(),
+                                            "Resultado": result_df,
+                                            "Errores": result_df[result_df["Resultado"] == "ERROR"] if "Resultado" in result_df.columns else pd.DataFrame(),
+                                            "Pendientes": result_df[result_df["Resultado"] == "PENDIENTE"] if "Resultado" in result_df.columns else pd.DataFrame(),
+                                        }
+                                    ),
                                     file_name=f"resultado_activacion_inventario_{brand_config['site_key']}.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 )
+                        saved_result_df = st.session_state.get("inventory_activation_result_df")
+                        if saved_result_df is not None and not saved_result_df.empty:
+                            st.markdown("#### Último resultado de activación")
+                            saved_summary_df = _inventory_activation_summary_df(saved_result_df)
+                            if saved_summary_df is not None and not saved_summary_df.empty:
+                                st.dataframe(saved_summary_df, use_container_width=True, hide_index=True)
+                            st.dataframe(saved_result_df, use_container_width=True, height=360)
                     return
 
                 if st.button(f"Analizar carga parcial: {update_label}", type="primary"):
@@ -10920,41 +11579,15 @@ api_version = "{DEFAULT_API_VERSION}"
                         st.info("Se actualizaran los metacampos custom.tecnologia y custom.logo. Los logos se resuelven contra los metaobjetos definidos en Shopify.")
                     if can_apply:
                         confirm_apply = st.checkbox("Confirmo que revise la vista previa y quiero aplicar en Shopify")
-                        if confirm_apply and st.button("Sincronizar Shopify", type="primary"):
-                            sync_started = datetime.now(timezone(timedelta(hours=-5)))
-                            st.session_state["shopify_apply_status"] = {
-                                "estado": "EN_PROCESO",
-                                "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
-                            }
-                            progress_callback = make_sync_progress_callback("Carga parcial Shopify")
-                            try:
-                                result_df = apply_shopify_preview(
-                                    shopify_config,
-                                    preview_df,
-                                    progress_callback=progress_callback,
-                                )
-                                clear_shopify_products_cache(brand_config["site_key"])
-                                st.session_state["shopify_apply_status"] = {
-                                    "estado": "FINALIZADO",
-                                    "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
-                                    "fin": datetime.now(timezone(timedelta(hours=-5))).strftime("%d/%m/%Y %H:%M:%S"),
-                                }
-                            except Exception as exc:
-                                result_df = sync_error_result("Carga parcial Shopify", exc)
-                                st.session_state["shopify_apply_status"] = {
-                                    "estado": "ERROR",
-                                    "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
-                                    "fin": datetime.now(timezone(timedelta(hours=-5))).strftime("%d/%m/%Y %H:%M:%S"),
-                                    "error": clean_value(exc),
-                                }
-                            st.session_state["shopify_apply_result_df"] = result_df
-                            render_sync_result_summary(result_df, "carga parcial")
-                            st.dataframe(result_df, use_container_width=True)
-                            st.download_button(
-                                "Descargar reporte de sincronización",
-                                data=dataframe_to_excel_bytes({"Resultado": result_df}),
-                                file_name=f"resultado_shopify_{update_operation}_{brand_config['site_key']}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        if confirm_apply:
+                            render_persistent_sync_job_panel(
+                                shopify_config,
+                                brand_config,
+                                preview_df,
+                                mode=f"partial_{update_operation}",
+                                label="Carga parcial Shopify",
+                                activate_inventory_locations=False,
+                                session_key=f"shopify_partial_job_{brand_config['site_key']}_{update_operation}",
                             )
             except Exception as exc:
                 st.error("No pude generar o aplicar la carga parcial con Shopify API.")
@@ -11314,43 +11947,15 @@ api_version = "{DEFAULT_API_VERSION}"
                         " Ninguna variante se envia por API sin SKU."
                     )
                     confirm_complete = st.checkbox("Confirmo que revise la vista previa y quiero sincronizar productos existentes en Shopify")
-                    if confirm_complete and st.button("Sincronizar Shopify", type="primary"):
-                        sync_started = datetime.now(timezone(timedelta(hours=-5)))
-                        st.session_state["complete_apply_status"] = {
-                            "estado": "EN_PROCESO",
-                            "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
-                        }
-                        progress_callback = make_sync_progress_callback("Carga completa Shopify")
-                        try:
-                            result_df = apply_full_product_updates(
-                                shopify_config,
-                                matrixify_df,
-                                progress_callback=progress_callback,
-                            )
-                            clear_shopify_products_cache(brand_config["site_key"])
-                            st.session_state["complete_apply_status"] = {
-                                "estado": "FINALIZADO",
-                                "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
-                                "fin": datetime.now(timezone(timedelta(hours=-5))).strftime("%d/%m/%Y %H:%M:%S"),
-                            }
-                        except Exception as exc:
-                            result_df = sync_error_result("Carga completa Shopify", exc)
-                            st.session_state["complete_apply_status"] = {
-                                "estado": "ERROR",
-                                "inicio": sync_started.strftime("%d/%m/%Y %H:%M:%S"),
-                                "fin": datetime.now(timezone(timedelta(hours=-5))).strftime("%d/%m/%Y %H:%M:%S"),
-                                "error": clean_value(exc),
-                            }
-                        st.session_state["complete_apply_result_df"] = result_df
-                        st.dataframe(result_df, use_container_width=True)
-                    result_df = st.session_state.get("complete_apply_result_df")
-                    if result_df is not None:
-                        render_sync_result_summary(result_df, "carga completa")
-                        st.download_button(
-                            "Descargar reporte de sincronización",
-                            data=dataframe_to_excel_bytes({"Resultado": result_df}),
-                            file_name=f"resultado_carga_completa_{brand_config['site_key']}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    if confirm_complete:
+                        render_persistent_sync_job_panel(
+                            shopify_config,
+                            brand_config,
+                            matrixify_df,
+                            mode="complete",
+                            label="Carga completa Shopify",
+                            activate_inventory_locations=True,
+                            session_key=f"shopify_complete_job_{brand_config['site_key']}",
                         )
             st.markdown("</div>", unsafe_allow_html=True)
         except Exception as exc:

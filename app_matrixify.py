@@ -5,6 +5,7 @@ import json
 import pickle
 import re
 import time
+import unicodedata
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -133,7 +134,7 @@ KPI_AUTO_REFRESH_SECONDS = 15 * 60
 OUTPUT_DIR = Path("outputs")
 KPI_CACHE_DIR = OUTPUT_DIR / "kpi_cache"
 SYNC_JOB_DIR = OUTPUT_DIR / "sync_jobs"
-KPI_CACHE_VERSION = "2026-06-15-latest-stock-cutoff-v1"
+KPI_CACHE_VERSION = "2026-07-04-kpi-visible-audit-missing-input-v1"
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -142,10 +143,10 @@ DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "vanspe": ["320", "152", "151", "150", "149"],
 }
 DEFAULT_ECOMM_STOCK_SECURITY = {
-    "114": 0, "88": 1, "84": 0, "113": 0, "320": 0, "111": 1, "8": 0, "44": 0, "46": 0,
+    "114": 0, "88": 0, "84": 0, "113": 0, "320": 0, "111": 0, "8": 0, "44": 0, "46": 0,
     "97": 0, "43": 0, "112": 0, "59": 0, "52": 0, "2": 0, "83": 0, "16": 1, "122": 0,
     "18": 0, "7": 0, "30": 0, "19": 0, "23": 0, "96": 1, "130": 0, "129": 0, "139": 0,
-    "142": 0, "143": 0, "145": 1, "149": 0, "150": 0, "152": 0, "151": 0,
+    "142": 0, "143": 0, "145": 0, "149": 0, "150": 0, "152": 0, "151": 0,
 }
 
 MATRIXIFY_COLUMNS = [
@@ -4107,6 +4108,204 @@ def numeric_kpi_value(value):
         return 0
 
 
+def row_first_value(row, columns):
+    for column in columns:
+        if column in row.index:
+            value = clean_value(row.get(column))
+            if value:
+                return value
+    return ""
+
+
+def split_mod_col_code(mod_col):
+    text = clean_value(mod_col).upper()
+    if "-" not in text:
+        return text, ""
+    model, color = text.rsplit("-", 1)
+    return model, color
+
+
+def suggested_handle(title, mod_col, brand_label=""):
+    base = first_non_empty(title, mod_col)
+    text = f"{base} {brand_label} {mod_col}".strip()
+    text = unicodedata.normalize("NFKD", clean_value(text)).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
+    return text or clean_value(mod_col).lower()
+
+
+def build_missing_models_input_export(expected, missing_models, brand_config):
+    if expected is None or expected.empty or missing_models is None or missing_models.empty:
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(columns=["Campo", "Responsable", "Descripcion"]),
+        )
+
+    missing_keys = {
+        clean_value(value).upper()
+        for value in missing_models.get("Mod-Col KPI", pd.Series(dtype=object))
+        if clean_value(value)
+    }
+    source = expected[expected["Mod-Col KPI"].map(lambda value: clean_value(value).upper() in missing_keys)].copy()
+    if source.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    product_rows = []
+    variant_rows = []
+    missing_field_rows = []
+    brand_label = clean_value(brand_config.get("label"))
+
+    for mod_col, group in source.groupby("Mod-Col KPI", sort=False):
+        group = group.copy()
+        group = group[group["SKU"].map(clean_value) != ""].copy() if "SKU" in group.columns else group
+        if group.empty:
+            continue
+        group = group.drop_duplicates(subset=["Talla KPI", "SKU"], keep="first")
+        first_row = group.iloc[0]
+        model_code, color_code = split_mod_col_code(mod_col)
+        vendor = brand_display_name(
+            first_non_empty(row_first_value(first_row, ["MARCA_MA", "Marca", "Vendor"]), brand_label),
+            brand_label,
+        )
+        title = row_first_value(
+            first_row,
+            [
+                "Title",
+                "Nombre del Producto",
+                "Nombre Producto",
+                "NOMBRE_PRODUCTO",
+                "DESCRIPCION_MA",
+                "Descripcion",
+                "MODELO",
+            ],
+        )
+        product_type = row_first_value(
+            first_row,
+            ["Type", "Tipo De Producto", "Tipo de Producto", "TIPO", "TIPO_MA", "Tipo", "Categoria", "CATEGORIA"],
+        )
+        category = row_first_value(first_row, ["Categoria", "Categoría", "CATEGORIA", "Familia", "FAMILIA"])
+        subcategory = row_first_value(first_row, ["Sub Categoria", "Sub Categoría", "SUBCATEGORIA", "SUB CATEGORIA"])
+        gender = row_first_value(first_row, ["Genero", "Género", "GENERO", "Sexo", "SEXO"])
+        color_name = row_first_value(
+            first_row,
+            ["Color Forus", "Color Web", "COLOR_WEB", "Color", "COLOR", "DESC_COLOR", "COLOR_MA"],
+        )
+        composition = row_first_value(
+            first_row,
+            ["Composicion", "Composición", "COMPOSICION", "Material", "MATERIAL", "Materialidad"],
+        )
+        technology = row_first_value(
+            first_row,
+            ["Tecnologia", "Tecnología", "TECNOLOGIA", "TECNOLOGÍA", "Technology", "TECHNOLOGY"],
+        )
+        care = row_first_value(first_row, ["Cuidado", "CUIDADO", "Cuidados", "Care"])
+        body_html = row_first_value(first_row, ["Body HTML", "Descripcion Web", "Descripción Web", "DESCRIPCION_WEB"])
+        image_src = row_first_value(first_row, ["Image Src", "Imagen", "IMAGEN", "Foto", "FOTO"])
+        tags_parts = [vendor, category, subcategory, gender, product_type, technology, mod_col]
+        tags = ", ".join(dict.fromkeys([clean_value(value) for value in tags_parts if clean_value(value)]))
+        valid_sizes = list(dict.fromkeys(group.get("Talla KPI", pd.Series(dtype=object)).map(clean_value).tolist()))
+        skus = list(dict.fromkeys(group.get("SKU", pd.Series(dtype=object)).map(clean_value).tolist()))
+        stock_total = safe_int_value(pd.to_numeric(group.get("stock_total", 0), errors="coerce").fillna(0).sum())
+        price = row_first_value(first_row, ["Precio", "PRECIO", "Variant Price", "Price"])
+        compare_at = row_first_value(first_row, ["Compare At Price", "Precio Compare At", "PRECIO_ANTES"])
+
+        missing_notes = []
+        if not title:
+            missing_notes.append("Completar titulo comercial")
+        if not body_html:
+            missing_notes.append("Completar descripcion/body HTML")
+        if not image_src:
+            missing_notes.append("Validar fotos")
+        if not price:
+            missing_notes.append("Validar precio")
+        if not composition:
+            missing_notes.append("Completar composicion/material")
+        if not care:
+            missing_notes.append("Completar cuidados")
+
+        product_rows.append(
+            {
+                "Mod-Col": mod_col,
+                "Codigo modelo color": mod_col,
+                "Codigo modelo": model_code,
+                "Codigo color": color_code,
+                "Handle sugerido": suggested_handle(title, mod_col, vendor),
+                "Title": first_non_empty(title, mod_col),
+                "Body HTML": body_html,
+                "Vendor": vendor,
+                "Type": product_type,
+                "Tags sugeridos": tags,
+                "Status recomendado": "ACTIVE",
+                "Published recomendado": "TRUE",
+                "Image Src": image_src,
+                "Marca": vendor,
+                "Genero": gender,
+                "Tipo de prenda": product_type,
+                "Categoria": category,
+                "Sub Categoria": subcategory,
+                "Color": color_name or color_code,
+                "Tallas validas": ", ".join([value for value in valid_sizes if value]),
+                "Variantes a crear": len([value for value in valid_sizes if value]),
+                "SKUs": ", ".join([value for value in skus if value]),
+                "Precio": price,
+                "Compare At Price": compare_at,
+                "Stock disponible": stock_total,
+                "Composicion": composition,
+                "Tecnologia": technology,
+                "Cuidado": care,
+                "Metafield: custom.codigo_modelo_color [id]": mod_col,
+                "Metafield: custom.marca [single_line_text_field]": vendor,
+                "Metafield: custom.tecnologia [list.single_line_text_field]": technology,
+                "Metafield: custom.materialidad [single_line_text_field]": composition,
+                "Campos que debe completar marca": "; ".join(missing_notes) if missing_notes else "Revisar y aprobar",
+                "Observaciones": "Producto no creado en Shopify. Input sugerido desde ARTI/BigQuery.",
+            }
+        )
+        for _, variant in group.iterrows():
+            variant_rows.append(
+                {
+                    "Mod-Col": mod_col,
+                    "Codigo modelo": model_code,
+                    "Color": color_name or color_code,
+                    "Talla": clean_value(variant.get("Talla KPI")),
+                    "SKU": clean_value(variant.get("SKU")),
+                    "EAN / Barcode": row_first_value(variant, ["CodBarras", "EAN", "Barcode", "CODBARRAS", "COD_BARRAS"]),
+                    "Precio": row_first_value(variant, ["Precio", "PRECIO", "Variant Price", "Price"]),
+                    "Stock disponible": safe_int_value(variant.get("stock_total")),
+                    "Stock Key": clean_value(variant.get("Stock Key")),
+                    "Accion": "Crear variante",
+                }
+            )
+        for field, value in (
+            ("Title", title),
+            ("Body HTML", body_html),
+            ("Image Src", image_src),
+            ("Precio", price),
+            ("Composicion", composition),
+            ("Cuidado", care),
+        ):
+            if not clean_value(value):
+                missing_field_rows.append(
+                    {
+                        "Mod-Col": mod_col,
+                        "Campo": field,
+                        "Responsable": "Marca / Brand Manager",
+                        "Descripcion": "Completar antes de carga final",
+                    }
+                )
+
+    required_fields = pd.DataFrame(
+        [
+            {"Campo": "Mod-Col", "Responsable": "Sistema", "Descripcion": "Codigo modelo-color fuente de verdad."},
+            {"Campo": "SKU / Talla", "Responsable": "ARTI/BigQuery", "Descripcion": "Variantes validas; no se inventan tallas."},
+            {"Campo": "Title / Body HTML / Fotos", "Responsable": "Marca", "Descripcion": "Campos comerciales a revisar."},
+            {"Campo": "Metafields", "Responsable": "Sistema + Marca", "Descripcion": "Se precargan si existen datos fuente."},
+        ]
+        + missing_field_rows
+    )
+    return pd.DataFrame(product_rows), pd.DataFrame(variant_rows), required_fields
+
+
 def flatten_shopify_for_kpis(shopify_products):
     product_rows = []
     variant_rows = []
@@ -4114,6 +4313,8 @@ def flatten_shopify_for_kpis(shopify_products):
         mod_col = clean_value(product.get("Mod-Col")).upper()
         status = clean_value(product.get("Status")).upper()
         online_url = clean_value(product.get("Online Store URL"))
+        published_online = bool(online_url)
+        visible_online = status == "ACTIVE" and published_online
         variants = product.get("Variants") or []
         has_price = any(valid_kpi_price(variant.get("Variant Price")) for variant in variants)
         product_rows.append(
@@ -4122,8 +4323,9 @@ def flatten_shopify_for_kpis(shopify_products):
                 "Handle": clean_value(product.get("Handle")),
                 "Title": clean_value(product.get("Title")),
                 "Status": status,
-                "Publicado": "SI" if online_url else "",
-                "Visible": status == "ACTIVE" and (bool(online_url) or not online_url),
+                "Publicado": "SI" if published_online else "NO",
+                "Online Store URL": online_url,
+                "Visible": visible_online,
                 "Tiene precio": has_price,
                 "Fotos": len([url for url in clean_value(product.get("Image Src")).split(";") if clean_value(url)]),
             }
@@ -4134,7 +4336,9 @@ def flatten_shopify_for_kpis(shopify_products):
                     "Mod-Col": mod_col,
                     "Handle": clean_value(product.get("Handle")),
                     "Status": status,
-                    "Publicado": "SI" if online_url else "",
+                    "Publicado": "SI" if published_online else "NO",
+                    "Online Store URL": online_url,
+                    "Visible": visible_online,
                     "Variant SKU": clean_value(variant.get("Variant SKU")),
                     "Variant Price": clean_value(variant.get("Variant Price")),
                     "Variant Inventory Qty": numeric_kpi_value(variant.get("Variant Inventory Qty")),
@@ -4201,7 +4405,9 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     expected["Producto creado Shopify"] = expected["Mod-Col KPI"].map(lambda value: value in shopify_model_keys)
     expected["Variante creada Shopify"] = expected["SKU"].map(lambda value: value in shopify_variant_skus)
     expected["Status Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Status")))
-    expected["Visible Shopify"] = expected["Status Shopify"].map(lambda value: clean_value(value).upper() == "ACTIVE")
+    expected["Publicado Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Publicado")))
+    expected["URL Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Online Store URL")))
+    expected["Visible Shopify"] = expected["Mod-Col KPI"].map(lambda value: bool(product_status_by_key.get(value, {}).get("Visible")))
     expected["Fotos Shopify"] = expected["Mod-Col KPI"].map(lambda value: int(product_status_by_key.get(value, {}).get("Fotos") or 0))
 
     model_stock = (
@@ -4213,6 +4419,9 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             Tallas_con_stock=("Con stock", "sum"),
             Producto_creado=("Producto creado Shopify", "max"),
             Visible_Shopify=("Visible Shopify", "max"),
+            Status_Shopify=("Status Shopify", "first"),
+            Publicado_Shopify=("Publicado Shopify", "first"),
+            URL_Shopify=("URL Shopify", "first"),
             Fotos_Shopify=("Fotos Shopify", "max"),
         )
     )
@@ -4313,8 +4522,10 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             return "Sin foto"
         if row.get("Sin_precio_shopify"):
             return "Sin precio"
-        if not row.get("Visible_Shopify"):
-            return "No activo/publicado"
+        if clean_value(row.get("Status_Shopify")).upper() != "ACTIVE":
+            return "No activo Shopify"
+        if clean_value(row.get("Publicado_Shopify")).upper() != "SI":
+            return "No publicado Online Store"
         return "Otros por revisar"
 
     def non_visible_blockers(row):
@@ -4325,8 +4536,10 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             blockers.append("Sin foto")
         if row.get("Sin_precio_shopify"):
             blockers.append("Sin precio")
-        if not row.get("Visible_Shopify"):
-            blockers.append("No activo/publicado")
+        if clean_value(row.get("Status_Shopify")).upper() != "ACTIVE":
+            blockers.append("No activo Shopify")
+        if clean_value(row.get("Publicado_Shopify")).upper() != "SI":
+            blockers.append("No publicado Online Store")
         return " + ".join(blockers) if blockers else "Otros por revisar"
 
     def non_visible_state(row):
@@ -4334,7 +4547,8 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             "Stock Shopify OK" if row.get("Con_stock_shopify") else "Sin stock Shopify",
             "Con foto" if row.get("Con_foto_shopify") else "Sin foto",
             "Con precio" if not row.get("Sin_precio_shopify") else "Sin precio",
-            "Activo/publicado" if row.get("Visible_Shopify") else "No activo/publicado",
+            clean_value(row.get("Status_Shopify")) or "Sin status",
+            "Publicado Online Store" if clean_value(row.get("Publicado_Shopify")).upper() == "SI" else "No publicado Online Store",
         ]
         return " | ".join(pieces)
 
@@ -4381,7 +4595,8 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "no_visible_sin_stock_shopify": int(non_visible_counts.get("Sin stock Shopify", 0)),
         "no_visible_sin_foto": int(non_visible_counts.get("Sin foto", 0)),
         "no_visible_sin_precio": int(non_visible_counts.get("Sin precio", 0)),
-        "no_visible_no_activo": int(non_visible_counts.get("No activo/publicado", 0)),
+        "no_visible_no_activo": int(non_visible_counts.get("No activo Shopify", 0)),
+        "no_visible_no_publicado": int(non_visible_counts.get("No publicado Online Store", 0)),
         "no_visible_otros": int(non_visible_counts.get("Otros por revisar", 0)),
         "modelos_listos_tienda": web_visible,
         "modelos_con_stock_con_foto": int(
@@ -4408,7 +4623,21 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "stock_ecomm_rows": int(stock_ecomm_rows),
         "stock_ecomm_units": int(stock_ecomm_units),
         "stock_ecomm_models": int(stock_ecomm_models),
+        "modelos_total_auditoria": int(model_stock["Mod-Col KPI"].nunique()),
+        "modelos_no_creados_shopify": int(len(missing_models)),
+        "modelos_creados_no_visibles": int(len(non_visible_web)),
+        "modelos_visibles_reales_web": int(web_visible),
     }
+    kpi_audit = pd.DataFrame(
+        [
+            {"Indicador": "Total modelos fuente ARTI/BigQuery", "Valor": kpis["modelos_total_auditoria"], "Lectura": "Modelo-color detectados con tallas validas."},
+            {"Indicador": "Modelos con stock eComm", "Valor": kpis["modelos_con_stock"], "Lectura": "Modelo-color que deberian venderse por stock eComm."},
+            {"Indicador": "Modelos ya creados en Shopify", "Valor": kpis["modelos_creados_shopify"], "Lectura": "Existe producto Shopify con codigo modelo-color."},
+            {"Indicador": "Modelos no creados en Shopify", "Valor": kpis["modelos_no_creados_shopify"], "Lectura": "Existe en fuente pero no en Shopify."},
+            {"Indicador": "Modelos creados pero no visibles", "Valor": kpis["modelos_creados_no_visibles"], "Lectura": "Creado con stock eComm, pero no cumple stock/precio/foto/activo/publicado."},
+            {"Indicador": "Modelos visibles reales web", "Valor": kpis["modelos_visibles_reales_web"], "Lectura": "Activo, publicado Online Store, con stock Shopify, precio y foto."},
+        ]
+    )
     model_stock["Creado_con_stock"] = model_stock["Debe estar visible"] & model_stock["Producto_creado"]
     brand_summary = (
         model_stock.groupby("Marca", as_index=False)
@@ -4463,12 +4692,21 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         missing_stock_variants_export = pd.DataFrame(
             columns=["Mod-Col", "MARCA_MA", "Talla", "SKU", "Stock total", "Motivo web"]
         )
+    missing_models_input, missing_models_variants, missing_models_fields = build_missing_models_input_export(
+        expected,
+        missing_models,
+        brand_config,
+    )
     return {
         "kpis": kpis,
+        "kpi_audit": kpi_audit,
         "model_stock": model_stock,
         "brand_summary": brand_summary,
         "actions": actions_df,
         "missing_stock_variants": missing_stock_variants_export,
+        "missing_models_input": missing_models_input,
+        "missing_models_variants": missing_models_variants,
+        "missing_models_fields": missing_models_fields,
         "no_price_models": no_price_models,
         "no_photo_models": no_photo_models,
         "no_shopify_stock_models": no_shopify_stock_models,
@@ -10660,6 +10898,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         {"label": "Causa principal: sin foto", "short": "Causa foto", "value": kpis["no_visible_sin_foto"], "icon": "&#9673;"},
         {"label": "Causa principal: sin precio", "short": "Causa precio", "value": kpis["no_visible_sin_precio"], "icon": "$"},
         {"label": "Causa principal: no activo", "short": "Causa activo", "value": kpis["no_visible_no_activo"], "icon": "&#9676;"},
+        {"label": "Causa principal: no publicado", "short": "No publicado", "value": kpis.get("no_visible_no_publicado", 0), "icon": "&#9676;"},
     ]
     pareto_rows = [
         {
@@ -10676,6 +10915,32 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         render_brand_summary_table(brand_summary)
 
     render_kpi_chart_grid(funnel_rows, pareto_rows)
+    audit_df = result.get("kpi_audit", pd.DataFrame())
+    missing_models_input_df = result.get("missing_models_input", pd.DataFrame())
+    missing_models_variants_df = result.get("missing_models_variants", pd.DataFrame())
+    missing_models_fields_df = result.get("missing_models_fields", pd.DataFrame())
+    with st.expander("Auditoria de visibilidad Shopify", expanded=False):
+        st.caption(
+            "Visible real web = producto creado en Shopify, status ACTIVE, publicado en Online Store, con stock Shopify, precio y foto."
+        )
+        if audit_df is not None and not audit_df.empty:
+            st.dataframe(audit_df, use_container_width=True, hide_index=True)
+        if missing_models_input_df is not None and not missing_models_input_df.empty:
+            st.download_button(
+                "Descargar input sugerido: modelos no creados en Shopify",
+                data=dataframe_to_excel_bytes(
+                    {
+                        "Input sugerido": missing_models_input_df,
+                        "Variantes a crear": missing_models_variants_df if missing_models_variants_df is not None else pd.DataFrame(),
+                        "Campos por completar": missing_models_fields_df if missing_models_fields_df is not None else pd.DataFrame(),
+                    }
+                ),
+                file_name=f"input_modelos_no_creados_{brand_config['site_key']}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="Archivo prellenado desde ARTI/BigQuery para que la marca complete solo lo manual antes de crear productos.",
+            )
+        else:
+            st.success("No hay modelos con stock pendientes de creacion en Shopify para este sitio.")
     filtered_actions_df = render_actions_table(actions_df, f"{brand_config['site_key']}_kpi")
     if filtered_actions_df is not None and not filtered_actions_df.empty:
         st.download_button(
@@ -10719,6 +10984,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     else:
         excel_bytes = dataframe_to_excel_bytes(
             {
+                "Auditoria KPIs": result.get("kpi_audit", pd.DataFrame()),
                 "Resumen modelos": result["model_stock"],
                 "Resumen por marca": result.get("brand_summary", pd.DataFrame()),
                 "Match bodegas eComm": result.get("ecomm_stock_match", pd.DataFrame()),
@@ -10726,6 +10992,9 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 "Detalle variantes stock": filtered_variants_df if filtered_variants_df is not None else pd.DataFrame(),
                 "Resumen bloqueos web": result.get("non_visible_combo_summary", pd.DataFrame()),
                 "No visibles web": result.get("non_visible_web", pd.DataFrame()),
+                "Input modelos no creados": result.get("missing_models_input", pd.DataFrame()),
+                "Variantes modelos no creados": result.get("missing_models_variants", pd.DataFrame()),
+                "Campos por completar": result.get("missing_models_fields", pd.DataFrame()),
                 "Sin stock Shopify": result.get("no_shopify_stock_models", pd.DataFrame()),
                 "Sin precio": result["no_price_models"],
                 "Sin foto": result["no_photo_models"],

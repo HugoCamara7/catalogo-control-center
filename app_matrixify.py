@@ -134,7 +134,7 @@ KPI_AUTO_REFRESH_SECONDS = 15 * 60
 OUTPUT_DIR = Path("outputs")
 KPI_CACHE_DIR = OUTPUT_DIR / "kpi_cache"
 SYNC_JOB_DIR = OUTPUT_DIR / "sync_jobs"
-KPI_CACHE_VERSION = "2026-07-04-kpi-visible-audit-missing-input-v1"
+KPI_CACHE_VERSION = "2026-07-04-kpi-visible-stock-location-audit-v1"
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -4342,6 +4342,8 @@ def flatten_shopify_for_kpis(shopify_products):
                     "Variant SKU": clean_value(variant.get("Variant SKU")),
                     "Variant Price": clean_value(variant.get("Variant Price")),
                     "Variant Inventory Qty": numeric_kpi_value(variant.get("Variant Inventory Qty")),
+                    "Variant Inventory Item ID": clean_value(variant.get("Variant Inventory Item ID")),
+                    "Variant Inventory Item GID": clean_value(variant.get("Variant Inventory Item GID")),
                     "Tiene precio": valid_kpi_price(variant.get("Variant Price")),
                 }
             )
@@ -4409,6 +4411,20 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     expected["URL Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Online Store URL")))
     expected["Visible Shopify"] = expected["Mod-Col KPI"].map(lambda value: bool(product_status_by_key.get(value, {}).get("Visible")))
     expected["Fotos Shopify"] = expected["Mod-Col KPI"].map(lambda value: int(product_status_by_key.get(value, {}).get("Fotos") or 0))
+    variant_status_by_sku = (
+        variants_df.drop_duplicates("Variant SKU").set_index("Variant SKU").to_dict("index")
+        if not variants_df.empty and "Variant SKU" in variants_df.columns
+        else {}
+    )
+    expected["Stock Shopify Variante"] = expected["SKU"].map(
+        lambda value: numeric_kpi_value(variant_status_by_sku.get(clean_value(value), {}).get("Variant Inventory Qty"))
+    )
+    expected["Inventory Item GID"] = expected["SKU"].map(
+        lambda value: clean_value(variant_status_by_sku.get(clean_value(value), {}).get("Variant Inventory Item GID"))
+    )
+    expected["Inventory Item ID"] = expected["SKU"].map(
+        lambda value: clean_value(variant_status_by_sku.get(clean_value(value), {}).get("Variant Inventory Item ID"))
+    )
 
     model_stock = (
         expected.groupby("Mod-Col KPI", as_index=False)
@@ -4487,6 +4503,60 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     no_shopify_stock_models = model_stock[
         model_stock["Debe estar visible"] & model_stock["Producto_creado"] & (model_stock["Stock_Shopify"] <= 0)
     ].copy()
+    stock_location_activation_audit = expected[
+        (expected["Con stock"])
+        & (expected["Producto creado Shopify"])
+        & (expected["Variante creada Shopify"])
+        & (expected["Stock Shopify Variante"] <= 0)
+    ].copy()
+    if not stock_location_activation_audit.empty:
+        stock_location_activation_audit = stock_location_activation_audit[
+            [
+                "Mod-Col KPI",
+                "MARCA_MA",
+                "Talla KPI",
+                "SKU",
+                "stock_total",
+                "Stock Shopify Variante",
+                "Inventory Item GID",
+                "Inventory Item ID",
+                "Status Shopify",
+                "Publicado Shopify",
+                "URL Shopify",
+            ]
+        ].rename(
+            columns={
+                "Mod-Col KPI": "Mod-Col",
+                "MARCA_MA": "Marca",
+                "Talla KPI": "Talla",
+                "stock_total": "Stock eComm BigQuery",
+                "Stock Shopify Variante": "Stock Shopify",
+            }
+        )
+        stock_location_activation_audit["Diagnostico"] = (
+            "SKU existe en Shopify y tiene stock eComm, pero Shopify no refleja stock en la variante."
+        )
+        stock_location_activation_audit["Accion sugerida"] = (
+            "Revisar/activar sucursales del inventory item y luego sincronizar stock."
+        )
+    else:
+        stock_location_activation_audit = pd.DataFrame(
+            columns=[
+                "Mod-Col",
+                "Marca",
+                "Talla",
+                "SKU",
+                "Stock eComm BigQuery",
+                "Stock Shopify",
+                "Inventory Item GID",
+                "Inventory Item ID",
+                "Status Shopify",
+                "Publicado Shopify",
+                "URL Shopify",
+                "Diagnostico",
+                "Accion sugerida",
+            ]
+        )
     no_price_keys = {clean_value(value) for value in no_price_models.get("Mod-Col KPI", pd.Series(dtype=object))}
     model_stock["Sin_precio_shopify"] = model_stock["Mod-Col KPI"].map(lambda value: clean_value(value) in no_price_keys)
     no_photo_keys = {clean_value(value) for value in no_photo_models.get("Mod-Col KPI", pd.Series(dtype=object))}
@@ -4609,6 +4679,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             (model_stock["Debe estar visible"] & model_stock["Producto_creado"] & model_stock["Con_stock_shopify"]).sum()
         ),
         "modelos_sin_stock_shopify": int(len(no_shopify_stock_models)),
+        "variantes_stock_ecomm_sin_stock_shopify": int(len(stock_location_activation_audit)),
         "sincronizacion_stock_shopify": float(
             (
                 model_stock["Debe estar visible"]
@@ -4710,6 +4781,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "no_price_models": no_price_models,
         "no_photo_models": no_photo_models,
         "no_shopify_stock_models": no_shopify_stock_models,
+        "stock_location_activation_audit": stock_location_activation_audit,
         "non_visible_web": non_visible_web,
         "non_visible_combo_summary": non_visible_combo_summary,
         "ecomm_stock_match": ecomm_stock_match,
@@ -10899,6 +10971,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         {"label": "Causa principal: sin precio", "short": "Causa precio", "value": kpis["no_visible_sin_precio"], "icon": "$"},
         {"label": "Causa principal: no activo", "short": "Causa activo", "value": kpis["no_visible_no_activo"], "icon": "&#9676;"},
         {"label": "Causa principal: no publicado", "short": "No publicado", "value": kpis.get("no_visible_no_publicado", 0), "icon": "&#9676;"},
+        {"label": "Variantes con stock eComm sin stock Shopify", "short": "Revisar sucursal", "value": kpis.get("variantes_stock_ecomm_sin_stock_shopify", 0), "icon": "&#8635;"},
     ]
     pareto_rows = [
         {
@@ -10925,6 +10998,18 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         )
         if audit_df is not None and not audit_df.empty:
             st.dataframe(audit_df, use_container_width=True, hide_index=True)
+        stock_activation_audit_df = result.get("stock_location_activation_audit", pd.DataFrame())
+        if stock_activation_audit_df is not None and not stock_activation_audit_df.empty:
+            st.warning(
+                "Hay SKUs con stock eComm en BigQuery y variante creada en Shopify, pero Shopify reporta stock 0. "
+                "Esto suele indicar falta de activacion de sucursales o sincronizacion de stock pendiente."
+            )
+            st.download_button(
+                "Descargar SKUs para revisar sucursales / stock Shopify",
+                data=dataframe_to_excel_bytes({"Auditoria sucursales stock": stock_activation_audit_df}),
+                file_name=f"auditoria_sucursales_stock_{brand_config['site_key']}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
         if missing_models_input_df is not None and not missing_models_input_df.empty:
             st.download_button(
                 "Descargar input sugerido: modelos no creados en Shopify",
@@ -10995,6 +11080,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 "Input modelos no creados": result.get("missing_models_input", pd.DataFrame()),
                 "Variantes modelos no creados": result.get("missing_models_variants", pd.DataFrame()),
                 "Campos por completar": result.get("missing_models_fields", pd.DataFrame()),
+                "Auditoria sucursales stock": result.get("stock_location_activation_audit", pd.DataFrame()),
                 "Sin stock Shopify": result.get("no_shopify_stock_models", pd.DataFrame()),
                 "Sin precio": result["no_price_models"],
                 "Sin foto": result["no_photo_models"],

@@ -387,7 +387,8 @@ ARTI_COLUMN_ALIASES_APP = {
     "ColorNombre": [
         "Color Web", "color_web", "nombre_color", "Nombre Color", "Color Nombre",
         "color_nombre", "desc_color", "descripcion_color", "des_color", "color_descripcion",
-        "color_desc", "COLOR_WEB", "NOMBRE_COLOR", "DESC_COLOR",
+        "color_desc", "COLOR_WEB", "NOMBRE_COLOR", "DESC_COLOR", "descol_ma", "nomcol_ma",
+        "color_forus", "Color Forus",
     ],
     "Precio": ["Precio", "precio_ma", "precio", "price", "precio_venta", "pvp"],
     "CodBarras": [
@@ -405,7 +406,8 @@ ARTI_COLUMN_ALIASES_APP = {
         "NombreModelo", "Nombre Modelo", "Nombre del modelo", "Modelo Nombre", "NOMBRE_MODELO",
         "DESC_MODELO", "DESCRIPCION_MODELO", "Descripcion Modelo", "Descripción Modelo",
         "Nombre del Producto", "Nombre Producto", "NOMBRE_PRODUCTO", "Title", "Titulo", "Título",
-        "Descripcion Producto", "DESCRIPCION_MA", "MODELO",
+        "Descripcion Producto", "DESCRIPCION_MA", "MODELO", "nommod_ma", "nom_modelo",
+        "desc_modelo", "desmod_ma", "product_name", "modelo_nombre",
     ],
     "DescripcionWeb": [
         "DescripcionWeb", "Descripcion Web", "Descripción Web", "DESCRIPCION_WEB",
@@ -426,14 +428,15 @@ ARTI_COLUMN_ALIASES_APP = {
     ],
     "TipoProducto": [
         "TipoProducto", "Tipo Producto", "Tipo De Producto", "Tipo de Producto", "TIPO",
-        "TIPO_MA", "Tipo", "Type", "Product Type", "Categoria Producto",
+        "TIPO_MA", "Tipo", "Type", "Product Type", "Categoria Producto", "tipo_prenda",
+        "Tipo de Prenda", "tipprenda_ma", "prenda",
     ],
     "Categoria": ["Categoria", "Categoría", "CATEGORIA", "Familia", "FAMILIA", "Category"],
     "SubCategoria": [
         "SubCategoria", "Sub Categoria", "Sub Categoría", "SUBCATEGORIA", "SUB CATEGORIA",
         "Subcategory", "Sub Category",
     ],
-    "Genero": ["Genero", "Género", "GENERO", "Sexo", "SEXO", "Gender"],
+    "Genero": ["Genero", "Género", "GENERO", "Sexo", "SEXO", "Gender", "genero_ma", "sexo_ma"],
     "Temporada": ["Temporada", "TEMPORADA", "Season", "Coleccion Temporada"],
     "Tecnologia": ["Tecnologia", "Tecnología", "TECNOLOGIA", "TECNOLOGÍA", "Technology", "Tecnologias", "Tecnologías"],
     "Coleccion": ["Coleccion", "Colección", "COLECCION", "Collection"],
@@ -10881,6 +10884,106 @@ def render_actions_table(actions_df, key_prefix):
     return filtered
 
 
+def render_visibility_audit_table(audit_df):
+    audit_df = audit_df.copy() if isinstance(audit_df, pd.DataFrame) else pd.DataFrame()
+    if audit_df.empty:
+        st.warning("No se genero auditoria de visibilidad.")
+        return
+    rows = []
+    for index, row in audit_df.reset_index(drop=True).iterrows():
+        rows.append(
+            f"""
+            <tr>
+                <td><span class="row-index">{index + 1}</span></td>
+                <td><strong>{escape(clean_value(row.get("Indicador")))}</strong></td>
+                <td style="text-align:center;"><span class="stock-badge">{format_kpi_number(row.get("Valor"))}</span></td>
+                <td>{escape(clean_value(row.get("Lectura")))}</td>
+            </tr>
+            """
+        )
+    render_html(
+        f"""
+        <div class="kpi-table-card" style="margin-top:0;">
+            <div class="kpi-table-head">
+                <div class="kpi-table-title"><span>&#9635;</span><span>Resumen de visibilidad</span></div>
+            </div>
+            <table class="kpi-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Indicador</th>
+                        <th>Valor</th>
+                        <th>Lectura</th>
+                    </tr>
+                </thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+        </div>
+        """
+    )
+
+
+def render_missing_models_audit_table(missing_models_input_df, key_prefix):
+    df = missing_models_input_df.copy() if isinstance(missing_models_input_df, pd.DataFrame) else pd.DataFrame()
+    if df.empty:
+        return df
+    search = st.text_input(
+        "Buscar modelo no creado",
+        placeholder="Buscar por Mod-Col, nombre, color, tipo o genero...",
+        label_visibility="collapsed",
+        key=f"{key_prefix}_missing_input_search",
+    )
+    filtered = df.copy()
+    if search:
+        needle = clean_value(search).lower()
+        filtered = filtered[
+            filtered.apply(lambda row: needle in " ".join(clean_value(value).lower() for value in row.values), axis=1)
+        ].copy()
+    visible = filtered.head(12).copy()
+    rows = []
+    for index, row in visible.reset_index(drop=True).iterrows():
+        rows.append(
+            f"""
+            <tr>
+                <td><span class="row-index">{index + 1}</span></td>
+                <td><strong>{escape(clean_value(row.get("Mod-Col")))}</strong></td>
+                <td>{escape(first_non_empty(row.get("Nombre web sugerido"), row.get("Title")))}</td>
+                <td>{escape(clean_value(row.get("Marca")))}</td>
+                <td>{escape(clean_value(row.get("Tipo de prenda")))}</td>
+                <td>{escape(clean_value(row.get("Genero")))}</td>
+                <td>{escape(first_non_empty(row.get("Color web"), row.get("Color")))}</td>
+                <td style="text-align:center;"><span class="stock-badge">{format_kpi_number(row.get("Stock disponible"))}</span></td>
+            </tr>
+            """
+        )
+    render_html(
+        f"""
+        <div class="kpi-table-card" style="margin-top:16px;">
+            <div class="kpi-table-head">
+                <div class="kpi-table-title"><span>&#9635;</span><span>Modelos no creados con input sugerido</span></div>
+            </div>
+            <table class="kpi-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Mod-Col</th>
+                        <th>Nombre sugerido</th>
+                        <th>Marca</th>
+                        <th>Tipo</th>
+                        <th>Genero</th>
+                        <th>Color web</th>
+                        <th>Stock</th>
+                    </tr>
+                </thead>
+                <tbody>{''.join(rows)}</tbody>
+            </table>
+        </div>
+        """
+    )
+    st.caption(f"Mostrando {len(visible)} de {len(filtered)} modelos no creados. Descarga el Excel para ver el detalle completo.")
+    return filtered
+
+
 def render_missing_variants_table(missing_variants_df, key_prefix):
     if missing_variants_df is None or missing_variants_df.empty:
         return pd.DataFrame()
@@ -11135,7 +11238,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
             "Visible real web = producto creado en Shopify, status ACTIVE, publicado en Online Store, con stock Shopify, precio y foto."
         )
         if audit_df is not None and not audit_df.empty:
-            st.dataframe(audit_df, use_container_width=True, hide_index=True)
+            render_visibility_audit_table(audit_df)
         stock_activation_audit_df = result.get("stock_location_activation_audit", pd.DataFrame())
         if stock_activation_audit_df is not None and not stock_activation_audit_df.empty:
             st.warning(
@@ -11162,6 +11265,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 help="Archivo prellenado desde ARTI/BigQuery para que la marca complete solo lo manual antes de crear productos.",
             )
+            render_missing_models_audit_table(missing_models_input_df, f"{brand_config['site_key']}_audit")
         else:
             st.success("No hay modelos con stock pendientes de creacion en Shopify para este sitio.")
     filtered_actions_df = render_actions_table(actions_df, f"{brand_config['site_key']}_kpi")

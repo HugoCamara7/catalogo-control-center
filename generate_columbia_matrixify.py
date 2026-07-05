@@ -1313,6 +1313,27 @@ ARTI_REQUIRED_COLUMNS = [
     "CodBarras",
 ]
 
+ARTI_OPTIONAL_COLUMNS = [
+    "NombreModelo",
+    "DescripcionWeb",
+    "Caracteristicas",
+    "Material",
+    "Cuidado",
+    "TipoProducto",
+    "Categoria",
+    "SubCategoria",
+    "Genero",
+    "ColorNombre",
+    "Temporada",
+    "Coleccion",
+    "Ocasion",
+    "Deporte",
+    "Tecnologia",
+    "Imagen",
+]
+
+ARTI_OUTPUT_COLUMNS = ARTI_REQUIRED_COLUMNS + ARTI_OPTIONAL_COLUMNS
+
 SIAL_COLUMNS = [
     "Cod. Modelo",
     "Cod. Color",
@@ -1507,6 +1528,136 @@ BIGQUERY_ARTI_COLUMN_CANDIDATES = {
         "codigo_ean13",
         "cod_ean13",
     ],
+    "NombreModelo": [
+        "NombreModelo",
+        "Nombre Modelo",
+        "Nombre del modelo",
+        "NOMBRE_MODELO",
+        "nommod_ma",
+        "nom_modelo",
+        "nombre_modelo",
+        "desc_modelo",
+        "desmod_ma",
+        "descripcion_modelo",
+        "descrip_modelo",
+        "modelo_nombre",
+        "modelo",
+        "nombre_producto",
+        "nombre del producto",
+        "product_name",
+        "title",
+    ],
+    "DescripcionWeb": [
+        "DescripcionWeb",
+        "Descripcion Web",
+        "Descripción Web",
+        "DESCRIPCION_WEB",
+        "descripcion_web",
+        "descripcion_producto",
+        "desc_producto",
+        "descripcion",
+        "descrip",
+        "product_description",
+        "body_html",
+        "body html",
+    ],
+    "Caracteristicas": [
+        "Caracteristicas",
+        "Características",
+        "caracteristicas",
+        "features",
+        "beneficios",
+        "bullet",
+        "bullets",
+        "descripcion_larga",
+        "descripcion larga",
+    ],
+    "Material": [
+        "Material",
+        "material",
+        "materiales",
+        "materialidad",
+        "composicion",
+        "composición",
+        "composition",
+        "tipo_material",
+        "tipo de material",
+    ],
+    "Cuidado": [
+        "Cuidado",
+        "Cuidados",
+        "cuidado",
+        "cuidados",
+        "care",
+        "lavado",
+        "washing",
+        "instrucciones_cuidado",
+        "instrucciones de cuidado",
+    ],
+    "TipoProducto": [
+        "TipoProducto",
+        "Tipo Producto",
+        "Tipo De Producto",
+        "Tipo de Producto",
+        "tipo_producto",
+        "tipo_prenda",
+        "tipo de prenda",
+        "tipprenda_ma",
+        "prenda",
+        "type",
+        "product_type",
+    ],
+    "Categoria": [
+        "Categoria",
+        "Categoría",
+        "categoria",
+        "category",
+        "familia",
+        "familia_ma",
+        "linea",
+        "linea_ma",
+    ],
+    "SubCategoria": [
+        "SubCategoria",
+        "Sub Categoria",
+        "Sub Categoría",
+        "subcategoria",
+        "sub_categoria",
+        "subcategory",
+        "sub category",
+        "subfamilia",
+        "sub_familia",
+    ],
+    "Genero": [
+        "Genero",
+        "Género",
+        "genero",
+        "genero_ma",
+        "sexo",
+        "sexo_ma",
+        "gender",
+    ],
+    "ColorNombre": [
+        "ColorNombre",
+        "Color Nombre",
+        "Color Web",
+        "color_web",
+        "color forus",
+        "color_forus",
+        "nombre_color",
+        "desc_color",
+        "descripcion_color",
+        "descol_ma",
+        "nomcol_ma",
+        "color_nombre",
+        "color_descripcion",
+    ],
+    "Temporada": ["Temporada", "temporada", "season", "temporada_ma"],
+    "Coleccion": ["Coleccion", "Colección", "coleccion", "collection", "coleccion_ma"],
+    "Ocasion": ["Ocasion", "Ocasión", "ocasion", "occasion", "ocasiones"],
+    "Deporte": ["Deporte", "deporte", "sport", "activity", "actividad"],
+    "Tecnologia": ["Tecnologia", "Tecnología", "tecnologia", "technology", "tecnologias", "tecnologías"],
+    "Imagen": ["Imagen", "image", "image_src", "Image Src", "foto", "url_imagen", "imagen_url"],
 }
 
 BIGQUERY_MODEL_COLUMN_CANDIDATES = [
@@ -1621,7 +1772,7 @@ def normalize_arti_required_columns(df):
             result.loc[fill_mask, "CodBarras"] = result.loc[fill_mask, found]
     if ("Mod-Col" not in result.columns or not (result["Mod-Col"].map(clean) != "").any()) and "COD MOD COL" in result.columns:
         result["Mod-Col"] = result["COD MOD COL"]
-    for column in ARTI_REQUIRED_COLUMNS:
+    for column in ARTI_OUTPUT_COLUMNS:
         if column not in result.columns:
             result[column] = ""
     return result
@@ -1701,13 +1852,16 @@ def _read_arti_from_bigquery(config, brand_config=None):
         if not column_map.get("Mod-Col"):
             column_map["Mod-Col"] = column_map["COD MOD COL"]
 
+        select_columns = list(ARTI_REQUIRED_COLUMNS) + [
+            column for column in ARTI_OPTIONAL_COLUMNS if column_map.get(column)
+        ]
         select_lines = [
             _bigquery_select_expression(
                 output_column,
                 "" if column_map.get(output_column) == "__MODEL_COLOR__" else column_map.get(output_column),
                 model_color_expression if column_map.get(output_column) == "__MODEL_COLOR__" else "",
             )
-            for output_column in ARTI_REQUIRED_COLUMNS
+            for output_column in select_columns
         ]
         for index, barcode_column in enumerate(barcode_columns[1:20], start=2):
             select_lines.append(f"CAST(`{barcode_column}` AS STRING) AS `CodBarras_alt_{index}`")
@@ -1732,7 +1886,8 @@ def _read_arti_from_bigquery(config, brand_config=None):
     df = query_job.to_dataframe()
     df = normalize_arti_required_columns(df)
     source = clean(config.get("table")) or "query configurada"
-    return df[ARTI_REQUIRED_COLUMNS].astype(object), f"BigQuery: {source}"
+    output_columns = [column for column in ARTI_OUTPUT_COLUMNS if column in df.columns]
+    return df[output_columns].astype(object), f"BigQuery: {source}"
 
 
 def read_arti_source(
@@ -1754,26 +1909,16 @@ def read_arti_source(
                 raise RuntimeError(f"No se pudo leer ARTI desde BigQuery. Detalle: {exc}") from exc
             print(f"No se pudo leer BigQuery; usando respaldo local. Detalle: {exc}")
     if zip_path.exists():
-        return pd.read_csv(zip_path, dtype=object, usecols=lambda col: col in ARTI_REQUIRED_COLUMNS), str(zip_path)
+        return normalize_arti_required_columns(pd.read_csv(zip_path, dtype=object)), str(zip_path)
     if csv_path.exists():
-        return pd.read_csv(csv_path, dtype=object, usecols=lambda col: col in ARTI_REQUIRED_COLUMNS), str(csv_path)
+        return normalize_arti_required_columns(pd.read_csv(csv_path, dtype=object)), str(csv_path)
     if xlsx_path.exists():
         return (
-            pd.read_excel(
-                xlsx_path,
-                sheet_name=0,
-                dtype=object,
-                usecols=lambda col: col in ARTI_REQUIRED_COLUMNS,
-            ),
+            normalize_arti_required_columns(pd.read_excel(xlsx_path, sheet_name=0, dtype=object)),
             str(xlsx_path),
         )
     return (
-        pd.read_excel(
-            ARTI_PATH,
-            sheet_name="Hoja1",
-            dtype=object,
-            usecols=lambda col: col in ARTI_REQUIRED_COLUMNS,
-        ),
+        normalize_arti_required_columns(pd.read_excel(ARTI_PATH, sheet_name="Hoja1", dtype=object)),
         str(ARTI_PATH),
     )
 

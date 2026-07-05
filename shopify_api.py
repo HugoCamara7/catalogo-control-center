@@ -212,6 +212,13 @@ def _product_node_to_record(node):
         "Type": clean(node.get("productType")),
         "Status": clean(node.get("status")),
         "Online Store URL": clean(node.get("onlineStoreUrl")),
+        "Published Online Store": (
+            "SI"
+            if node.get("publishedOnOnlineStore") is True
+            else "NO"
+            if node.get("publishedOnOnlineStore") is False
+            else ""
+        ),
         "Mod-Col": clean(metafield.get("value")).upper(),
         "Metafield: custom.materialidad [single_line_text_field]": clean(materialidad.get("value")),
         "Metafield: custom.tecnologia [list.single_line_text_field]": clean(tecnologia.get("value")),
@@ -228,8 +235,15 @@ def _product_node_to_record(node):
 
 def fetch_products(config, max_products=5000):
     shop_domain, api_version, token = _client(config)
+    publication_id = ""
+    try:
+        publication_id = online_store_publication_id(config)
+    except Exception:
+        publication_id = ""
+    publication_field = "publishedOnOnlineStore: publishedOnPublication(publicationId: $publicationId)" if publication_id else ""
+    publication_variable = ", $publicationId: ID!" if publication_id else ""
     query = """
-    query ProductsForMatrixify($first: Int!, $after: String) {
+    query ProductsForMatrixify($first: Int!, $after: String__PUBLICATION_VARIABLE__) {
       products(first: $first, after: $after) {
         pageInfo {
           hasNextPage
@@ -246,6 +260,7 @@ def fetch_products(config, max_products=5000):
           productType
           status
           onlineStoreUrl
+          __PUBLICATION_FIELD__
           codigoModeloColor: metafield(namespace: "custom", key: "codigo_modelo_color") {
             value
           }
@@ -306,17 +321,14 @@ def fetch_products(config, max_products=5000):
       }
     }
     """
+    query = query.replace("__PUBLICATION_VARIABLE__", publication_variable).replace("__PUBLICATION_FIELD__", publication_field)
     records = []
     after = None
     while len(records) < max_products:
-        data = graphql_request(
-            shop_domain,
-            token,
-            query,
-            variables={"first": min(250, max_products - len(records)), "after": after},
-            api_version=api_version,
-            timeout=45,
-        )
+        variables = {"first": min(250, max_products - len(records)), "after": after}
+        if publication_id:
+            variables["publicationId"] = publication_id
+        data = graphql_request(shop_domain, token, query, variables=variables, api_version=api_version, timeout=45)
         products = data.get("products") or {}
         records.extend(_product_node_to_record(node) for node in products.get("nodes") or [])
         page_info = products.get("pageInfo") or {}

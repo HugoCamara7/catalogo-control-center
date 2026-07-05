@@ -134,7 +134,7 @@ KPI_AUTO_REFRESH_SECONDS = 15 * 60
 OUTPUT_DIR = Path("outputs")
 KPI_CACHE_DIR = OUTPUT_DIR / "kpi_cache"
 SYNC_JOB_DIR = OUTPUT_DIR / "sync_jobs"
-KPI_CACHE_VERSION = "2026-07-04-kpi-visible-stock-location-audit-v1"
+KPI_CACHE_VERSION = "2026-07-04-kpi-published-online-store-v1"
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -4313,7 +4313,11 @@ def flatten_shopify_for_kpis(shopify_products):
         mod_col = clean_value(product.get("Mod-Col")).upper()
         status = clean_value(product.get("Status")).upper()
         online_url = clean_value(product.get("Online Store URL"))
-        published_online = bool(online_url)
+        published_field = clean_value(product.get("Published Online Store")).upper()
+        if published_field:
+            published_online = published_field in ("SI", "YES", "TRUE", "1", "PUBLISHED")
+        else:
+            published_online = bool(online_url)
         visible_online = status == "ACTIVE" and published_online
         variants = product.get("Variants") or []
         has_price = any(valid_kpi_price(variant.get("Variant Price")) for variant in variants)

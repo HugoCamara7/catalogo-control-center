@@ -21,6 +21,7 @@ import streamlit.components.v1 as components
 
 from generate_columbia_matrixify import (
     SITE_CONFIGS,
+    build_body_html as build_matrixify_body_html,
     build_columbia_matrixify,
     build_matrixify_updates,
     brand_display_name,
@@ -134,7 +135,7 @@ KPI_AUTO_REFRESH_SECONDS = 15 * 60
 OUTPUT_DIR = Path("outputs")
 KPI_CACHE_DIR = OUTPUT_DIR / "kpi_cache"
 SYNC_JOB_DIR = OUTPUT_DIR / "sync_jobs"
-KPI_CACHE_VERSION = "2026-07-04-kpi-published-online-store-v1"
+KPI_CACHE_VERSION = "2026-07-04-missing-input-enriched-v1"
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -400,6 +401,45 @@ ARTI_COLUMN_ALIASES_APP = {
         "codigo_barra_producto", "codigo_barras_producto", "codigo_de_barras",
         "codigo_de_barra", "codigo_ean13", "cod_ean13",
     ],
+    "NombreModelo": [
+        "NombreModelo", "Nombre Modelo", "Nombre del modelo", "Modelo Nombre", "NOMBRE_MODELO",
+        "DESC_MODELO", "DESCRIPCION_MODELO", "Descripcion Modelo", "Descripción Modelo",
+        "Nombre del Producto", "Nombre Producto", "NOMBRE_PRODUCTO", "Title", "Titulo", "Título",
+        "Descripcion Producto", "DESCRIPCION_MA", "MODELO",
+    ],
+    "DescripcionWeb": [
+        "DescripcionWeb", "Descripcion Web", "Descripción Web", "DESCRIPCION_WEB",
+        "Product Description", "Descripcion Comercial", "Descripción Comercial",
+        "Descripcion", "Descripción", "Body HTML", "BodyHtml",
+    ],
+    "Caracteristicas": [
+        "Caracteristicas", "Características", "CARACTERISTICAS", "Features", "Beneficios",
+        "BENEFICIOS", "Bullet", "Bullets", "Descripcion larga", "Descripción larga",
+    ],
+    "Material": [
+        "Material", "MATERIAL", "Materiales", "Materialidad", "Composicion", "Composición",
+        "COMPOSICION", "Tipo de Material", "Tipo Material", "Composition",
+    ],
+    "Cuidado": [
+        "Cuidado", "Cuidados", "CUIDADO", "CUIDADOS", "Care", "Instrucciones de cuidado",
+        "Lavado", "Washing",
+    ],
+    "TipoProducto": [
+        "TipoProducto", "Tipo Producto", "Tipo De Producto", "Tipo de Producto", "TIPO",
+        "TIPO_MA", "Tipo", "Type", "Product Type", "Categoria Producto",
+    ],
+    "Categoria": ["Categoria", "Categoría", "CATEGORIA", "Familia", "FAMILIA", "Category"],
+    "SubCategoria": [
+        "SubCategoria", "Sub Categoria", "Sub Categoría", "SUBCATEGORIA", "SUB CATEGORIA",
+        "Subcategory", "Sub Category",
+    ],
+    "Genero": ["Genero", "Género", "GENERO", "Sexo", "SEXO", "Gender"],
+    "Temporada": ["Temporada", "TEMPORADA", "Season", "Coleccion Temporada"],
+    "Tecnologia": ["Tecnologia", "Tecnología", "TECNOLOGIA", "TECNOLOGÍA", "Technology", "Tecnologias", "Tecnologías"],
+    "Coleccion": ["Coleccion", "Colección", "COLECCION", "Collection"],
+    "Ocasion": ["Ocasion", "Ocasión", "OCASION", "Ocasiones", "Occasion"],
+    "Deporte": ["Deporte", "DEPORTE", "Sport", "Activity"],
+    "Imagen": ["Image Src", "Imagen", "IMAGEN", "Foto", "FOTO", "Url Imagen", "URL Imagen"],
 }
 
 
@@ -3343,13 +3383,16 @@ def render_sync_result_summary(result_df, label="sincronizacion"):
         return
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Procesados", f"{summary['total']:,}")
-    c2.metric("OK", f"{summary['ok']:,}")
-    c3.metric("Parcial/Omitido", f"{summary['partial'] + summary['skipped']:,}")
+    c2.metric("Sin observaciones", f"{summary['ok']:,}")
+    c3.metric("Creados con observacion", f"{summary['partial']:,}")
     c4.metric("Errores", f"{summary['errors']:,}")
     if summary["errors"]:
         st.error(f"{summary['errors']:,} filas terminaron con error. Revisa el reporte de sincronizacion.")
     elif summary["partial"] or summary["skipped"]:
-        st.warning("La sincronizacion termino con observaciones. Revisa el reporte antes de cerrar.")
+        st.info(
+            "La sincronizacion termino con observaciones: los productos se crearon/actualizaron, "
+            "pero hay datos por revisar en el reporte."
+        )
     else:
         st.success("Sincronizacion finalizada correctamente.")
 
@@ -4109,11 +4152,18 @@ def numeric_kpi_value(value):
 
 
 def row_first_value(row, columns):
+    normalized_lookup = {}
+    try:
+        normalized_lookup = {normalize_header(column): column for column in row.index}
+    except Exception:
+        normalized_lookup = {}
     for column in columns:
-        if column in row.index:
-            value = clean_value(row.get(column))
-            if value:
-                return value
+        source_column = column if column in row.index else normalized_lookup.get(normalize_header(column))
+        if source_column is None:
+            continue
+        value = clean_value(row.get(source_column))
+        if value:
+            return repair_mojibake_text(value)
     return ""
 
 
@@ -4131,6 +4181,29 @@ def suggested_handle(title, mod_col, brand_label=""):
     text = unicodedata.normalize("NFKD", clean_value(text)).encode("ascii", "ignore").decode("ascii")
     text = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
     return text or clean_value(mod_col).lower()
+
+
+def pluralize_spanish_label(value):
+    text = clean_value(value)
+    if not text:
+        return ""
+    words = text.split()
+    last = words[-1]
+    lower = last.lower()
+    if lower.endswith("s"):
+        return text
+    if lower.endswith("z"):
+        words[-1] = last[:-1] + ("ces" if last.islower() else "CES")
+    elif lower[-1:] in "aeiouáéíóú":
+        words[-1] = last + "s"
+    else:
+        words[-1] = last + "es"
+    return " ".join(words)
+
+
+def compact_join_values(values, separator=", "):
+    cleaned = [clean_value(value) for value in values if clean_value(value)]
+    return separator.join(dict.fromkeys(cleaned))
 
 
 def build_missing_models_input_export(expected, missing_models, brand_config):
@@ -4171,9 +4244,12 @@ def build_missing_models_input_export(expected, missing_models, brand_config):
             first_row,
             [
                 "Title",
+                "NombreModelo",
                 "Nombre del Producto",
                 "Nombre Producto",
                 "NOMBRE_PRODUCTO",
+                "Descripcion Producto",
+                "Descripcion Modelo",
                 "DESCRIPCION_MA",
                 "Descripcion",
                 "MODELO",
@@ -4181,28 +4257,67 @@ def build_missing_models_input_export(expected, missing_models, brand_config):
         )
         product_type = row_first_value(
             first_row,
-            ["Type", "Tipo De Producto", "Tipo de Producto", "TIPO", "TIPO_MA", "Tipo", "Categoria", "CATEGORIA"],
+            ["TipoProducto", "Type", "Tipo De Producto", "Tipo de Producto", "TIPO", "TIPO_MA", "Tipo", "Categoria", "CATEGORIA"],
         )
+        product_type_plural = pluralize_spanish_label(product_type)
         category = row_first_value(first_row, ["Categoria", "Categoría", "CATEGORIA", "Familia", "FAMILIA"])
-        subcategory = row_first_value(first_row, ["Sub Categoria", "Sub Categoría", "SUBCATEGORIA", "SUB CATEGORIA"])
+        subcategory = row_first_value(first_row, ["SubCategoria", "Sub Categoria", "Sub Categoría", "SUBCATEGORIA", "SUB CATEGORIA"])
         gender = row_first_value(first_row, ["Genero", "Género", "GENERO", "Sexo", "SEXO"])
+        season = row_first_value(first_row, ["Temporada", "TEMPORADA", "Season"])
+        collection = row_first_value(first_row, ["Coleccion", "Colección", "COLECCION", "Collection"])
+        occasion = row_first_value(first_row, ["Ocasion", "Ocasión", "OCASION", "Occasion"])
+        sport = row_first_value(first_row, ["Deporte", "DEPORTE", "Sport", "Activity"])
         color_name = row_first_value(
             first_row,
-            ["Color Forus", "Color Web", "COLOR_WEB", "Color", "COLOR", "DESC_COLOR", "COLOR_MA"],
+            ["ColorNombre", "Color Forus", "Color Web", "COLOR_WEB", "Color", "COLOR", "DESC_COLOR", "COLOR_MA"],
         )
+        features = row_first_value(first_row, ["Caracteristicas", "Características", "Features", "Beneficios"])
         composition = row_first_value(
             first_row,
-            ["Composicion", "Composición", "COMPOSICION", "Material", "MATERIAL", "Materialidad"],
+            ["Material", "Composicion", "Composición", "COMPOSICION", "MATERIAL", "Materialidad"],
         )
         technology = row_first_value(
             first_row,
             ["Tecnologia", "Tecnología", "TECNOLOGIA", "TECNOLOGÍA", "Technology", "TECHNOLOGY"],
         )
         care = row_first_value(first_row, ["Cuidado", "CUIDADO", "Cuidados", "Care"])
-        body_html = row_first_value(first_row, ["Body HTML", "Descripcion Web", "Descripción Web", "DESCRIPCION_WEB"])
-        image_src = row_first_value(first_row, ["Image Src", "Imagen", "IMAGEN", "Foto", "FOTO"])
-        tags_parts = [vendor, category, subcategory, gender, product_type, technology, mod_col]
-        tags = ", ".join(dict.fromkeys([clean_value(value) for value in tags_parts if clean_value(value)]))
+        body_html = row_first_value(first_row, ["Body HTML", "DescripcionWeb", "Descripcion Web", "Descripción Web", "DESCRIPCION_WEB"])
+        if not body_html:
+            try:
+                body_html = build_matrixify_body_html(first_row)
+            except Exception:
+                body_html = ""
+        image_src = row_first_value(first_row, ["Imagen", "Image Src", "IMAGEN", "Foto", "FOTO"])
+        image_folder = ""
+        if not image_src:
+            try:
+                image_config = brand_image_config(vendor, brand_config)
+                image_urls = image_candidates(mod_col, image_config)
+                image_src = "; ".join(image_urls)
+                image_folder = clean_value((image_config or {}).get("folder"))
+            except Exception:
+                image_src = ""
+        title_suggested = first_non_empty(
+            title,
+            compact_join_values([vendor, product_type, gender, color_name], " "),
+            mod_col,
+        )
+        tags_parts = [
+            vendor,
+            brand_label,
+            category,
+            subcategory,
+            gender,
+            product_type_plural or product_type,
+            color_name,
+            season,
+            collection,
+            occasion,
+            sport,
+            technology,
+            mod_col,
+        ]
+        tags = compact_join_values(tags_parts)
         valid_sizes = list(dict.fromkeys(group.get("Talla KPI", pd.Series(dtype=object)).map(clean_value).tolist()))
         skus = list(dict.fromkeys(group.get("SKU", pd.Series(dtype=object)).map(clean_value).tolist()))
         stock_total = safe_int_value(pd.to_numeric(group.get("stock_total", 0), errors="coerce").fillna(0).sum())
@@ -4229,27 +4344,36 @@ def build_missing_models_input_export(expected, missing_models, brand_config):
                 "Codigo modelo color": mod_col,
                 "Codigo modelo": model_code,
                 "Codigo color": color_code,
-                "Handle sugerido": suggested_handle(title, mod_col, vendor),
-                "Title": first_non_empty(title, mod_col),
+                "Nombre modelo ARTI": title,
+                "Nombre web sugerido": title_suggested,
+                "Handle sugerido": suggested_handle(title_suggested, mod_col, vendor),
+                "Title": title_suggested,
                 "Body HTML": body_html,
                 "Vendor": vendor,
-                "Type": product_type,
+                "Type": product_type_plural or product_type,
                 "Tags sugeridos": tags,
                 "Status recomendado": "ACTIVE",
                 "Published recomendado": "TRUE",
                 "Image Src": image_src,
+                "Ruta fotos esperada": image_folder,
                 "Marca": vendor,
                 "Genero": gender,
-                "Tipo de prenda": product_type,
+                "Tipo de prenda": product_type_plural or product_type,
                 "Categoria": category,
                 "Sub Categoria": subcategory,
+                "Color web": color_name or color_code,
                 "Color": color_name or color_code,
+                "Temporada": season,
+                "Coleccion": collection,
+                "Ocasion": occasion,
+                "Deporte": sport,
                 "Tallas validas": ", ".join([value for value in valid_sizes if value]),
                 "Variantes a crear": len([value for value in valid_sizes if value]),
                 "SKUs": ", ".join([value for value in skus if value]),
                 "Precio": price,
                 "Compare At Price": compare_at,
                 "Stock disponible": stock_total,
+                "Caracteristicas": features,
                 "Composicion": composition,
                 "Tecnologia": technology,
                 "Cuidado": care,
@@ -4257,6 +4381,9 @@ def build_missing_models_input_export(expected, missing_models, brand_config):
                 "Metafield: custom.marca [single_line_text_field]": vendor,
                 "Metafield: custom.tecnologia [list.single_line_text_field]": technology,
                 "Metafield: custom.materialidad [single_line_text_field]": composition,
+                "Metafield: custom.tipo [single_line_text_field]": product_type_plural or product_type,
+                "Metafield: custom.genero [single_line_text_field]": gender,
+                "Metafield: custom.color_forus [single_line_text_field]": color_name or color_code,
                 "Campos que debe completar marca": "; ".join(missing_notes) if missing_notes else "Revisar y aprobar",
                 "Observaciones": "Producto no creado en Shopify. Input sugerido desde ARTI/BigQuery.",
             }
@@ -4316,8 +4443,10 @@ def flatten_shopify_for_kpis(shopify_products):
         published_field = clean_value(product.get("Published Online Store")).upper()
         if published_field:
             published_online = published_field in ("SI", "YES", "TRUE", "1", "PUBLISHED")
+            published_source = "publishedOnPublication"
         else:
             published_online = bool(online_url)
+            published_source = "onlineStoreUrl"
         visible_online = status == "ACTIVE" and published_online
         variants = product.get("Variants") or []
         has_price = any(valid_kpi_price(variant.get("Variant Price")) for variant in variants)
@@ -4328,6 +4457,7 @@ def flatten_shopify_for_kpis(shopify_products):
                 "Title": clean_value(product.get("Title")),
                 "Status": status,
                 "Publicado": "SI" if published_online else "NO",
+                "Publicado fuente": published_source,
                 "Online Store URL": online_url,
                 "Visible": visible_online,
                 "Tiene precio": has_price,
@@ -4341,6 +4471,7 @@ def flatten_shopify_for_kpis(shopify_products):
                     "Handle": clean_value(product.get("Handle")),
                     "Status": status,
                     "Publicado": "SI" if published_online else "NO",
+                    "Publicado fuente": published_source,
                     "Online Store URL": online_url,
                     "Visible": visible_online,
                     "Variant SKU": clean_value(variant.get("Variant SKU")),
@@ -4356,6 +4487,7 @@ def flatten_shopify_for_kpis(shopify_products):
 
 def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     arti = arti_df.copy() if isinstance(arti_df, pd.DataFrame) else pd.DataFrame()
+    arti = normalize_arti_columns_for_app(arti)
     stock = stock_df.copy() if isinstance(stock_df, pd.DataFrame) else pd.DataFrame()
     allowed = set(brand_config.get("allowed_arti_brands") or [])
     if "MARCA_MA" in arti.columns and allowed:
@@ -4412,6 +4544,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     expected["Variante creada Shopify"] = expected["SKU"].map(lambda value: value in shopify_variant_skus)
     expected["Status Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Status")))
     expected["Publicado Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Publicado")))
+    expected["Publicado fuente Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Publicado fuente")))
     expected["URL Shopify"] = expected["Mod-Col KPI"].map(lambda value: clean_value(product_status_by_key.get(value, {}).get("Online Store URL")))
     expected["Visible Shopify"] = expected["Mod-Col KPI"].map(lambda value: bool(product_status_by_key.get(value, {}).get("Visible")))
     expected["Fotos Shopify"] = expected["Mod-Col KPI"].map(lambda value: int(product_status_by_key.get(value, {}).get("Fotos") or 0))
@@ -4441,6 +4574,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             Visible_Shopify=("Visible Shopify", "max"),
             Status_Shopify=("Status Shopify", "first"),
             Publicado_Shopify=("Publicado Shopify", "first"),
+            Publicado_Fuente_Shopify=("Publicado fuente Shopify", "first"),
             URL_Shopify=("URL Shopify", "first"),
             Fotos_Shopify=("Fotos Shopify", "max"),
         )
@@ -7086,8 +7220,8 @@ def _sync_job_summary_df(job):
             {"Indicador": "Total productos", "Valor": total},
             {"Indicador": "Procesados", "Valor": processed},
             {"Indicador": "Pendientes", "Valor": pending},
-            {"Indicador": "OK", "Valor": int(job.get("ok_products") or 0)},
-            {"Indicador": "Parciales", "Valor": int(job.get("partial_products") or 0)},
+            {"Indicador": "Sin observaciones", "Valor": int(job.get("ok_products") or 0)},
+            {"Indicador": "Creados con observacion", "Valor": int(job.get("partial_products") or 0)},
             {"Indicador": "Errores", "Valor": errors},
             {"Indicador": "Bloque actual", "Valor": f"{int(job.get('current_block') or 0)} / {int(job.get('total_blocks') or 0)}"},
             {"Indicador": "Actualizado", "Valor": job.get("updated_at")},
@@ -7314,8 +7448,8 @@ def render_persistent_sync_job_panel(
     status_cols = st.columns(5)
     status_cols[0].metric("Procesados", f"{processed:,}/{total:,}")
     status_cols[1].metric("Pendientes", f"{pending:,}")
-    status_cols[2].metric("OK", f"{int(job.get('ok_products') or 0):,}")
-    status_cols[3].metric("Parciales", f"{int(job.get('partial_products') or 0):,}")
+    status_cols[2].metric("Sin observaciones", f"{int(job.get('ok_products') or 0):,}")
+    status_cols[3].metric("Con observacion", f"{int(job.get('partial_products') or 0):,}")
     status_cols[4].metric("Errores", f"{int(job.get('error_products') or 0):,}")
     st.info(
         f"Job {job['id']} | estado: {status} | bloque {int(job.get('current_block') or 0)} de {int(job.get('total_blocks') or 0)} | actualizado: {job.get('updated_at')}"

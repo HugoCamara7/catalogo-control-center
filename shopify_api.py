@@ -680,7 +680,12 @@ def online_store_publication_id(config):
     publications = fetch_publications(config)
     for publication in publications:
         name = clean(publication.get("name")).lower()
+        normalized = name.replace("-", " ").replace("_", " ")
         if name in ("online store", "tienda online", "canal online"):
+            return clean(publication.get("id"))
+        if ("online" in normalized and ("store" in normalized or "tienda" in normalized or "web" in normalized)):
+            return clean(publication.get("id"))
+        if ("web" in normalized and ("store" in normalized or "tienda" in normalized or "canal" in normalized)):
             return clean(publication.get("id"))
     return clean((publications[0] if publications else {}).get("id"))
 

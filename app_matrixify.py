@@ -7881,10 +7881,10 @@ def inject_custom_css(config):
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div > div:first-child {{
             opacity: 0 !important;
-            width: 0 !important;
+            width: auto !important;
             min-width: 0 !important;
-            max-width: 0 !important;
-            flex: 0 0 0 !important;
+            max-width: none !important;
+            flex: 1 1 auto !important;
             overflow: hidden !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div > div:last-child {{
@@ -8011,9 +8011,9 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] {{
             position: absolute !important;
             inset: 0 !important;
-            z-index: 8 !important;
+            z-index: 30 !important;
             min-height: 78px !important;
-            opacity: 0.001 !important;
+            opacity: 1 !important;
             cursor: pointer !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] * {{
@@ -8022,6 +8022,13 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
             height: 78px !important;
             min-height: 78px !important;
+            background: transparent !important;
+            border-color: transparent !important;
+            box-shadow: none !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] svg,
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] path {{
+            opacity: 0 !important;
         }}
         .forus-sidebar {{
             border-radius: 24px;

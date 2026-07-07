@@ -7941,8 +7941,7 @@ def inject_custom_css(config):
             display: none !important;
         }}
         section[data-testid="stSidebar"] .site-picker-visual {{
-            position: absolute;
-            inset: 0;
+            position: relative;
             z-index: 4;
             min-height: 78px;
             display: grid;
@@ -7955,6 +7954,7 @@ def inject_custom_css(config):
             border: 1px solid #DDE6F2;
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
             pointer-events: none;
+            margin-bottom: 10px;
         }}
         section[data-testid="stSidebar"] .site-picker-logo {{
             width: 76px;
@@ -8009,26 +8009,57 @@ def inject_custom_css(config):
             -webkit-text-fill-color: #0F172A !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] {{
-            position: absolute !important;
-            inset: 0 !important;
-            z-index: 30 !important;
-            min-height: 78px !important;
+            position: relative !important;
+            z-index: 5 !important;
+            min-height: 48px !important;
             opacity: 1 !important;
             cursor: pointer !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] * {{
             cursor: pointer !important;
         }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] {{
+            min-height: 48px !important;
+        }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
-            height: 78px !important;
-            min-height: 78px !important;
-            background: transparent !important;
-            border-color: transparent !important;
+            height: 48px !important;
+            min-height: 48px !important;
+            background: #FFFFFF !important;
+            border-color: #DDE6F2 !important;
             box-shadow: none !important;
+            border-radius: 14px !important;
+            padding-left: 14px !important;
+            padding-right: 14px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div > div:first-child {{
+            opacity: 1 !important;
+            width: auto !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            flex: 1 1 auto !important;
+            overflow: hidden !important;
+            justify-content: flex-start !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] [role="combobox"],
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] [role="combobox"] *,
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="singleValue"],
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="ValueContainer"],
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="placeholder"] {{
+            color: #0F172A !important;
+            -webkit-text-fill-color: #0F172A !important;
+            text-shadow: none !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] svg,
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] path {{
-            opacity: 0 !important;
+            opacity: 1 !important;
+            color: #0F172A !important;
+            fill: #0F172A !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] span,
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] input,
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div *:not(svg):not(path) {{
+            color: #0F172A !important;
+            -webkit-text-fill-color: #0F172A !important;
         }}
         .forus-sidebar {{
             border-radius: 24px;

@@ -7776,13 +7776,14 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-site_picker_card {{
             position: relative;
             margin: 6px 0 24px;
+            isolation: isolate;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card::after {{
             content: "Sitio activo";
             position: absolute;
-            left: 108px;
+            left: 126px;
             top: 18px;
-            z-index: 3;
+            z-index: 6;
             color: #172554;
             font-size: 13px;
             line-height: 1;
@@ -7792,9 +7793,9 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-site_picker_card::before {{
             content: "";
             position: absolute;
-            left: 18px;
+            left: 22px;
             top: 50%;
-            width: 72px;
+            width: 76px;
             height: 46px;
             transform: translateY(-50%);
             border-radius: 13px;
@@ -7804,7 +7805,7 @@ def inject_custom_css(config):
             background-position: center;
             background-size: contain;
             border: 1px solid #E2E8F0;
-            z-index: 2;
+            z-index: 6;
             pointer-events: none;
         }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
@@ -7817,8 +7818,10 @@ def inject_custom_css(config):
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
-            padding-left: 108px;
-            padding-right: 36px;
+            padding-left: 126px !important;
+            padding-right: 42px !important;
+            justify-content: flex-start !important;
+            text-align: left !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] {{
             position: relative;
@@ -7826,10 +7829,10 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"]::before {{
             content: var(--site-label);
             position: absolute;
-            left: 108px;
+            left: 126px;
             right: 48px;
             top: 37px;
-            z-index: 3;
+            z-index: 6;
             color: #0F172A;
             font-size: 18px;
             line-height: 1.15;
@@ -7838,6 +7841,15 @@ def inject_custom_css(config):
             overflow: hidden;
             text-overflow: clip;
             pointer-events: none;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] [role="combobox"],
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] [role="combobox"] *,
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="singleValue"],
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="ValueContainer"],
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="placeholder"] {{
+            color: transparent !important;
+            -webkit-text-fill-color: transparent !important;
+            text-shadow: none !important;
         }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] > div > div:first-child {{
             flex: 1 1 auto;
@@ -7855,10 +7867,12 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] span,
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] input {{
             color: transparent !important;
+            -webkit-text-fill-color: transparent !important;
             caret-color: transparent !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div *:not(svg):not(path) {{
             color: transparent !important;
+            -webkit-text-fill-color: transparent !important;
             text-shadow: none !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] svg,

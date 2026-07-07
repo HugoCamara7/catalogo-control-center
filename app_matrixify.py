@@ -671,7 +671,27 @@ def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=0):
         uploaded_file.seek(0)
     except Exception:
         pass
-    df = pd.read_excel(uploaded_file, sheet_name=sheet_name, dtype=object)
+    try:
+        df = pd.read_excel(uploaded_file, sheet_name=sheet_name, dtype=object)
+    except ValueError as exc:
+        if isinstance(sheet_name, str) and "Worksheet named" in str(exc):
+            try:
+                uploaded_file.seek(0)
+            except Exception:
+                pass
+            sheets = pd.read_excel(uploaded_file, sheet_name=None, dtype=object)
+            exact_sheet = next((name for name in sheets if clean_value(name).lower() == sheet_name.lower()), "")
+            if exact_sheet:
+                df = sheets[exact_sheet]
+            else:
+                non_empty_sheets = [
+                    sheet_df.dropna(how="all")
+                    for sheet_df in sheets.values()
+                    if isinstance(sheet_df, pd.DataFrame) and not sheet_df.dropna(how="all").empty
+                ]
+                df = non_empty_sheets[0] if non_empty_sheets else pd.DataFrame()
+        else:
+            raise
     if isinstance(df, dict):
         df = next(iter(df.values()), pd.DataFrame())
     df = df.dropna(how="all")
@@ -8060,6 +8080,55 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div *:not(svg):not(path) {{
             color: #0F172A !important;
             -webkit-text-fill-color: #0F172A !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card {{
+            min-height: auto !important;
+            padding: 12px 12px 14px !important;
+            border-radius: 20px !important;
+            background: #FFFFFF !important;
+            border: 1px solid #DDE6F2 !important;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.06) !important;
+        }}
+        section[data-testid="stSidebar"] .site-picker-visual {{
+            position: relative !important;
+            min-height: 48px !important;
+            grid-template-columns: 92px minmax(0, 1fr) !important;
+            gap: 12px !important;
+            padding: 0 !important;
+            margin: 0 0 10px !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            background: transparent !important;
+            box-shadow: none !important;
+        }}
+        section[data-testid="stSidebar"] .site-picker-logo {{
+            width: 82px !important;
+            height: 48px !important;
+        }}
+        section[data-testid="stSidebar"] .site-picker-logo img {{
+            max-width: 74px !important;
+            max-height: 36px !important;
+        }}
+        section[data-testid="stSidebar"] .site-picker-copy {{
+            align-self: center !important;
+        }}
+        section[data-testid="stSidebar"] .site-picker-kicker {{
+            margin: 0 !important;
+            font-size: 14px !important;
+        }}
+        section[data-testid="stSidebar"] .site-picker-name,
+        section[data-testid="stSidebar"] .site-picker-chevron {{
+            display: none !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] {{
+            min-height: 46px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
+            height: 46px !important;
+            min-height: 46px !important;
+            border-radius: 14px !important;
+            background: #F8FAFC !important;
+            border: 1px solid #DDE6F2 !important;
         }}
         .forus-sidebar {{
             border-radius: 24px;

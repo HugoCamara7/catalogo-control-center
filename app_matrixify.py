@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -7311,17 +7311,33 @@ def process_sync_job_next_block(job_id, shopify_config, max_retries=2, progress_
     for block_position, product_key in enumerate(block_keys, start=1):
         last_error = ""
         product_result_df = pd.DataFrame()
+        total_products = max(1, int(job.get("total_products") or len(job.get("product_keys") or []) or len(block_keys)))
+        global_position = min(len(job.get("completed_keys", [])) + 1, total_products)
+        current_block = int(job.get("current_block") or 0)
+        total_blocks = int(job.get("total_blocks") or 0)
+
+        def job_progress_callback(_current, _total, inner_handle, stage, message=""):
+            if progress_callback:
+                block_label = f"Bloque {current_block}/{total_blocks}" if total_blocks else f"Bloque {current_block}"
+                progress_callback(
+                    global_position,
+                    total_products,
+                    inner_handle or product_key,
+                    f"{block_label} - {stage}",
+                    message,
+                )
+
         for attempt in range(1, max(1, int(max_retries or 1)) + 1):
             try:
                 if progress_callback:
-                    progress_callback(block_position, len(block_keys), product_key, f"Procesando intento {attempt}")
+                    job_progress_callback(block_position, len(block_keys), product_key, f"Procesando intento {attempt}")
                 product_result_df = _sync_job_run_one_product(
                     shopify_config,
                     source_df,
                     product_key,
                     job.get("mode"),
                     bool(job.get("activate_inventory_locations")),
-                    progress_callback=progress_callback,
+                    progress_callback=job_progress_callback,
                 )
                 result_text = ""
                 message_text = ""
@@ -7457,6 +7473,16 @@ def render_persistent_sync_job_panel(
     st.info(
         f"Job {job['id']} | estado: {status} | bloque {int(job.get('current_block') or 0)} de {int(job.get('total_blocks') or 0)} | actualizado: {job.get('updated_at')}"
     )
+    job_events = job.get("events") or []
+    last_product_event = next((event for event in reversed(job_events) if clean_value(event.get("Producto"))), {})
+    last_product = clean_value(last_product_event.get("Producto"))
+    last_stage = clean_value(last_product_event.get("Etapa"))
+    pending_preview = [clean_value(key) for key in (job.get("pending_keys") or [])[:6] if clean_value(key)]
+    if last_product or pending_preview:
+        st.caption(
+            (f"Ultimo producto registrado: {last_product}" + (f" ({last_stage})" if last_stage else "") if last_product else "")
+            + (f" | Proximos pendientes: {', '.join(pending_preview)}" if pending_preview else "")
+        )
 
     action_cols = st.columns([1, 1, 1, 2])
     if pending and action_cols[0].button("Continuar siguiente bloque", type="primary", key=f"{session_key}_continue"):
@@ -7903,6 +7929,99 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] path {{
             color: #0F172A !important;
             fill: #0F172A !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card {{
+            min-height: 88px !important;
+            margin: 6px 0 24px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card::before,
+        section[data-testid="stSidebar"] .st-key-site_picker_card::after,
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"]::before {{
+            content: none !important;
+            display: none !important;
+        }}
+        section[data-testid="stSidebar"] .site-picker-visual {{
+            position: absolute;
+            inset: 0;
+            z-index: 4;
+            min-height: 78px;
+            display: grid;
+            grid-template-columns: 88px minmax(0, 1fr) 22px;
+            align-items: center;
+            gap: 14px;
+            padding: 12px 18px;
+            border-radius: 20px;
+            background: #FFFFFF;
+            border: 1px solid #DDE6F2;
+            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
+            pointer-events: none;
+        }}
+        section[data-testid="stSidebar"] .site-picker-logo {{
+            width: 76px;
+            height: 46px;
+            display: grid;
+            place-items: center;
+            border-radius: 13px;
+            background: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            overflow: hidden;
+        }}
+        section[data-testid="stSidebar"] .site-picker-logo img {{
+            max-width: 68px;
+            max-height: 36px;
+            object-fit: contain;
+            display: block;
+        }}
+        section[data-testid="stSidebar"] .site-picker-logo span {{
+            color: var(--brand-primary) !important;
+            font-size: 14px;
+            line-height: 1;
+            font-weight: 950;
+            -webkit-text-fill-color: var(--brand-primary) !important;
+        }}
+        section[data-testid="stSidebar"] .site-picker-copy {{
+            min-width: 0;
+        }}
+        section[data-testid="stSidebar"] .site-picker-kicker {{
+            margin: 0 0 6px;
+            color: #172554 !important;
+            font-size: 13px;
+            line-height: 1;
+            font-weight: 950;
+            -webkit-text-fill-color: #172554 !important;
+        }}
+        section[data-testid="stSidebar"] .site-picker-name {{
+            margin: 0;
+            color: #0F172A !important;
+            font-size: 18px;
+            line-height: 1.15;
+            font-weight: 950;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            -webkit-text-fill-color: #0F172A !important;
+        }}
+        section[data-testid="stSidebar"] .site-picker-chevron {{
+            color: #0F172A !important;
+            font-size: 21px;
+            line-height: 1;
+            font-weight: 900;
+            -webkit-text-fill-color: #0F172A !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] {{
+            position: absolute !important;
+            inset: 0 !important;
+            z-index: 8 !important;
+            min-height: 78px !important;
+            opacity: 0.001 !important;
+            cursor: pointer !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] * {{
+            cursor: pointer !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
+            height: 78px !important;
+            min-height: 78px !important;
         }}
         .forus-sidebar {{
             border-radius: 24px;
@@ -11697,11 +11816,37 @@ def main():
             st.session_state.pop("auth_user", None)
             st.rerun()
     site_options = {config["site_label"]: key for key, config in SITE_CONFIGS.items()}
+    current_site_label = clean_value(st.session_state.get("site_picker")) or next(iter(site_options))
+    if current_site_label not in site_options:
+        current_site_label = next(iter(site_options))
+    current_site_key = site_options[current_site_label]
+    current_site_config = get_site_config(get_brand_config(current_site_key), get_shopify_config(current_site_key))
+    current_logo_src = image_data_uri(resolve_logo_path(current_site_config.get("logo_path") or current_site_config.get("logo", "")))
+    current_brand_name = escape(clean_value(current_site_config.get("brand_name")) or current_site_label)
+    current_site_name = escape(clean_value(current_site_config.get("site_label")) or current_site_label)
+    current_logo_html = (
+        f'<img src="{current_logo_src}" alt="{current_brand_name}">'
+        if current_logo_src
+        else f"<span>{current_brand_name[:2].upper()}</span>"
+    )
     with st.sidebar.container(key="site_picker_card"):
+        st.markdown(
+            f"""
+            <div class="site-picker-visual" aria-hidden="true">
+                <div class="site-picker-logo">{current_logo_html}</div>
+                <div class="site-picker-copy">
+                    <p class="site-picker-kicker">Sitio activo</p>
+                    <p class="site-picker-name">{current_site_name}</p>
+                </div>
+                <div class="site-picker-chevron">⌄</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         selected_site_label = st.selectbox(
             "Sitio destino",
             list(site_options),
-            index=0,
+            index=list(site_options).index(current_site_label),
             key="site_picker",
             label_visibility="collapsed",
         )

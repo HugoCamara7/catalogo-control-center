@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -7777,13 +7777,19 @@ def inject_custom_css(config):
             position: relative;
             margin: 6px 0 24px;
             isolation: isolate;
+            min-height: 84px;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card > div,
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] {{
+            min-height: 84px !important;
+            position: relative;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card::after {{
             content: "Sitio activo";
             position: absolute;
             left: 126px;
-            top: 18px;
-            z-index: 6;
+            top: 22px;
+            z-index: 12;
             color: #172554;
             font-size: 13px;
             line-height: 1;
@@ -7794,7 +7800,7 @@ def inject_custom_css(config):
             content: "";
             position: absolute;
             left: 22px;
-            top: 50%;
+            top: 42px;
             width: 76px;
             height: 46px;
             transform: translateY(-50%);
@@ -7805,7 +7811,7 @@ def inject_custom_css(config):
             background-position: center;
             background-size: contain;
             border: 1px solid #E2E8F0;
-            z-index: 6;
+            z-index: 12;
             pointer-events: none;
         }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
@@ -7818,21 +7824,26 @@ def inject_custom_css(config):
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
+            height: 78px !important;
+            min-height: 78px !important;
             padding-left: 126px !important;
             padding-right: 42px !important;
             justify-content: flex-start !important;
             text-align: left !important;
+            overflow: hidden !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] {{
             position: relative;
+            min-height: 78px !important;
+            z-index: 1;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"]::before {{
             content: var(--site-label);
             position: absolute;
             left: 126px;
             right: 48px;
-            top: 37px;
-            z-index: 6;
+            top: 42px;
+            z-index: 12;
             color: #0F172A;
             font-size: 18px;
             line-height: 1.15;
@@ -7841,6 +7852,19 @@ def inject_custom_css(config):
             overflow: hidden;
             text-overflow: clip;
             pointer-events: none;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div > div:first-child {{
+            opacity: 0 !important;
+            width: 0 !important;
+            min-width: 0 !important;
+            max-width: 0 !important;
+            flex: 0 0 0 !important;
+            overflow: hidden !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div > div:last-child {{
+            opacity: 1 !important;
+            position: relative;
+            z-index: 13;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] [role="combobox"],
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] [role="combobox"] *,

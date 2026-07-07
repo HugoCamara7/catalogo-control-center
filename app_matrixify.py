@@ -349,6 +349,20 @@ def product_lookup_key(value):
     return re.sub(r"[^A-Z0-9]+", "", clean_value(value).upper())
 
 
+def product_lookup_candidates(value):
+    raw = clean_value(value).upper()
+    compact = product_lookup_key(raw)
+    candidates = [raw, compact]
+    stripped_raw = re.sub(r"^[A-Z]{1,4}(?=\d)", "", raw)
+    stripped_compact = re.sub(r"^[A-Z]{1,4}(?=\d)", "", compact)
+    if stripped_raw != raw:
+        candidates.append(stripped_raw)
+        candidates.append(product_lookup_key(stripped_raw))
+    if stripped_compact != compact:
+        candidates.append(stripped_compact)
+    return list(dict.fromkeys(candidate for candidate in candidates if clean_value(candidate)))
+
+
 def variant_mod_col_candidates(variant):
     sku = clean_value((variant or {}).get("Variant SKU")).upper()
     if not sku:
@@ -2531,9 +2545,7 @@ def _product_lookup_from_shopify(records):
     by_handle = {}
 
     def add_key(value, record):
-        key = clean_value(value).upper()
-        compact_key = product_lookup_key(key)
-        for candidate in (key, compact_key):
+        for candidate in product_lookup_candidates(value):
             if candidate and candidate not in by_key:
                 by_key[candidate] = record
 
@@ -3166,7 +3178,7 @@ def build_shopify_update_preview(
     for input_index, row in source_df.iterrows():
         key = _source_key_for_update(row)
         handle = clean_value(row.get("Handle"))
-        product = by_key.get(key) or by_key.get(product_lookup_key(key)) or by_handle.get(handle)
+        product = next((by_key.get(candidate) for candidate in product_lookup_candidates(key) if by_key.get(candidate)), None) or by_handle.get(handle)
         if not product:
             raw_key_values = [
                 clean_value(row.get(column))
@@ -12099,14 +12111,28 @@ api_version = "{DEFAULT_API_VERSION}"
             update_file = st.file_uploader("2. Subir archivo con Mod-Col y Title", type=["xlsx", "xls"], key="update_title")
         elif update_operation == "body":
             st.info(
-                "Mantención Body HTML: revisa el catálogo actual de Shopify y corrige solamente "
-                "Body HTML donde Materiales y Cuidados estén mezclados o mal estructurados."
+                "Mantención Body HTML: puedes subir un Excel con Mod-Col, Body HTML, Material y Cuidado "
+                "para reemplazar el HTML de esos productos. Si no subes archivo, la app corrige solamente "
+                "los Body HTML actuales donde Materiales y Cuidados estén mezclados o mal estructurados."
             )
-            body_mode = "fix_catalog"
-            st.caption(
-                "No requiere archivo. Usa Shopify API como fuente, genera vista previa y luego permite sincronizar "
-                "solo los productos afectados."
-            )
+            if update_source == "Shopify API":
+                update_file = st.file_uploader(
+                    "2. Opcional: subir Excel con Mod-Col, Body HTML, Material y Cuidado",
+                    type=["xlsx", "xls"],
+                    key="update_body_html",
+                    help="Si subes archivo, la app busca cada Mod-Col en Shopify y arma el Body HTML con las columnas recibidas.",
+                )
+                body_mode = "from_input" if update_file else "fix_catalog"
+                st.caption(
+                    "Con archivo: reemplaza Body HTML de los Mod-Col indicados. "
+                    "Sin archivo: revisa el catálogo actual y corrige solo HTML mal estructurado."
+                )
+            else:
+                body_mode = "from_input" if template_file else "fix_catalog"
+                st.caption(
+                    "El Excel cargado arriba se interpretará como input de mantenimiento Body HTML. "
+                    "Debe incluir Mod-Col y columnas como Body HTML, Material, Composición, Cuidado o Cuidados."
+                )
         elif update_operation == "technologies":
             update_file = None
             st.success("No requiere archivo: se analiza el catálogo actual de Shopify.")
@@ -12138,7 +12164,12 @@ api_version = "{DEFAULT_API_VERSION}"
             )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        update_ready = update_file or update_operation in ("photos", "siblings", "technologies", "inventory_locations") or body_mode == "fix_catalog"
+        update_ready = (
+            update_file
+            or update_operation in ("photos", "siblings", "technologies", "inventory_locations")
+            or body_mode == "fix_catalog"
+            or (update_operation == "body" and update_source == "Respaldo Excel" and template_file)
+        )
         partial_context = "|".join(
             [
                 clean_value(brand_config.get("site_key")),
@@ -12173,19 +12204,27 @@ api_version = "{DEFAULT_API_VERSION}"
             ):
                 st.session_state.pop(state_key, None)
             st.session_state["partial_context"] = partial_context
-        if update_source == "Shopify API" and not is_shopify_configured(shopify_config):
+        effective_update_source = update_source
+        body_backup_input_file = None
+        if update_operation == "body" and update_source == "Respaldo Excel" and template_file:
+            body_backup_input_file = template_file
+            if is_shopify_configured(shopify_config):
+                effective_update_source = "Shopify API"
+
+        if effective_update_source == "Shopify API" and not is_shopify_configured(shopify_config):
             st.error("Este sitio no tiene Shopify API configurada en Secrets.")
             update_ready = False
-        if update_operation == "inventory_locations" and update_source != "Shopify API":
+        if update_operation == "inventory_locations" and effective_update_source != "Shopify API":
             st.error("La activación de inventario en sucursales solo se puede ejecutar con Shopify API.")
             update_ready = False
 
-        if update_source == "Shopify API" and update_ready:
+        if effective_update_source == "Shopify API" and update_ready:
             try:
+                effective_update_file = body_backup_input_file if body_backup_input_file is not None else update_file
                 update_df = read_uploaded_excel_cached(
-                    update_file,
+                    effective_update_file,
                     f"partial_{brand_config['site_key']}_{update_operation}",
-                ) if update_file else None
+                ) if effective_update_file else None
                 if update_df is not None and update_operation != "centry":
                     _, detected_brands, blocked_brands = input_brand_report(update_df, brand_config)
                     if blocked_brands:

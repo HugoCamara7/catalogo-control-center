@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -11716,15 +11716,27 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     )
 
 
+def _normalize_auth_username(value):
+    return clean_value(value).strip().casefold()
+
+
 def get_auth_users():
     try:
         auth_config = dict(st.secrets.get("app_auth", {}))
     except Exception:
         auth_config = {}
     users = auth_config.get("users", {})
-    if isinstance(users, dict) and users:
-        return {clean_value(user): clean_value(password) for user, password in users.items() if clean_value(user)}
-    username = clean_value(auth_config.get("username"))
+    try:
+        configured_users = dict(users)
+    except (TypeError, ValueError):
+        configured_users = {}
+    if configured_users:
+        return {
+            _normalize_auth_username(user): clean_value(password)
+            for user, password in configured_users.items()
+            if _normalize_auth_username(user) and clean_value(password)
+        }
+    username = _normalize_auth_username(auth_config.get("username"))
     password = clean_value(auth_config.get("password"))
     if username and password:
         return {username: password}
@@ -11962,10 +11974,11 @@ def require_login():
     )
     if submitted:
         users = get_auth_users()
-        expected = users.get(clean_value(username))
+        normalized_username = _normalize_auth_username(username)
+        expected = users.get(normalized_username)
         if expected and hmac.compare_digest(clean_value(password), expected):
             st.session_state["authenticated"] = True
-            st.session_state["auth_user"] = clean_value(username)
+            st.session_state["auth_user"] = normalized_username
             st.rerun()
         st.error("Usuario o contrasena incorrectos.")
     return False

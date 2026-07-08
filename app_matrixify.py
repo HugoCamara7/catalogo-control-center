@@ -568,6 +568,10 @@ def publication_date_from_row(row):
         first_row_value(
             row,
             [
+                "Fecha publicacion web",
+                "Fecha de publicacion web",
+                "Fecha publicación web",
+                "Fecha de publicación web",
                 "Fecha publicaciÃ³n",
                 "Fecha publicacion",
                 "Fecha de publicaciÃ³n",
@@ -3106,6 +3110,7 @@ def build_shopify_update_preview(
     update_input_df,
     operation,
     brand_config,
+    shopify_config=None,
     arti_df=None,
     tag_mode="merge",
     image_mode="replace",
@@ -3339,6 +3344,23 @@ def build_shopify_update_preview(
             logo_value = ", ".join(dict.fromkeys(clean_value(value) for value in logo_refs if clean_value(value)))
             current_technology = clean_value(product.get("Metafield: custom.tecnologia [list.single_line_text_field]"))
             current_logo = clean_value(product.get("Metafield: custom.logo [list.metaobject_reference]"))
+            logo_resolved, logo_missing = _validate_logo_metaobject_refs(shopify_config, logo_value)
+            status = "OK"
+            observation = f"{len(technology_names)} tecnologia(s), {len(_split_tags(logo_value))} logo(s)"
+            if logo_missing:
+                status = "PARCIAL"
+                observation = f"{observation}. Faltan logo/metaobject: {', '.join(logo_missing)}"
+                issues.append(
+                    {
+                        "Mod-Col": product_key,
+                        "Handle": product.get("Handle"),
+                        "Problema": "Tecnologia detectada, pero faltan logos/metaobjects en Shopify",
+                        "Detalle": ", ".join(logo_missing),
+                        "Fila": input_index + 2,
+                    }
+                )
+            elif logo_value and shopify_config:
+                observation = f"{observation}. Logos validados: {len(logo_resolved)}"
             rows.append(
                 {
                     "Accion": "Actualizar",
@@ -3351,10 +3373,12 @@ def build_shopify_update_preview(
                     "Valor actual": f"tecnologia: {current_technology} | logo: {current_logo}",
                     "Valor nuevo": technology_value,
                     "Valor nuevo logos": logo_value,
+                    "Logos validados": ", ".join(logo_resolved),
+                    "Logos faltantes": ", ".join(logo_missing),
                     "Metafield: custom.tecnologia [list.single_line_text_field]": technology_value,
                     "Metafield: custom.logo [list.metaobject_reference]": logo_value,
-                    "Estado": "OK",
-                    "Observacion": f"{len(technology_names)} tecnologia(s), {len(_split_tags(logo_value))} logo(s)",
+                    "Estado": status,
+                    "Observacion": observation,
                 }
             )
         elif operation == "photos":
@@ -5367,6 +5391,27 @@ def _resolve_metaobject_reference_value(shopify_config, column, value):
     if field_type == "list.metaobject_reference":
         return json.dumps(gids, ensure_ascii=False)
     return gids[0] if gids else ""
+
+
+def _validate_logo_metaobject_refs(shopify_config, value):
+    refs = _split_tags(value)
+    if not refs:
+        return [], []
+    if not shopify_config:
+        return [], refs
+    resolved = []
+    missing = []
+    for ref in refs:
+        try:
+            _resolve_metaobject_reference_value(
+                shopify_config,
+                "Metafield: custom.logo [list.metaobject_reference]",
+                ref,
+            )
+            resolved.append(ref)
+        except Exception:
+            missing.append(ref)
+    return resolved, missing
 
 
 def _shopify_image_url(value):
@@ -12508,6 +12553,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         update_df,
                         update_operation,
                         brand_config,
+                        shopify_config=shopify_config,
                         arti_df=preview_arti_df,
                         tag_mode=tag_mode,
                         image_mode=image_mode,

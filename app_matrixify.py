@@ -5042,6 +5042,27 @@ def save_cached_catalog_kpi_result(site_key, result):
         pickle.dump(result, cache_file)
 
 
+def render_dashboard_refresh_error(exc, cached_result=None):
+    error_text = clean_value(exc)
+    st.error(f"No se pudo actualizar el dashboard: {error_text}")
+    if isinstance(cached_result, dict) and cached_result.get("kpis"):
+        refreshed_label = format_datetime_lima(cached_result.get("meta", {}).get("refreshed_at"))
+        suffix = f" del {refreshed_label}" if refreshed_label else ""
+        st.warning(f"Se mantienen en pantalla los ultimos KPIs validos{suffix}. No se reemplazaron por ceros.")
+    else:
+        st.warning(
+            "No hay KPIs validos guardados para mostrar. Reintenta en unos minutos o revisa que la tabla de stock "
+            "BigQuery tenga filas para el ultimo corte."
+        )
+    with st.expander("Diagnostico rapido", expanded=False):
+        st.write(
+            "- La app evita pisar el dashboard cuando BigQuery devuelve 0 filas de stock.\n"
+            "- Esto suele pasar por una ventana de actualizacion de la tabla, permisos, o una consulta `stock_query` "
+            "custom que quedo sin datos.\n"
+            "- Si usas `stock_query` en Secrets, valida que no este amarrada a una fecha sin carga."
+        )
+
+
 def siblings_by_model_from_shopify(shopify_products):
     products_df = pd.DataFrame(shopify_products)
     if products_df.empty or "Mod-Col" not in products_df.columns or "Handle" not in products_df.columns:
@@ -7437,6 +7458,21 @@ def _reset_sync_job_errors(job_id):
     return job
 
 
+def _update_sync_job_batch_size(job_id, batch_size):
+    job = _load_sync_job(job_id)
+    if not job:
+        return None
+    batch_size = max(1, int(batch_size or job.get("batch_size") or 20))
+    pending_count = len(job.get("pending_keys") or [])
+    current_block = int(job.get("current_block") or 0)
+    remaining_blocks = int((pending_count + batch_size - 1) / batch_size) if pending_count else 0
+    job["batch_size"] = batch_size
+    job["total_blocks"] = current_block + remaining_blocks
+    job["updated_at"] = _now_lima_text()
+    _save_sync_job(job)
+    return job
+
+
 def render_persistent_sync_job_panel(
     shopify_config,
     brand_config,
@@ -7458,12 +7494,28 @@ def render_persistent_sync_job_panel(
     )
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
-        batch_size = st.selectbox(
+        batch_choice = st.selectbox(
             "Productos por bloque",
-            [10, 20, 30, 50],
-            index=1,
-            key=f"{session_key}_batch_size",
+            ["10", "20", "30", "50", "Otro", "Todos pendientes"],
+            index=3,
+            key=f"{session_key}_batch_choice_v2",
         )
+        if batch_choice == "Otro":
+            batch_size = int(
+                st.number_input(
+                    "Cantidad personalizada",
+                    min_value=1,
+                    max_value=max(product_total, 1),
+                    value=min(max(product_total, 1), 100),
+                    step=5,
+                    key=f"{session_key}_custom_batch_size",
+                )
+            )
+        elif batch_choice == "Todos pendientes":
+            batch_size = max(product_total, 1)
+            st.caption("Procesara todo lo pendiente del job en el siguiente bloque.")
+        else:
+            batch_size = int(batch_choice)
     with c2:
         st.metric("Productos detectados", f"{product_total:,}")
     with c3:
@@ -7518,6 +7570,7 @@ def render_persistent_sync_job_panel(
 
     action_cols = st.columns([1, 1, 1, 2])
     if pending and action_cols[0].button("Continuar siguiente bloque", type="primary", key=f"{session_key}_continue"):
+        job = _update_sync_job_batch_size(job["id"], min(max(1, int(batch_size or 20)), max(pending, 1))) or job
         progress_callback = make_sync_progress_callback(label)
         job = process_sync_job_next_block(job["id"], shopify_config, progress_callback=progress_callback)
         clear_shopify_products_cache(site_key)
@@ -11401,6 +11454,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         else:
             result = None
     if result is None:
+        cached_before_refresh = load_cached_catalog_kpi_result(brand_config["site_key"])
         spinner_text = (
             "Cargando dashboard actualizado..."
         )
@@ -11410,10 +11464,13 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 st.session_state[run_key] = result
                 save_cached_catalog_kpi_result(brand_config["site_key"], result)
             except Exception as exc:
-                st.error(f"No se pudo actualizar el dashboard: {exc}")
+                if cached_before_refresh is not None and is_current_kpi_result(cached_before_refresh):
+                    result = cached_before_refresh
+                    st.session_state[run_key] = result
+                render_dashboard_refresh_error(exc, result)
 
     if not result:
-        st.info("Cargando dashboard...")
+        st.info("Dashboard pendiente de datos validos. Presiona Actualizar cuando BigQuery vuelva a entregar stock.")
         return
 
     meta = result.get("meta", {}) if isinstance(result, dict) else {}
@@ -11451,7 +11508,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 save_cached_catalog_kpi_result(brand_config["site_key"], result)
                 st.rerun()
             except Exception as exc:
-                st.error(f"No se pudo actualizar el dashboard: {exc}")
+                render_dashboard_refresh_error(exc, result)
 
     kpis = result["kpis"]
     combo_summary_df = result.get("non_visible_combo_summary", pd.DataFrame())

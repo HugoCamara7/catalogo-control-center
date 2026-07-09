@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -2891,6 +2891,63 @@ TECHNOLOGY_LOGO_ALIASES = {
 }
 
 
+TECHNOLOGY_LOGO_METAOBJECT_GIDS = {
+    "Amortiguación Alta": "gid://shopify/Metaobject/524803440828",
+    "Amortiguación Baja": "gid://shopify/Metaobject/524803473596",
+    "Light Warm": "gid://shopify/Metaobject/524803506364",
+    "Maximum Warm": "gid://shopify/Metaobject/524803539132",
+    "Medium Warm": "gid://shopify/Metaobject/524803571900",
+    "Amortiguación Media": "gid://shopify/Metaobject/524803604668",
+    "Navic Fit": "gid://shopify/Metaobject/524803637436",
+    "Adapt Trax": "gid://shopify/Metaobject/524803670204",
+    "Omni Heat Helix": "gid://shopify/Metaobject/524803702972",
+    "Omni Heat Arctic": "gid://shopify/Metaobject/524803735740",
+    "Omni Heat Reflective": "gid://shopify/Metaobject/524803768508",
+    "Omni Heat Infinity": "gid://shopify/Metaobject/524803801276",
+    "Omni Shield": "gid://shopify/Metaobject/524803834044",
+    "Omni Tech": "gid://shopify/Metaobject/524803866812",
+    "Omni Shade": "gid://shopify/Metaobject/524803899580",
+    "Omni Wick": "gid://shopify/Metaobject/524803932348",
+    "Omni Freeze Zero": "gid://shopify/Metaobject/524803965116",
+    "Omni Freeze": "gid://shopify/Metaobject/524803997884",
+    "OmniFreezeZeroIce": "gid://shopify/Metaobject/524804030652",
+    "Omni Grip": "gid://shopify/Metaobject/524804063420",
+    "Omni Shade Sun Deflector": "gid://shopify/Metaobject/524804096188",
+    "Out Dry Extreme": "gid://shopify/Metaobject/524804128956",
+    "Skin Cancer Foundation": "gid://shopify/Metaobject/524804161724",
+    "RDS": "gid://shopify/Metaobject/524804194492",
+    "Tech Lite": "gid://shopify/Metaobject/524804227260",
+    "Thermarator": "gid://shopify/Metaobject/524804260028",
+    "Omni Max": "gid://shopify/Metaobject/524804292796",
+    "Fishing": "gid://shopify/Metaobject/524804325564",
+    "Double Wall": "gid://shopify/Metaobject/524804358332",
+    "Hiking": "gid://shopify/Metaobject/524804391100",
+    "Heat Seal": "gid://shopify/Metaobject/524804423868",
+    "Everyday": "gid://shopify/Metaobject/524804456636",
+    "Omni Shield Release": "gid://shopify/Metaobject/524804489404",
+    "Omni Shade Broad Spectrum AF": "gid://shopify/Metaobject/524804522172",
+    "Omni Shade Broad Spectrum UPF50": "gid://shopify/Metaobject/524804554940",
+    "Omni Shield Blood N Guts": "gid://shopify/Metaobject/524804587708",
+    "Tech Lite Plush": "gid://shopify/Metaobject/524804620476",
+    "Out Dry": "gid://shopify/Metaobject/524804653244",
+    "Omni Heat Black Dot": "gid://shopify/Metaobject/524804686012",
+    "Omni Heat Synthetic Down": "gid://shopify/Metaobject/524804718780",
+    "Ski Snow": "gid://shopify/Metaobject/524804751548",
+    "Trail Running": "gid://shopify/Metaobject/524804784316",
+    "Turbo Down": "gid://shopify/Metaobject/524804817084",
+    "Water": "gid://shopify/Metaobject/524804849852",
+    "Omni Grip LT": "gid://shopify/Metaobject/524804882620",
+    "Omni Heat Thermal Insulation": "gid://shopify/Metaobject/524804915388",
+    "Omni Freeze Zero Ice": "gid://shopify/Metaobject/524804948156",
+    "Water Repellent": "gid://shopify/Metaobject/524804980924",
+    "Waterproof": "gid://shopify/Metaobject/524805013692",
+    "Omni Wind Block": "gid://shopify/Metaobject/524805046460",
+    "Omni Wick Evap": "gid://shopify/Metaobject/524805079228",
+    "Omni Shade Broad Spectrum": "gid://shopify/Metaobject/524805111996",
+    "TechLite Plus": "gid://shopify/Metaobject/524805144764",
+}
+
+
 TECHNOLOGY_SOURCE_COLUMNS = [
     "Metafield: custom.tecnologia [list.single_line_text_field]",
     "Tecnologias ",
@@ -3017,6 +3074,12 @@ def detect_product_technologies(source_row=None, shopify_product=None, brand_con
     seen_names = set()
     seen_logos = set()
 
+    def technology_identity_key(value):
+        text_value = clean_value(value).lower()
+        text_value = text_value.replace("tech-lite", "techlite").replace("tech lite", "techlite")
+        text_value = text_value.replace("out-dry", "outdry").replace("out dry", "outdry")
+        return re.sub(r"[^a-z0-9]+", "", text_value)
+
     def logo_aliases_for_value(value):
         text_value = clean_value(value)
         normalized = re.sub(r"[^a-z0-9]+", "-", text_value.lower()).strip("-")
@@ -3031,7 +3094,7 @@ def detect_product_technologies(source_row=None, shopify_product=None, brand_con
     def add_detected(name, logo):
         name = clean_value(name)
         logo = clean_value(logo)
-        name_key = name.lower()
+        name_key = technology_identity_key(name)
         if any(
             existing.startswith(f"{name_key} ") or existing.startswith(f"{name_key}-")
             for existing in seen_names
@@ -3040,11 +3103,13 @@ def detect_product_technologies(source_row=None, shopify_product=None, brand_con
         if name and name_key not in seen_names:
             detected_names.append(name)
             seen_names.add(name_key)
-        for logo_item in logo_aliases_for_value(logo or name):
-            logo_key = logo_item.lower()
-            if logo_item and logo_key not in seen_logos:
-                detected_logos.append(logo_item)
-                seen_logos.add(logo_key)
+        logo_aliases = logo_aliases_for_value(logo or name)
+        preferred_logo = next((item for item in logo_aliases if clean_value(item).lower().startswith("logo.")), "")
+        preferred_logo = preferred_logo or (logo_aliases[0] if logo_aliases else "")
+        logo_key = _static_logo_metaobject_gid(preferred_logo) or technology_identity_key(preferred_logo)
+        if preferred_logo and logo_key not in seen_logos:
+            detected_logos.append(preferred_logo)
+            seen_logos.add(logo_key)
 
     for tech in sorted(
         TECHNOLOGY_MAINTAINER,
@@ -3071,9 +3136,10 @@ def detect_product_technologies(source_row=None, shopify_product=None, brand_con
             if parsed:
                 add_detected(parsed, "")
         for logo in _split_tags(logos):
-            if logo and logo not in seen_logos:
+            logo_key = _static_logo_metaobject_gid(logo) or technology_identity_key(logo)
+            if logo and logo_key not in seen_logos:
                 detected_logos.append(logo)
-                seen_logos.add(logo)
+                seen_logos.add(logo_key)
 
     return detected_names, detected_logos
 
@@ -5243,6 +5309,32 @@ def _logo_reference_candidates(reference, handle=""):
     return {candidate.lower() for candidate in candidates if candidate}
 
 
+def _static_logo_metaobject_gid(reference, handle=""):
+    lookup = {}
+    for label, gid in TECHNOLOGY_LOGO_METAOBJECT_GIDS.items():
+        for candidate in _logo_reference_candidates(label):
+            lookup.setdefault(candidate, gid)
+    for normalized, aliases in TECHNOLOGY_LOGO_ALIASES.items():
+        gid = ""
+        for alias in aliases:
+            gid = lookup.get(clean_value(alias).lower()) or next(
+                (lookup.get(candidate) for candidate in _logo_reference_candidates(alias) if lookup.get(candidate)),
+                "",
+            )
+            if gid:
+                break
+        if gid:
+            for alias in [normalized, *aliases]:
+                for candidate in _logo_reference_candidates(alias):
+                    lookup.setdefault(candidate, gid)
+
+    for candidate in _logo_reference_candidates(reference, handle):
+        gid = lookup.get(candidate)
+        if gid:
+            return gid
+    return ""
+
+
 def _metaobject_gid_lookup(shopify_config, metaobject_type):
     cache_key = f"metaobject_lookup_v2_{clean_value(metaobject_type)}"
     if cache_key not in st.session_state:
@@ -5375,11 +5467,16 @@ def _resolve_metaobject_reference_value(shopify_config, column, value):
                 if gid:
                     break
         if not gid:
-            fallback_lookup = _all_metaobject_gid_lookup(shopify_config)
+            try:
+                fallback_lookup = _all_metaobject_gid_lookup(shopify_config)
+            except Exception:
+                fallback_lookup = {"by_reference": {}, "by_handle": {}}
             for candidate in _logo_reference_candidates(reference, handle):
                 gid = fallback_lookup["by_reference"].get(candidate) or fallback_lookup["by_handle"].get(candidate)
                 if gid:
                     break
+        if not gid:
+            gid = _static_logo_metaobject_gid(reference, handle)
         if gid:
             if gid not in gids:
                 gids.append(gid)
@@ -12249,8 +12346,19 @@ api_version = "{DEFAULT_API_VERSION}"
                     "Debe incluir Mod-Col y columnas como Body HTML, Material, Composición, Cuidado o Cuidados."
                 )
         elif update_operation == "technologies":
-            update_file = None
-            st.success("No requiere archivo: se analiza el catálogo actual de Shopify.")
+            if update_source == "Shopify API":
+                update_file = st.file_uploader(
+                    "2. Opcional: subir Excel con Mod-Col y Tecnologia",
+                    type=["xlsx", "xls"],
+                    key="update_technologies",
+                    help=(
+                        "Si subes archivo, la app usa sus columnas Cod Mod Col/Mod-Col y Tecnologia para actualizar "
+                        "custom.tecnologia y custom.logo. Si no subes archivo, analiza el catálogo actual de Shopify."
+                    ),
+                )
+                st.success("Opcional: sin archivo se analiza el catálogo actual de Shopify.")
+            else:
+                st.success("El respaldo Excel cargado arriba se usará como input de tecnologías.")
             st.caption(
                 "Mantención tecnologías: detecta tecnologías principalmente desde Tags, y también desde título, "
                 "descripción y metacampos disponibles. Luego actualiza custom.tecnologia y custom.logo sin borrar "
@@ -12321,8 +12429,13 @@ api_version = "{DEFAULT_API_VERSION}"
             st.session_state["partial_context"] = partial_context
         effective_update_source = update_source
         body_backup_input_file = None
+        technology_backup_input_file = None
         if update_operation == "body" and update_source == "Respaldo Excel" and template_file:
             body_backup_input_file = template_file
+            if is_shopify_configured(shopify_config):
+                effective_update_source = "Shopify API"
+        if update_operation == "technologies" and update_source == "Respaldo Excel" and template_file:
+            technology_backup_input_file = template_file
             if is_shopify_configured(shopify_config):
                 effective_update_source = "Shopify API"
 
@@ -12335,7 +12448,11 @@ api_version = "{DEFAULT_API_VERSION}"
 
         if effective_update_source == "Shopify API" and update_ready:
             try:
-                effective_update_file = body_backup_input_file if body_backup_input_file is not None else update_file
+                effective_update_file = (
+                    body_backup_input_file
+                    if body_backup_input_file is not None
+                    else (technology_backup_input_file if technology_backup_input_file is not None else update_file)
+                )
                 update_df = read_uploaded_excel_cached(
                     effective_update_file,
                     f"partial_{brand_config['site_key']}_{update_operation}",

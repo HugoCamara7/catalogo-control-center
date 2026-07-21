@@ -1,116 +1,95 @@
-# App Matrixify Multimarca
+import sys
+from pathlib import Path
 
-Aplicacion Streamlit para convertir un Excel input de productos a una salida Matrixify expandida por talla. El flujo esta organizado por sitio destino para conservar IDs desde el ultimo catalogo Matrixify de cada tienda.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-## Como usar
+from catalog_rules import (
+    build_catalog_handle,
+    is_invalid_size_for_creation,
+    normalize_product_type,
+    resolve_size_guide,
+    sanitize_body_html,
+    validate_catalog_row,
+)
 
-1. Instalar dependencias:
 
-```powershell
-pip install -r requirements.txt
-```
+def assert_true(condition, message):
+    if not condition:
+        raise AssertionError(message)
 
-2. Configurar el maestro `arti`.
 
-La app primero intenta leer el ARTI desde BigQuery. Para desarrollo local, crea:
+def main():
+    shoe_rule = normalize_product_type("zapatillas")
+    assert_true(shoe_rule and shoe_rule["category"] == "Calzado", "Zapatillas debe normalizar a Calzado")
 
-```text
-.streamlit/secrets.toml
-```
+    handle = build_catalog_handle("Casacas", "Mujer", "Columbia", "2092991-NRY")
+    assert_true(handle == "casacas-mujer-columbia-2092991-nry", "Handle debe ser tipo-genero-marca-modcol")
 
-Puedes copiar la estructura desde:
+    jacket_rule = normalize_product_type("jacket")
+    assert_true(jacket_rule and jacket_rule["plural"] == "Casacas", "Jacket debe pluralizar a Casacas")
 
-```text
-.streamlit/secrets.example.toml
-```
+    assert_true(is_invalid_size_for_creation("000"), "000 debe bloquearse")
+    assert_true(is_invalid_size_for_creation("K"), "K debe bloquearse")
+    assert_true(not is_invalid_size_for_creation("M"), "M debe ser talla valida")
 
-Si BigQuery no esta configurado, la app usa el respaldo local:
+    blocked = resolve_size_guide(
+        brand="Columbia",
+        category="Calzado",
+        gender="Hombre",
+        current_guide="CLB_HOMBRE_VESTUARIO",
+    )
+    assert_true(blocked["status"] == "blocked", "Calzado con guia vestuario debe bloquearse")
 
-```text
-data/arti.zip
-```
+    approved = resolve_size_guide(brand="Columbia", category="Vestuario", gender="Mujer")
+    assert_true(approved["guide"] == "CLB_MUJER_TOPS", "Vestuario mujer Columbia debe sugerir guia mujer tops")
 
-Para probar conexion Shopify por sitio, agrega las credenciales en Secrets:
+    approved_top = resolve_size_guide(
+        brand="Columbia",
+        category="Vestuario",
+        product_type="Casacas",
+        gender="Mujer",
+    )
+    assert_true(approved_top["guide"] == "CLB_MUJER_TOPS", "Casacas mujer debe usar guia TOPS")
 
-```toml
-[shopify_sites.columbia]
-shop_domain = "columbiape.myshopify.com"
-client_id = "..."
-client_secret = "..."
-admin_access_token = "..."
-api_version = "2026-04"
-```
+    approved_bottom = resolve_size_guide(
+        brand="Columbia",
+        category="Vestuario",
+        product_type="Pantalones",
+        gender="Mujer",
+    )
+    assert_true(approved_bottom["guide"] == "CLB_MUJER_BOTTOMS", "Pantalones mujer debe usar guia BOTTOMS")
 
-Repite la estructura para `rockford` y `hush_puppies`. Si `admin_access_token`
-esta vacio, la app intentara obtener token con `client_id` y `client_secret`.
+    blocked_bottom = resolve_size_guide(
+        brand="Columbia",
+        category="Vestuario",
+        product_type="Shorts",
+        gender="Hombre",
+        current_guide="CLB_HOMBRE_TOPS",
+    )
+    assert_true(blocked_bottom["status"] == "blocked", "Bottom con guia TOPS debe bloquearse")
 
-Tambien puedes agregar una lista de tipos/familias actuales de Shopify para que el archivo final avise si aparece un tipo nuevo:
+    row_result = validate_catalog_row(
+        {
+            "Mod-Col": "2092991-NRY",
+            "Marca": "Columbia",
+            "Genero": "Mujer",
+            "Categoria": "Vestuario",
+            "Tipo de prenda": "Casacas",
+            "Color web": "Negro",
+            "Title": "Casaca Mujer",
+            "Talla": "M",
+            "SKU": "5327440",
+            "Precio": "299.90",
+        }
+    )
+    assert_true(not any(i["level"] == "bloqueo" for i in row_result["issues"]), "Fila ejemplo no debe bloquearse")
 
-```text
-data/tipos_shopify.xlsx
-```
+    clean_html, changes = sanitize_body_html("<script>x()</script><p onclick='x'>Hola</p>")
+    assert_true("<script" not in clean_html.lower(), "Debe remover scripts")
+    assert_true(changes, "Debe reportar cambios de HTML")
 
-Puede ser una sola columna con encabezado `Tipo`, `Familia`, `Prenda` o similar.
+    print("OK catalog_rules")
 
-3. Ejecutar la app:
 
-```powershell
-streamlit run app_matrixify.py
-```
-
-4. Elegir sitio destino en el sidebar.
-
-La app trae perfiles cerrados para:
-
-- Columbia.pe: permite Columbia.
-- Rockford.pe: permite Columbia, Rockford, Patagonia, Sorel y Mountain Hardwear.
-- HushPuppies.pe: permite Hush Puppies, Hush Puppies Kids, Accesorios HP, Keds y Rockford.
-- Vans.pe: permite Vans.
-
-El vendor, dominio Sial, carpeta de fotos y marcas permitidas se definen por sitio en el codigo para evitar cargas cruzadas.
-
-5. Cargar archivos:
-
-- Excel input de productos.
-- Ultimo catalogo Matrixify del sitio elegido. Es obligatorio para conservar Product ID y Variant ID, y evitar duplicados.
-
-6. Presionar **Generar Matrixify** y descargar el Excel final.
-
-## Actualizaciones puntuales
-
-En el sidebar puedes cambiar **Tipo de operacion** a **Actualizacion puntual**.
-Este modo genera archivos Matrixify livianos, solo con los campos necesarios:
-
-- **Tags**: sube `Mod-Col` y `Tags`; permite agregar a los tags actuales o reemplazarlos.
-- **Fotos 10 vistas**: usa el catalogo Matrixify y ARTI para generar URLs correctas por marca; permite reemplazar o mezclar fotos.
-- **Siblings**: recalcula `Metafield: theme.siblings` con todos los handles que comparten el mismo codigo modelo.
-- **Titulo**: sube `Mod-Col` y `Title`.
-- **Body HTML / Material / Cuidado**: reconstruye desde input comercial o detecta Material/Cuidado mezclados en el catalogo.
-
-## Logica actual
-
-- Lee el ARTI desde BigQuery cuando existen secretos configurados.
-- Si BigQuery no esta configurado, usa `data/arti.zip`, `data/arti.csv` o `data/arti.xlsx`.
-- Hace match entre input y ARTI por `Mod-Col` o `COD MOD COL`.
-- Usa tallas, SKUs, precios y codigos de barra desde ARTI.
-- Omite variantes con talla `0`.
-- Ordena tallas tipo `XS, S, M, L, XL, XXL`, tallas numericas y tallas reales.
-- Filtra ARTI por las marcas permitidas del sitio cuando existe la columna `MARCA_MA`.
-- Valida marcas del input si existe columna `Marca`, `Brand`, `Vendor` o similar.
-- Valida que el catalogo Matrixify cargado tenga el vendor esperado del sitio cuando existe columna `Vendor`.
-- Genera hojas de salida Matrixify, Carga Sial, resumen, revision, tipos nuevos y omitidos sin cambios.
-- Usa vendor, dominio Sial y carpeta de fotos segun el sitio elegido.
-
-## Columnas requeridas en BigQuery
-
-La tabla o query debe entregar estas columnas:
-
-```text
-CODINT_MA
-COD MOD COL
-Mod-Col
-TALNUM_MA
-MARCA_MA
-Precio
-CodBarras
-```
+if __name__ == "__main__":
+    main()

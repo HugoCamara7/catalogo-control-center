@@ -43,9 +43,21 @@ from generate_columbia_matrixify import (
     read_arti_source,
 )
 try:
-    from catalog_rules import CATALOG_FIELD_ALIASES, aliases_for, build_catalog_handle, validate_catalog_row
+    from catalog_rules import (
+        CATALOG_FIELD_ALIASES,
+        INPUT_COLUMNS as CATALOG_INPUT_COLUMNS,
+        PRODUCT_TYPE_RULES,
+        SIZE_GUIDE_RULES,
+        aliases_for,
+        build_catalog_handle,
+        resolve_size_guide,
+        validate_catalog_row,
+    )
 except Exception:
     CATALOG_FIELD_ALIASES = {}
+    CATALOG_INPUT_COLUMNS = []
+    PRODUCT_TYPE_RULES = []
+    SIZE_GUIDE_RULES = []
 
     def aliases_for(field, fallback=None):
         return list(fallback or [])
@@ -55,6 +67,15 @@ except Exception:
 
     def validate_catalog_row(row):
         return {"normalized": {}, "issues": [], "size_guide_decision": {}}
+
+    def resolve_size_guide(brand="", category="", product_type="", gender="", age_group="", current_guide=""):
+        return {
+            "guide": clean_value(current_guide),
+            "rule": "fallback",
+            "match_level": "none",
+            "warning": "No se pudo cargar catalog_rules.resolve_size_guide.",
+            "status": "warning",
+        }
 
 try:
     import shopify_api as _shopify_api
@@ -1379,6 +1400,767 @@ def dataframe_to_excel_bytes(sheets):
     return buffer
 
 
+COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V1_2026-07-21"
+COMMERCIAL_INPUT_MAX_ROWS = 5000
+COMMERCIAL_INPUT_REQUIRED_COLUMNS = [
+    "Codigo modelo",
+    "Mod-Col",
+    "Marca",
+    "Genero",
+    "Clase",
+    "Categoria",
+    "Tipo de prenda",
+    "Color web/filtro",
+    "Nombre web o Title",
+]
+COMMERCIAL_INPUT_TEXT_LIST_COLUMNS = [
+    "Caracteristicas",
+    "Materiales o composicion",
+    "Cuidados",
+    "Tecnologias",
+    "Tags sugeridos",
+]
+COMMERCIAL_INPUT_INVALID_TEXTS = {
+    "",
+    "-",
+    ".",
+    "0",
+    "00",
+    "000",
+    "n/a",
+    "na",
+    "null",
+    "none",
+    "sin informacion",
+    "sininformacion",
+    "pendiente",
+    "por completar",
+    "porcompletar",
+    "tbd",
+}
+
+
+def _input_norm_key(value):
+    text = unicodedata.normalize("NFKD", clean_value(value))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def configured_commercial_brands():
+    brands = {}
+    for config in SITE_CONFIGS.values():
+        for brand in config.get("allowed_arti_brands", []):
+            display = brand_display_name(brand, brand.title())
+            brands[_input_norm_key(display)] = display
+    for config in SITE_CONFIGS.values():
+        display = brand_display_name(config.get("label"), config.get("label", ""))
+        if display:
+            brands[_input_norm_key(display)] = display
+    return [brands[key] for key in sorted(brands)]
+
+
+def sites_for_commercial_brand(brand_name):
+    brand_key = normalize_brand_name(brand_name)
+    sites = []
+    for site_key, config in SITE_CONFIGS.items():
+        allowed = {normalize_brand_name(value) for value in config.get("allowed_arti_brands", [])}
+        label_key = normalize_brand_name(config.get("label"))
+        if brand_key in allowed or brand_key == label_key:
+            site_config = dict(config)
+            site_config["site_key"] = site_key
+            sites.append(site_config)
+    return sites
+
+
+def publication_column_for_site(site_label):
+    label = clean_value(site_label).upper()
+    label = label.replace(".", "_").replace("-", "_")
+    label = re.sub(r"[^A-Z0-9_]+", "_", label)
+    label = re.sub(r"_+", "_", label).strip("_")
+    return f"PUBLICAR_{label}"
+
+
+def commercial_input_metafields_for_brand(brand_name):
+    brand_key = normalize_brand_name(brand_name)
+    common = [
+        {
+            "Nombre visible": "Marca",
+            "Namespace": "custom",
+            "Key": "marca",
+            "Tipo de dato": "single_line_text_field",
+            "Responsable": "Catalog Control Center",
+            "Aparece en input": "NO",
+            "Regla": "Se toma de la marca seleccionada; Brand no debe cambiarla.",
+        },
+        {
+            "Nombre visible": "Tipo de prenda",
+            "Namespace": "custom",
+            "Key": "tipo",
+            "Tipo de dato": "single_line_text_field",
+            "Responsable": "Catalog Control Center",
+            "Aparece en input": "SI",
+            "Regla": "Debe normalizarse/pluralizarse segun diccionario web.",
+        },
+        {
+            "Nombre visible": "Guia de talla",
+            "Namespace": "custom",
+            "Key": "guia_de_tallas",
+            "Tipo de dato": "page_reference",
+            "Responsable": "Catalog Control Center",
+            "Aparece en input": "SI",
+            "Regla": "Se valida por marca, categoria, genero y tipo de prenda.",
+        },
+        {
+            "Nombre visible": "Materialidad",
+            "Namespace": "custom",
+            "Key": "materialidad",
+            "Tipo de dato": "single_line_text_field",
+            "Responsable": "Brand",
+            "Aparece en input": "SI",
+            "Regla": "No borrar si viene vacio; se usa si Brand lo informa.",
+        },
+    ]
+    if brand_key == "COLUMBIA":
+        common.extend(
+            [
+                {
+                    "Nombre visible": "Tecnologia",
+                    "Namespace": "custom",
+                    "Key": "tecnologia",
+                    "Tipo de dato": "list.single_line_text_field",
+                    "Responsable": "Brand / Catalog Control Center",
+                    "Aparece en input": "SI",
+                    "Regla": "Separar por | o coma; se normaliza a nombres permitidos.",
+                },
+                {
+                    "Nombre visible": "Logo",
+                    "Namespace": "custom",
+                    "Key": "logo",
+                    "Tipo de dato": "list.metaobject_reference",
+                    "Responsable": "Catalog Control Center",
+                    "Aparece en input": "NO",
+                    "Regla": "Se resuelve desde tecnologias detectadas; no pedir GID a Brand.",
+                },
+            ]
+        )
+    if brand_key in {"HUSH PUPPIES", "VANS", "ROCKFORD"}:
+        common.append(
+            {
+                "Nombre visible": "Composicion",
+                "Namespace": "custom",
+                "Key": "composicion",
+                "Tipo de dato": "multi_line_text_field",
+                "Responsable": "Brand",
+                "Aparece en input": "SI",
+                "Regla": "Se usa para informacion comercial y body si corresponde.",
+            }
+        )
+    return pd.DataFrame(common)
+
+
+def commercial_input_columns_for_brand(brand_name):
+    base_columns = [
+        "Codigo modelo",
+        "Mod-Col",
+        "Marca",
+        "Genero",
+        "Grupo de edad",
+        "Clase",
+        "Categoria",
+        "Subcategoria",
+        "Tipo de prenda",
+        "Color comercial",
+        "Color Forus",
+        "Color web/filtro",
+        "Nombre web o Title",
+        "Descripcion",
+        "Caracteristicas",
+        "Materiales o composicion",
+        "Cuidados",
+        "Tecnologias",
+        "Tags sugeridos",
+        "Guia de talla",
+        "Fecha publicacion",
+        "Observaciones",
+    ]
+    site_columns = [publication_column_for_site(site["site_label"]) for site in sites_for_commercial_brand(brand_name)]
+    return base_columns + site_columns
+
+
+def _commercial_values_rows(brand_name):
+    sites = sites_for_commercial_brand(brand_name)
+    values = []
+    for item in ["Hombre", "Mujer", "Unisex", "Nino", "Nina", "Bebe"]:
+        values.append({"Lista": "Genero", "Valor": item, "Marca": brand_name, "Observacion": ""})
+    for item in ["Adulto", "Kids", "Junior", "Bebe"]:
+        values.append({"Lista": "Grupo de edad", "Valor": item, "Marca": brand_name, "Observacion": ""})
+    for item in ["Calzado", "Vestuario", "Accesorios"]:
+        values.append({"Lista": "Clase", "Valor": item, "Marca": brand_name, "Observacion": ""})
+        values.append({"Lista": "Categoria", "Valor": item, "Marca": brand_name, "Observacion": ""})
+    for item in ["SI", "NO"]:
+        values.append({"Lista": "Publicacion sitio", "Valor": item, "Marca": brand_name, "Observacion": "Obligatorio por sitio."})
+    for rule in PRODUCT_TYPE_RULES:
+        values.append({"Lista": "Tipo de prenda", "Valor": rule.get("plural") or rule.get("normalized"), "Marca": brand_name, "Observacion": rule.get("category", "")})
+    for rule in SIZE_GUIDE_RULES:
+        guide = clean_value(rule.get("guide"))
+        if guide:
+            values.append({"Lista": "Guia de talla", "Valor": guide, "Marca": rule.get("brand", ""), "Observacion": rule.get("family", "")})
+    for item in ["Omni-Tech", "Omni-Heat Infinity", "Omni-Shield", "Omni-Grip", "OutDry", "Techlite", "Thermarator"]:
+        values.append({"Lista": "Tecnologias", "Valor": item, "Marca": "Columbia", "Observacion": "Solo si aplica."})
+    for site in sites:
+        values.append({"Lista": "Sitios asociados", "Valor": site["site_label"], "Marca": brand_name, "Observacion": publication_column_for_site(site["site_label"])})
+    return pd.DataFrame(values)
+
+
+def _commercial_dictionary_rows(brand_name):
+    columns = commercial_input_columns_for_brand(brand_name)
+    rows = []
+    for column in columns:
+        required = column in COMMERCIAL_INPUT_REQUIRED_COLUMNS or column.startswith("PUBLICAR_")
+        is_site = column.startswith("PUBLICAR_")
+        rows.append(
+            {
+                "Nombre exacto": column,
+                "Nombre visible": column,
+                "Descripcion": (
+                    "SI publica/mantiene publicado; NO no publica. Nunca se retira silenciosamente."
+                    if is_site
+                    else {
+                        "Descripcion": "Texto comercial base. La app genera Body HTML; Brand no escribe HTML.",
+                        "Caracteristicas": "Lista de beneficios separada por |.",
+                        "Materiales o composicion": "Materiales/composicion separados por | si son varios.",
+                        "Cuidados": "Cuidados separados por |.",
+                        "Tecnologias": "Tecnologias separadas por | o coma. La app resuelve metafields custom.tecnologia y custom.logo.",
+                        "Tipo de prenda": "Debe seleccionarse del diccionario web, pluralizado cuando corresponda.",
+                        "Guia de talla": "Puede venir vacia si la app puede resolverla; si viene, debe ser compatible.",
+                    }.get(column, f"Campo comercial {column}.")
+                ),
+                "Responsable de llenado": "Brand" if column not in {"Marca"} and not is_site else ("Usuario eCommerce" if is_site else "Catalog Control Center"),
+                "Tipo de dato": "Fecha" if column == "Fecha publicacion" else "Texto",
+                "Formato permitido": "SI/NO" if is_site else ("yyyy-mm-dd hh:mm" if column == "Fecha publicacion" else "Texto limpio"),
+                "Obligatorio": "SI" if required else "NO",
+                "Longitud minima": 150 if column == "Descripcion" else "",
+                "Longitud recomendada": "300-1000" if column == "Descripcion" else ("30-80" if column == "Nombre web o Title" else ""),
+                "Longitud maxima": 5000 if column == "Descripcion" else "",
+                "Valores permitidos": "SI|NO" if is_site else "",
+                "Separador aplicable": "|" if column in COMMERCIAL_INPUT_TEXT_LIST_COLUMNS else "",
+                "Ejemplo correcto": {
+                    "Codigo modelo": "2092991",
+                    "Mod-Col": "2092991-NRY",
+                    "Marca": brand_display_name(brand_name, brand_name),
+                    "Genero": "Mujer",
+                    "Clase": "Vestuario",
+                    "Categoria": "Vestuario",
+                    "Tipo de prenda": "Casacas",
+                    "Color web/filtro": "Negro",
+                    "Nombre web o Title": "Casaca Impermeable Mujer Arcadia II",
+                    "Descripcion": "Casaca impermeable, respirable y plegable para lluvia diaria.",
+                    "Caracteristicas": "Impermeable|Respirable|Capucha ajustable",
+                    "Materiales o composicion": "Exterior: 100% poliester|Forro: malla respirable",
+                    "Cuidados": "Lavar con agua fria|No usar blanqueador",
+                    "Tecnologias": "Omni-Tech|Omni-Shield",
+                    "Tags sugeridos": "Vestuario|Mujer|Outdoor",
+                    "Guia de talla": "CLB_MUJER_TOPS",
+                }.get(column, "NO" if is_site else ""),
+                "Ejemplo incorrecto": "vacio" if required else "",
+                "Regla de validacion": "No vacio; SI/NO" if is_site else ("No aceptar K, 0, 000 como tallas en creacion." if column == "Talla" else "Validar contra diccionario si aplica."),
+                "Transformacion realizada por la aplicacion": "Genera Body HTML desde campos comerciales." if column in {"Descripcion", "Caracteristicas", "Materiales o composicion", "Cuidados"} else "Normaliza espacios y equivalencias.",
+                "Campo de Shopify": {
+                    "Nombre web o Title": "Product.title",
+                    "Descripcion": "Product.bodyHtml",
+                    "Caracteristicas": "Product.bodyHtml",
+                    "Materiales o composicion": "Product.bodyHtml/custom.materialidad",
+                    "Cuidados": "Product.bodyHtml",
+                    "Tecnologias": "custom.tecnologia/custom.logo",
+                    "Guia de talla": "custom.guia_de_tallas",
+                    "Tipo de prenda": "Product.productType/custom.tipo",
+                }.get(column, "Publication" if is_site else "Auxiliar"),
+                "Namespace": "custom" if column in {"Tecnologias", "Guia de talla", "Tipo de prenda", "Materiales o composicion"} else "",
+                "Key": {
+                    "Tecnologias": "tecnologia/logo",
+                    "Guia de talla": "guia_de_tallas",
+                    "Tipo de prenda": "tipo",
+                    "Materiales o composicion": "materialidad",
+                }.get(column, ""),
+                "Comportamiento si esta vacio": "Bloquea" if required else "No actualiza ni borra informacion existente.",
+                "Nivel de error": "Bloqueo" if required else "Advertencia",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _commercial_examples_df(brand_name):
+    brand_label = brand_display_name(brand_name, brand_name)
+    columns = commercial_input_columns_for_brand(brand_name)
+    site_values = {column: "NO" for column in columns if column.startswith("PUBLICAR_")}
+    if site_values:
+        first_site_col = next(iter(site_values))
+        site_values[first_site_col] = "SI"
+    rows = [
+        {
+            "Codigo modelo": "EJEMPLO-CALZADO",
+            "Mod-Col": "EJEMPLO-CALZADO-001",
+            "Marca": brand_label,
+            "Genero": "Hombre",
+            "Grupo de edad": "Adulto",
+            "Clase": "Calzado",
+            "Categoria": "Calzado",
+            "Subcategoria": "Zapatillas",
+            "Tipo de prenda": "Zapatillas",
+            "Color comercial": "Negro/Blanco",
+            "Color Forus": "Negro",
+            "Color web/filtro": "Negro",
+            "Nombre web o Title": f"Zapatilla Hombre {brand_label} Ejemplo",
+            "Descripcion": "Zapatilla liviana para uso urbano y actividades diarias con ajuste comodo.",
+            "Caracteristicas": "Suela flexible|Ajuste seguro|Plantilla confortable",
+            "Materiales o composicion": "Capellada textil|Suela de caucho",
+            "Cuidados": "Limpiar con pano humedo|Secar a la sombra",
+            "Tecnologias": "Techlite" if normalize_brand_name(brand_name) == "COLUMBIA" else "",
+            "Tags sugeridos": "Calzado|Hombre|Urbano",
+            "Guia de talla": "CLB_HOMBRE_CALZADO" if normalize_brand_name(brand_name) == "COLUMBIA" else "",
+            "Fecha publicacion": "",
+            "Observaciones": "Ejemplo didactico; no procesar.",
+            **site_values,
+        },
+        {
+            "Codigo modelo": "EJEMPLO-VESTUARIO",
+            "Mod-Col": "EJEMPLO-VESTUARIO-001",
+            "Marca": brand_label,
+            "Genero": "Mujer",
+            "Grupo de edad": "Adulto",
+            "Clase": "Vestuario",
+            "Categoria": "Vestuario",
+            "Subcategoria": "Casacas",
+            "Tipo de prenda": "Casacas",
+            "Color comercial": "Azul",
+            "Color Forus": "Azul",
+            "Color web/filtro": "Azul",
+            "Nombre web o Title": f"Casaca Mujer {brand_label} Ejemplo",
+            "Descripcion": "Casaca respirable para proteger de la lluvia ligera y acompanar salidas outdoor.",
+            "Caracteristicas": "Repelente al agua|Capucha ajustable|Bolsillos laterales",
+            "Materiales o composicion": "Exterior: 100% poliester",
+            "Cuidados": "Lavar en ciclo suave|No usar lejia",
+            "Tecnologias": "Omni-Shield" if normalize_brand_name(brand_name) == "COLUMBIA" else "",
+            "Tags sugeridos": "Vestuario|Mujer|Outdoor",
+            "Guia de talla": "CLB_MUJER_TOPS" if normalize_brand_name(brand_name) == "COLUMBIA" else "",
+            "Fecha publicacion": "",
+            "Observaciones": "Ejemplo didactico; no procesar.",
+            **site_values,
+        },
+        {
+            "Codigo modelo": "EJEMPLO-ACCESORIO",
+            "Mod-Col": "EJEMPLO-ACCESORIO-001",
+            "Marca": brand_label,
+            "Genero": "Unisex",
+            "Grupo de edad": "Adulto",
+            "Clase": "Accesorios",
+            "Categoria": "Accesorios",
+            "Subcategoria": "Gorros",
+            "Tipo de prenda": "Gorros",
+            "Color comercial": "Beige",
+            "Color Forus": "Beige",
+            "Color web/filtro": "Beige",
+            "Nombre web o Title": f"Gorro Unisex {brand_label} Ejemplo",
+            "Descripcion": "Gorro comodo para uso diario con construccion suave y facil de combinar.",
+            "Caracteristicas": "Tejido suave|Uso diario|Ajuste comodo",
+            "Materiales o composicion": "100% acrilico",
+            "Cuidados": "Lavar a mano|No planchar",
+            "Tecnologias": "",
+            "Tags sugeridos": "Accesorios|Unisex|Uso diario",
+            "Guia de talla": "",
+            "Fecha publicacion": "",
+            "Observaciones": "Ejemplo didactico; no procesar.",
+            **site_values,
+        },
+    ]
+    return pd.DataFrame(rows).reindex(columns=columns)
+
+
+def _commercial_input_blank_df(brand_name, rows=100):
+    columns = commercial_input_columns_for_brand(brand_name)
+    df = pd.DataFrame([{column: "" for column in columns} for _ in range(rows)])
+    df["Marca"] = brand_display_name(brand_name, brand_name)
+    for column in columns:
+        if column.startswith("PUBLICAR_"):
+            df[column] = "NO"
+    return df
+
+
+def build_brand_commercial_input_workbook(brand_name):
+    from openpyxl.comments import Comment
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.utils import get_column_letter
+
+    brand_label = brand_display_name(brand_name, brand_name)
+    sites = sites_for_commercial_brand(brand_label)
+    columns = commercial_input_columns_for_brand(brand_label)
+    site_columns = [column for column in columns if column.startswith("PUBLICAR_")]
+    dictionary_df = _commercial_dictionary_rows(brand_label)
+    values_df = _commercial_values_rows(brand_label)
+    examples_df = _commercial_examples_df(brand_label)
+    sheets = {
+        "INSTRUCCIONES": pd.DataFrame(
+            [
+                {"Campo": "Marca", "Detalle": brand_label},
+                {"Campo": "Version formato", "Detalle": COMMERCIAL_INPUT_TEMPLATE_VERSION},
+                {"Campo": "Uso", "Detalle": "Completar INPUT_COMERCIAL. No escribir Body HTML; la app lo genera desde descripcion, caracteristicas, materiales y cuidados."},
+                {"Campo": "Separador", "Detalle": "Usar | para listas. Ej: Impermeable|Capucha ajustable|Costuras selladas."},
+                {"Campo": "Sitios", "Detalle": "Cada columna PUBLICAR_* acepta solo SI o NO. Predeterminado NO."},
+                {"Campo": "Campos vacios", "Detalle": "Campos opcionales vacios no eliminan informacion existente en Shopify."},
+                {"Campo": "Fechas", "Detalle": "Usar yyyy-mm-dd hh:mm si aplica."},
+                {"Campo": "No modificar", "Detalle": "No cambiar nombres de hojas, encabezados, Marca ni version."},
+            ]
+        ),
+        "INPUT_COMERCIAL": _commercial_input_blank_df(brand_label),
+        "EJEMPLOS": examples_df,
+        "DICCIONARIO_COLUMNAS": dictionary_df,
+        "VALORES_PERMITIDOS": values_df,
+        "TIPOS_PRENDA": pd.DataFrame(PRODUCT_TYPE_RULES),
+        "GUIAS_TALLA": pd.DataFrame(SIZE_GUIDE_RULES),
+        "SITIOS_MARCA": pd.DataFrame(
+            [
+                {
+                    "Marca": brand_label,
+                    "Codigo sitio": site.get("site_key", ""),
+                    "Nombre sitio": site.get("site_label", ""),
+                    "Dominio": site.get("store_domain", ""),
+                    "Tienda Shopify": SITE_UI_CONFIG.get(site.get("site_label", ""), {}).get("shopify_store", ""),
+                    "Canal/publicacion": "Online Store",
+                    "Estado": "Activo",
+                    "Columna SI/NO": publication_column_for_site(site.get("site_label", "")),
+                }
+                for site in sites
+            ]
+        ),
+        "METAFIELDS_MARCA": commercial_input_metafields_for_brand(brand_label),
+        "ERRORES_Y_ADVERTENCIAS": pd.DataFrame(
+            [
+                {"Nivel": "Bloqueo", "Regla": "Marca incorrecta", "Accion": "Usar el input de la marca correcta."},
+                {"Nivel": "Bloqueo", "Regla": "PUBLICAR_* vacio o diferente a SI/NO", "Accion": "Seleccionar SI o NO."},
+                {"Nivel": "Bloqueo", "Regla": "Campo obligatorio vacio", "Accion": "Completar el campo."},
+                {"Nivel": "Advertencia", "Regla": "Tipo de prenda nuevo", "Accion": "Revisar y aprobar diccionario antes de cargar."},
+                {"Nivel": "Advertencia", "Regla": "Separador ||", "Accion": "Corregir separadores vacios."},
+            ]
+        ),
+    }
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            repair_mojibake_dataframe(df).to_excel(writer, index=False, sheet_name=sheet_name[:31])
+        wb = writer.book
+        thin = Side(style="thin", color="D9E2EF")
+        header_fill = PatternFill("solid", fgColor="DCEBFF")
+        required_fill = PatternFill("solid", fgColor="FFE8E8")
+        optional_fill = PatternFill("solid", fgColor="EAF7EF")
+        auto_fill = PatternFill("solid", fgColor="F4F6FA")
+        for ws in wb.worksheets:
+            ws.freeze_panes = "A2"
+            ws.sheet_view.showGridLines = False
+            for row in ws.iter_rows():
+                for cell in row:
+                    cell.alignment = Alignment(vertical="top", wrap_text=True)
+                    cell.border = Border(top=thin, left=thin, right=thin, bottom=thin)
+            for cell in ws[1]:
+                cell.font = Font(bold=True, color="001B44")
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            for column_cells in ws.columns:
+                letter = column_cells[0].column_letter
+                width = min(max(len(clean_value(column_cells[0].value)) + 4, 16), 42)
+                ws.column_dimensions[letter].width = width
+            if ws.title not in {"INPUT_COMERCIAL"}:
+                ws.protection.sheet = True
+        ws = wb["INPUT_COMERCIAL"]
+        ws.protection.sheet = True
+        ws.protection.selectLockedCells = False
+        ws.protection.selectUnlockedCells = True
+        for row in ws.iter_rows(min_row=2, max_row=COMMERCIAL_INPUT_MAX_ROWS + 1):
+            for cell in row:
+                cell.protection = Protection(locked=False)
+        column_positions = {cell.value: cell.column for cell in ws[1]}
+        for column in columns:
+            col_idx = column_positions.get(column)
+            if not col_idx:
+                continue
+            header = ws.cell(row=1, column=col_idx)
+            if column in COMMERCIAL_INPUT_REQUIRED_COLUMNS or column.startswith("PUBLICAR_"):
+                header.fill = required_fill
+            elif column in {"Marca"}:
+                header.fill = auto_fill
+            else:
+                header.fill = optional_fill
+            header.comment = Comment(clean_value(dictionary_df.loc[dictionary_df["Nombre exacto"].eq(column), "Descripcion"].head(1).squeeze()), "Catalog Control Center")
+        if "Marca" in column_positions:
+            col_letter = get_column_letter(column_positions["Marca"])
+            for row_idx in range(2, COMMERCIAL_INPUT_MAX_ROWS + 2):
+                cell = ws[f"{col_letter}{row_idx}"]
+                cell.value = brand_label
+                cell.protection = Protection(locked=True)
+        si_no_validation = DataValidation(type="list", formula1='"SI,NO"', allow_blank=False)
+        ws.add_data_validation(si_no_validation)
+        for column in site_columns:
+            col_letter = get_column_letter(column_positions[column])
+            si_no_validation.add(f"{col_letter}2:{col_letter}{COMMERCIAL_INPUT_MAX_ROWS + 1}")
+        for list_name, target_column in [
+            ("Genero", "Genero"),
+            ("Grupo de edad", "Grupo de edad"),
+            ("Clase", "Clase"),
+            ("Categoria", "Categoria"),
+            ("Tipo de prenda", "Tipo de prenda"),
+            ("Guia de talla", "Guia de talla"),
+        ]:
+            if target_column not in column_positions:
+                continue
+            values = values_df.loc[values_df["Lista"].eq(list_name), "Valor"].dropna().astype(str).drop_duplicates().tolist()
+            if not values:
+                continue
+            options = ",".join(values[:80])
+            validation = DataValidation(type="list", formula1=f'"{options}"', allow_blank=True)
+            ws.add_data_validation(validation)
+            col_letter = get_column_letter(column_positions[target_column])
+            validation.add(f"{col_letter}2:{col_letter}{COMMERCIAL_INPUT_MAX_ROWS + 1}")
+    buffer.seek(0)
+    return buffer
+
+
+def _commercial_find_column(df, aliases):
+    normalized = {normalize_header(column): column for column in df.columns}
+    for alias in aliases:
+        key = normalize_header(alias)
+        if key in normalized:
+            return normalized[key]
+    return None
+
+
+def build_body_html_from_commercial_row(row):
+    def parts(value):
+        raw = clean_value(value)
+        if not raw:
+            return []
+        pieces = re.split(r"[|]", raw)
+        return [escape(clean_value(piece)) for piece in pieces if clean_value(piece)]
+
+    description = clean_value(row.get("Descripcion"))
+    sections = []
+    if description:
+        sections.append(f"<section><h3>Descripcion</h3><p>{escape(description)}</p></section>")
+    for title, column in [
+        ("Caracteristicas", "Caracteristicas"),
+        ("Materiales", "Materiales o composicion"),
+        ("Cuidados", "Cuidados"),
+    ]:
+        items = parts(row.get(column))
+        if items:
+            sections.append(f"<section><h3>{title}</h3><ul>{''.join(f'<li>{item}</li>' for item in items)}</ul></section>")
+    return "\n".join(sections)
+
+
+def validate_brand_commercial_input(uploaded_file, brand_name):
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+    except Exception as exc:
+        return pd.DataFrame(), pd.DataFrame([{"Fila": "", "Campo": "Archivo", "Estado": "Bloqueado", "Mensaje": f"No se pudo leer Excel: {exc}"}]), pd.DataFrame()
+    sheet_name = "INPUT_COMERCIAL" if "INPUT_COMERCIAL" in xls.sheet_names else xls.sheet_names[0]
+    df = pd.read_excel(xls, sheet_name=sheet_name, dtype=object).dropna(how="all")
+    df = repair_mojibake_dataframe(df)
+    if df.empty:
+        return df, pd.DataFrame([{"Fila": "", "Campo": "Archivo", "Estado": "Bloqueado", "Mensaje": "El input no tiene filas reales."}]), pd.DataFrame()
+    brand_label = brand_display_name(brand_name, brand_name)
+    expected_columns = commercial_input_columns_for_brand(brand_label)
+    site_columns = [column for column in expected_columns if column.startswith("PUBLICAR_")]
+    report_rows = []
+    preview_rows = []
+    col_map = {column: _commercial_find_column(df, [column]) for column in expected_columns}
+    for required in COMMERCIAL_INPUT_REQUIRED_COLUMNS + site_columns:
+        if not col_map.get(required):
+            report_rows.append({"Fila": "", "Mod-Col": "", "Campo": required, "Valor original": "", "Valor normalizado": "", "Estado": "Bloqueado", "Mensaje": "Falta columna obligatoria.", "Accion recomendada": "Usar formato vigente por marca."})
+    if report_rows:
+        return df, pd.DataFrame(report_rows), pd.DataFrame()
+    seen = set()
+    for idx, row in df.iterrows():
+        excel_row = int(idx) + 2
+        normalized = {}
+        for column in expected_columns:
+            source_col = col_map.get(column)
+            normalized[column] = clean_value(row.get(source_col)) if source_col else ""
+        mod_col = normalized.get("Mod-Col")
+        if not mod_col or mod_col.upper().startswith("EJEMPLO-"):
+            continue
+        row_status = "Listo"
+        row_messages = []
+        row_brand = normalize_brand_name(normalized.get("Marca"))
+        expected_brand = normalize_brand_name(brand_label)
+        if row_brand != expected_brand:
+            row_status = "Bloqueado"
+            row_messages.append(f"Marca del archivo ({normalized.get('Marca')}) no corresponde a {brand_label}.")
+        for column in COMMERCIAL_INPUT_REQUIRED_COLUMNS:
+            value = normalized.get(column)
+            if _input_norm_key(value) in COMMERCIAL_INPUT_INVALID_TEXTS:
+                row_status = "Bloqueado"
+                row_messages.append(f"{column} obligatorio vacio o invalido.")
+        for column in site_columns:
+            value = normalized.get(column).upper()
+            if value not in {"SI", "NO"}:
+                row_status = "Bloqueado"
+                row_messages.append(f"{column} debe ser SI o NO.")
+        key = (mod_col, normalized.get("Nombre web o Title"))
+        if key in seen:
+            row_status = "Con advertencia" if row_status == "Listo" else row_status
+            row_messages.append("Mod-Col duplicado en el input; revisar si corresponde a variantes o duplicidad.")
+        seen.add(key)
+        type_decision = validate_catalog_row(
+            {
+                "Mod-Col": mod_col,
+                "Marca": normalized.get("Marca"),
+                "Genero": normalized.get("Genero"),
+                "Categoria": normalized.get("Categoria"),
+                "Tipo de prenda": normalized.get("Tipo de prenda"),
+                "Guia de tallas": normalized.get("Guia de talla"),
+                "Talla": "M",
+                "SKU": "VALIDACION",
+            }
+        )
+        for issue in type_decision.get("issues", []):
+            if issue.get("field") in {"Tipo de prenda", "Guia de tallas"}:
+                level = clean_value(issue.get("level"))
+                if level == "bloqueo":
+                    row_status = "Bloqueado"
+                elif row_status == "Listo":
+                    row_status = "Con advertencia"
+                row_messages.append(f"{issue.get('field')}: {issue.get('message')}")
+        for list_column in COMMERCIAL_INPUT_TEXT_LIST_COLUMNS:
+            value = normalized.get(list_column)
+            if "||" in value:
+                if row_status == "Listo":
+                    row_status = "Con advertencia"
+                row_messages.append(f"{list_column} contiene separadores vacios ||.")
+        description = normalized.get("Descripcion")
+        visible_len = len(strip_html(description))
+        if description and visible_len < 150:
+            if row_status == "Listo":
+                row_status = "Con advertencia"
+            row_messages.append("Descripcion bajo 150 caracteres visibles.")
+        handle = build_catalog_handle(
+            product_type=normalized.get("Tipo de prenda"),
+            gender=normalized.get("Genero"),
+            brand=normalized.get("Marca"),
+            mod_col=mod_col,
+        )
+        body_html = build_body_html_from_commercial_row(normalized)
+        preview_rows.append(
+            {
+                "Fila": excel_row,
+                "Mod-Col": mod_col,
+                "Marca": normalized.get("Marca"),
+                "Title propuesto": normalized.get("Nombre web o Title"),
+                "Handle sugerido": handle,
+                "Body HTML generado": body_html,
+                "Sitios SI": ", ".join(column for column in site_columns if normalized.get(column).upper() == "SI"),
+                "Estado": row_status,
+                "Mensaje": " | ".join(row_messages),
+            }
+        )
+        if row_messages:
+            for message in row_messages:
+                report_rows.append(
+                    {
+                        "Fila": excel_row,
+                        "Mod-Col": mod_col,
+                        "Campo": "Validacion",
+                        "Valor original": "",
+                        "Valor normalizado": "",
+                        "Estado": row_status,
+                        "Mensaje": message,
+                        "Accion recomendada": "Corregir input o aprobar valor nuevo en diccionario.",
+                    }
+                )
+    preview_df = pd.DataFrame(preview_rows)
+    report_df = pd.DataFrame(report_rows)
+    summary_df = pd.DataFrame(
+        [
+            {"Indicador": "Filas analizadas", "Valor": len(preview_df)},
+            {"Indicador": "Modelos-color", "Valor": preview_df["Mod-Col"].nunique() if not preview_df.empty else 0},
+            {"Indicador": "Registros validos", "Valor": int(preview_df["Estado"].eq("Listo").sum()) if not preview_df.empty else 0},
+            {"Indicador": "Registros con advertencias", "Valor": int(preview_df["Estado"].eq("Con advertencia").sum()) if not preview_df.empty else 0},
+            {"Indicador": "Registros bloqueados", "Valor": int(preview_df["Estado"].eq("Bloqueado").sum()) if not preview_df.empty else 0},
+            {"Indicador": "Valores nuevos / revisar", "Valor": len(report_df) if not report_df.empty else 0},
+        ]
+    )
+    return preview_df, report_df, summary_df
+
+
+def render_commercial_input_center():
+    st.markdown('<div class="section-card"><h2>Descargar input comercial</h2>', unsafe_allow_html=True)
+    st.caption("Genera un formato por marca con sitios SI/NO, diccionarios, ejemplos y validaciones antes de cargar a Shopify.")
+    brand_options = configured_commercial_brands()
+    selected_brand = st.selectbox("Marca", brand_options, key="commercial_input_brand")
+    sites = sites_for_commercial_brand(selected_brand)
+    if not sites:
+        st.warning("No encontre sitios asociados para esta marca en la configuracion actual.")
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Sitio": site.get("site_label"),
+                        "Columna input": publication_column_for_site(site.get("site_label")),
+                        "Dominio": site.get("store_domain"),
+                    }
+                    for site in sites
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    workbook_bytes = build_brand_commercial_input_workbook(selected_brand)
+    file_date = datetime.now().strftime("%Y%m%d")
+    file_brand = re.sub(r"[^A-Za-z0-9]+", "_", selected_brand).strip("_").upper()
+    st.download_button(
+        "Descargar formato input por marca",
+        data=workbook_bytes,
+        file_name=f"Input_Catalogo_{file_brand}_{file_date}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="download_brand_commercial_input",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="section-card"><h2>Validar input comercial</h2>', unsafe_allow_html=True)
+    uploaded = st.file_uploader("Subir input comercial completado", type=["xlsx", "xls"], key="validate_brand_commercial_input")
+    if uploaded is not None and st.button("Analizar input comercial", type="primary", key="analyze_brand_commercial_input"):
+        preview_df, report_df, summary_df = validate_brand_commercial_input(uploaded, selected_brand)
+        st.session_state["brand_input_preview_df"] = preview_df
+        st.session_state["brand_input_report_df"] = report_df
+        st.session_state["brand_input_summary_df"] = summary_df
+    summary_df = st.session_state.get("brand_input_summary_df")
+    preview_df = st.session_state.get("brand_input_preview_df")
+    report_df = st.session_state.get("brand_input_report_df")
+    if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
+        cols = st.columns(min(4, len(summary_df)))
+        for idx, row in summary_df.iterrows():
+            cols[idx % len(cols)].metric(clean_value(row.get("Indicador")), int(row.get("Valor", 0)))
+        if isinstance(preview_df, pd.DataFrame) and not preview_df.empty:
+            st.subheader("Vista previa")
+            st.dataframe(preview_df, use_container_width=True, hide_index=True)
+        if isinstance(report_df, pd.DataFrame) and not report_df.empty:
+            st.subheader("Errores y advertencias")
+            st.dataframe(report_df, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Descargar reporte de validacion",
+            data=dataframe_to_excel_bytes(
+                {
+                    "Resumen": summary_df,
+                    "Vista previa": preview_df if isinstance(preview_df, pd.DataFrame) else pd.DataFrame(),
+                    "Errores y advertencias": report_df if isinstance(report_df, pd.DataFrame) else pd.DataFrame(),
+                }
+            ),
+            file_name=f"reporte_validacion_input_{file_brand}_{file_date}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_brand_input_validation_report",
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 CENTRY_BASE_COLUMNS = [
     "Nombre del Producto",
     "Marca",
@@ -2668,6 +3450,21 @@ HANDLE_UPDATE_COLUMNS = [
 ]
 
 
+SIZE_GUIDE_UPDATE_COLUMNS = [
+    "Guia de tallas",
+    "Guía de tallas",
+    "Guia Tallas",
+    "Guía Tallas",
+    "Size Guide",
+    "Size guide",
+    "Tabla de tallas",
+    "Guia",
+    "Guía",
+    "Metafield: custom.guia_de_tallas [page_reference]",
+    "custom.guia_de_tallas",
+]
+
+
 def _source_key_for_update(row):
     for column in UPDATE_KEY_COLUMNS:
         value = clean_value(row.get(column))
@@ -3218,6 +4015,395 @@ def partial_preview_summary(preview_df, issues_df=None):
     )
 
 
+PARTIAL_REQUIRED_HTML_SECTIONS = ("Caracteristicas", "Materiales", "Cuidados")
+PARTIAL_INVALID_VALUES = {"", "-", "--", "0", "00", "000", "n/a", "na", "null", "none", "sin info", "sin informacion"}
+PARTIAL_HTML_DANGER_TOKENS = ("<script", "<style", " onerror=", " onclick=", "javascript:", "<iframe", "<object", "<embed")
+
+
+def read_uploaded_excel_sheet_or_first(uploaded_file, state_prefix, preferred_sheet="Products"):
+    """Read the preferred worksheet when present; otherwise fall back to the first sheet."""
+    if uploaded_file is None:
+        return pd.DataFrame()
+    try:
+        return read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=preferred_sheet)
+    except ValueError as exc:
+        if "Worksheet named" not in clean_value(exc):
+            raise
+        return read_uploaded_excel_cached(uploaded_file, f"{state_prefix}_first_sheet", sheet_name=0)
+
+
+def _partial_status_series(df):
+    if df is None or df.empty or "Estado validacion" not in df.columns:
+        return pd.Series([], dtype=object)
+    return df["Estado validacion"].map(lambda value: normalize_header(clean_value(value)))
+
+
+def _partial_problem_series(df):
+    if df is None or df.empty or "Problema" not in df.columns:
+        return pd.Series([], dtype=object)
+    return df["Problema"].map(lambda value: normalize_header(clean_value(value)))
+
+
+def _partial_bad_value(value):
+    text = normalize_header(value)
+    return text in PARTIAL_INVALID_VALUES or text in {"sincontenido", "sininformacion", "pendiente", "porcompletar", "tbd"}
+
+
+def _html_tag_balance_warning(html):
+    lowered = clean_value(html).lower()
+    for tag in ("section", "div", "ul", "ol", "li", "p", "strong"):
+        opening = len(re.findall(rf"<{tag}(\s|>|/)", lowered))
+        closing = lowered.count(f"</{tag}>")
+        if opening != closing:
+            return f"HTML posiblemente mal cerrado en etiqueta {tag}."
+    return ""
+
+
+def _partial_issue_text(row):
+    pieces = []
+    for column in ("Problema", "Detalle", "Observacion"):
+        value = clean_value(row.get(column))
+        if value:
+            pieces.append(value)
+    return " | ".join(dict.fromkeys(pieces))
+
+
+def _partial_row_base(row, operation="", status="Listo", problem="", action="Actualizar campo seleccionado"):
+    return {
+        "Mod-Col": clean_value(row.get("Mod-Col") or row.get("Código modelo color") or row.get("Codigo modelo color")),
+        "Handle": clean_value(row.get("Handle")),
+        "Producto": clean_value(row.get("Title") or row.get("Nombre") or row.get("Product Title")),
+        "Marca": clean_value(row.get("Vendor") or row.get("Marca") or row.get("Sitio")),
+        "Categoria": clean_value(row.get("Categoria") or row.get("Categoría") or row.get("Metafield: custom.categoria [single_line_text_field]")),
+        "Tipo": clean_value(row.get("Type") or row.get("Tipo") or row.get("Tipo de prenda") or row.get("Metafield: custom.tipo [single_line_text_field]")),
+        "Genero": clean_value(row.get("Genero") or row.get("Género") or row.get("Metafield: custom.genero [single_line_text_field]")),
+        "Operacion": clean_value(operation or row.get("Operacion")),
+        "Estado validacion": status,
+        "Problema": clean_value(problem),
+        "Accion sugerida": clean_value(action),
+    }
+
+
+def validate_partial_body_html(value, title="", mod_col=""):
+    html = clean_value(value)
+    text = strip_html(html)
+    normalized_text = normalize_header(text)
+    if _partial_bad_value(html) or _partial_bad_value(text):
+        return "Bloqueado", "Body HTML vacío o placeholder inválido."
+    if len(text) < 45:
+        return "Bloqueado", "Body HTML demasiado corto para publicación."
+    if normalize_header(title) and normalized_text == normalize_header(title):
+        return "Bloqueado", "Body HTML solo contiene el título del producto."
+    if normalize_header(mod_col) and normalized_text == normalize_header(mod_col):
+        return "Bloqueado", "Body HTML solo contiene el código modelo-color."
+    lowered = html.lower()
+    if any(token in lowered for token in PARTIAL_HTML_DANGER_TOKENS):
+        return "Bloqueado", "HTML contiene scripts, estilos o atributos no permitidos."
+    visible_tags = ("&lt;" in lowered and "&gt;" in lowered) or ("<p>" in text.lower() and "</p>" in text.lower())
+    if visible_tags:
+        return "Observación", "El texto parece contener etiquetas visibles; revisar antes de aplicar."
+    missing_sections = [
+        label
+        for label in PARTIAL_REQUIRED_HTML_SECTIONS
+        if normalize_header(label) not in normalize_header(text)
+    ]
+    if missing_sections:
+        return "Observación", f"Faltan secciones esperadas: {', '.join(missing_sections)}."
+    balance_warning = _html_tag_balance_warning(html)
+    if balance_warning:
+        return "Observación", balance_warning
+    return "Listo", "HTML listo para actualizar solo Body HTML."
+
+
+def validate_partial_image_urls(value):
+    urls = [clean_value(item) for item in re.split(r"[;|\n]+", clean_value(value)) if clean_value(item)]
+    if not urls:
+        return "Bloqueado", "No hay URLs de fotos para cargar.", 0, 0
+    duplicates = len(urls) - len(dict.fromkeys(urls))
+    invalid = [
+        url for url in urls
+        if not re.match(r"^https?://", url, flags=re.IGNORECASE)
+        or " " in url
+    ]
+    if invalid:
+        return "Bloqueado", f"{len(invalid)} URL(s) inválida(s).", len(urls), duplicates
+    if duplicates:
+        return "Observación", f"{duplicates} URL(s) duplicada(s); se recomienda revisar.", len(urls), duplicates
+    return "Listo", "Fotos listas para actualizar solo media.", len(urls), 0
+
+
+def partial_business_entity_count(df):
+    if df is None or df.empty:
+        return 0
+    for column in ("Mod-Col", "Handle", "Product ID"):
+        if column in df.columns:
+            values = df[column].map(clean_value)
+            values = values[values != ""]
+            if not values.empty:
+                return int(values.nunique())
+    return int(len(df))
+
+
+def _partial_proposed_value(row, operation):
+    operation = clean_value(operation).lower()
+    if operation == "body":
+        return (
+            row.get("Valor nuevo")
+            or row.get("Body HTML")
+            or row.get("Description HTML")
+            or row.get("Descripcion HTML")
+            or row.get("Descripción HTML")
+        )
+    if operation == "photos":
+        return row.get("Valor nuevo") or row.get("Image Src") or row.get("Imagen") or row.get("URL Imagen")
+    if operation == "size_guides":
+        return (
+            row.get("Valor nuevo")
+            or row.get("Guía propuesta")
+            or row.get("Guia propuesta")
+            or row.get("Metafield: custom.guia_de_tallas [page_reference]")
+            or row.get("Guía de tallas")
+            or row.get("Guia de tallas")
+        )
+    return row.get("Valor nuevo")
+
+
+def _partial_current_value(row, operation):
+    operation = clean_value(operation).lower()
+    if clean_value(row.get("Valor actual")):
+        return row.get("Valor actual")
+    if operation == "body":
+        return row.get("Body HTML actual") or row.get("Current Body HTML") or row.get("Body HTML")
+    if operation == "photos":
+        return row.get("Fotos actuales") or row.get("Current Image Src") or row.get("Image Src actual")
+    if operation == "size_guides":
+        return row.get("Guía actual") or row.get("Guia actual")
+    return ""
+
+
+def _size_guide_decision_for_row(row):
+    current = clean_value(_partial_proposed_value(row, "size_guides") or _partial_current_value(row, "size_guides"))
+    return resolve_size_guide(
+        brand=clean_value(row.get("Marca") or row.get("Vendor") or row.get("Sitio")),
+        category=clean_value(row.get("Categoria") or row.get("Categoría")),
+        product_type=clean_value(row.get("Tipo") or row.get("Type") or row.get("Tipo de prenda")),
+        gender=clean_value(row.get("Genero") or row.get("Género")),
+        age_group=clean_value(row.get("Edad") or row.get("Age Group")),
+        current_guide=current,
+    )
+
+
+def filter_preview_by_diagnostic_ready(preview_df, diagnostic_df):
+    preview = preview_df if isinstance(preview_df, pd.DataFrame) else pd.DataFrame()
+    diagnostic = diagnostic_df if isinstance(diagnostic_df, pd.DataFrame) else pd.DataFrame()
+    if preview.empty or diagnostic.empty or "Estado validacion" not in diagnostic.columns:
+        return preview
+    ready = diagnostic[diagnostic["Estado validacion"].map(clean_value).str.lower() == "listo"].copy()
+    if ready.empty:
+        return preview.iloc[0:0].copy()
+    filtered = preview.copy()
+    masks = []
+    if "Handle" in ready.columns and "Handle" in filtered.columns:
+        ready_handles = {clean_value(value) for value in ready["Handle"] if clean_value(value)}
+        if ready_handles:
+            masks.append(filtered["Handle"].map(clean_value).isin(ready_handles))
+    if "Mod-Col" in ready.columns and "Mod-Col" in filtered.columns:
+        ready_keys = {clean_value(value).upper() for value in ready["Mod-Col"] if clean_value(value)}
+        if ready_keys:
+            masks.append(filtered["Mod-Col"].map(lambda value: clean_value(value).upper()).isin(ready_keys))
+    if not masks:
+        return filtered.iloc[0:0].copy()
+    mask = masks[0].copy()
+    for extra_mask in masks[1:]:
+        mask = mask | extra_mask
+    return filtered[mask].copy()
+
+
+def build_partial_diagnostic_table(preview_df, issues_df=None, operation=""):
+    preview = preview_df if isinstance(preview_df, pd.DataFrame) else pd.DataFrame()
+    issues = issues_df if isinstance(issues_df, pd.DataFrame) else pd.DataFrame()
+    rows = []
+    operation = clean_value(operation).lower()
+
+    for _, row in preview.iterrows():
+        base = _partial_row_base(row, operation=operation, status="Listo")
+        base["Campo Shopify"] = clean_value(row.get("Campo"))
+        current_value = _partial_current_value(row, operation)
+        proposed_value = _partial_proposed_value(row, operation)
+        base["Valor actual"] = clean_value(current_value)[:1200]
+        base["Valor propuesto"] = clean_value(proposed_value)[:1200]
+        if operation == "body":
+            status, problem = validate_partial_body_html(proposed_value, row.get("Producto") or row.get("Title"), row.get("Mod-Col"))
+            current_status, current_problem = validate_partial_body_html(current_value, row.get("Producto") or row.get("Title"), row.get("Mod-Col"))
+            base.update(
+                {
+                    "Estado validacion": status,
+                    "Problema": "" if status == "Listo" else problem,
+                    "Accion sugerida": "Actualizar solo Body HTML" if status == "Listo" else "Revisar contenido antes de aplicar",
+                    "Preview texto": strip_html(proposed_value)[:600],
+                    "HTML actual valido": "Sí" if current_status == "Listo" else "No",
+                    "Problema HTML actual": "" if current_status == "Listo" else current_problem,
+                    "Campo afectado": "Body HTML",
+                }
+            )
+        elif operation == "photos":
+            status, problem, photo_count, duplicate_count = validate_partial_image_urls(proposed_value)
+            current_urls = _split_semicolon_values(current_value)
+            base.update(
+                {
+                    "Estado validacion": status,
+                    "Problema": "" if status == "Listo" else problem,
+                    "Accion sugerida": "Actualizar solo fotos/media" if status == "Listo" else "Corregir URLs de fotos",
+                    "Cantidad fotos": photo_count,
+                    "Duplicadas": duplicate_count,
+                    "Tiene foto actual": "Sí" if current_urls or clean_value(row.get("Valor actual")) else "No",
+                    "Tiene foto principal propuesta": "Sí" if photo_count > 0 else "No",
+                    "Campo afectado": "Media/Fotos",
+                }
+            )
+        elif operation == "size_guides":
+            decision = _size_guide_decision_for_row(row)
+            status = "Listo" if clean_value(decision.get("status")) in ("approved", "") else "Bloqueado" if clean_value(decision.get("status")) == "blocked" else "Observación"
+            base.update(
+                {
+                    "Estado validacion": status,
+                    "Problema": clean_value(decision.get("warning")) if status != "Listo" else "",
+                    "Accion sugerida": "Actualizar solo guía de tallas" if status == "Listo" else "Revisar regla categoría/tipo/género",
+                    "Guía actual": clean_value(row.get("Valor actual")),
+                    "Guía propuesta": clean_value(row.get("Valor nuevo")),
+                    "Regla aplicada": clean_value(decision.get("rule")),
+                    "Campo afectado": "Metafield: custom.guia_de_tallas",
+                }
+            )
+        rows.append(base)
+
+    for _, issue in issues.iterrows():
+        base = _partial_row_base(issue, operation=operation, status="Bloqueado", problem=_partial_issue_text(issue), action="No actualizar hasta corregir")
+        base["Campo Shopify"] = ""
+        base["Valor actual"] = ""
+        base["Valor propuesto"] = ""
+        rows.append(base)
+
+    return pd.DataFrame(rows)
+
+
+def partial_diagnostic_summary(diagnostic_df, operation=""):
+    df = diagnostic_df if isinstance(diagnostic_df, pd.DataFrame) else pd.DataFrame()
+    operation = clean_value(operation).lower()
+    if df.empty:
+        return pd.DataFrame(
+            [
+                {"Indicador": "Total analizado", "Valor": 0},
+                {"Indicador": "Listos para actualizar", "Valor": 0},
+                {"Indicador": "Bloqueados", "Valor": 0},
+                {"Indicador": "Con observación", "Valor": 0},
+            ]
+        )
+    status = _partial_status_series(df)
+    problems = _partial_problem_series(df)
+    total = partial_business_entity_count(df)
+    ready = int((status == "listo").sum())
+    blocked = int((status == "bloqueado").sum())
+    observed = int((status == "observacion").sum())
+    rows = []
+    if operation == "body":
+        rows = [
+            {"Indicador": "Total analizado", "Valor": total},
+            {"Indicador": "Body HTML válido", "Valor": ready},
+            {"Indicador": "Sin descripción", "Valor": int(problems.str.contains("vacio|placeholder|nocontenido|nohaycontenido", na=False).sum())},
+            {"Indicador": "Contenido insuficiente", "Valor": int(problems.str.contains("demasiadocorto|solocontiene", na=False).sum())},
+            {"Indicador": "Valores sin sentido", "Valor": int(problems.str.contains("placeholder|codigo|titulo", na=False).sum())},
+            {"Indicador": "HTML mal formado", "Valor": int(problems.str.contains("malcerrado|etiquetasvisibles|scripts|estilos|atributosnopermitidos", na=False).sum())},
+            {"Indicador": "Listos para actualizar", "Valor": ready},
+            {"Indicador": "Bloqueados", "Valor": blocked},
+        ]
+    elif operation == "photos":
+        photo_counts = pd.to_numeric(df.get("Cantidad fotos", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+        duplicates = pd.to_numeric(df.get("Duplicadas", pd.Series(0, index=df.index)), errors="coerce").fillna(0)
+        current_photo = df.get("Tiene foto actual", pd.Series("", index=df.index)).map(clean_value).str.lower()
+        rows = [
+            {"Indicador": "Modelos analizados", "Valor": total},
+            {"Indicador": "Con fotografías", "Valor": int((photo_counts > 0).sum())},
+            {"Indicador": "Sin fotografías", "Valor": int((photo_counts <= 0).sum())},
+            {"Indicador": "Sin imagen principal", "Valor": int((current_photo != "sí").sum() if not current_photo.empty else 0)},
+            {"Indicador": "URLs inválidas/vacías", "Valor": int(problems.str.contains("url|nohayurls|invalida|inválida", na=False).sum())},
+            {"Indicador": "Imágenes duplicadas", "Valor": int((duplicates > 0).sum())},
+            {"Indicador": "Listos para actualizar", "Valor": ready},
+            {"Indicador": "Bloqueados", "Valor": blocked},
+        ]
+    elif operation == "size_guides":
+        rows = [
+            {"Indicador": "Total analizado", "Valor": total},
+            {"Indicador": "Guía válida", "Valor": ready},
+            {"Indicador": "Sin guía", "Valor": int(problems.str.contains("vacia|vacía|noguia|noexiste", na=False).sum())},
+            {"Indicador": "Posible error", "Valor": observed},
+            {"Indicador": "Categoría/guía incompatible", "Valor": int(problems.str.contains("incompatible|calzado|vestuario|categoria|categoría", na=False).sum())},
+            {"Indicador": "Listos para actualizar", "Valor": ready},
+            {"Indicador": "Bloqueados", "Valor": blocked},
+        ]
+    else:
+        rows = [
+            {"Indicador": "Total analizado", "Valor": total},
+            {"Indicador": "Listos para actualizar", "Valor": ready},
+            {"Indicador": "Bloqueados", "Valor": blocked},
+            {"Indicador": "Con observación", "Valor": observed},
+        ]
+    return pd.DataFrame(rows)
+
+
+def render_partial_diagnostic_panel(diagnostic_df, operation=""):
+    if diagnostic_df is None or diagnostic_df.empty:
+        st.warning("No hay registros válidos para diagnosticar.")
+        return diagnostic_df
+    summary_df = partial_diagnostic_summary(diagnostic_df, operation)
+    st.markdown("#### Diagnóstico antes de actualizar Shopify")
+    st.caption("El análisis es una simulación: solo las filas con estado Listo pasan a la actualización. Los bloqueados quedan fuera.")
+    cards_html = ['<div class="partial-kpi-grid">']
+    for _, row in summary_df.iterrows():
+        cards_html.append(
+            '<div class="partial-kpi-card">'
+            f'<span>{clean_value(row.get("Indicador"))}</span>'
+            f'<strong>{format_kpi_number(safe_int_value(row.get("Valor")))}</strong>'
+            '</div>'
+        )
+    cards_html.append("</div>")
+    st.markdown(
+        """
+        <style>
+        .partial-kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:10px 0 18px}
+        .partial-kpi-card{background:#fff;border:1px solid #dbe5f2;border-radius:14px;padding:14px 16px;min-height:84px;box-shadow:0 8px 24px rgba(15,40,80,.05)}
+        .partial-kpi-card span{display:block;color:#53657c;font-weight:800;font-size:12px;line-height:1.25}
+        .partial-kpi-card strong{display:block;color:#001b44;font-size:26px;line-height:1.05;margin-top:8px}
+        @media(max-width:1100px){.partial-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        </style>
+        """
+        + "".join(cards_html),
+        unsafe_allow_html=True,
+    )
+    filter_cols = st.columns([1.2, 1.2, 1.2, 2])
+    brands = ["Todas"] + sorted([value for value in diagnostic_df.get("Marca", pd.Series(dtype=object)).map(clean_value).unique() if value])
+    categories = ["Todas"] + sorted([value for value in diagnostic_df.get("Categoria", pd.Series(dtype=object)).map(clean_value).unique() if value])
+    statuses = ["Todos"] + sorted([value for value in diagnostic_df.get("Estado validacion", pd.Series(dtype=object)).map(clean_value).unique() if value])
+    brand = filter_cols[0].selectbox("Marca", brands, key=f"partial_diag_brand_{operation}")
+    category = filter_cols[1].selectbox("Categoría", categories, key=f"partial_diag_category_{operation}")
+    status = filter_cols[2].selectbox("Estado", statuses, key=f"partial_diag_status_{operation}")
+    search = filter_cols[3].text_input("Buscar Mod-Col, handle o producto", key=f"partial_diag_search_{operation}")
+
+    filtered = diagnostic_df.copy()
+    if brand != "Todas" and "Marca" in filtered.columns:
+        filtered = filtered[filtered["Marca"].map(clean_value) == brand]
+    if category != "Todas" and "Categoria" in filtered.columns:
+        filtered = filtered[filtered["Categoria"].map(clean_value) == category]
+    if status != "Todos" and "Estado validacion" in filtered.columns:
+        filtered = filtered[filtered["Estado validacion"].map(clean_value) == status]
+    if clean_value(search):
+        needle = normalize_header(search)
+        searchable = filtered.apply(lambda row: " ".join(clean_value(value) for value in row.values), axis=1).map(normalize_header)
+        filtered = filtered[searchable.str.contains(re.escape(needle), na=False)]
+    st.dataframe(filtered.head(500), use_container_width=True, height=360)
+    return filtered
+
+
 def build_shopify_update_preview(
     shopify_products,
     update_input_df,
@@ -3290,6 +4476,8 @@ def build_shopify_update_preview(
     if operation in ("photos", "technologies") and source_df.empty:
         source_df = pd.DataFrame(shopify_products)
     if operation == "body" and body_mode == "fix_catalog" and source_df.empty:
+        source_df = pd.DataFrame(shopify_products)
+    if operation == "size_guides" and source_df.empty:
         source_df = pd.DataFrame(shopify_products)
 
     matrixify_rows = []
@@ -3437,6 +4625,85 @@ def build_shopify_update_preview(
                     "Valor nuevo": new_body,
                     "Estado": "OK",
                     "Observacion": "HTML normalizado con Caracteristicas, Material y Cuidado separados",
+                }
+            )
+        elif operation == "size_guides":
+            guide_col = first_existing_column(source_df, SIZE_GUIDE_UPDATE_COLUMNS)
+            current_guide = clean_value(
+                product.get("Metafield: custom.guia_de_tallas [page_reference]")
+                or product.get("Guia de tallas")
+                or product.get("Guía de tallas")
+            )
+            input_guide = clean_value(row.get(guide_col)) if guide_col else ""
+            proposed_seed = input_guide or current_guide
+            category = clean_value(
+                row.get("Categoria")
+                or row.get("Categoría")
+                or product.get("Metafield: custom.categoria [single_line_text_field]")
+                or product.get("Type")
+            )
+            product_type = clean_value(
+                row.get("Tipo de prenda")
+                or row.get("Tipo")
+                or product.get("Metafield: custom.tipo [single_line_text_field]")
+                or product.get("Type")
+            )
+            gender = clean_value(
+                row.get("Genero")
+                or row.get("Género")
+                or product.get("Metafield: custom.genero [single_line_text_field]")
+            )
+            decision = resolve_size_guide(
+                brand=clean_value(row.get("Marca") or product.get("Vendor") or brand_config.get("label")),
+                category=category,
+                product_type=product_type,
+                gender=gender,
+                age_group=clean_value(row.get("Edad") or row.get("Age Group")),
+                current_guide=proposed_seed,
+            )
+            if clean_value(decision.get("status")) == "blocked":
+                issues.append(
+                    {
+                        "Mod-Col": product_key,
+                        "Handle": product.get("Handle"),
+                        "Problema": "Guía de talla incompatible",
+                        "Detalle": clean_value(decision.get("warning")),
+                        "Fila": input_index + 2,
+                    }
+                )
+                continue
+            proposed_guide = clean_value(input_guide or decision.get("guide"))
+            if normalize_header(proposed_guide) in PARTIAL_INVALID_VALUES:
+                issues.append(
+                    {
+                        "Mod-Col": product_key,
+                        "Handle": product.get("Handle"),
+                        "Problema": "Guía de talla vacía o inválida",
+                        "Detalle": clean_value(decision.get("warning")) or "No se detectó guía de talla válida.",
+                        "Fila": input_index + 2,
+                    }
+                )
+                continue
+            if current_guide and clean_value(current_guide) == proposed_guide:
+                continue
+            rows.append(
+                {
+                    "Accion": "Actualizar",
+                    "Sitio": brand_config["site_label"],
+                    "Operacion": "size_guides",
+                    "Mod-Col": product_key,
+                    "Product ID": product_id,
+                    "Handle": product.get("Handle"),
+                    "Campo": "Metafield: custom.guia_de_tallas",
+                    "Valor actual": current_guide,
+                    "Valor nuevo": proposed_guide,
+                    "Metafield: custom.guia_de_tallas [page_reference]": proposed_guide,
+                    "Estado": "OK" if clean_value(decision.get("status")) == "approved" else "PARCIAL",
+                    "Observacion": clean_value(decision.get("warning")) or clean_value(decision.get("rule")),
+                    "Marca": clean_value(row.get("Marca") or product.get("Vendor")),
+                    "Categoria": category,
+                    "Tipo": product_type,
+                    "Genero": gender,
                 }
             )
         elif operation == "technologies":
@@ -3633,6 +4900,12 @@ def apply_shopify_preview(shopify_config, preview_df, progress_callback=None):
                 product_update(shopify_config, product_id, title=clean_value(row.get("Valor nuevo")))
             elif operation == "body":
                 product_update(shopify_config, product_id, body_html=clean_value(row.get("Valor nuevo")))
+            elif operation == "size_guides":
+                status = "OMITIDO"
+                message = (
+                    "custom.guia_de_tallas es page_reference; la API requiere gid://shopify/Page/... "
+                    "y se mantiene para descarga Matrixify/validación segura."
+                )
             elif operation == "photos":
                 image_urls = _split_semicolon_values(row.get("Valor nuevo"))
                 media_ids = _split_semicolon_values(row.get("Media IDs"))
@@ -3782,6 +5055,7 @@ def shopify_products_to_matrixify_df(shopify_products):
         "Metafield: custom.tipo [single_line_text_field]",
         "Metafield: custom.categoria [single_line_text_field]",
         "Metafield: custom.sub_categoria [single_line_text_field]",
+        "Metafield: custom.guia_de_tallas [page_reference]",
         "Metafield: custom.nombre_corto [single_line_text_field]",
         "Metafield: custom.descripcion_corta [single_line_text_field]",
         "Metafield: custom.pais_de_fabricacion [single_line_text_field]",
@@ -3832,6 +5106,13 @@ def shopify_products_to_matrixify_df(shopify_products):
                     else "",
                     "Metafield: custom.logo [list.metaobject_reference]": (
                         product.get("Metafield: custom.logo [list.metaobject_reference]")
+                    )
+                    if index == 0
+                    else "",
+                    "Metafield: custom.guia_de_tallas [page_reference]": (
+                        product.get("Metafield: custom.guia_de_tallas [page_reference]")
+                        or product.get("Guia de tallas")
+                        or product.get("Guía de tallas")
                     )
                     if index == 0
                     else "",
@@ -12278,12 +13559,13 @@ def main():
     ui_config = get_site_config(brand_config, shopify_config)
     inject_styles(ui_config)
     render_allowed_brands_card(brand_config)
-    nav_options = ["KPIs de catálogo", "Carga de catálogo"]
+    nav_options = ["KPIs de catálogo", "Input comercial", "Carga de catálogo"]
     if st.session_state.get("operation_area_choice") not in nav_options:
         st.session_state["operation_area_choice"] = nav_options[0]
     st.sidebar.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
     with st.sidebar.container(key="operation_nav"):
         sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
+        sidebar_nav_button("Input comercial", "operation_area_choice", "Input comercial", "operation_nav_input")
         operation_area = st.session_state.get("operation_area_choice", nav_options[0])
     operation_mode = "Carga completa"
     load_options = ["Carga completa", "Carga parcial"]
@@ -12345,6 +13627,9 @@ api_version = "{DEFAULT_API_VERSION}"
     if operation_area == "KPIs de catálogo":
         render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready)
         return
+    if operation_area == "Input comercial":
+        render_commercial_input_center()
+        return
 
     render_stepper(ui_config, current_step=current_flow_step())
 
@@ -12355,6 +13640,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Fotos 10 vistas": "photos",
             "Siblings": "siblings",
             "Titulo": "title",
+            "Guías de talla": "size_guides",
             "Mantención tecnologías": "technologies",
             "Mantención Body HTML": "body",
             "Activar inventario en sucursales": "inventory_locations",
@@ -12436,6 +13722,24 @@ api_version = "{DEFAULT_API_VERSION}"
                     "El Excel cargado arriba se interpretará como input de mantenimiento Body HTML. "
                     "Debe incluir Mod-Col y columnas como Body HTML, Material, Composición, Cuidado o Cuidados."
                 )
+        elif update_operation == "size_guides":
+            if update_source == "Shopify API":
+                update_file = st.file_uploader(
+                    "2. Opcional: subir Excel con Mod-Col y Guía de tallas",
+                    type=["xlsx", "xls"],
+                    key="update_size_guides",
+                    help=(
+                        "Si subes archivo, se usa como propuesta. Si no subes archivo, la app revisa el catálogo "
+                        "actual y valida la guía contra categoría, tipo, género y reglas TOP/BOTTOM."
+                    ),
+                )
+                st.success("Opcional: sin archivo se audita el catálogo actual de Shopify.")
+            else:
+                st.success("El respaldo Excel cargado arriba se usará como input de guías de talla.")
+            st.caption(
+                "Guías de talla: valida vacíos, valores inválidos e incompatibilidades como calzado con guía de vestuario "
+                "o vestuario/calzado con talla única. No modifica precio, stock, fotos, variantes ni otros metacampos."
+            )
         elif update_operation == "technologies":
             if update_source == "Shopify API":
                 update_file = st.file_uploader(
@@ -12480,9 +13784,10 @@ api_version = "{DEFAULT_API_VERSION}"
 
         update_ready = (
             update_file
-            or update_operation in ("photos", "siblings", "technologies", "inventory_locations")
+            or update_operation in ("photos", "siblings", "technologies", "size_guides", "inventory_locations")
             or body_mode == "fix_catalog"
             or (update_operation == "body" and update_source == "Respaldo Excel" and template_file)
+            or (update_operation == "size_guides" and update_source == "Respaldo Excel" and template_file)
         )
         partial_context = "|".join(
             [
@@ -12502,6 +13807,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 "shopify_preview_df",
                 "shopify_preview_issues_df",
                 "shopify_preview_matrixify_df",
+                "shopify_preview_diagnostic_df",
                 "shopify_preview_operation",
                 "shopify_apply_result_df",
                 "inventory_activation_preview_df",
@@ -12521,12 +13827,17 @@ api_version = "{DEFAULT_API_VERSION}"
         effective_update_source = update_source
         body_backup_input_file = None
         technology_backup_input_file = None
+        size_guides_backup_input_file = None
         if update_operation == "body" and update_source == "Respaldo Excel" and template_file:
             body_backup_input_file = template_file
             if is_shopify_configured(shopify_config):
                 effective_update_source = "Shopify API"
         if update_operation == "technologies" and update_source == "Respaldo Excel" and template_file:
             technology_backup_input_file = template_file
+            if is_shopify_configured(shopify_config):
+                effective_update_source = "Shopify API"
+        if update_operation == "size_guides" and update_source == "Respaldo Excel" and template_file:
+            size_guides_backup_input_file = template_file
             if is_shopify_configured(shopify_config):
                 effective_update_source = "Shopify API"
 
@@ -12542,7 +13853,11 @@ api_version = "{DEFAULT_API_VERSION}"
                 effective_update_file = (
                     body_backup_input_file
                     if body_backup_input_file is not None
-                    else (technology_backup_input_file if technology_backup_input_file is not None else update_file)
+                    else (
+                        technology_backup_input_file
+                        if technology_backup_input_file is not None
+                        else (size_guides_backup_input_file if size_guides_backup_input_file is not None else update_file)
+                    )
                 )
                 update_df = read_uploaded_excel_cached(
                     effective_update_file,
@@ -12784,21 +14099,33 @@ api_version = "{DEFAULT_API_VERSION}"
                     st.session_state["shopify_preview_df"] = preview_df
                     st.session_state["shopify_preview_issues_df"] = issues_df
                     st.session_state["shopify_preview_matrixify_df"] = matrixify_df
+                    if update_operation in ("body", "photos", "size_guides"):
+                        st.session_state["shopify_preview_diagnostic_df"] = build_partial_diagnostic_table(
+                            preview_df,
+                            issues_df,
+                            update_operation,
+                        )
+                    else:
+                        st.session_state["shopify_preview_diagnostic_df"] = pd.DataFrame()
                     st.session_state["shopify_preview_operation"] = update_operation
                     st.session_state.pop(f"shopify_preview_excel_{brand_config['site_key']}_{update_operation}", None)
 
                 preview_df = st.session_state.get("shopify_preview_df")
                 issues_df = st.session_state.get("shopify_preview_issues_df", pd.DataFrame())
                 matrixify_df = st.session_state.get("shopify_preview_matrixify_df", pd.DataFrame())
+                diagnostic_df = st.session_state.get("shopify_preview_diagnostic_df", pd.DataFrame())
                 if preview_df is not None:
                     if preview_df.empty:
                         st.warning("No se genero ninguna fila de vista previa.")
                     else:
                         st.success(f"Vista previa generada con {len(preview_df):,} cambios.")
-                        summary_df = partial_preview_summary(preview_df, issues_df)
-                        st.write("Resumen de carga parcial")
-                        st.dataframe(summary_df, use_container_width=True, hide_index=True)
-                        st.dataframe(preview_df.head(100), use_container_width=True)
+                        if update_operation in ("body", "photos", "size_guides"):
+                            render_partial_diagnostic_panel(diagnostic_df, update_operation)
+                        else:
+                            summary_df = partial_preview_summary(preview_df, issues_df)
+                            st.write("Resumen de carga parcial")
+                            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                            st.dataframe(preview_df.head(100), use_container_width=True)
                     if issues_df is not None and not issues_df.empty:
                         st.warning(f"Hay {len(issues_df):,} observaciones.")
                         st.dataframe(issues_df, use_container_width=True)
@@ -12806,14 +14133,17 @@ api_version = "{DEFAULT_API_VERSION}"
                     excel_key = f"shopify_preview_excel_{brand_config['site_key']}_{update_operation}"
                     excel_bytes = st.session_state.get(excel_key)
                     if excel_bytes is None:
-                        excel_bytes = dataframe_to_excel_bytes(
-                            {
-                                "Resumen": partial_preview_summary(preview_df, issues_df),
-                                "Vista previa": preview_df if preview_df is not None else pd.DataFrame(),
-                                "Revision": issues_df if issues_df is not None else pd.DataFrame(),
-                                "Matrixify fotos": matrixify_df if matrixify_df is not None else pd.DataFrame(),
-                            }
-                        )
+                        sheets = {
+                            "Resumen": partial_preview_summary(preview_df, issues_df),
+                            "Vista previa": preview_df if preview_df is not None else pd.DataFrame(),
+                            "Revision": issues_df if issues_df is not None else pd.DataFrame(),
+                            "Matrixify fotos": matrixify_df if matrixify_df is not None else pd.DataFrame(),
+                        }
+                        if update_operation in ("body", "photos", "size_guides"):
+                            sheets["Resumen Diagnostico"] = partial_diagnostic_summary(diagnostic_df, update_operation)
+                            sheets["Diagnostico"] = diagnostic_df if diagnostic_df is not None else pd.DataFrame()
+                            sheets["Listos para aplicar"] = filter_preview_by_diagnostic_ready(preview_df, diagnostic_df)
+                        excel_bytes = dataframe_to_excel_bytes(sheets)
                         st.session_state[excel_key] = excel_bytes
                     st.download_button(
                         "Descargar estructura Matrixify",
@@ -12822,18 +14152,26 @@ api_version = "{DEFAULT_API_VERSION}"
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
-                    can_apply = update_operation in ("tags", "title", "body", "siblings", "photos", "technologies") and preview_df is not None and not preview_df.empty
+                    writable_preview_df = preview_df
+                    if update_operation in ("body", "photos", "size_guides"):
+                        writable_preview_df = filter_preview_by_diagnostic_ready(preview_df, diagnostic_df)
+                    can_apply = update_operation in ("tags", "title", "body", "siblings", "photos", "technologies") and writable_preview_df is not None and not writable_preview_df.empty
                     if update_operation == "photos":
                         st.info("REPLACE elimina las fotos actuales del producto y sube las 10 URLs nuevas. MERGE agrega las URLs nuevas sin borrar las actuales.")
                     if update_operation == "technologies":
                         st.info("Se actualizaran los metacampos custom.tecnologia y custom.logo. Los logos se resuelven contra los metaobjetos definidos en Shopify.")
+                    if update_operation == "size_guides":
+                        st.warning(
+                            "Las guías de talla son page_reference. La vista previa y el Excel quedan listos, "
+                            "pero la escritura directa por API se mantiene bloqueada para no enviar texto donde Shopify espera un ID de página."
+                        )
                     if can_apply:
                         confirm_apply = st.checkbox("Confirmo que revise la vista previa y quiero aplicar en Shopify")
                         if confirm_apply:
                             render_persistent_sync_job_panel(
                                 shopify_config,
                                 brand_config,
-                                preview_df,
+                                writable_preview_df,
                                 mode=f"partial_{update_operation}",
                                 label="Carga parcial Shopify",
                                 activate_inventory_locations=False,
@@ -12844,10 +14182,10 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.exception(exc)
         elif update_source == "Respaldo Excel" and template_file and update_ready:
             try:
-                template_df = read_uploaded_excel_cached(
+                template_df = read_uploaded_excel_sheet_or_first(
                     template_file,
                     f"partial_template_{brand_config['site_key']}_{update_operation}",
-                    sheet_name="Products",
+                    preferred_sheet="Products",
                 )
                 if "Vendor" in template_df.columns:
                     catalog_vendors = {
@@ -12894,15 +14232,30 @@ api_version = "{DEFAULT_API_VERSION}"
                         only_missing_images=only_missing_images,
                         body_mode=body_mode,
                     )
+                    diagnostic_df = pd.DataFrame()
                     if matrixify_df.empty:
                         st.warning("No se genero ninguna fila de carga parcial. Revisa la hoja Revision.")
                     else:
                         st.success(f"Carga parcial generada con {len(matrixify_df):,} productos.")
-                        st.dataframe(matrixify_df.head(100), use_container_width=True)
+                        if update_operation in ("body", "photos", "size_guides"):
+                            diagnostic_df = build_partial_diagnostic_table(matrixify_df, issues_df, update_operation)
+                            render_partial_diagnostic_panel(diagnostic_df, update_operation)
+                        else:
+                            st.dataframe(matrixify_df.head(100), use_container_width=True)
                     if issues_df is not None and not issues_df.empty:
                         st.warning(f"Hay {len(issues_df):,} observaciones.")
                         st.dataframe(issues_df, use_container_width=True)
-                    excel_bytes = update_to_excel_bytes(matrixify_df, issues_df)
+                    if update_operation in ("body", "photos", "size_guides"):
+                        excel_bytes = dataframe_to_excel_bytes(
+                            {
+                                "Products": matrixify_df,
+                                "Resumen Diagnostico": partial_diagnostic_summary(diagnostic_df, update_operation),
+                                "Diagnostico": diagnostic_df,
+                                "Revision": issues_df if issues_df is not None else pd.DataFrame(),
+                            }
+                        )
+                    else:
+                        excel_bytes = update_to_excel_bytes(matrixify_df, issues_df)
                     st.download_button(
                         "Descargar estructura Matrixify",
                         data=excel_bytes,

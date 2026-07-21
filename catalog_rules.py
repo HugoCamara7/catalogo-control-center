@@ -355,6 +355,11 @@ def resolve_size_guide(brand="", category="", product_type="", gender="", age_gr
     category_key = normalize_key(category)
     gender_key = normalize_key(gender)
     guide_key = normalize_key(current_guide)
+    known_guides = {
+        normalize_key(rule.get("guide", ""))
+        for rule in SIZE_GUIDE_RULES
+        if normalize_text(rule.get("guide", ""))
+    }
     product_rule = normalize_product_type(product_type)
     product_group = (product_rule or {}).get("size_guide_group", "")
     if not product_group and category_key == "vestuario":
@@ -374,7 +379,17 @@ def resolve_size_guide(brand="", category="", product_type="", gender="", age_gr
         elif product_type_key in {normalize_key(item) for item in top_markers}:
             product_group = "TOPS"
     if guide_key:
-        if category_key == "calzado" and "vestuario" in guide_key:
+        if known_guides and guide_key not in known_guides:
+            return {
+                "guide": "",
+                "rule": "current_guide_unknown",
+                "match_level": "blocked",
+                "warning": "Guia de tallas no existe en el diccionario permitido.",
+                "status": "blocked",
+            }
+        if category_key == "calzado" and (
+            "vestuario" in guide_key or "top" in guide_key or "bottom" in guide_key
+        ):
             return {
                 "guide": "",
                 "rule": "current_guide_conflict",
@@ -382,7 +397,9 @@ def resolve_size_guide(brand="", category="", product_type="", gender="", age_gr
                 "warning": "Guia de vestuario no compatible con calzado.",
                 "status": "blocked",
             }
-        if category_key == "vestuario" and "calzado" in guide_key:
+        if category_key == "vestuario" and (
+            "calzado" in guide_key or "zapato" in guide_key or "zapatilla" in guide_key or "footwear" in guide_key
+        ):
             return {
                 "guide": "",
                 "rule": "current_guide_conflict",

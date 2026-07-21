@@ -9,6 +9,17 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
+try:
+    from catalog_rules import resolve_size_guide
+except Exception:
+    def resolve_size_guide(brand="", category="", product_type="", gender="", age_group="", current_guide=""):
+        return {
+            "guide": clean(current_guide),
+            "status": "review",
+            "warning": "No se pudo cargar catalog_rules.resolve_size_guide.",
+            "rule": "",
+        }
+
 
 TEMPLATE_PATH = Path(r"C:\Users\hcamara\Downloads\Export_2026-05-21_113908.xlsx")
 INPUT_PATH = Path(r"C:\Users\hcamara\Documents\Version Input prueba.xlsx")
@@ -2252,6 +2263,19 @@ SIBLINGS_COLUMN = "Metafield: theme.siblings [single_line_text_field]"
 SIBLINGS_COLOR_COLUMN = "Metafield: theme.siblings_color [single_line_text_field]"
 CUSTOM_SIBLINGS_COLUMN = "Metafield: custom.siblings [single_line_text_field]"
 CUSTOM_SIBLINGS_COLOR_COLUMN = "Metafield: custom.siblings_color [single_line_text_field]"
+SIZE_GUIDE_COLUMN = "Metafield: custom.guia_de_tallas [page_reference]"
+SIZE_GUIDE_UPDATE_COLUMNS = [
+    "Guia de tallas",
+    "Guía de tallas",
+    "Guia Tallas",
+    "Guía Tallas",
+    "Size Guide",
+    "Tabla de tallas",
+    "Guia",
+    "Guía",
+    SIZE_GUIDE_COLUMN,
+    "custom.guia_de_tallas",
+]
 CRITICAL_PRODUCT_METAFIELD_COLUMNS = [
     "Metafield: custom.marca [single_line_text_field]",
     "Metafield: custom.materialidad [single_line_text_field]",
@@ -2263,6 +2287,7 @@ CRITICAL_PRODUCT_METAFIELD_COLUMNS = [
     "Metafield: custom.tipo [single_line_text_field]",
     "Metafield: custom.categoria [single_line_text_field]",
     "Metafield: custom.sub_categoria [single_line_text_field]",
+    SIZE_GUIDE_COLUMN,
     "Metafield: custom.nombre_corto [single_line_text_field]",
     "Metafield: custom.descripcion_corta [single_line_text_field]",
     "Metafield: custom.pais_de_fabricacion [single_line_text_field]",
@@ -2575,6 +2600,65 @@ def build_matrixify_updates(
                 if not body_html:
                     continue
             rows.append(_minimal_product_update(catalog_row, {"Body HTML": body_html}))
+        elif operation == "size_guides":
+            guide_col = first_existing(source_df, SIZE_GUIDE_UPDATE_COLUMNS)
+            current_guide = clean(catalog_row.get(SIZE_GUIDE_COLUMN))
+            input_guide = clean(source_row.get(guide_col)) if guide_col else ""
+            category = first_non_empty(
+                source_row.get("Categoria"),
+                source_row.get("Categoría"),
+                catalog_row.get("Metafield: custom.categoria [single_line_text_field]"),
+                catalog_row.get("Type"),
+            )
+            product_type = first_non_empty(
+                source_row.get("Tipo de prenda"),
+                source_row.get("Tipo"),
+                catalog_row.get("Metafield: custom.tipo [single_line_text_field]"),
+                catalog_row.get("Type"),
+            )
+            gender = first_non_empty(
+                source_row.get("Genero"),
+                source_row.get("Género"),
+                catalog_row.get("Metafield: custom.genero [single_line_text_field]"),
+            )
+            decision = resolve_size_guide(
+                brand=first_non_empty(
+                    source_row.get("Marca"),
+                    catalog_row.get("Metafield: custom.marca [single_line_text_field]"),
+                    catalog_row.get("Vendor"),
+                ),
+                category=category,
+                product_type=product_type,
+                gender=gender,
+                age_group=first_non_empty(source_row.get("Edad"), source_row.get("Age Group")),
+                current_guide=input_guide or current_guide,
+            )
+            if clean(decision.get("status")) == "blocked":
+                issues.append(
+                    {
+                        "Mod-Col": key,
+                        "Handle": catalog_handle,
+                        "Problema": "Guía de talla incompatible",
+                        "Detalle": clean(decision.get("warning")),
+                        "Fila": input_index + 2,
+                    }
+                )
+                continue
+            proposed_guide = clean(input_guide or decision.get("guide"))
+            if not proposed_guide or proposed_guide.lower() in {"0", "-", "n/a", "na", "null", "none"}:
+                issues.append(
+                    {
+                        "Mod-Col": key,
+                        "Handle": catalog_handle,
+                        "Problema": "Guía de talla vacía o inválida",
+                        "Detalle": clean(decision.get("warning")) or "No se detectó guía de talla válida.",
+                        "Fila": input_index + 2,
+                    }
+                )
+                continue
+            if current_guide and current_guide == proposed_guide:
+                continue
+            rows.append(_minimal_product_update(catalog_row, {SIZE_GUIDE_COLUMN: proposed_guide}))
         else:
             issues.append({"Problema": f"Operacion no soportada: {operation}"})
             break

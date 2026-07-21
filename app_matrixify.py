@@ -43,6 +43,20 @@ from generate_columbia_matrixify import (
     read_arti_source,
 )
 try:
+    from catalog_rules import CATALOG_FIELD_ALIASES, aliases_for, build_catalog_handle, validate_catalog_row
+except Exception:
+    CATALOG_FIELD_ALIASES = {}
+
+    def aliases_for(field, fallback=None):
+        return list(fallback or [])
+
+    def build_catalog_handle(product_type="", gender="", brand="", mod_col=""):
+        return ""
+
+    def validate_catalog_row(row):
+        return {"normalized": {}, "issues": [], "size_guide_decision": {}}
+
+try:
     import shopify_api as _shopify_api
 except Exception as exc:
     _shopify_api = None
@@ -458,6 +472,39 @@ ARTI_COLUMN_ALIASES_APP = {
     "Deporte": ["Deporte", "DEPORTE", "Sport", "Activity"],
     "Imagen": ["Image Src", "Imagen", "IMAGEN", "Foto", "FOTO", "Url Imagen", "URL Imagen"],
 }
+
+_CATALOG_ALIAS_TO_ARTI_TARGET = {
+    "mod_col": ["COD MOD COL", "Mod-Col"],
+    "sku": ["CODINT_MA"],
+    "barcode": ["CodBarras"],
+    "size": ["TALNUM_MA"],
+    "brand": ["MARCA_MA"],
+    "title": ["NombreModelo"],
+    "description": ["DescripcionWeb"],
+    "features": ["Caracteristicas"],
+    "material": ["Material"],
+    "care": ["Cuidado"],
+    "product_type": ["TipoProducto"],
+    "category": ["Categoria"],
+    "subcategory": ["SubCategoria"],
+    "gender": ["Genero"],
+    "color_web": ["ColorNombre"],
+    "season": ["Temporada"],
+    "collection": ["Coleccion"],
+    "occasion": ["Ocasion"],
+    "sport": ["Deporte"],
+    "technology": ["Tecnologia"],
+    "image": ["Imagen"],
+    "price": ["Precio"],
+}
+
+for catalog_field, arti_targets in _CATALOG_ALIAS_TO_ARTI_TARGET.items():
+    for target in arti_targets:
+        if target not in ARTI_COLUMN_ALIASES_APP:
+            continue
+        for alias in CATALOG_FIELD_ALIASES.get(catalog_field, []):
+            if alias not in ARTI_COLUMN_ALIASES_APP[target]:
+                ARTI_COLUMN_ALIASES_APP[target].append(alias)
 
 
 def normalize_arti_columns_for_app(df):
@@ -4300,7 +4347,10 @@ def split_mod_col_code(mod_col):
     return model, color
 
 
-def suggested_handle(title, mod_col, brand_label=""):
+def suggested_handle(title, mod_col, brand_label="", product_type="", gender=""):
+    technical_handle = build_catalog_handle(product_type=product_type, gender=gender, brand=brand_label, mod_col=mod_col)
+    if technical_handle:
+        return technical_handle
     base = first_non_empty(title, mod_col)
     text = f"{base} {brand_label} {mod_col}".strip()
     text = unicodedata.normalize("NFKD", clean_value(text)).encode("ascii", "ignore").decode("ascii")
@@ -4462,6 +4512,32 @@ def build_missing_models_input_export(expected, missing_models, brand_config):
             missing_notes.append("Completar composicion/material")
         if not care:
             missing_notes.append("Completar cuidados")
+        validation_row = {
+            "Mod-Col": mod_col,
+            "Marca": vendor,
+            "Genero": gender,
+            "Categoria": category,
+            "Sub Categoria": subcategory,
+            "Tipo de prenda": product_type_plural or product_type,
+            "Color web": color_name or color_code,
+            "Title": title_suggested,
+            "Body HTML": body_html,
+            "Talla": first_non_empty(*(valid_sizes or [""])),
+            "SKU": first_non_empty(*(skus or [""])),
+            "Precio": price,
+            "Guia de tallas": row_first_value(first_row, ["Guia de tallas", "Guía de tallas", "Size Guide"]),
+        }
+        validation_result = validate_catalog_row(validation_row)
+        size_decision = validation_result.get("size_guide_decision") or {}
+        validation_issues = validation_result.get("issues") or []
+        if validation_issues:
+            missing_notes.extend(
+                [
+                    f"{clean_value(issue.get('level')).upper()}: {clean_value(issue.get('field'))} - {clean_value(issue.get('message'))}"
+                    for issue in validation_issues
+                    if clean_value(issue.get("message"))
+                ]
+            )
 
         product_rows.append(
             {
@@ -4471,7 +4547,13 @@ def build_missing_models_input_export(expected, missing_models, brand_config):
                 "Codigo color": color_code,
                 "Nombre modelo ARTI": title,
                 "Nombre web sugerido": title_suggested,
-                "Handle sugerido": suggested_handle(title_suggested, mod_col, vendor),
+                "Handle sugerido": suggested_handle(
+                    title_suggested,
+                    mod_col,
+                    vendor,
+                    product_type_plural or product_type,
+                    gender,
+                ),
                 "Title": title_suggested,
                 "Body HTML": body_html,
                 "Vendor": vendor,
@@ -4509,6 +4591,15 @@ def build_missing_models_input_export(expected, missing_models, brand_config):
                 "Metafield: custom.tipo [single_line_text_field]": product_type_plural or product_type,
                 "Metafield: custom.genero [single_line_text_field]": gender,
                 "Metafield: custom.color_forus [single_line_text_field]": color_name or color_code,
+                "Guia de talla sugerida": clean_value(size_decision.get("guide")),
+                "Regla guia talla": clean_value(size_decision.get("rule")),
+                "Estado validacion": (
+                    "BLOQUEADO"
+                    if any(clean_value(issue.get("level")).lower() == "bloqueo" for issue in validation_issues)
+                    else "ADVERTENCIA"
+                    if validation_issues or clean_value(size_decision.get("status")).lower() == "warning"
+                    else "APROBADO"
+                ),
                 "Campos que debe completar marca": "; ".join(missing_notes) if missing_notes else "Revisar y aprobar",
                 "Observaciones": "Producto no creado en Shopify. Input sugerido desde ARTI/BigQuery.",
             }
@@ -13078,7 +13169,10 @@ api_version = "{DEFAULT_API_VERSION}"
                         else:
                             st.success("Sin observaciones Matrixify.")
                         if type_warnings_df is not None and not type_warnings_df.empty:
-                            st.warning("Revisa la hoja Tipos nuevos antes de cargar en Shopify.")
+                            st.warning(
+                                "Tipos de prenda nuevos detectados. Revisa la hoja Tipos nuevos y la Revision antes de sincronizar: "
+                                "hay que confirmar si el Type existe en la web destino o agregarlo al diccionario por web."
+                            )
                             st.dataframe(type_warnings_df, use_container_width=True)
                         if skipped_df is not None and not skipped_df.empty:
                             st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")

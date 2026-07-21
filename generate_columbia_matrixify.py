@@ -1291,6 +1291,34 @@ def build_new_type_warnings(input_df):
     return pd.DataFrame(rows, columns=["Campo", "Valor", "Productos", "Ejemplos Mod-Col", "Nota"])
 
 
+def new_type_warnings_to_issues(type_warnings_df):
+    if type_warnings_df is None or type_warnings_df.empty:
+        return []
+    if "Campo" in type_warnings_df.columns and clean(type_warnings_df.iloc[0].get("Campo")) == "Configuracion":
+        return []
+
+    issues = []
+    for _, row in type_warnings_df.iterrows():
+        value = clean(row.get("Valor"))
+        if not value:
+            continue
+        examples = [clean(item) for item in re.split(r"[,;|]", clean(row.get("Ejemplos Mod-Col"))) if clean(item)]
+        if not examples:
+            examples = [""]
+        for mod_col in examples:
+            issues.append(
+                {
+                    "Mod-Col": mod_col,
+                    "Problema": f"Tipo de prenda nuevo/no reconocido: {value}. Revisar diccionario por web antes de cargar a Shopify.",
+                    "Accion sugerida": "Validar si el Type existe en la web destino. Si es correcto, agregarlo al diccionario/data/tipos_shopify.xlsx; si no, corregir el input.",
+                    "Tipo detectado": value,
+                    "Campo": clean(row.get("Campo")),
+                    "Fila input": "",
+                }
+            )
+    return issues
+
+
 def available_output_path(path):
     if not path.exists():
         return path
@@ -2552,6 +2580,10 @@ def build_matrixify_updates(
             break
 
     output_df = pd.DataFrame(rows)
+    type_warning_source_df = source_df if source_df is not None else update_input_df
+    if type_warning_source_df is not None:
+        type_warnings_df = build_new_type_warnings(type_warning_source_df)
+        issues.extend(new_type_warnings_to_issues(type_warnings_df))
     issues_df = pd.DataFrame(issues)
     return output_df, issues_df
 
@@ -2606,6 +2638,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     sial_rows = []
     issues = []
     skipped_rows = []
+    known_types_for_report, known_types_source = load_known_types()
+    runtime_type_warning_keys = set()
+    runtime_type_warning_rows = []
 
     for input_index, product in input_df.iterrows():
         key = product["__KEY"]
@@ -2744,6 +2779,25 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         body_html = build_body_html(product)
         tags = row_alias_value(product, TAG_COLUMNS)
         product_type = row_alias_value(product, TYPE_COLUMNS)
+        if not product_type and not variants.empty:
+            product_type = row_alias_value(variants.iloc[0], TYPE_COLUMNS)
+        product_type_key = normalize_compare(product_type)
+        if (
+            known_types_for_report
+            and product_type_key
+            and product_type_key not in known_types_for_report
+            and (key, product_type_key) not in runtime_type_warning_keys
+        ):
+            runtime_type_warning_keys.add((key, product_type_key))
+            runtime_type_warning_rows.append(
+                {
+                    "Campo": "Type detectado",
+                    "Valor": product_type,
+                    "Productos": 1,
+                    "Ejemplos Mod-Col": key,
+                    "Nota": f"No existe en {known_types_source}. Validar diccionario por web antes de cargar a Shopify.",
+                }
+            )
         technology_value = row_first_existing(
             product,
             [tech_col, "METAFIELD TECNOLOGÍAS", "METAFIELD TECNOLOGIAS", "Tecnologias ", "Tecnologías"],
@@ -2917,6 +2971,24 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         rows.extend(product_rows)
         sial_rows.extend(product_sial_rows)
 
+    type_warnings_df = build_new_type_warnings(input_df)
+    if runtime_type_warning_rows:
+        runtime_type_warnings_df = pd.DataFrame(
+            runtime_type_warning_rows,
+            columns=["Campo", "Valor", "Productos", "Ejemplos Mod-Col", "Nota"],
+        )
+        if type_warnings_df is None or type_warnings_df.empty:
+            type_warnings_df = runtime_type_warnings_df
+        elif not (
+            "Campo" in type_warnings_df.columns
+            and clean(type_warnings_df.iloc[0].get("Campo")) == "Configuracion"
+        ):
+            type_warnings_df = pd.concat([type_warnings_df, runtime_type_warnings_df], ignore_index=True).drop_duplicates(
+                subset=["Campo", "Valor", "Ejemplos Mod-Col"],
+                keep="first",
+            )
+    issues.extend(new_type_warnings_to_issues(type_warnings_df))
+
     output_df = pd.DataFrame(rows, columns=matrixify_columns)
     output_df = fill_top_row_product_fields(output_df, input_df, tech_col)
     sial_df = pd.DataFrame(sial_rows, columns=get_sial_columns(brand_config))
@@ -2929,7 +3001,6 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         skipped_rows,
         columns=["Mod-Col", "Handle", "Filas omitidas", "Motivo"],
     )
-    type_warnings_df = build_new_type_warnings(input_df)
     summary_df = pd.DataFrame(
         [
             {"Metrica": "Productos input", "Valor": len(input_df)},

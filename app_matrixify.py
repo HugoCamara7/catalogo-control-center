@@ -14499,10 +14499,21 @@ def render_ticket_styles():
     st.markdown(
         """
         <style>
-        .ticket-hero{padding:24px 28px;border:1px solid #D9E2EF;background:#fff;border-radius:14px;margin-bottom:20px}
-        .ticket-hero p{margin:0 0 6px;color:#2563EB;font-size:12px;font-weight:900;text-transform:uppercase}
-        .ticket-hero h1{margin:0;color:#0B1B46;font-size:29px;line-height:1.15}
-        .ticket-hero span{display:block;margin-top:8px;color:#64748B}
+        .ticket-hero{padding:20px 24px;border:1px solid #D9E2EF;background:#fff;border-radius:14px;margin:0 0 16px}
+        .ticket-hero p{margin:0 0 5px;color:#2563EB;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:0}
+        .ticket-hero h1{margin:0;color:#0B1B46;font-size:26px;line-height:1.15}
+        .ticket-hero span{display:block;margin-top:7px;color:#64748B;font-size:15px}
+        .ticket-kpi-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:0 0 16px}
+        .ticket-kpi-card{min-height:88px;padding:13px 15px;border:1px solid #D9E2EF;border-radius:12px;background:#fff;box-shadow:0 12px 25px rgba(15,23,42,.05)}
+        .ticket-kpi-card small{display:block;min-height:30px;color:#40516E;font-size:12px;font-weight:800;line-height:1.2}
+        .ticket-kpi-card strong{display:block;margin-top:7px;color:#0B1B46;font-size:27px;line-height:1;font-weight:900}
+        .ticket-kpi-card.blue{border-color:#BFDBFE;background:#F8FBFF}.ticket-kpi-card.blue strong{color:#2563EB}
+        .ticket-kpi-card.amber{border-color:#FDE6BD;background:#FFFDF8}.ticket-kpi-card.amber strong{color:#C56A00}
+        .ticket-kpi-card.red{border-color:#FECACA;background:#FFF9F9}.ticket-kpi-card.red strong{color:#DC2626}
+        .ticket-kpi-card.green{border-color:#BBF7D0;background:#F7FFF9}.ticket-kpi-card.green strong{color:#15803D}
+        .ticket-kpi-card.slate{background:#fff}.ticket-filter-panel{padding:14px 16px 4px;border:1px solid #D9E2EF;border-radius:12px;background:#fff;margin:0 0 16px}
+        .ticket-filter-title{margin:0 0 8px;color:#0B1B46;font-size:15px;line-height:1.2}
+        .ticket-filter-panel h3{margin:0 0 8px;color:#0B1B46;font-size:15px}
         .ticket-state{display:inline-flex;align-items:center;min-height:28px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:850;border:1px solid #CBD5E1;background:#F8FAFC;color:#334155}
         .ticket-state.blue{background:#EFF6FF;border-color:#BFDBFE;color:#1D4ED8}
         .ticket-state.yellow{background:#FFFBEB;border-color:#FDE68A;color:#A16207}
@@ -14515,11 +14526,23 @@ def render_ticket_styles():
         .ticket-summary strong{display:block;color:#0B1B46;font-size:21px}
         .ticket-event{padding:10px 12px;border-left:3px solid #93C5FD;background:#F8FAFC;margin:7px 0;border-radius:0 8px 8px 0}
         .ticket-event strong{color:#0B1B46}.ticket-event small{color:#64748B}
-        @media(max-width:900px){.ticket-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:1100px){.ticket-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+        @media(max-width:900px){.ticket-summary,.ticket-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_ticket_kpi_grid(items):
+    """Render a compact, dashboard-style operational summary for catalog tickets."""
+    cards = []
+    for label, value, tone in items:
+        cards.append(
+            f'<div class="ticket-kpi-card {escape(tone)}"><small>{escape(label)}</small>'
+            f'<strong>{int(value):,}</strong></div>'
+        )
+    st.markdown(f'<div class="ticket-kpi-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
 def _ticket_state_color(status):
@@ -14600,51 +14623,51 @@ def render_ticket_inbox(service, actor, brand_view=False):
     if not brand_view:
         states = [ticket.get("status") for ticket in all_tickets]
         kpis = [
-            ("Pendientes", states.count(STATE_PENDING)),
-            ("Sin asignar", sum(1 for item in all_tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_REJECTED})),
-            ("Asignados a mí", sum(1 for item in all_tickets if item.get("assignee") == actor.get("user"))),
-            ("En revisión", states.count(STATE_REVIEW)),
-            ("Observados", states.count(STATE_OBSERVED)),
-            ("Aprobados", states.count(STATE_APPROVED)),
-            ("En carga", states.count(STATE_LOADING)),
-            ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets)),
-            ("Completados", states.count(STATE_COMPLETED) + states.count(STATE_COMPLETED_OBS)),
-            ("Fallidos", states.count(STATE_FAILED)),
+            ("Pendientes", states.count(STATE_PENDING), "blue"),
+            ("Sin asignar", sum(1 for item in all_tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_REJECTED}), "amber"),
+            ("Asignados a mí", sum(1 for item in all_tickets if item.get("assignee") == actor.get("user")), "blue"),
+            ("En revisión", states.count(STATE_REVIEW), "amber"),
+            ("Observados", states.count(STATE_OBSERVED), "red"),
+            ("Aprobados", states.count(STATE_APPROVED), "green"),
+            ("En carga", states.count(STATE_LOADING), "blue"),
+            ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets), "red"),
+            ("Completados", states.count(STATE_COMPLETED) + states.count(STATE_COMPLETED_OBS), "green"),
+            ("Fallidos", states.count(STATE_FAILED), "red"),
         ]
-        cols = st.columns(5)
-        for idx, (label, value) in enumerate(kpis):
-            cols[idx % 5].metric(label, value)
-    filter_cols = st.columns([1.2, 1, 1, 1, 1.2])
-    brands = sorted({clean_value(item.get("brand")) for item in all_tickets if clean_value(item.get("brand"))})
-    statuses = sorted({item.get("status") for item in all_tickets if item.get("status")})
-    assignees = sorted({clean_value(item.get("assignee")) for item in all_tickets if clean_value(item.get("assignee"))})
-    with filter_cols[0]:
-        search = st.text_input("Buscar", placeholder="Ticket, Mod-Col, archivo o usuario", key=f"ticket_search_{actor.get('role')}")
-    with filter_cols[1]:
-        brand_filter = st.selectbox("Marca", ["Todas"] + brands, key=f"ticket_brand_filter_{actor.get('role')}")
-    with filter_cols[2]:
-        state_label_options = ["Todos"] + [STATE_LABELS.get(value, value) for value in statuses]
-        state_label = st.selectbox("Estado", state_label_options, key=f"ticket_state_filter_{actor.get('role')}")
-    with filter_cols[3]:
-        priority_label = st.selectbox("Prioridad", ["Todas"] + [PRIORITY_LABELS[key] for key in PRIORITIES], key=f"ticket_priority_filter_{actor.get('role')}")
-    with filter_cols[4]:
-        assignee_filter = st.selectbox("Responsable", ["Todos"] + assignees, key=f"ticket_assignee_filter_{actor.get('role')}")
-    secondary_filters = st.columns([1, 1, 1, 1])
-    sites = sorted({site for item in all_tickets for site in item.get("sites", []) if clean_value(site)})
-    load_types = sorted({clean_value(item.get("load_type")) for item in all_tickets if clean_value(item.get("load_type"))})
-    with secondary_filters[0]:
-        site_filter = st.selectbox("Sitio", ["Todos"] + sites, key=f"ticket_site_filter_{actor.get('role')}")
-    with secondary_filters[1]:
-        load_type_labels = {"complete": "Completa", "partial": "Parcial"}
-        load_type_label = st.selectbox(
-            "Tipo de carga",
-            ["Todas"] + [load_type_labels.get(value, value.title()) for value in load_types],
-            key=f"ticket_load_filter_{actor.get('role')}",
-        )
-    with secondary_filters[2]:
-        date_from = st.date_input("Desde", value=None, key=f"ticket_date_from_{actor.get('role')}")
-    with secondary_filters[3]:
-        date_to = st.date_input("Hasta", value=None, key=f"ticket_date_to_{actor.get('role')}")
+        render_ticket_kpi_grid(kpis)
+    with st.container(border=True):
+        st.markdown("<h3 class=\"ticket-filter-title\">Buscar y filtrar solicitudes</h3>", unsafe_allow_html=True)
+        filter_cols = st.columns([1.2, 1, 1, 1, 1.2])
+        brands = sorted({clean_value(item.get("brand")) for item in all_tickets if clean_value(item.get("brand"))})
+        statuses = sorted({item.get("status") for item in all_tickets if item.get("status")})
+        assignees = sorted({clean_value(item.get("assignee")) for item in all_tickets if clean_value(item.get("assignee"))})
+        with filter_cols[0]:
+            search = st.text_input("Buscar", placeholder="Ticket, Mod-Col, archivo o usuario", key=f"ticket_search_{actor.get('role')}")
+        with filter_cols[1]:
+            brand_filter = st.selectbox("Marca", ["Todas"] + brands, key=f"ticket_brand_filter_{actor.get('role')}")
+        with filter_cols[2]:
+            state_label_options = ["Todos"] + [STATE_LABELS.get(value, value) for value in statuses]
+            state_label = st.selectbox("Estado", state_label_options, key=f"ticket_state_filter_{actor.get('role')}")
+        with filter_cols[3]:
+            priority_label = st.selectbox("Prioridad", ["Todas"] + [PRIORITY_LABELS[key] for key in PRIORITIES], key=f"ticket_priority_filter_{actor.get('role')}")
+        with filter_cols[4]:
+            assignee_filter = st.selectbox("Responsable", ["Todos"] + assignees, key=f"ticket_assignee_filter_{actor.get('role')}")
+        secondary_filters = st.columns([1, 1, 1, 1])
+        sites = sorted({site for item in all_tickets for site in item.get("sites", []) if clean_value(site)})
+        load_types = sorted({clean_value(item.get("load_type")) for item in all_tickets if clean_value(item.get("load_type"))})
+        with secondary_filters[0]:
+            site_filter = st.selectbox("Sitio", ["Todos"] + sites, key=f"ticket_site_filter_{actor.get('role')}")
+        with secondary_filters[1]:
+            load_type_labels = {"complete": "Completa", "partial": "Parcial"}
+            load_type_label = st.selectbox(
+                "Tipo de carga",
+                ["Todas"] + [load_type_labels.get(value, value.title()) for value in load_types],
+                key=f"ticket_load_filter_{actor.get('role')}",
+            )
+        with secondary_filters[2]:
+            date_from = st.date_input("Desde", value=None, key=f"ticket_date_from_{actor.get('role')}")
+        with secondary_filters[3]:
+            date_to = st.date_input("Hasta", value=None, key=f"ticket_date_to_{actor.get('role')}")
     state_filter = ""
     if state_label != "Todos":
         state_filter = next((key for key, value in STATE_LABELS.items() if value == state_label), "")

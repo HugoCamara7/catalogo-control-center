@@ -126,8 +126,43 @@ def normalize_key(value):
     return re.sub(r"[^a-z0-9]+", "", value)
 
 
+def _payload_bytes(payload):
+    """Normalize uploaded files and in-memory buffers before persistence."""
+    if payload is None:
+        return b""
+    if isinstance(payload, bytes):
+        return payload
+    if isinstance(payload, bytearray):
+        return bytes(payload)
+    if isinstance(payload, memoryview):
+        return payload.tobytes()
+
+    getvalue = getattr(payload, "getvalue", None)
+    if callable(getvalue):
+        return _payload_bytes(getvalue())
+
+    reader = getattr(payload, "read", None)
+    if callable(reader):
+        current_position = None
+        try:
+            teller = getattr(payload, "tell", None)
+            if callable(teller):
+                current_position = teller()
+            seeker = getattr(payload, "seek", None)
+            if callable(seeker):
+                seeker(0)
+            value = reader()
+            if current_position is not None and callable(seeker):
+                seeker(current_position)
+            return _payload_bytes(value)
+        except (OSError, TypeError, ValueError) as exc:
+            raise TicketValidationError("No se pudo leer el archivo adjunto.") from exc
+
+    raise TicketValidationError("El adjunto no tiene un formato de archivo v\u00e1lido.")
+
+
 def file_sha256(payload):
-    return hashlib.sha256(payload or b"").hexdigest()
+    return hashlib.sha256(_payload_bytes(payload)).hexdigest()
 
 
 def _safe_name(value):
@@ -219,12 +254,13 @@ class LocalTicketStore:
         return self.get_ticket(ticket["code"])
 
     def put_artifact(self, code, version, kind, filename, payload):
+        payload = _payload_bytes(payload)
         folder = self.artifact_dir / _safe_name(code)
         folder.mkdir(parents=True, exist_ok=True)
         relative = Path("artifacts") / _safe_name(code) / f"v{int(version):03d}_{kind}_{_safe_name(filename)}"
         path = self.root / relative
         with self._lock:
-            path.write_bytes(payload or b"")
+            path.write_bytes(payload)
         return relative.as_posix()
 
     def get_artifact(self, path):
@@ -391,11 +427,12 @@ class GitHubTicketStore:
         return saved
 
     def put_artifact(self, code, version, kind, filename, payload):
-        if len(payload or b"") > 90 * 1024 * 1024:
+        payload = _payload_bytes(payload)
+        if len(payload) > 90 * 1024 * 1024:
             raise TicketValidationError("El archivo supera 90 MB. Configura almacenamiento externo para adjuntos grandes.")
         path = f"{self.prefix}/artifacts/{_safe_name(code)}/v{int(version):03d}_{kind}_{_safe_name(filename)}"
         _, sha = self._get_file(path)
-        self._put_file(path, payload or b"", f"catalog: attach {code} v{version}", sha)
+        self._put_file(path, payload, f"catalog: attach {code} v{version}", sha)
         return path
 
     def get_artifact(self, path):

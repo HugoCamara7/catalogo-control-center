@@ -48,6 +48,7 @@ if "streamlit" not in sys.modules:
 from app_matrixify import (
     build_body_html_from_commercial_row,
     build_brand_commercial_input_workbook,
+    commercial_allowed_classes_for_brand,
     commercial_input_columns_for_brand,
     validate_brand_commercial_input,
 )
@@ -64,23 +65,44 @@ def _to_upload(df):
 def test_brand_input_workbook_structure():
     workbook = build_brand_commercial_input_workbook("Columbia")
     xls = pd.ExcelFile(workbook)
-    expected = {
-        "INSTRUCCIONES",
-        "INPUT_COMERCIAL",
-        "EJEMPLOS",
-        "DICCIONARIO_COLUMNAS",
-        "VALORES_PERMITIDOS",
-        "TIPOS_PRENDA",
-        "GUIAS_TALLA",
-        "SITIOS_MARCA",
-        "METAFIELDS_MARCA",
-        "ERRORES_Y_ADVERTENCIAS",
-    }
-    assert expected.issubset(set(xls.sheet_names))
+    assert set(xls.sheet_names) == {"INPUT_COMERCIAL", "GUIA", "DICCIONARIO"}
+    assert len(xls.sheet_names) <= 3
     columns = list(pd.read_excel(xls, sheet_name="INPUT_COMERCIAL", nrows=0).columns)
     assert "Body HTML" not in columns
+    assert "Talla" not in columns
+    assert "Tags sugeridos" not in columns
+    assert "Tags adicionales" in columns
+    assert "Nombre de Producto" in columns
+    assert "Materiales" in columns
     assert "PUBLICAR_COLUMBIA_PE" in columns
     assert "PUBLICAR_ROCKFORD_PE" in columns
+
+
+def test_brand_specific_allowed_classes():
+    assert commercial_allowed_classes_for_brand("Columbia") == ["Calzado", "Vestuario", "Accesorios"]
+    assert commercial_allowed_classes_for_brand("Rockford") == ["Calzado", "Vestuario", "Accesorios"]
+    assert commercial_allowed_classes_for_brand("Vans") == ["Calzado", "Vestuario", "Accesorios"]
+    assert commercial_allowed_classes_for_brand("Mountain Hardwear") == ["Vestuario", "Accesorios"]
+    assert commercial_allowed_classes_for_brand("Patagonia") == ["Vestuario", "Accesorios"]
+    assert commercial_allowed_classes_for_brand("Sorel") == ["Calzado"]
+    assert commercial_allowed_classes_for_brand("Hush Puppies") == ["Calzado", "Accesorios"]
+    assert commercial_allowed_classes_for_brand("Hush Puppies Kids") == ["Calzado", "Vestuario", "Accesorios"]
+
+
+def test_brand_input_examples_respect_allowed_classes():
+    sorel = pd.ExcelFile(build_brand_commercial_input_workbook("Sorel"))
+    sorel_guide = pd.read_excel(sorel, sheet_name="GUIA")
+    sorel_text = "\n".join(sorel_guide["Detalle"].dropna().astype(str).tolist())
+    assert "Clase: Calzado" in sorel_text
+    assert "Clase: Vestuario" not in sorel_text
+    assert "Clase: Accesorios" not in sorel_text
+
+    mountain = pd.ExcelFile(build_brand_commercial_input_workbook("Mountain Hardwear"))
+    mountain_guide = pd.read_excel(mountain, sheet_name="GUIA")
+    mountain_text = "\n".join(mountain_guide["Detalle"].dropna().astype(str).tolist())
+    assert "Clase: Vestuario" in mountain_text
+    assert "Clase: Accesorios" in mountain_text
+    assert "Clase: Calzado" not in mountain_text
 
 
 def test_brand_input_validation_blocks_bad_site_value():
@@ -93,10 +115,9 @@ def test_brand_input_validation_blocks_bad_site_value():
             "Marca": "Columbia",
             "Genero": "Mujer",
             "Clase": "Vestuario",
-            "Categoria": "Vestuario",
             "Tipo de prenda": "Casacas",
             "Color web/filtro": "Negro",
-            "Nombre web o Title": "Casaca Impermeable Mujer Arcadia II",
+            "Nombre de Producto": "Casaca Impermeable Mujer Arcadia II",
             "Descripcion": "Casaca impermeable respirable para lluvia diaria con tecnologia de proteccion y uso outdoor.",
             "PUBLICAR_COLUMBIA_PE": "TAL VEZ",
             "PUBLICAR_ROCKFORD_PE": "NO",
@@ -107,12 +128,36 @@ def test_brand_input_validation_blocks_bad_site_value():
     assert int(summary.loc[summary["Indicador"].eq("Registros bloqueados"), "Valor"].iloc[0]) == 1
 
 
+def test_brand_input_validation_blocks_disallowed_class():
+    columns = commercial_input_columns_for_brand("Sorel")
+    row = {column: "" for column in columns}
+    row.update(
+        {
+            "Mod-Col": "SRL-TEST-001",
+            "Marca": "Sorel",
+            "Genero": "Mujer",
+            "Clase": "Vestuario",
+            "Tipo de prenda": "Casacas",
+            "Color web/filtro": "Negro",
+            "Nombre de Producto": "Casaca Mujer Sorel No Permitida",
+            "Descripcion": "Producto de prueba con una clase que no corresponde a la marca Sorel dentro del formato comercial.",
+        }
+    )
+    for column in columns:
+        if column.startswith("PUBLICAR_"):
+            row[column] = "SI"
+    _, report, summary = validate_brand_commercial_input(_to_upload(pd.DataFrame([row])), "Sorel")
+    assert not report.empty
+    assert report["Mensaje"].astype(str).str.contains("no permitida", case=False).any()
+    assert int(summary.loc[summary["Indicador"].eq("Registros bloqueados"), "Valor"].iloc[0]) == 1
+
+
 def test_body_html_is_generated_from_business_fields():
     body = build_body_html_from_commercial_row(
         {
             "Descripcion": "Descripcion comercial limpia.",
             "Caracteristicas": "Impermeable|Respirable",
-            "Materiales o composicion": "Exterior: 100% poliester",
+            "Materiales": "Exterior: 100% poliester",
             "Cuidados": "Lavar con agua fria|No usar lejia",
         }
     )
@@ -124,6 +169,9 @@ def test_body_html_is_generated_from_business_fields():
 
 if __name__ == "__main__":
     test_brand_input_workbook_structure()
+    test_brand_specific_allowed_classes()
+    test_brand_input_examples_respect_allowed_classes()
     test_brand_input_validation_blocks_bad_site_value()
+    test_brand_input_validation_blocks_disallowed_class()
     test_body_html_is_generated_from_business_fields()
     print("OK brand commercial input")

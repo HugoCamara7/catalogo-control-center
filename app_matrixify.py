@@ -1400,25 +1400,20 @@ def dataframe_to_excel_bytes(sheets):
     return buffer
 
 
-COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V1_2026-07-21"
+COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V3_2026-07-22"
 COMMERCIAL_INPUT_MAX_ROWS = 5000
 COMMERCIAL_INPUT_REQUIRED_COLUMNS = [
-    "Codigo modelo",
     "Mod-Col",
     "Marca",
-    "Genero",
-    "Clase",
-    "Categoria",
-    "Tipo de prenda",
-    "Color web/filtro",
-    "Nombre web o Title",
+    "Nombre de Producto",
+    "Descripcion",
 ]
 COMMERCIAL_INPUT_TEXT_LIST_COLUMNS = [
     "Caracteristicas",
-    "Materiales o composicion",
+    "Materiales",
     "Cuidados",
-    "Tecnologias",
-    "Tags sugeridos",
+    "Tecnologia",
+    "Tags adicionales",
 ]
 COMMERCIAL_INPUT_INVALID_TEXTS = {
     "",
@@ -1439,11 +1434,87 @@ COMMERCIAL_INPUT_INVALID_TEXTS = {
     "tbd",
 }
 
+COMMERCIAL_BRAND_ALLOWED_CLASSES = {
+    "COLUMBIA": ["Calzado", "Vestuario", "Accesorios"],
+    "ROCKFORD": ["Calzado", "Vestuario", "Accesorios"],
+    "VANS": ["Calzado", "Vestuario", "Accesorios"],
+    "MOUNTAIN HARDWEAR": ["Vestuario", "Accesorios"],
+    "PATAGONIA": ["Vestuario", "Accesorios"],
+    "SOREL": ["Calzado"],
+    "HUSH PUPPIES": ["Calzado", "Accesorios"],
+    "HUSH PUPPIES KIDS": ["Calzado", "Vestuario", "Accesorios"],
+    "ACCESORIOS HP": ["Accesorios"],
+    "KEDS": ["Calzado"],
+}
+
+COMMERCIAL_CLASS_EXAMPLES = {
+    "Calzado": {
+        "Mod-Col": "EJEMPLO-CALZADO-001",
+        "Genero": "Hombre",
+        "Tipo de prenda": "Zapatillas",
+        "Color Comercial": "Negro/Blanco",
+        "Color web/filtro": "Negro",
+        "Nombre": "Zapatilla Hombre",
+        "Descripcion": "Zapatilla liviana para uso urbano y actividades diarias con ajuste comodo.",
+        "Caracteristicas": "Suela flexible|Ajuste seguro|Plantilla confortable",
+        "Materiales": "Capellada textil|Suela de caucho",
+        "Cuidados": "Limpiar con pano humedo|Secar a la sombra",
+        "Tags": "Urbano|Lanzamiento",
+    },
+    "Vestuario": {
+        "Mod-Col": "EJEMPLO-VESTUARIO-001",
+        "Genero": "Mujer",
+        "Tipo de prenda": "Casacas",
+        "Color Comercial": "Azul",
+        "Color web/filtro": "Azul",
+        "Nombre": "Casaca Mujer",
+        "Descripcion": "Casaca respirable para proteger de la lluvia ligera y acompanar salidas outdoor.",
+        "Caracteristicas": "Repelente al agua|Capucha ajustable|Bolsillos laterales",
+        "Materiales": "Exterior: 100% poliester",
+        "Cuidados": "Lavar en ciclo suave|No usar lejia",
+        "Tags": "Outdoor|Uso diario",
+    },
+    "Accesorios": {
+        "Mod-Col": "EJEMPLO-ACCESORIO-001",
+        "Genero": "Unisex",
+        "Tipo de prenda": "Gorros",
+        "Color Comercial": "Beige",
+        "Color web/filtro": "Beige",
+        "Nombre": "Gorro Unisex",
+        "Descripcion": "Gorro comodo para uso diario con construccion suave y facil de combinar.",
+        "Caracteristicas": "Tejido suave|Uso diario|Ajuste comodo",
+        "Materiales": "100% acrilico",
+        "Cuidados": "Lavar a mano|No planchar",
+        "Tags": "Regalo|Uso diario",
+    },
+}
+
 
 def _input_norm_key(value):
     text = unicodedata.normalize("NFKD", clean_value(value))
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def commercial_allowed_classes_for_brand(brand_name):
+    brand_key = normalize_brand_name(brand_name)
+    if "HUSH PUPPIES" in brand_key and "KIDS" in brand_key:
+        return COMMERCIAL_BRAND_ALLOWED_CLASSES["HUSH PUPPIES KIDS"]
+    if brand_key in COMMERCIAL_BRAND_ALLOWED_CLASSES:
+        return COMMERCIAL_BRAND_ALLOWED_CLASSES[brand_key]
+    display_key = normalize_brand_name(brand_display_name(brand_name, brand_name))
+    return COMMERCIAL_BRAND_ALLOWED_CLASSES.get(display_key, ["Calzado", "Vestuario", "Accesorios"])
+
+
+def commercial_product_type_rules_for_brand(brand_name):
+    allowed_classes = {_input_norm_key(item) for item in commercial_allowed_classes_for_brand(brand_name)}
+    rows = []
+    for rule in PRODUCT_TYPE_RULES:
+        category = clean_value(rule.get("category"))
+        if category and _input_norm_key(category) not in allowed_classes:
+            continue
+        rows.append(rule)
+    return rows
 
 
 def configured_commercial_brands():
@@ -1560,28 +1631,21 @@ def commercial_input_metafields_for_brand(brand_name):
 
 def commercial_input_columns_for_brand(brand_name):
     base_columns = [
-        "Codigo modelo",
         "Mod-Col",
         "Marca",
         "Genero",
-        "Grupo de edad",
         "Clase",
-        "Categoria",
-        "Subcategoria",
         "Tipo de prenda",
-        "Color comercial",
-        "Color Forus",
+        "Color Comercial",
         "Color web/filtro",
-        "Nombre web o Title",
+        "Nombre de Producto",
         "Descripcion",
         "Caracteristicas",
-        "Materiales o composicion",
+        "Materiales",
         "Cuidados",
-        "Tecnologias",
-        "Tags sugeridos",
-        "Guia de talla",
+        "Tecnologia",
+        "Tags adicionales",
         "Fecha publicacion",
-        "Observaciones",
     ]
     site_columns = [publication_column_for_site(site["site_label"]) for site in sites_for_commercial_brand(brand_name)]
     return base_columns + site_columns
@@ -1589,24 +1653,25 @@ def commercial_input_columns_for_brand(brand_name):
 
 def _commercial_values_rows(brand_name):
     sites = sites_for_commercial_brand(brand_name)
+    allowed_classes = commercial_allowed_classes_for_brand(brand_name)
     values = []
     for item in ["Hombre", "Mujer", "Unisex", "Nino", "Nina", "Bebe"]:
         values.append({"Lista": "Genero", "Valor": item, "Marca": brand_name, "Observacion": ""})
     for item in ["Adulto", "Kids", "Junior", "Bebe"]:
         values.append({"Lista": "Grupo de edad", "Valor": item, "Marca": brand_name, "Observacion": ""})
-    for item in ["Calzado", "Vestuario", "Accesorios"]:
+    for item in allowed_classes:
         values.append({"Lista": "Clase", "Valor": item, "Marca": brand_name, "Observacion": ""})
         values.append({"Lista": "Categoria", "Valor": item, "Marca": brand_name, "Observacion": ""})
     for item in ["SI", "NO"]:
         values.append({"Lista": "Publicacion sitio", "Valor": item, "Marca": brand_name, "Observacion": "Obligatorio por sitio."})
-    for rule in PRODUCT_TYPE_RULES:
+    for rule in commercial_product_type_rules_for_brand(brand_name):
         values.append({"Lista": "Tipo de prenda", "Valor": rule.get("plural") or rule.get("normalized"), "Marca": brand_name, "Observacion": rule.get("category", "")})
     for rule in SIZE_GUIDE_RULES:
         guide = clean_value(rule.get("guide"))
         if guide:
             values.append({"Lista": "Guia de talla", "Valor": guide, "Marca": rule.get("brand", ""), "Observacion": rule.get("family", "")})
     for item in ["Omni-Tech", "Omni-Heat Infinity", "Omni-Shield", "Omni-Grip", "OutDry", "Techlite", "Thermarator"]:
-        values.append({"Lista": "Tecnologias", "Valor": item, "Marca": "Columbia", "Observacion": "Solo si aplica."})
+        values.append({"Lista": "Tecnologia", "Valor": item, "Marca": "Columbia", "Observacion": "Solo si aplica."})
     for site in sites:
         values.append({"Lista": "Sitios asociados", "Valor": site["site_label"], "Marca": brand_name, "Observacion": publication_column_for_site(site["site_label"])})
     return pd.DataFrame(values)
@@ -1614,6 +1679,45 @@ def _commercial_values_rows(brand_name):
 
 def _commercial_dictionary_rows(brand_name):
     columns = commercial_input_columns_for_brand(brand_name)
+    allowed_classes = commercial_allowed_classes_for_brand(brand_name)
+    auto_tags_note = (
+        "La app agrega automaticamente los tags tradicionales desde ARTI/BigQuery/Shopify: "
+        "marca, Mod-Col, tipo de prenda, color, clase y tecnologias. Brand no debe escribirlos aqui."
+    )
+    descriptions = {
+        "Mod-Col": "Codigo modelo-color real. Es la llave principal del producto.",
+        "Marca": "Marca del producto. La plantilla la deja fija para evitar cargas cruzadas.",
+        "Genero": "Genero comercial si Brand lo conoce. La app puede reconciliar con ARTI.",
+        "Clase": f"Clase comercial permitida para esta marca: {', '.join(allowed_classes)}.",
+        "Tipo de prenda": "Tipo web pluralizado cuando corresponda. La app avisa si detecta un tipo nuevo.",
+        "Color Comercial": "Color comercial del producto. La app puede usarlo para lectura interna.",
+        "Color web/filtro": "Color visible/filtro web, no codigo de color.",
+        "Nombre de Producto": "Titulo comercial que se enviara a Shopify como Product.title.",
+        "Descripcion": "Texto comercial base. La app arma el Body HTML; Brand no escribe HTML.",
+        "Caracteristicas": "Beneficios o bullets separados por |.",
+        "Materiales": "Materiales/composicion separados por |. Se usa para Body HTML y metafields si aplica.",
+        "Cuidados": "Cuidados separados por |. Se usa para Body HTML.",
+        "Tecnologia": "Tecnologias separadas por | o coma. La app resuelve custom.tecnologia y custom.logo.",
+        "Tags adicionales": f"Solo tags comerciales adicionales separados por |. {auto_tags_note}",
+        "Fecha publicacion": "Fecha sugerida si aplica. Puede quedar vacia.",
+    }
+    examples = {
+        "Mod-Col": "2092991-NRY",
+        "Marca": brand_display_name(brand_name, brand_name),
+        "Genero": "Mujer",
+        "Clase": allowed_classes[0] if allowed_classes else "Vestuario",
+        "Tipo de prenda": "Casacas",
+        "Color Comercial": "Black",
+        "Color web/filtro": "Negro",
+        "Nombre de Producto": "Casaca Impermeable Mujer Arcadia II",
+        "Descripcion": "Casaca impermeable y respirable para lluvia diaria.",
+        "Caracteristicas": "Impermeable|Respirable|Capucha ajustable",
+        "Materiales": "Exterior: 100% poliester|Forro: malla respirable",
+        "Cuidados": "Lavar con agua fria|No usar blanqueador",
+        "Tecnologia": "Omni-Tech|Omni-Shield",
+        "Tags adicionales": "Outdoor|Uso diario|Nueva temporada",
+        "Fecha publicacion": "2026-08-01 09:00",
+    }
     rows = []
     for column in columns:
         required = column in COMMERCIAL_INPUT_REQUIRED_COLUMNS or column.startswith("PUBLICAR_")
@@ -1623,64 +1727,37 @@ def _commercial_dictionary_rows(brand_name):
                 "Nombre exacto": column,
                 "Nombre visible": column,
                 "Descripcion": (
-                    "SI publica/mantiene publicado; NO no publica. Nunca se retira silenciosamente."
+                    "SI se considera para publicar en este sitio; NO se mantiene apagado/no se publica para este sitio."
                     if is_site
-                    else {
-                        "Descripcion": "Texto comercial base. La app genera Body HTML; Brand no escribe HTML.",
-                        "Caracteristicas": "Lista de beneficios separada por |.",
-                        "Materiales o composicion": "Materiales/composicion separados por | si son varios.",
-                        "Cuidados": "Cuidados separados por |.",
-                        "Tecnologias": "Tecnologias separadas por | o coma. La app resuelve metafields custom.tecnologia y custom.logo.",
-                        "Tipo de prenda": "Debe seleccionarse del diccionario web, pluralizado cuando corresponda.",
-                        "Guia de talla": "Puede venir vacia si la app puede resolverla; si viene, debe ser compatible.",
-                    }.get(column, f"Campo comercial {column}.")
+                    else descriptions.get(column, f"Campo comercial {column}.")
                 ),
                 "Responsable de llenado": "Brand" if column not in {"Marca"} and not is_site else ("Usuario eCommerce" if is_site else "Catalog Control Center"),
                 "Tipo de dato": "Fecha" if column == "Fecha publicacion" else "Texto",
                 "Formato permitido": "SI/NO" if is_site else ("yyyy-mm-dd hh:mm" if column == "Fecha publicacion" else "Texto limpio"),
                 "Obligatorio": "SI" if required else "NO",
                 "Longitud minima": 150 if column == "Descripcion" else "",
-                "Longitud recomendada": "300-1000" if column == "Descripcion" else ("30-80" if column == "Nombre web o Title" else ""),
+                "Longitud recomendada": "300-1000" if column == "Descripcion" else ("30-80" if column == "Nombre de Producto" else ""),
                 "Longitud maxima": 5000 if column == "Descripcion" else "",
                 "Valores permitidos": "SI|NO" if is_site else "",
                 "Separador aplicable": "|" if column in COMMERCIAL_INPUT_TEXT_LIST_COLUMNS else "",
-                "Ejemplo correcto": {
-                    "Codigo modelo": "2092991",
-                    "Mod-Col": "2092991-NRY",
-                    "Marca": brand_display_name(brand_name, brand_name),
-                    "Genero": "Mujer",
-                    "Clase": "Vestuario",
-                    "Categoria": "Vestuario",
-                    "Tipo de prenda": "Casacas",
-                    "Color web/filtro": "Negro",
-                    "Nombre web o Title": "Casaca Impermeable Mujer Arcadia II",
-                    "Descripcion": "Casaca impermeable, respirable y plegable para lluvia diaria.",
-                    "Caracteristicas": "Impermeable|Respirable|Capucha ajustable",
-                    "Materiales o composicion": "Exterior: 100% poliester|Forro: malla respirable",
-                    "Cuidados": "Lavar con agua fria|No usar blanqueador",
-                    "Tecnologias": "Omni-Tech|Omni-Shield",
-                    "Tags sugeridos": "Vestuario|Mujer|Outdoor",
-                    "Guia de talla": "CLB_MUJER_TOPS",
-                }.get(column, "NO" if is_site else ""),
+                "Ejemplo correcto": examples.get(column, "NO" if is_site else ""),
                 "Ejemplo incorrecto": "vacio" if required else "",
-                "Regla de validacion": "No vacio; SI/NO" if is_site else ("No aceptar K, 0, 000 como tallas en creacion." if column == "Talla" else "Validar contra diccionario si aplica."),
-                "Transformacion realizada por la aplicacion": "Genera Body HTML desde campos comerciales." if column in {"Descripcion", "Caracteristicas", "Materiales o composicion", "Cuidados"} else "Normaliza espacios y equivalencias.",
+                "Regla de validacion": "No vacio; SI/NO" if is_site else "Validar contra diccionario si aplica.",
+                "Transformacion realizada por la aplicacion": "Genera Body HTML desde campos comerciales." if column in {"Descripcion", "Caracteristicas", "Materiales", "Cuidados"} else "Normaliza espacios y equivalencias.",
                 "Campo de Shopify": {
-                    "Nombre web o Title": "Product.title",
+                    "Nombre de Producto": "Product.title",
                     "Descripcion": "Product.bodyHtml",
                     "Caracteristicas": "Product.bodyHtml",
-                    "Materiales o composicion": "Product.bodyHtml/custom.materialidad",
+                    "Materiales": "Product.bodyHtml/custom.materialidad",
                     "Cuidados": "Product.bodyHtml",
-                    "Tecnologias": "custom.tecnologia/custom.logo",
-                    "Guia de talla": "custom.guia_de_tallas",
+                    "Tecnologia": "custom.tecnologia/custom.logo",
                     "Tipo de prenda": "Product.productType/custom.tipo",
                 }.get(column, "Publication" if is_site else "Auxiliar"),
-                "Namespace": "custom" if column in {"Tecnologias", "Guia de talla", "Tipo de prenda", "Materiales o composicion"} else "",
+                "Namespace": "custom" if column in {"Tecnologia", "Tipo de prenda", "Materiales"} else "",
                 "Key": {
-                    "Tecnologias": "tecnologia/logo",
-                    "Guia de talla": "guia_de_tallas",
+                    "Tecnologia": "tecnologia/logo",
                     "Tipo de prenda": "tipo",
-                    "Materiales o composicion": "materialidad",
+                    "Materiales": "materialidad",
                 }.get(column, ""),
                 "Comportamiento si esta vacio": "Bloquea" if required else "No actualiza ni borra informacion existente.",
                 "Nivel de error": "Bloqueo" if required else "Advertencia",
@@ -1692,87 +1769,38 @@ def _commercial_dictionary_rows(brand_name):
 def _commercial_examples_df(brand_name):
     brand_label = brand_display_name(brand_name, brand_name)
     columns = commercial_input_columns_for_brand(brand_name)
+    allowed_classes = commercial_allowed_classes_for_brand(brand_name)
     site_values = {column: "NO" for column in columns if column.startswith("PUBLICAR_")}
     if site_values:
         first_site_col = next(iter(site_values))
         site_values[first_site_col] = "SI"
-    rows = [
-        {
-            "Codigo modelo": "EJEMPLO-CALZADO",
-            "Mod-Col": "EJEMPLO-CALZADO-001",
-            "Marca": brand_label,
-            "Genero": "Hombre",
-            "Grupo de edad": "Adulto",
-            "Clase": "Calzado",
-            "Categoria": "Calzado",
-            "Subcategoria": "Zapatillas",
-            "Tipo de prenda": "Zapatillas",
-            "Color comercial": "Negro/Blanco",
-            "Color Forus": "Negro",
-            "Color web/filtro": "Negro",
-            "Nombre web o Title": f"Zapatilla Hombre {brand_label} Ejemplo",
-            "Descripcion": "Zapatilla liviana para uso urbano y actividades diarias con ajuste comodo.",
-            "Caracteristicas": "Suela flexible|Ajuste seguro|Plantilla confortable",
-            "Materiales o composicion": "Capellada textil|Suela de caucho",
-            "Cuidados": "Limpiar con pano humedo|Secar a la sombra",
-            "Tecnologias": "Techlite" if normalize_brand_name(brand_name) == "COLUMBIA" else "",
-            "Tags sugeridos": "Calzado|Hombre|Urbano",
-            "Guia de talla": "CLB_HOMBRE_CALZADO" if normalize_brand_name(brand_name) == "COLUMBIA" else "",
-            "Fecha publicacion": "",
-            "Observaciones": "Ejemplo didactico; no procesar.",
-            **site_values,
-        },
-        {
-            "Codigo modelo": "EJEMPLO-VESTUARIO",
-            "Mod-Col": "EJEMPLO-VESTUARIO-001",
-            "Marca": brand_label,
-            "Genero": "Mujer",
-            "Grupo de edad": "Adulto",
-            "Clase": "Vestuario",
-            "Categoria": "Vestuario",
-            "Subcategoria": "Casacas",
-            "Tipo de prenda": "Casacas",
-            "Color comercial": "Azul",
-            "Color Forus": "Azul",
-            "Color web/filtro": "Azul",
-            "Nombre web o Title": f"Casaca Mujer {brand_label} Ejemplo",
-            "Descripcion": "Casaca respirable para proteger de la lluvia ligera y acompanar salidas outdoor.",
-            "Caracteristicas": "Repelente al agua|Capucha ajustable|Bolsillos laterales",
-            "Materiales o composicion": "Exterior: 100% poliester",
-            "Cuidados": "Lavar en ciclo suave|No usar lejia",
-            "Tecnologias": "Omni-Shield" if normalize_brand_name(brand_name) == "COLUMBIA" else "",
-            "Tags sugeridos": "Vestuario|Mujer|Outdoor",
-            "Guia de talla": "CLB_MUJER_TOPS" if normalize_brand_name(brand_name) == "COLUMBIA" else "",
-            "Fecha publicacion": "",
-            "Observaciones": "Ejemplo didactico; no procesar.",
-            **site_values,
-        },
-        {
-            "Codigo modelo": "EJEMPLO-ACCESORIO",
-            "Mod-Col": "EJEMPLO-ACCESORIO-001",
-            "Marca": brand_label,
-            "Genero": "Unisex",
-            "Grupo de edad": "Adulto",
-            "Clase": "Accesorios",
-            "Categoria": "Accesorios",
-            "Subcategoria": "Gorros",
-            "Tipo de prenda": "Gorros",
-            "Color comercial": "Beige",
-            "Color Forus": "Beige",
-            "Color web/filtro": "Beige",
-            "Nombre web o Title": f"Gorro Unisex {brand_label} Ejemplo",
-            "Descripcion": "Gorro comodo para uso diario con construccion suave y facil de combinar.",
-            "Caracteristicas": "Tejido suave|Uso diario|Ajuste comodo",
-            "Materiales o composicion": "100% acrilico",
-            "Cuidados": "Lavar a mano|No planchar",
-            "Tecnologias": "",
-            "Tags sugeridos": "Accesorios|Unisex|Uso diario",
-            "Guia de talla": "",
-            "Fecha publicacion": "",
-            "Observaciones": "Ejemplo didactico; no procesar.",
-            **site_values,
-        },
-    ]
+    rows = []
+    for class_name in allowed_classes:
+        example = COMMERCIAL_CLASS_EXAMPLES.get(class_name, {})
+        rows.append(
+            {
+                "Mod-Col": example.get("Mod-Col", f"EJEMPLO-{class_name.upper()}-001"),
+                "Marca": brand_label,
+                "Genero": example.get("Genero", "Unisex"),
+                "Clase": class_name,
+                "Tipo de prenda": example.get("Tipo de prenda", ""),
+                "Color Comercial": example.get("Color Comercial", ""),
+                "Color web/filtro": example.get("Color web/filtro", ""),
+                "Nombre de Producto": f"{example.get('Nombre', class_name)} {brand_label} Ejemplo",
+                "Descripcion": example.get("Descripcion", ""),
+                "Caracteristicas": example.get("Caracteristicas", ""),
+                "Materiales": example.get("Materiales", ""),
+                "Cuidados": example.get("Cuidados", ""),
+                "Tecnologia": (
+                    "Techlite" if class_name == "Calzado" and normalize_brand_name(brand_name) == "COLUMBIA"
+                    else "Omni-Shield" if class_name == "Vestuario" and normalize_brand_name(brand_name) == "COLUMBIA"
+                    else ""
+                ),
+                "Tags adicionales": example.get("Tags", ""),
+                "Fecha publicacion": "",
+                **site_values,
+            }
+        )
     return pd.DataFrame(rows).reindex(columns=columns)
 
 
@@ -1796,53 +1824,91 @@ def build_brand_commercial_input_workbook(brand_name):
     sites = sites_for_commercial_brand(brand_label)
     columns = commercial_input_columns_for_brand(brand_label)
     site_columns = [column for column in columns if column.startswith("PUBLICAR_")]
+    allowed_classes = commercial_allowed_classes_for_brand(brand_label)
     dictionary_df = _commercial_dictionary_rows(brand_label)
     values_df = _commercial_values_rows(brand_label)
     examples_df = _commercial_examples_df(brand_label)
-    sheets = {
-        "INSTRUCCIONES": pd.DataFrame(
-            [
-                {"Campo": "Marca", "Detalle": brand_label},
-                {"Campo": "Version formato", "Detalle": COMMERCIAL_INPUT_TEMPLATE_VERSION},
-                {"Campo": "Uso", "Detalle": "Completar INPUT_COMERCIAL. No escribir Body HTML; la app lo genera desde descripcion, caracteristicas, materiales y cuidados."},
-                {"Campo": "Separador", "Detalle": "Usar | para listas. Ej: Impermeable|Capucha ajustable|Costuras selladas."},
-                {"Campo": "Sitios", "Detalle": "Cada columna PUBLICAR_* acepta solo SI o NO. Predeterminado NO."},
-                {"Campo": "Campos vacios", "Detalle": "Campos opcionales vacios no eliminan informacion existente en Shopify."},
-                {"Campo": "Fechas", "Detalle": "Usar yyyy-mm-dd hh:mm si aplica."},
-                {"Campo": "No modificar", "Detalle": "No cambiar nombres de hojas, encabezados, Marca ni version."},
-            ]
-        ),
-        "INPUT_COMERCIAL": _commercial_input_blank_df(brand_label),
-        "EJEMPLOS": examples_df,
-        "DICCIONARIO_COLUMNAS": dictionary_df,
-        "VALORES_PERMITIDOS": values_df,
-        "TIPOS_PRENDA": pd.DataFrame(PRODUCT_TYPE_RULES),
-        "GUIAS_TALLA": pd.DataFrame(SIZE_GUIDE_RULES),
-        "SITIOS_MARCA": pd.DataFrame(
-            [
-                {
-                    "Marca": brand_label,
-                    "Codigo sitio": site.get("site_key", ""),
-                    "Nombre sitio": site.get("site_label", ""),
-                    "Dominio": site.get("store_domain", ""),
-                    "Tienda Shopify": SITE_UI_CONFIG.get(site.get("site_label", ""), {}).get("shopify_store", ""),
-                    "Canal/publicacion": "Online Store",
-                    "Estado": "Activo",
-                    "Columna SI/NO": publication_column_for_site(site.get("site_label", "")),
+    guide_rows = [
+        {"Seccion": "Resumen", "Campo": "Marca", "Detalle": brand_label},
+        {"Seccion": "Resumen", "Campo": "Version formato", "Detalle": COMMERCIAL_INPUT_TEMPLATE_VERSION},
+        {"Seccion": "Regla clave", "Campo": "Maximo de hojas", "Detalle": "El archivo operativo usa solo INPUT_COMERCIAL, GUIA y DICCIONARIO."},
+        {"Seccion": "Regla clave", "Campo": "Tallas", "Detalle": "Brand no llena tallas. La app crea variantes desde BigQuery/ARTI y excluye tallas invalidas."},
+        {"Seccion": "Regla clave", "Campo": "Clases permitidas", "Detalle": f"Para {brand_label} solo se permiten: {', '.join(allowed_classes)}."},
+        {"Seccion": "Regla clave", "Campo": "Body HTML", "Detalle": "Brand no llena Body HTML. La app lo genera desde Descripcion, Caracteristicas, Materiales y Cuidados."},
+        {"Seccion": "Regla clave", "Campo": "Tags tradicionales", "Detalle": "Brand no llena tags tradicionales. La app agrega marca, Mod-Col, tipo de prenda, color, clase y tecnologias automaticamente."},
+        {"Seccion": "Regla clave", "Campo": "Tags adicionales", "Detalle": "Brand solo completa tags comerciales extra en Tags adicionales, separados por |."},
+        {"Seccion": "Publicacion", "Campo": "Columnas PUBLICAR_*", "Detalle": "Usar SI para publicar/considerar ese sitio y NO para mantener apagado/no publicar en ese sitio."},
+        {"Seccion": "Publicacion", "Campo": "Carga completa", "Detalle": "La app debe respetar las columnas SI/NO por sitio aunque el input incluya todos los modelos."},
+        {"Seccion": "Separadores", "Campo": "Listas", "Detalle": "Usar | en Caracteristicas, Materiales, Cuidados y Tags adicionales. Tecnologia acepta | o coma."},
+        {"Seccion": "Automatico", "Campo": "Informacion fuente", "Detalle": "La app completa o valida Cod Mod Col, tipo de prenda, color, tecnologias, clase y reglas web desde sus fuentes."},
+    ]
+    for index, example in examples_df.iterrows():
+        guide_rows.append(
+            {
+                "Seccion": "Ejemplo",
+                "Campo": f"Fila ejemplo {index + 1}",
+                "Detalle": " | ".join(
+                    f"{column}: {clean_value(value)}"
+                    for column, value in example.items()
+                    if clean_value(value)
+                ),
+            }
+        )
+    sites_df = pd.DataFrame(
+        [
+            {
+                "Tipo": "Sitio",
+                "Nombre exacto": publication_column_for_site(site.get("site_label", "")),
+                "Nombre visible": site.get("site_label", ""),
+                "Descripcion": f"Dominio: {site.get('store_domain', '')}",
+                "Valores permitidos": "SI|NO",
+                "Responsable": "Usuario eCommerce",
+            }
+            for site in sites
+        ]
+    )
+    values_compact_df = values_df.rename(
+        columns={
+            "Lista": "Tipo",
+            "Valor": "Nombre exacto",
+            "Marca": "Nombre visible",
+            "Observacion": "Descripcion",
+        }
+    )
+    values_compact_df["Valores permitidos"] = ""
+    values_compact_df["Responsable"] = "Catalog Control Center"
+    metafields_compact_df = commercial_input_metafields_for_brand(brand_label).rename(
+        columns={
+            "Nombre visible": "Nombre exacto",
+            "Namespace": "Nombre visible",
+            "Regla": "Descripcion",
+            "Responsable": "Responsable",
+        }
+    )
+    if not metafields_compact_df.empty:
+        metafields_compact_df["Tipo"] = "Metafield"
+        metafields_compact_df["Valores permitidos"] = metafields_compact_df.get("Tipo de dato", "")
+    dictionary_compact = pd.concat(
+        [
+            dictionary_df.assign(Tipo="Columna input").rename(
+                columns={
+                    "Nombre exacto": "Nombre exacto",
+                    "Nombre visible": "Nombre visible",
+                    "Descripcion": "Descripcion",
+                    "Valores permitidos": "Valores permitidos",
+                    "Responsable de llenado": "Responsable",
                 }
-                for site in sites
-            ]
-        ),
-        "METAFIELDS_MARCA": commercial_input_metafields_for_brand(brand_label),
-        "ERRORES_Y_ADVERTENCIAS": pd.DataFrame(
-            [
-                {"Nivel": "Bloqueo", "Regla": "Marca incorrecta", "Accion": "Usar el input de la marca correcta."},
-                {"Nivel": "Bloqueo", "Regla": "PUBLICAR_* vacio o diferente a SI/NO", "Accion": "Seleccionar SI o NO."},
-                {"Nivel": "Bloqueo", "Regla": "Campo obligatorio vacio", "Accion": "Completar el campo."},
-                {"Nivel": "Advertencia", "Regla": "Tipo de prenda nuevo", "Accion": "Revisar y aprobar diccionario antes de cargar."},
-                {"Nivel": "Advertencia", "Regla": "Separador ||", "Accion": "Corregir separadores vacios."},
-            ]
-        ),
+            )[["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]],
+            sites_df[["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]],
+            values_compact_df[["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]],
+            metafields_compact_df.reindex(columns=["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]),
+        ],
+        ignore_index=True,
+    )
+    sheets = {
+        "INPUT_COMERCIAL": _commercial_input_blank_df(brand_label),
+        "GUIA": pd.DataFrame(guide_rows),
+        "DICCIONARIO": dictionary_compact,
     }
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -1947,10 +2013,13 @@ def build_body_html_from_commercial_row(row):
         sections.append(f"<section><h3>Descripcion</h3><p>{escape(description)}</p></section>")
     for title, column in [
         ("Caracteristicas", "Caracteristicas"),
-        ("Materiales", "Materiales o composicion"),
+        ("Materiales", "Materiales"),
         ("Cuidados", "Cuidados"),
     ]:
-        items = parts(row.get(column))
+        if column == "Materiales":
+            items = parts(first_non_empty(row.get("Materiales"), row.get("Materiales o composicion"), row.get("Composicion")))
+        else:
+            items = parts(row.get(column))
         if items:
             sections.append(f"<section><h3>{title}</h3><ul>{''.join(f'<li>{item}</li>' for item in items)}</ul></section>")
     return "\n".join(sections)
@@ -1969,9 +2038,19 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
     brand_label = brand_display_name(brand_name, brand_name)
     expected_columns = commercial_input_columns_for_brand(brand_label)
     site_columns = [column for column in expected_columns if column.startswith("PUBLICAR_")]
+    allowed_classes = commercial_allowed_classes_for_brand(brand_label)
+    allowed_class_keys = {_input_norm_key(value) for value in allowed_classes}
     report_rows = []
     preview_rows = []
-    col_map = {column: _commercial_find_column(df, [column]) for column in expected_columns}
+    column_aliases = {
+        "Nombre de Producto": ["Nombre de Producto", "Nombre web o Title", "Title", "Titulo", "Título", "Nombre Producto"],
+        "Materiales": ["Materiales", "Materiales o composicion", "Materiales o composición", "Composicion", "Composición"],
+        "Tecnologia": ["Tecnologia", "Tecnología", "Tecnologias", "Tecnologías", "Technology"],
+        "Tags adicionales": ["Tags adicionales", "Tags sugeridos", "Tags extra", "Tags"],
+        "Color Comercial": ["Color Comercial", "Color comercial", "Color Comercial ", "Color"],
+        "Color web/filtro": ["Color web/filtro", "Color Web", "Color Forus", "Color visible", "Color filtro"],
+    }
+    col_map = {column: _commercial_find_column(df, column_aliases.get(column, [column])) for column in expected_columns}
     for required in COMMERCIAL_INPUT_REQUIRED_COLUMNS + site_columns:
         if not col_map.get(required):
             report_rows.append({"Fila": "", "Mod-Col": "", "Campo": required, "Valor original": "", "Valor normalizado": "", "Estado": "Bloqueado", "Mensaje": "Falta columna obligatoria.", "Accion recomendada": "Usar formato vigente por marca."})
@@ -2004,7 +2083,11 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
             if value not in {"SI", "NO"}:
                 row_status = "Bloqueado"
                 row_messages.append(f"{column} debe ser SI o NO.")
-        key = (mod_col, normalized.get("Nombre web o Title"))
+        class_value = normalized.get("Clase")
+        if class_value and _input_norm_key(class_value) not in allowed_class_keys:
+            row_status = "Bloqueado"
+            row_messages.append(f"Clase '{class_value}' no permitida para {brand_label}. Permitidas: {', '.join(allowed_classes)}.")
+        key = (mod_col, normalized.get("Nombre de Producto"))
         if key in seen:
             row_status = "Con advertencia" if row_status == "Listo" else row_status
             row_messages.append("Mod-Col duplicado en el input; revisar si corresponde a variantes o duplicidad.")
@@ -2014,9 +2097,9 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                 "Mod-Col": mod_col,
                 "Marca": normalized.get("Marca"),
                 "Genero": normalized.get("Genero"),
-                "Categoria": normalized.get("Categoria"),
+                "Categoria": normalized.get("Clase"),
                 "Tipo de prenda": normalized.get("Tipo de prenda"),
-                "Guia de tallas": normalized.get("Guia de talla"),
+                "Guia de tallas": "",
                 "Talla": "M",
                 "SKU": "VALIDACION",
             }
@@ -2053,7 +2136,7 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                 "Fila": excel_row,
                 "Mod-Col": mod_col,
                 "Marca": normalized.get("Marca"),
-                "Title propuesto": normalized.get("Nombre web o Title"),
+                "Title propuesto": normalized.get("Nombre de Producto"),
                 "Handle sugerido": handle,
                 "Body HTML generado": body_html,
                 "Sitios SI": ", ".join(column for column in site_columns if normalized.get(column).upper() == "SI"),
@@ -2092,7 +2175,7 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
 
 def render_commercial_input_center():
     st.markdown('<div class="section-card"><h2>Descargar input comercial</h2>', unsafe_allow_html=True)
-    st.caption("Genera un formato por marca con sitios SI/NO, diccionarios, ejemplos y validaciones antes de cargar a Shopify.")
+    st.caption("Genera un formato liviano por marca: 15 columnas base, sitios SI/NO y solo 3 hojas.")
     brand_options = configured_commercial_brands()
     selected_brand = st.selectbox("Marca", brand_options, key="commercial_input_brand")
     sites = sites_for_commercial_brand(selected_brand)
@@ -2122,6 +2205,11 @@ def render_commercial_input_center():
         file_name=f"Input_Catalogo_{file_brand}_{file_date}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_brand_commercial_input",
+    )
+    st.info(
+        "Brand no llena tallas, Body HTML ni tags tradicionales. "
+        "La app arma variantes desde BigQuery/ARTI, genera Body HTML desde textos comerciales "
+        "y agrega automaticamente marca, Mod-Col, tipo, color, clase y tecnologias."
     )
     st.markdown("</div>", unsafe_allow_html=True)
 

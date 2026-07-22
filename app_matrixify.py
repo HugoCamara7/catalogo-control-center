@@ -2,6 +2,7 @@ import io
 import base64
 import hmac
 import json
+import math
 import pickle
 import re
 import time
@@ -1400,7 +1401,7 @@ def dataframe_to_excel_bytes(sheets):
     return buffer
 
 
-COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V6_2026-07-22"
+COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V7_2026-07-22"
 COMMERCIAL_INPUT_MAX_ROWS = 5000
 COMMERCIAL_INPUT_REQUIRED_COLUMNS = [
     "Mod-Col",
@@ -1412,6 +1413,9 @@ COMMERCIAL_INPUT_REQUIRED_COLUMNS = [
     "Color web/filtro",
     "Nombre de Producto",
     "Descripcion",
+    "Caracteristicas",
+    "Materiales",
+    "Cuidados",
 ]
 COMMERCIAL_INPUT_TEXT_LIST_COLUMNS = [
     "Caracteristicas",
@@ -2232,7 +2236,10 @@ def _commercial_brand_fill_guide_df(brand_name):
         "Pais de fabricacion": "País donde fue fabricado el producto, si se conoce.",
         "Codigo de referencia": "Código de referencia comercial, si aplica.",
         "Tags adicionales": "Palabras comerciales adicionales. Si hay varias, sepáralas únicamente con |.",
-        "Fecha publicacion": "Fecha deseada de publicación. Puede quedar vacía.",
+        "Fecha publicacion": (
+            "Fecha y hora de publicación en formato DD/MM/AAAA HH:MM, hora de Lima. "
+            "Ejemplo: 01/08/2026 09:00. Déjala vacía para publicar de inmediato."
+        ),
     }
     rows = []
     for column in columns:
@@ -2242,6 +2249,9 @@ def _commercial_brand_fill_guide_df(brand_name):
             site_name = column.removeprefix("PUBLICAR_").replace("_", ".").title()
             description = f"Escribe SI para incluir el producto en {site_name}; escribe NO si no corresponde."
             example = "SI"
+        elif column == "Fecha publicacion":
+            description = descriptions[column]
+            example = "01/08/2026 09:00"
         else:
             description = descriptions.get(column, f"Completa la información de {column}.")
             example = clean_value(example_row.get(column))
@@ -2345,6 +2355,8 @@ def build_brand_commercial_input_workbook(brand_name):
             column_index = positions[column]
             header = input_ws.cell(1, column_index)
             header.comment = Comment(guide_lookup.get(column, "Completa esta columna."), "Catalog Control Center")
+            header.comment.width = 430
+            header.comment.height = 190
             if column == "Marca":
                 for row_index in range(2, input_ws.max_row + 1):
                     input_ws.cell(row_index, column_index).fill = PatternFill("solid", fgColor=pale_blue)
@@ -2369,6 +2381,11 @@ def build_brand_commercial_input_workbook(brand_name):
             letter = get_column_letter(positions[target_column])
             validation.add(f"{letter}2:{letter}{COMMERCIAL_INPUT_MAX_ROWS + 1}")
 
+        if "Fecha publicacion" in positions:
+            date_letter = get_column_letter(positions["Fecha publicacion"])
+            for row_index in range(2, COMMERCIAL_INPUT_MAX_ROWS + 2):
+                input_ws[f"{date_letter}{row_index}"].number_format = "dd/mm/yyyy hh:mm"
+
         example_ws = wb["EJEMPLO"]
         example_ws.sheet_properties.tabColor = "22A06B"
         for row_index in range(2, example_ws.max_row + 1):
@@ -2377,11 +2394,16 @@ def build_brand_commercial_input_workbook(brand_name):
         guide_ws = wb["COMO_LLENAR"]
         guide_ws.sheet_properties.tabColor = "F3B61F"
         guide_ws.column_dimensions["A"].width = 30
-        guide_ws.column_dimensions["B"].width = 76
-        guide_ws.column_dimensions["C"].width = 48
+        guide_ws.column_dimensions["B"].width = 86
+        guide_ws.column_dimensions["C"].width = 54
         guide_ws.column_dimensions["D"].width = 18
         for row_index in range(2, guide_ws.max_row + 1):
-            guide_ws.row_dimensions[row_index].height = 48
+            description_length = len(clean_value(guide_ws.cell(row_index, 2).value))
+            example_length = len(clean_value(guide_ws.cell(row_index, 3).value))
+            guide_ws.row_dimensions[row_index].height = max(
+                52,
+                18 * max(2, math.ceil(description_length / 78), math.ceil(example_length / 48)),
+            )
             required_cell = guide_ws.cell(row_index, 4)
             required_cell.font = Font(
                 bold=True,
@@ -2492,6 +2514,14 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
         if class_value and _input_norm_key(class_value) not in allowed_class_keys:
             row_status = "Bloqueado"
             row_messages.append(f"Clase '{class_value}' no permitida para {brand_label}. Permitidas: {', '.join(allowed_classes)}.")
+        publication_date = normalized.get("Fecha publicacion")
+        if publication_date:
+            normalized_publication_date = parse_publication_date(publication_date)
+            if parse_iso_datetime(normalized_publication_date) is None:
+                row_status = "Bloqueado"
+                row_messages.append(
+                    "Fecha publicacion debe usar DD/MM/AAAA HH:MM. Ejemplo: 01/08/2026 09:00."
+                )
         key = (mod_col, normalized.get("Nombre de Producto"))
         if key in seen:
             row_status = "Con advertencia" if row_status == "Listo" else row_status
@@ -2585,7 +2615,7 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
     return preview_df, report_df, summary_df
 
 
-def render_commercial_input_center():
+def render_commercial_input_center(download_only=False):
     brand_options = configured_commercial_brands()
     with st.container(key="commercial_input_download_panel"):
         st.markdown(
@@ -2636,6 +2666,9 @@ def render_commercial_input_center():
             """,
             unsafe_allow_html=True,
         )
+
+    if download_only:
+        return
 
     with st.container(key="commercial_input_validate_panel"):
         st.markdown('<div class="commercial-input-heading"><p>Revisión antes de crear</p><h2>Validar input comercial</h2></div>', unsafe_allow_html=True)
@@ -13862,6 +13895,32 @@ def _normalize_auth_username(value):
     return clean_value(value).strip().casefold()
 
 
+COMMERCIAL_INPUT_ONLY_USERS = {"comercial@forus.pe"}
+
+
+def auth_access_scope(username):
+    normalized_username = _normalize_auth_username(username)
+    try:
+        auth_config = dict(st.secrets.get("app_auth", {}))
+    except Exception:
+        auth_config = {}
+    try:
+        configured_roles = dict(auth_config.get("roles", {}))
+    except (TypeError, ValueError):
+        configured_roles = {}
+    normalized_roles = {
+        _normalize_auth_username(user): clean_value(role).strip().casefold()
+        for user, role in configured_roles.items()
+        if _normalize_auth_username(user)
+    }
+    configured_scope = normalized_roles.get(normalized_username)
+    if configured_scope in {"commercial", "comercial", "input_comercial", "commercial_input"}:
+        return "commercial_input"
+    if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
+        return "commercial_input"
+    return "full"
+
+
 def get_auth_users():
     try:
         auth_config = dict(st.secrets.get("app_auth", {}))
@@ -14121,6 +14180,7 @@ def require_login():
         if expected and hmac.compare_digest(clean_value(password), expected):
             st.session_state["authenticated"] = True
             st.session_state["auth_user"] = normalized_username
+            st.session_state["auth_scope"] = auth_access_scope(normalized_username)
             st.rerun()
         st.error("Usuario o contrasena incorrectos.")
     return False
@@ -14184,12 +14244,17 @@ def main():
     bigquery_ready = is_bigquery_configured(bigquery_config)
 
     render_sidebar_brand()
+    auth_user = clean_value(st.session_state.get("auth_user"))
+    auth_scope = auth_access_scope(auth_user)
+    st.session_state["auth_scope"] = auth_scope
+    commercial_input_only = auth_scope == "commercial_input"
     with st.sidebar.container(key="logout_card"):
-        user_label = clean_value(st.session_state.get("auth_user")) or "Usuario"
+        user_label = auth_user or "Usuario"
         st.caption(f"Sesion: {user_label}")
         if st.button("Cerrar sesion"):
             st.session_state.pop("authenticated", None)
             st.session_state.pop("auth_user", None)
+            st.session_state.pop("auth_scope", None)
             st.rerun()
     site_options = {config["site_label"]: key for key, config in SITE_CONFIGS.items()}
     current_site_label = clean_value(st.session_state.get("site_picker")) or next(iter(site_options))
@@ -14205,25 +14270,33 @@ def main():
         if current_logo_src
         else f"<span>{current_brand_name[:2].upper()}</span>"
     )
-    with st.sidebar.container(key="site_picker_card"):
-        logo_column, selector_column = st.columns([0.32, 0.68], gap="small", vertical_alignment="center")
-        with logo_column:
-            st.markdown(
-                f'<div class="site-picker-logo" aria-hidden="true">{current_logo_html}</div>',
-                unsafe_allow_html=True,
-            )
-        with selector_column:
-            selected_site_label = st.selectbox(
-                "Sitio activo",
-                list(site_options),
-                index=list(site_options).index(current_site_label),
-                key="site_picker",
-            )
+    selected_site_label = current_site_label
+    if not commercial_input_only:
+        with st.sidebar.container(key="site_picker_card"):
+            logo_column, selector_column = st.columns([0.32, 0.68], gap="small", vertical_alignment="center")
+            with logo_column:
+                st.markdown(
+                    f'<div class="site-picker-logo" aria-hidden="true">{current_logo_html}</div>',
+                    unsafe_allow_html=True,
+                )
+            with selector_column:
+                selected_site_label = st.selectbox(
+                    "Sitio activo",
+                    list(site_options),
+                    index=list(site_options).index(current_site_label),
+                    key="site_picker",
+                )
     selected_site_key = site_options[selected_site_label]
     brand_config = get_brand_config(selected_site_key)
     shopify_config = get_shopify_config(selected_site_key)
     ui_config = get_site_config(brand_config, shopify_config)
     inject_styles(ui_config)
+    if commercial_input_only:
+        with st.sidebar.container(key="commercial_limited_access_card"):
+            st.markdown('<p class="sidebar-label">Acceso comercial</p>', unsafe_allow_html=True)
+            st.info("Descarga de formatos habilitada")
+        render_commercial_input_center(download_only=True)
+        return
     render_allowed_brands_card(brand_config)
     nav_options = ["KPIs de catálogo", "Input comercial", "Carga de catálogo"]
     if st.session_state.get("operation_area_choice") not in nav_options:

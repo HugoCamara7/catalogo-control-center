@@ -1,8 +1,9 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
 import math
+import os
 import pickle
 import re
 import time
@@ -19,6 +20,38 @@ from urllib.request import Request, urlopen
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+
+from ticket_system import (
+    GitHubTicketStore,
+    LocalTicketStore,
+    MockJobAdapter,
+    MockNotificationAdapter,
+    PRIORITIES,
+    PRIORITY_LABELS,
+    ROLE_ADMIN,
+    ROLE_BRAND,
+    ROLE_OPERATOR,
+    STATE_APPROVED,
+    STATE_ASSIGNED,
+    STATE_COMPLETED,
+    STATE_COMPLETED_OBS,
+    STATE_CORRECTED,
+    STATE_FAILED,
+    STATE_LABELS,
+    STATE_LOADING,
+    STATE_OBSERVED,
+    STATE_PENDING,
+    STATE_REJECTED,
+    STATE_REVIEW,
+    TicketConflictError,
+    TicketError,
+    TicketPermissionError,
+    TicketService,
+    TicketValidationError,
+    file_sha256,
+    ticket_age_hours,
+    ticket_is_overdue,
+)
 
 from generate_columbia_matrixify import (
     SITE_CONFIGS,
@@ -2615,8 +2648,13 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
     return preview_df, report_df, summary_df
 
 
-def render_commercial_input_center(download_only=False):
-    brand_options = configured_commercial_brands()
+def render_commercial_input_center(download_only=False, forced_brands=None, actor=None):
+    brand_options = list(forced_brands or configured_commercial_brands())
+    if not brand_options:
+        st.error("Tu usuario no tiene marcas autorizadas. Solicita al administrador configurar app_auth.brands en Secrets.")
+        return
+    if st.session_state.get("commercial_input_brand") not in brand_options:
+        st.session_state["commercial_input_brand"] = brand_options[0]
     with st.container(key="commercial_input_download_panel"):
         st.markdown(
             """
@@ -2673,11 +2711,31 @@ def render_commercial_input_center(download_only=False):
     with st.container(key="commercial_input_validate_panel"):
         st.markdown('<div class="commercial-input-heading"><p>Revisión antes de crear</p><h2>Validar input comercial</h2></div>', unsafe_allow_html=True)
         uploaded = st.file_uploader("Subir input comercial completado", type=["xlsx", "xls"], key="validate_brand_commercial_input")
+        if uploaded is not None:
+            current_upload_hash = file_sha256(uploaded.getvalue())
+            validated_hash = clean_value(st.session_state.get("brand_input_validated_hash"))
+            validated_brand = clean_value(st.session_state.get("brand_input_validated_brand"))
+            if validated_hash and (validated_hash != current_upload_hash or validated_brand != selected_brand):
+                for stale_key in [
+                    "brand_input_preview_df",
+                    "brand_input_report_df",
+                    "brand_input_summary_df",
+                    "brand_input_validated_bytes",
+                    "brand_input_validated_name",
+                    "brand_input_validated_hash",
+                    "brand_input_validated_brand",
+                ]:
+                    st.session_state.pop(stale_key, None)
         if uploaded is not None and st.button("Analizar input comercial", type="primary", key="analyze_brand_commercial_input"):
+            input_bytes = uploaded.getvalue()
             preview_df, report_df, summary_df = validate_brand_commercial_input(uploaded, selected_brand)
             st.session_state["brand_input_preview_df"] = preview_df
             st.session_state["brand_input_report_df"] = report_df
             st.session_state["brand_input_summary_df"] = summary_df
+            st.session_state["brand_input_validated_bytes"] = input_bytes
+            st.session_state["brand_input_validated_name"] = clean_value(uploaded.name) or "input_comercial.xlsx"
+            st.session_state["brand_input_validated_hash"] = file_sha256(input_bytes)
+            st.session_state["brand_input_validated_brand"] = selected_brand
         summary_df = st.session_state.get("brand_input_summary_df")
         preview_df = st.session_state.get("brand_input_preview_df")
         report_df = st.session_state.get("brand_input_report_df")
@@ -2693,17 +2751,105 @@ def render_commercial_input_center(download_only=False):
                 st.dataframe(report_df, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar reporte de validacion",
-                data=dataframe_to_excel_bytes(
+                data=(validation_report_bytes := dataframe_to_excel_bytes(
                     {
                         "Resumen": summary_df,
                         "Vista previa": preview_df if isinstance(preview_df, pd.DataFrame) else pd.DataFrame(),
                         "Errores y advertencias": report_df if isinstance(report_df, pd.DataFrame) else pd.DataFrame(),
                     }
-                ),
+                )),
                 file_name=f"reporte_validacion_input_{file_brand}_{file_date}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="download_brand_input_validation_report",
             )
+            summary_map = {
+                clean_value(row.get("Indicador")): int(row.get("Valor", 0) or 0)
+                for _, row in summary_df.iterrows()
+            }
+            blocked = int(summary_map.get("Registros bloqueados", 0))
+            products = int(summary_map.get("Filas analizadas", 0))
+            model_colors = int(summary_map.get("Modelos-color", 0))
+            same_validation = (
+                st.session_state.get("brand_input_validated_brand") == selected_brand
+                and st.session_state.get("brand_input_validated_hash")
+                == file_sha256(st.session_state.get("brand_input_validated_bytes", b""))
+            )
+            if blocked:
+                st.error(f"La solicitud no puede enviarse: existen {blocked} registros bloqueados.")
+            elif products <= 0:
+                st.warning("No existen productos válidos para crear una solicitud.")
+            elif actor and actor.get("role") in {ROLE_BRAND, ROLE_ADMIN} and same_validation:
+                st.markdown("### Enviar al equipo de catálogo")
+                ticket_comment = st.text_area(
+                    "Comentario para Operaciones",
+                    key="brand_ticket_comment",
+                    placeholder="Campaña, fecha requerida o contexto que deba conocer el equipo.",
+                )
+                priority_label = st.selectbox(
+                    "Prioridad",
+                    [PRIORITY_LABELS[key] for key in PRIORITIES],
+                    index=list(PRIORITIES).index("normal"),
+                    key="brand_ticket_priority",
+                )
+                confirmed = st.checkbox(
+                    "Confirmo que revisé la vista previa y que esta versión está lista para revisión interna.",
+                    key="brand_ticket_confirmed",
+                )
+                if st.button(
+                    "Enviar solicitud de carga",
+                    type="primary",
+                    disabled=not confirmed,
+                    key="submit_catalog_ticket",
+                ):
+                    try:
+                        service, backend = get_ticket_service()
+                        selected_publication_columns = set()
+                        if isinstance(preview_df, pd.DataFrame) and "Sitios SI" in preview_df.columns:
+                            for value in preview_df["Sitios SI"].dropna().astype(str):
+                                selected_publication_columns.update(
+                                    clean_value(item) for item in value.split(",") if clean_value(item)
+                                )
+                        selected_sites = [
+                            clean_value(site.get("site_label"))
+                            for site in sites
+                            if publication_column_for_site(site.get("site_label")) in selected_publication_columns
+                        ]
+                        warnings = []
+                        if isinstance(report_df, pd.DataFrame) and not report_df.empty:
+                            warning_rows = report_df[report_df["Estado"].astype(str).ne("Bloqueado")]
+                            warnings = warning_rows.get("Mensaje", pd.Series(dtype=object)).dropna().astype(str).tolist()
+                        priority = next(
+                            key for key, label in PRIORITY_LABELS.items() if label == priority_label
+                        )
+                        ticket = service.create_ticket(
+                            actor,
+                            brand=selected_brand,
+                            sites=selected_sites,
+                            filename=st.session_state.get("brand_input_validated_name", "input_comercial.xlsx"),
+                            input_bytes=st.session_state.get("brand_input_validated_bytes", b""),
+                            report_bytes=validation_report_bytes,
+                            template_version="2026.07",
+                            load_type="complete",
+                            summary={
+                                "products": products,
+                                "model_colors": model_colors,
+                                "variants": 0,
+                                "new_products": 0,
+                                "updated_products": 0,
+                                "blocked": blocked,
+                                "warnings": int(summary_map.get("Registros con advertencias", 0)),
+                            },
+                            warnings=warnings,
+                            comment=ticket_comment,
+                            model_colors=preview_df.get("Mod-Col", pd.Series(dtype=object)).dropna().astype(str).tolist(),
+                            priority=priority,
+                        )
+                        st.session_state["selected_catalog_ticket"] = ticket["code"]
+                        st.success(f"Solicitud {ticket['code']} creada y enviada a Operaciones.")
+                        if backend == "local":
+                            st.info("Prueba local: el ticket se guardó en outputs/catalog_tickets. En producción configura el backend GitHub.")
+                    except TicketError as exc:
+                        st.error(str(exc))
 
 
 CENTRY_BASE_COLUMNS = [
@@ -13914,11 +14060,91 @@ def auth_access_scope(username):
         if _normalize_auth_username(user)
     }
     configured_scope = normalized_roles.get(normalized_username)
+    if configured_scope in {ROLE_BRAND, "marca"}:
+        return ROLE_BRAND
+    if configured_scope in {ROLE_OPERATOR, "operador", "operaciones"}:
+        return ROLE_OPERATOR
+    if configured_scope in {ROLE_ADMIN, "administrator", "administrador", "full"}:
+        return ROLE_ADMIN
     if configured_scope in {"commercial", "comercial", "input_comercial", "commercial_input"}:
         return "commercial_input"
     if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
         return "commercial_input"
-    return "full"
+    return ROLE_ADMIN
+
+
+def auth_allowed_brands(username, role=None):
+    normalized_username = _normalize_auth_username(username)
+    role = clean_value(role or auth_access_scope(username)).casefold()
+    if role == ROLE_ADMIN:
+        return configured_commercial_brands()
+    try:
+        auth_config = dict(st.secrets.get("app_auth", {}))
+        configured = dict(auth_config.get("brands", {}))
+    except (TypeError, ValueError, Exception):
+        configured = {}
+    raw = configured.get(normalized_username, configured.get(username, []))
+    if isinstance(raw, str):
+        values = re.split(r"[,;|]", raw)
+    elif isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        values = []
+    allowed = []
+    configured_labels = configured_commercial_brands()
+    configured_by_key = {_input_norm_key(label): label for label in configured_labels}
+    for value in values:
+        label = configured_by_key.get(_input_norm_key(value))
+        if label and label not in allowed:
+            allowed.append(label)
+    if role == ROLE_OPERATOR and not allowed:
+        return configured_labels
+    return allowed
+
+
+def current_ticket_actor():
+    username = clean_value(st.session_state.get("auth_user"))
+    role = clean_value(st.session_state.get("auth_scope") or auth_access_scope(username)).casefold()
+    return TicketService.actor(username, role, auth_allowed_brands(username, role))
+
+
+def get_ticket_service():
+    try:
+        config = dict(st.secrets.get("ticketing", {}))
+    except Exception:
+        config = {}
+    backend = clean_value(config.get("backend") or os.getenv("CATALOG_TICKETS_BACKEND") or "local").casefold()
+    if backend == "github":
+        repository = clean_value(config.get("repository") or os.getenv("CATALOG_TICKETS_REPOSITORY"))
+        owner = clean_value(config.get("owner"))
+        repo = clean_value(config.get("repo"))
+        if repository and "/" in repository:
+            owner, repo = repository.split("/", 1)
+        token = clean_value(config.get("token") or os.getenv("CATALOG_TICKETS_GITHUB_TOKEN"))
+        store = GitHubTicketStore(
+            owner=owner,
+            repo=repo,
+            token=token,
+            branch=clean_value(config.get("branch")) or "catalog-tickets",
+            prefix=clean_value(config.get("prefix")) or "catalog_tickets",
+        )
+        persistent_backend = "github"
+    else:
+        root = clean_value(config.get("local_path")) or "outputs/catalog_tickets"
+        store = LocalTicketStore(root)
+        persistent_backend = "local"
+    sla = {}
+    try:
+        sla = {clean_value(key).casefold(): float(value) for key, value in dict(config.get("sla_hours", {})).items()}
+    except (TypeError, ValueError):
+        sla = {}
+    service = TicketService(
+        store,
+        notifier=MockNotificationAdapter(),
+        jobs=MockJobAdapter(),
+        sla_hours=sla,
+    )
+    return service, persistent_backend
 
 
 def get_auth_users():
@@ -14269,6 +14495,451 @@ def sidebar_nav_button(label, state_key, value, button_key, extra_state=None):
         st.rerun()
 
 
+def render_ticket_styles():
+    st.markdown(
+        """
+        <style>
+        .ticket-hero{padding:24px 28px;border:1px solid #D9E2EF;background:#fff;border-radius:14px;margin-bottom:20px}
+        .ticket-hero p{margin:0 0 6px;color:#2563EB;font-size:12px;font-weight:900;text-transform:uppercase}
+        .ticket-hero h1{margin:0;color:#0B1B46;font-size:29px;line-height:1.15}
+        .ticket-hero span{display:block;margin-top:8px;color:#64748B}
+        .ticket-state{display:inline-flex;align-items:center;min-height:28px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:850;border:1px solid #CBD5E1;background:#F8FAFC;color:#334155}
+        .ticket-state.blue{background:#EFF6FF;border-color:#BFDBFE;color:#1D4ED8}
+        .ticket-state.yellow{background:#FFFBEB;border-color:#FDE68A;color:#A16207}
+        .ticket-state.green{background:#ECFDF5;border-color:#A7F3D0;color:#047857}
+        .ticket-state.red{background:#FEF2F2;border-color:#FECACA;color:#B91C1C}
+        .ticket-state.gray{background:#F1F5F9;border-color:#CBD5E1;color:#475569}
+        .ticket-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:12px 0 18px}
+        .ticket-summary>div{padding:14px;border:1px solid #D9E2EF;border-radius:10px;background:#fff;min-height:76px}
+        .ticket-summary small{display:block;color:#64748B;font-weight:750;margin-bottom:6px}
+        .ticket-summary strong{display:block;color:#0B1B46;font-size:21px}
+        .ticket-event{padding:10px 12px;border-left:3px solid #93C5FD;background:#F8FAFC;margin:7px 0;border-radius:0 8px 8px 0}
+        .ticket-event strong{color:#0B1B46}.ticket-event small{color:#64748B}
+        @media(max-width:900px){.ticket-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _ticket_state_color(status):
+    if status in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_APPROVED}:
+        return "green"
+    if status in {STATE_FAILED, STATE_REJECTED}:
+        return "red"
+    if status in {STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED}:
+        return "yellow"
+    if status in {STATE_PENDING, STATE_ASSIGNED, STATE_LOADING}:
+        return "blue"
+    return "gray"
+
+
+def _ticket_summary_value(summary_df, indicator):
+    if not isinstance(summary_df, pd.DataFrame) or summary_df.empty:
+        return 0
+    matches = summary_df[summary_df["Indicador"].astype(str).eq(indicator)]
+    return int(matches.iloc[0].get("Valor", 0) or 0) if not matches.empty else 0
+
+
+def _ticket_table(tickets):
+    rows = []
+    for ticket in tickets:
+        rows.append(
+            {
+                "Ticket": ticket.get("code"),
+                "Fecha": clean_value(ticket.get("created_at")).replace("T", " ")[:16],
+                "Marca": ticket.get("brand"),
+                "Solicitante": ticket.get("requester"),
+                "Carga": "Completa" if ticket.get("load_type") == "complete" else "Parcial",
+                "Sitios": ", ".join(ticket.get("sites", [])),
+                "Productos": int(ticket.get("summary", {}).get("products", 0)),
+                "Prioridad": PRIORITY_LABELS.get(ticket.get("priority"), ticket.get("priority")),
+                "Responsable": ticket.get("assignee") or "Sin asignar",
+                "Antigüedad": f"{ticket_age_hours(ticket):.0f} h",
+                "Estado": STATE_LABELS.get(ticket.get("status"), ticket.get("status")),
+                "Vencido": "Sí" if ticket_is_overdue(ticket) else "No",
+                "Acción": "Abrir solicitud",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_ticket_inbox(service, actor, brand_view=False):
+    render_ticket_styles()
+    title = "Mis solicitudes de catálogo" if brand_view else "Bandeja de solicitudes de catálogo"
+    subtitle = (
+        "Consulta tus archivos, observaciones y resultados."
+        if brand_view
+        else "Revisa, asigna y controla cada solicitud antes de autorizar una carga."
+    )
+    st.markdown(
+        f'<div class="ticket-hero"><p>Flujo controlado</p><h1>{escape(title)}</h1><span>{escape(subtitle)}</span></div>',
+        unsafe_allow_html=True,
+    )
+    try:
+        all_tickets = service.list_tickets(actor)
+    except TicketError as exc:
+        st.error(f"No se pudo leer la bandeja: {exc}")
+        return
+    actor_user = clean_value(actor.get("user")).casefold()
+    recent_notifications = []
+    for ticket in all_tickets:
+        for notification in ticket.get("notifications", []):
+            recipients = {clean_value(value).casefold() for value in notification.get("recipients", [])}
+            if not recipients or actor_user in recipients or actor.get("role") == ROLE_ADMIN:
+                recent_notifications.append({
+                    "Fecha": clean_value(notification.get("created_at")).replace("T", " ")[:16],
+                    "Ticket": ticket.get("code"),
+                    "Mensaje": notification.get("message"),
+                    "Canal": "Interna" if notification.get("channel") == "internal" else notification.get("channel"),
+                })
+    if recent_notifications:
+        recent_notifications = sorted(recent_notifications, key=lambda item: item["Fecha"], reverse=True)[:20]
+        with st.expander(f"Notificaciones recientes ({len(recent_notifications)})"):
+            st.dataframe(pd.DataFrame(recent_notifications), use_container_width=True, hide_index=True)
+    if not brand_view:
+        states = [ticket.get("status") for ticket in all_tickets]
+        kpis = [
+            ("Pendientes", states.count(STATE_PENDING)),
+            ("Sin asignar", sum(1 for item in all_tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_REJECTED})),
+            ("Asignados a mí", sum(1 for item in all_tickets if item.get("assignee") == actor.get("user"))),
+            ("En revisión", states.count(STATE_REVIEW)),
+            ("Observados", states.count(STATE_OBSERVED)),
+            ("Aprobados", states.count(STATE_APPROVED)),
+            ("En carga", states.count(STATE_LOADING)),
+            ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets)),
+            ("Completados", states.count(STATE_COMPLETED) + states.count(STATE_COMPLETED_OBS)),
+            ("Fallidos", states.count(STATE_FAILED)),
+        ]
+        cols = st.columns(5)
+        for idx, (label, value) in enumerate(kpis):
+            cols[idx % 5].metric(label, value)
+    filter_cols = st.columns([1.2, 1, 1, 1, 1.2])
+    brands = sorted({clean_value(item.get("brand")) for item in all_tickets if clean_value(item.get("brand"))})
+    statuses = sorted({item.get("status") for item in all_tickets if item.get("status")})
+    assignees = sorted({clean_value(item.get("assignee")) for item in all_tickets if clean_value(item.get("assignee"))})
+    with filter_cols[0]:
+        search = st.text_input("Buscar", placeholder="Ticket, Mod-Col, archivo o usuario", key=f"ticket_search_{actor.get('role')}")
+    with filter_cols[1]:
+        brand_filter = st.selectbox("Marca", ["Todas"] + brands, key=f"ticket_brand_filter_{actor.get('role')}")
+    with filter_cols[2]:
+        state_label_options = ["Todos"] + [STATE_LABELS.get(value, value) for value in statuses]
+        state_label = st.selectbox("Estado", state_label_options, key=f"ticket_state_filter_{actor.get('role')}")
+    with filter_cols[3]:
+        priority_label = st.selectbox("Prioridad", ["Todas"] + [PRIORITY_LABELS[key] for key in PRIORITIES], key=f"ticket_priority_filter_{actor.get('role')}")
+    with filter_cols[4]:
+        assignee_filter = st.selectbox("Responsable", ["Todos"] + assignees, key=f"ticket_assignee_filter_{actor.get('role')}")
+    secondary_filters = st.columns([1, 1, 1, 1])
+    sites = sorted({site for item in all_tickets for site in item.get("sites", []) if clean_value(site)})
+    load_types = sorted({clean_value(item.get("load_type")) for item in all_tickets if clean_value(item.get("load_type"))})
+    with secondary_filters[0]:
+        site_filter = st.selectbox("Sitio", ["Todos"] + sites, key=f"ticket_site_filter_{actor.get('role')}")
+    with secondary_filters[1]:
+        load_type_labels = {"complete": "Completa", "partial": "Parcial"}
+        load_type_label = st.selectbox(
+            "Tipo de carga",
+            ["Todas"] + [load_type_labels.get(value, value.title()) for value in load_types],
+            key=f"ticket_load_filter_{actor.get('role')}",
+        )
+    with secondary_filters[2]:
+        date_from = st.date_input("Desde", value=None, key=f"ticket_date_from_{actor.get('role')}")
+    with secondary_filters[3]:
+        date_to = st.date_input("Hasta", value=None, key=f"ticket_date_to_{actor.get('role')}")
+    state_filter = ""
+    if state_label != "Todos":
+        state_filter = next((key for key, value in STATE_LABELS.items() if value == state_label), "")
+    priority_filter = ""
+    if priority_label != "Todas":
+        priority_filter = next((key for key, value in PRIORITY_LABELS.items() if value == priority_label), "")
+    load_type_filter = ""
+    if load_type_label != "Todas":
+        load_type_filter = next((key for key, value in load_type_labels.items() if value == load_type_label), "")
+    filters = {
+        "brand": "" if brand_filter == "Todas" else brand_filter,
+        "status": state_filter,
+        "priority": priority_filter,
+        "assignee": "" if assignee_filter == "Todos" else assignee_filter,
+        "site": "" if site_filter == "Todos" else site_filter,
+        "load_type": load_type_filter,
+        "date_from": date_from.isoformat() if date_from else "",
+        "date_to": date_to.isoformat() if date_to else "",
+    }
+    try:
+        tickets = service.list_tickets(actor, filters=filters, search=search)
+    except TicketError as exc:
+        st.error(str(exc))
+        return
+    if not tickets:
+        st.info("No hay solicitudes que coincidan con los filtros.")
+        return
+    table_df = _ticket_table(tickets)
+    st.dataframe(table_df, use_container_width=True, hide_index=True)
+    ticket_codes = [ticket.get("code") for ticket in tickets]
+    selected_default = st.session_state.get("selected_catalog_ticket")
+    selected_index = ticket_codes.index(selected_default) if selected_default in ticket_codes else 0
+    selected_code = st.selectbox("Abrir solicitud", ticket_codes, index=selected_index, key=f"ticket_open_{actor.get('role')}")
+    st.session_state["selected_catalog_ticket"] = selected_code
+    render_ticket_detail(service, actor, selected_code)
+
+
+def render_ticket_detail(service, actor, code):
+    try:
+        ticket = service.get_ticket(actor, code)
+    except TicketError as exc:
+        st.error(str(exc))
+        return
+    status = ticket.get("status")
+    status_label = STATE_LABELS.get(status, status)
+    status_color = _ticket_state_color(status)
+    st.markdown(
+        f"### {escape(ticket.get('code', ''))} &nbsp; <span class=\"ticket-state {status_color}\">{escape(status_label)}</span>",
+        unsafe_allow_html=True,
+    )
+    summary = ticket.get("summary", {})
+    st.markdown(
+        f"""
+        <div class="ticket-summary">
+          <div><small>Marca y sitios</small><strong>{escape(ticket.get('brand',''))}</strong><span>{escape(', '.join(ticket.get('sites', [])))}</span></div>
+          <div><small>Productos</small><strong>{int(summary.get('products',0))}</strong><span>{int(summary.get('model_colors',0))} modelo-color</span></div>
+          <div><small>Solicitante</small><strong style="font-size:15px">{escape(ticket.get('requester',''))}</strong><span>{escape(ticket.get('filename',''))}</span></div>
+          <div><small>Responsable</small><strong style="font-size:15px">{escape(ticket.get('assignee') or 'Sin asignar')}</strong><span>{escape(PRIORITY_LABELS.get(ticket.get('priority'), ticket.get('priority','')))}</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    latest_version = (ticket.get("versions") or [{}])[-1]
+    st.caption(
+        f"Versión validada {latest_version.get('number', 1)} de {len(ticket.get('versions', []))} · "
+        f"Hash {clean_value(latest_version.get('hash'))[:12]} · Plantilla {clean_value(ticket.get('template_version'))}"
+    )
+    with st.expander("Vista previa de la solicitud", expanded=False):
+        preview_cols = st.columns(3)
+        preview_cols[0].metric("Productos nuevos", int(summary.get("new_products", 0)))
+        preview_cols[1].metric("Productos a actualizar", int(summary.get("updated_products", 0)))
+        preview_cols[2].metric("Variantes detectadas", int(summary.get("variants", 0)))
+        model_colors = [clean_value(value) for value in ticket.get("model_colors", []) if clean_value(value)]
+        if model_colors:
+            st.dataframe(
+                pd.DataFrame({"Código modelo-color": model_colors}),
+                use_container_width=True,
+                hide_index=True,
+                height=min(360, 38 + (len(model_colors) * 35)),
+            )
+        else:
+            st.caption("El detalle completo está disponible en el archivo de validación descargable.")
+    download_cols = st.columns(3)
+    try:
+        if latest_version.get("input_path"):
+            download_cols[0].download_button(
+                "Descargar input validado",
+                service.store.get_artifact(latest_version["input_path"]),
+                file_name=latest_version.get("filename") or ticket.get("filename") or "input.xlsx",
+                key=f"ticket_input_{code}_{latest_version.get('number', 1)}",
+            )
+        if latest_version.get("report_path"):
+            download_cols[1].download_button(
+                "Descargar validación",
+                service.store.get_artifact(latest_version["report_path"]),
+                file_name=f"{code}_validacion_v{latest_version.get('number',1)}.xlsx",
+                key=f"ticket_report_{code}_{latest_version.get('number', 1)}",
+            )
+    except TicketError as exc:
+        st.warning(f"No se pudo descargar un adjunto: {exc}")
+    if ticket.get("warnings"):
+        with st.expander(f"Advertencias ({len(ticket['warnings'])})"):
+            for warning in ticket["warnings"][:100]:
+                st.write(f"- {warning}")
+    if ticket.get("observations"):
+        with st.expander(f"Observaciones activas ({len(ticket['observations'])})", expanded=status == STATE_OBSERVED):
+            observations_df = pd.DataFrame(ticket["observations"])
+            if not observations_df.empty:
+                st.dataframe(observations_df, use_container_width=True, hide_index=True)
+    if ticket.get("job"):
+        job = ticket.get("job", {})
+        progress = max(0, min(100, safe_int_value(job.get("progress"), 0)))
+        st.markdown("#### Estado del proceso")
+        st.progress(progress / 100.0)
+        st.caption(
+            f"Job {clean_value(job.get('id')) or 'pendiente'} · {clean_value(job.get('status')) or status_label} · {progress}%"
+        )
+    if ticket.get("result"):
+        result_df = pd.DataFrame([ticket.get("result", {})])
+        st.markdown("#### Resultado final")
+        st.dataframe(result_df, use_container_width=True, hide_index=True)
+        download_cols[2].download_button(
+            "Descargar reporte final",
+            dataframe_to_excel_bytes({"Resultado": result_df}),
+            file_name=f"{code}_resultado_final.xlsx",
+            key=f"ticket_final_report_{code}",
+        )
+    role = actor.get("role")
+    if role == ROLE_BRAND and status == STATE_OBSERVED:
+        st.warning("Operaciones solicitó una corrección. Adjunta una nueva versión; la anterior se conservará.")
+        correction = st.file_uploader("Archivo corregido", type=["xlsx", "xls"], key=f"ticket_correction_{code}")
+        correction_comment = st.text_area("Respuesta a la observación", key=f"ticket_correction_comment_{code}")
+        if correction is not None and st.button("Validar y enviar corrección", type="primary", key=f"submit_correction_{code}"):
+            preview_df, report_df, summary_df = validate_brand_commercial_input(correction, ticket.get("brand"))
+            blocked = _ticket_summary_value(summary_df, "Registros bloqueados")
+            if blocked or preview_df.empty:
+                st.error(f"La corrección aún tiene {blocked} bloqueos o no contiene productos válidos.")
+            else:
+                try:
+                    saved = service.add_correction_version(
+                        actor,
+                        code,
+                        correction.name,
+                        correction.getvalue(),
+                        dataframe_to_excel_bytes({"Resumen": summary_df, "Vista previa": preview_df, "Errores": report_df}),
+                        {
+                            "products": _ticket_summary_value(summary_df, "Filas analizadas"),
+                            "model_colors": _ticket_summary_value(summary_df, "Modelos-color"),
+                            "blocked": blocked,
+                        },
+                        correction_comment,
+                    )
+                    st.success(f"Versión {len(saved.get('versions', []))} enviada.")
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+    if role in {ROLE_OPERATOR, ROLE_ADMIN}:
+        st.markdown("#### Acciones internas")
+        if role == ROLE_ADMIN:
+            current_priority = ticket.get("priority", "normal")
+            priority_options = list(PRIORITIES)
+            priority_col, priority_action = st.columns([2, 1])
+            selected_priority = priority_col.selectbox(
+                "Prioridad y SLA",
+                priority_options,
+                index=priority_options.index(current_priority) if current_priority in priority_options else 1,
+                format_func=lambda value: PRIORITY_LABELS.get(value, value),
+                key=f"ticket_priority_{code}",
+            )
+            if priority_action.button("Actualizar prioridad", key=f"save_ticket_priority_{code}"):
+                try:
+                    service.set_priority(actor, code, selected_priority)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+        if status in {STATE_PENDING, STATE_ASSIGNED, STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED, STATE_APPROVED, STATE_FAILED}:
+            assign_cols = st.columns([1, 2])
+            if assign_cols[0].button("Asignarme", key=f"assign_me_{code}"):
+                try:
+                    service.assign(actor, code, actor.get("user"))
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+            if role == ROLE_ADMIN:
+                assignee = assign_cols[1].text_input("Asignar a", value=ticket.get("assignee", ""), key=f"assign_user_{code}")
+                if assign_cols[1].button("Guardar responsable", key=f"assign_other_{code}"):
+                    try:
+                        service.assign(actor, code, assignee)
+                        st.rerun()
+                    except TicketError as exc:
+                        st.error(str(exc))
+        if status in {STATE_PENDING, STATE_ASSIGNED, STATE_CORRECTED}:
+            if st.button("Iniciar revisión", key=f"review_{code}"):
+                try:
+                    service.start_review(actor, code)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+        if status in {STATE_REVIEW, STATE_CORRECTED}:
+            review_comment = st.text_area("Observación o decisión", key=f"review_comment_{code}")
+            with st.expander("Agregar observación por producto o campo"):
+                observation_cols = st.columns(2)
+                observed_product = observation_cols[0].text_input("Producto / Mod-Col", key=f"observed_product_{code}")
+                observed_field = observation_cols[1].text_input("Campo", key=f"observed_field_{code}")
+                found_value = observation_cols[0].text_input("Valor encontrado", key=f"observed_found_{code}")
+                recommendation = observation_cols[1].text_input("Corrección recomendada", key=f"observed_recommendation_{code}")
+            structured_observations = []
+            if any(clean_value(value) for value in [observed_product, observed_field, found_value, recommendation]):
+                structured_observations.append(
+                    {
+                        "Producto": clean_value(observed_product),
+                        "Campo": clean_value(observed_field),
+                        "Valor encontrado": clean_value(found_value),
+                        "Corrección recomendada": clean_value(recommendation),
+                    }
+                )
+            action_cols = st.columns(3)
+            if action_cols[0].button("Solicitar corrección", key=f"observe_{code}"):
+                try:
+                    service.request_correction(actor, code, review_comment, structured_observations)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+            if action_cols[1].button("Aprobar", type="primary", key=f"approve_{code}"):
+                try:
+                    service.approve(actor, code, review_comment)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+            if action_cols[2].button("Rechazar", key=f"reject_{code}"):
+                try:
+                    service.reject(actor, code, review_comment)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+        if status == STATE_APPROVED:
+            run_cols = st.columns(2)
+            if run_cols[0].button("Ejecutar simulación", key=f"dry_run_{code}"):
+                try:
+                    service.run_dry_run(actor, code)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+            if ticket.get("dry_run", {}).get("status") == "completed" and run_cols[1].button("Iniciar carga simulada", type="primary", key=f"start_load_{code}"):
+                try:
+                    service.start_load(actor, code)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+        if status == STATE_FAILED:
+            if st.button("Reintentar carga simulada", type="primary", key=f"retry_load_{code}"):
+                try:
+                    service.start_load(actor, code)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+        if role == ROLE_ADMIN and status == STATE_LOADING:
+            mock_cols = st.columns(3)
+            if mock_cols[0].button("Simular completado", key=f"complete_mock_{code}"):
+                try:
+                    service.record_job_result(actor, code, success=True, result={"mode": "mock", "processed": summary.get("products", 0)})
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+            if mock_cols[1].button("Simular con observaciones", key=f"complete_obs_mock_{code}"):
+                try:
+                    service.record_job_result(actor, code, success=True, observations=True, result={"mode": "mock"})
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+            if mock_cols[2].button("Simular fallo", key=f"fail_mock_{code}"):
+                try:
+                    service.record_job_result(actor, code, success=False, error="Fallo simulado para validación funcional.")
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+    st.markdown("#### Comentarios")
+    comment = st.text_area("Agregar comentario", key=f"ticket_comment_{code}", label_visibility="collapsed", placeholder="Escribe un comentario para el equipo...")
+    if st.button("Publicar comentario", key=f"add_ticket_comment_{code}"):
+        try:
+            service.add_comment(actor, code, comment)
+            st.rerun()
+        except TicketError as exc:
+            st.error(str(exc))
+    for item in reversed(ticket.get("comments", [])):
+        st.markdown(f"**{escape(item.get('user',''))}** · {escape(item.get('created_at',''))}<br>{escape(item.get('message',''))}", unsafe_allow_html=True)
+    with st.expander("Historial y auditoría", expanded=False):
+        for event in reversed(ticket.get("events", [])):
+            state_text = STATE_LABELS.get(event.get("to_state"), event.get("to_state", ""))
+            st.markdown(
+                f'<div class="ticket-event"><strong>{escape(state_text or event.get("action", ""))}</strong><br><small>{escape(event.get("created_at", ""))} · {escape(event.get("user", ""))}</small><br>{escape(event.get("detail", ""))}</div>',
+                unsafe_allow_html=True,
+            )
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
     if not require_login():
@@ -14281,6 +14952,7 @@ def main():
     auth_scope = auth_access_scope(auth_user)
     st.session_state["auth_scope"] = auth_scope
     commercial_input_only = auth_scope == "commercial_input"
+    ticket_actor = current_ticket_actor() if auth_scope in {ROLE_BRAND, ROLE_OPERATOR, ROLE_ADMIN} else None
     with st.sidebar.container(key="logout_card"):
         user_label = auth_user or "Usuario"
         st.caption(f"Sesion: {user_label}")
@@ -14304,7 +14976,7 @@ def main():
         else f"<span>{current_brand_name[:2].upper()}</span>"
     )
     selected_site_label = current_site_label
-    if not commercial_input_only:
+    if not commercial_input_only and auth_scope not in {ROLE_BRAND, ROLE_OPERATOR}:
         with st.sidebar.container(key="site_picker_card"):
             logo_column, selector_column = st.columns([0.32, 0.68], gap="small", vertical_alignment="center")
             with logo_column:
@@ -14330,14 +15002,41 @@ def main():
             st.info("Descarga de formatos habilitada")
         render_commercial_input_center(download_only=True)
         return
+    if auth_scope == ROLE_BRAND:
+        allowed_brands = auth_allowed_brands(auth_user, ROLE_BRAND)
+        st.sidebar.markdown('<p class="sidebar-label">Portal Brand</p>', unsafe_allow_html=True)
+        with st.sidebar.container(key="brand_ticket_navigation"):
+            if st.session_state.get("brand_portal_view") not in {"Input comercial", "Mis solicitudes"}:
+                st.session_state["brand_portal_view"] = "Input comercial"
+            sidebar_nav_button("Input comercial", "brand_portal_view", "Input comercial", "brand_portal_input")
+            sidebar_nav_button("Mis solicitudes", "brand_portal_view", "Mis solicitudes", "brand_portal_tickets")
+        service, backend = get_ticket_service()
+        if backend == "local":
+            st.caption("Entorno de prueba local. Persistencia productiva pendiente de GitHub.")
+        if st.session_state.get("brand_portal_view") == "Mis solicitudes":
+            render_ticket_inbox(service, ticket_actor, brand_view=True)
+        else:
+            render_commercial_input_center(forced_brands=allowed_brands, actor=ticket_actor)
+        return
+    if auth_scope == ROLE_OPERATOR:
+        st.sidebar.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
+        with st.sidebar.container(key="operator_ticket_navigation"):
+            st.markdown("**Bandeja de solicitudes**")
+            st.caption("Revisión, observaciones, aprobación y carga simulada")
+        service, backend = get_ticket_service()
+        if backend == "local":
+            st.warning("Modo local de prueba: configura [ticketing] backend='github' para producción multiusuario.")
+        render_ticket_inbox(service, ticket_actor, brand_view=False)
+        return
     render_allowed_brands_card(brand_config)
-    nav_options = ["KPIs de catálogo", "Input comercial", "Carga de catálogo"]
+    nav_options = ["KPIs de catálogo", "Input comercial", "Solicitudes", "Carga de catálogo"]
     if st.session_state.get("operation_area_choice") not in nav_options:
         st.session_state["operation_area_choice"] = nav_options[0]
     st.sidebar.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
     with st.sidebar.container(key="operation_nav"):
         sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
         sidebar_nav_button("Input comercial", "operation_area_choice", "Input comercial", "operation_nav_input")
+        sidebar_nav_button("Solicitudes", "operation_area_choice", "Solicitudes", "operation_nav_tickets")
         operation_area = st.session_state.get("operation_area_choice", nav_options[0])
     operation_mode = "Carga completa"
     load_options = ["Carga completa", "Carga parcial"]
@@ -14400,7 +15099,13 @@ api_version = "{DEFAULT_API_VERSION}"
         render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready)
         return
     if operation_area == "Input comercial":
-        render_commercial_input_center()
+        render_commercial_input_center(actor=ticket_actor)
+        return
+    if operation_area == "Solicitudes":
+        service, backend = get_ticket_service()
+        if backend == "local":
+            st.warning("Modo local de prueba: configura el backend GitHub antes de habilitarlo para varios usuarios.")
+        render_ticket_inbox(service, ticket_actor, brand_view=False)
         return
 
     render_stepper(ui_config, current_step=current_flow_step())

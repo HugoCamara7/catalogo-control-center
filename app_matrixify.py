@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -1400,7 +1400,7 @@ def dataframe_to_excel_bytes(sheets):
     return buffer
 
 
-COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V5_2026-07-22"
+COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V6_2026-07-22"
 COMMERCIAL_INPUT_MAX_ROWS = 5000
 COMMERCIAL_INPUT_REQUIRED_COLUMNS = [
     "Mod-Col",
@@ -1968,7 +1968,7 @@ def _commercial_input_blank_df(brand_name, rows=100):
     return df
 
 
-def build_brand_commercial_input_workbook(brand_name):
+def _build_brand_commercial_input_workbook_legacy(brand_name):
     from openpyxl.comments import Comment
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.worksheet.datavalidation import DataValidation
@@ -2207,6 +2207,191 @@ def build_brand_commercial_input_workbook(brand_name):
     return buffer
 
 
+def _commercial_brand_fill_guide_df(brand_name):
+    """Return only the columns and wording that a Brand needs to see."""
+    columns = commercial_input_columns_for_brand(brand_name)
+    allowed_classes = commercial_allowed_classes_for_brand(brand_name)
+    examples_df = _commercial_examples_df(brand_name)
+    example_row = examples_df.iloc[0].to_dict() if not examples_df.empty else {}
+    descriptions = {
+        "Mod-Col": "Código real del modelo y color.",
+        "Marca": "Marca del producto. Esta columna ya viene completada.",
+        "Genero": "Hombre, Mujer, Unisex, Niño, Niña o Bebé.",
+        "Clase": f"Selecciona una opción: {', '.join(allowed_classes)}.",
+        "Tipo de prenda": "Tipo de producto, por ejemplo Casacas, Zapatillas o Gorros.",
+        "Color Comercial": "Nombre comercial del color informado por la marca.",
+        "Color web/filtro": "Color simple que verá el cliente, por ejemplo Negro, Azul o Beige.",
+        "Nombre de Producto": "Nombre comercial completo del producto.",
+        "Descripcion": "Descripción comercial principal del producto.",
+        "Caracteristicas": "Beneficios principales. Si hay varios, sepáralos únicamente con |.",
+        "Materiales": "Materiales o composición. Si hay varios, sepáralos únicamente con |.",
+        "Cuidados": "Recomendaciones de cuidado. Si hay varias, sepáralas únicamente con |.",
+        "Tecnologia": "Tecnologías comerciales. Si hay varias, sepáralas únicamente con |.",
+        "Categoria de Tecnologia": "Categoría comercial de la tecnología, si aplica.",
+        "Estilo": "Estilo comercial del producto, si aplica.",
+        "Pais de fabricacion": "País donde fue fabricado el producto, si se conoce.",
+        "Codigo de referencia": "Código de referencia comercial, si aplica.",
+        "Tags adicionales": "Palabras comerciales adicionales. Si hay varias, sepáralas únicamente con |.",
+        "Fecha publicacion": "Fecha deseada de publicación. Puede quedar vacía.",
+    }
+    rows = []
+    for column in columns:
+        is_site = column.startswith("PUBLICAR_")
+        required = column in COMMERCIAL_INPUT_REQUIRED_COLUMNS or is_site
+        if is_site:
+            site_name = column.removeprefix("PUBLICAR_").replace("_", ".").title()
+            description = f"Escribe SI para incluir el producto en {site_name}; escribe NO si no corresponde."
+            example = "SI"
+        else:
+            description = descriptions.get(column, f"Completa la información de {column}.")
+            example = clean_value(example_row.get(column))
+        rows.append(
+            {
+                "Columna": column,
+                "Qué debes completar": description,
+                "Ejemplo": example,
+                "¿Es obligatorio?": "SI" if required else "NO",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_brand_commercial_input_workbook(brand_name):
+    """Build the three-sheet, Brand-facing commercial workbook."""
+    from openpyxl.comments import Comment
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.utils import get_column_letter
+
+    brand_label = commercial_brand_display_name(brand_name)
+    columns = commercial_input_columns_for_brand(brand_label)
+    site_columns = [column for column in columns if column.startswith("PUBLICAR_")]
+    allowed_classes = commercial_allowed_classes_for_brand(brand_label)
+    examples_df = _commercial_examples_df(brand_label)
+    guide_df = _commercial_brand_fill_guide_df(brand_label)
+    blank_df = _commercial_input_blank_df(brand_label)
+    guide_lookup = guide_df.set_index("Columna")["Qué debes completar"].to_dict()
+
+    sheets = {
+        "PARA_COMPLETAR": blank_df,
+        "EJEMPLO": examples_df,
+        "COMO_LLENAR": guide_df,
+    }
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            repair_mojibake_dataframe(df).to_excel(writer, index=False, sheet_name=sheet_name)
+
+        wb = writer.book
+        navy = "063B73"
+        blue = "0B78D0"
+        pale_blue = "EAF4FF"
+        pale_green = "EAF7EF"
+        white = "FFFFFF"
+        text_color = "10233F"
+        thin = Side(style="thin", color="D7E2EE")
+
+        for ws in wb.worksheets:
+            ws.sheet_view.showGridLines = False
+            ws.freeze_panes = "A2"
+            ws.protection.sheet = False
+            ws.auto_filter.ref = ws.dimensions
+            ws.row_dimensions[1].height = 38
+            for cell in ws[1]:
+                cell.fill = PatternFill("solid", fgColor=navy)
+                cell.font = Font(bold=True, color=white, size=11)
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.border = Border(bottom=Side(style="medium", color=blue))
+            for row_index in range(2, ws.max_row + 1):
+                ws.row_dimensions[row_index].height = 34
+                row_fill = PatternFill("solid", fgColor=white if row_index % 2 == 0 else "F7FAFD")
+                for cell in ws[row_index]:
+                    cell.fill = row_fill
+                    cell.font = Font(color=text_color, size=10)
+                    cell.alignment = Alignment(vertical="top", wrap_text=True)
+                    cell.border = Border(bottom=thin)
+
+        widths = {
+            "Mod-Col": 22,
+            "Marca": 20,
+            "Genero": 16,
+            "Clase": 17,
+            "Tipo de prenda": 24,
+            "Color Comercial": 22,
+            "Color web/filtro": 22,
+            "Nombre de Producto": 38,
+            "Descripcion": 52,
+            "Caracteristicas": 46,
+            "Materiales": 42,
+            "Cuidados": 42,
+            "Tecnologia": 32,
+            "Categoria de Tecnologia": 28,
+            "Estilo": 22,
+            "Pais de fabricacion": 22,
+            "Codigo de referencia": 24,
+            "Tags adicionales": 38,
+            "Fecha publicacion": 22,
+        }
+        for sheet_name in ("PARA_COMPLETAR", "EJEMPLO"):
+            ws = wb[sheet_name]
+            for index, column in enumerate(columns, start=1):
+                ws.column_dimensions[get_column_letter(index)].width = widths.get(column, 24 if not column.startswith("PUBLICAR_") else 24)
+            ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{max(2, ws.max_row)}"
+
+        input_ws = wb["PARA_COMPLETAR"]
+        input_ws.sheet_properties.tabColor = blue
+        positions = {cell.value: cell.column for cell in input_ws[1]}
+        for column in columns:
+            column_index = positions[column]
+            header = input_ws.cell(1, column_index)
+            header.comment = Comment(guide_lookup.get(column, "Completa esta columna."), "Catalog Control Center")
+            if column == "Marca":
+                for row_index in range(2, input_ws.max_row + 1):
+                    input_ws.cell(row_index, column_index).fill = PatternFill("solid", fgColor=pale_blue)
+            elif column not in COMMERCIAL_INPUT_REQUIRED_COLUMNS and not column.startswith("PUBLICAR_"):
+                for row_index in range(2, input_ws.max_row + 1):
+                    input_ws.cell(row_index, column_index).fill = PatternFill("solid", fgColor=pale_green)
+
+        si_no_validation = DataValidation(type="list", formula1='"SI,NO"', allow_blank=False)
+        input_ws.add_data_validation(si_no_validation)
+        for column in site_columns:
+            letter = get_column_letter(positions[column])
+            si_no_validation.add(f"{letter}2:{letter}{COMMERCIAL_INPUT_MAX_ROWS + 1}")
+
+        for target_column, values in (
+            ("Genero", ["Hombre", "Mujer", "Unisex", "Nino", "Nina", "Bebe"]),
+            ("Clase", allowed_classes),
+        ):
+            if target_column not in positions or not values:
+                continue
+            validation = DataValidation(type="list", formula1=f'"{",".join(values)}"', allow_blank=True)
+            input_ws.add_data_validation(validation)
+            letter = get_column_letter(positions[target_column])
+            validation.add(f"{letter}2:{letter}{COMMERCIAL_INPUT_MAX_ROWS + 1}")
+
+        example_ws = wb["EJEMPLO"]
+        example_ws.sheet_properties.tabColor = "22A06B"
+        for row_index in range(2, example_ws.max_row + 1):
+            example_ws.row_dimensions[row_index].height = 66
+
+        guide_ws = wb["COMO_LLENAR"]
+        guide_ws.sheet_properties.tabColor = "F3B61F"
+        guide_ws.column_dimensions["A"].width = 30
+        guide_ws.column_dimensions["B"].width = 76
+        guide_ws.column_dimensions["C"].width = 48
+        guide_ws.column_dimensions["D"].width = 18
+        for row_index in range(2, guide_ws.max_row + 1):
+            guide_ws.row_dimensions[row_index].height = 48
+            required_cell = guide_ws.cell(row_index, 4)
+            required_cell.font = Font(
+                bold=True,
+                color="A61B1B" if required_cell.value == "SI" else "3A556F",
+            )
+
+    buffer.seek(0)
+    return buffer
+
+
 def _commercial_find_column(df, aliases):
     normalized = {normalize_header(column): column for column in df.columns}
     for alias in aliases:
@@ -2408,7 +2593,7 @@ def render_commercial_input_center():
             <div class="commercial-input-heading">
                 <p>Formato por marca</p>
                 <h2>Descargar input comercial</h2>
-                <span>3 hojas editables · sin tallas · sin Body HTML · listo para completar</span>
+                <span>Un formato simple, ejemplos completos y una guía breve</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -2422,9 +2607,9 @@ def render_commercial_input_center():
                 [
                     {
                         "Sitio": site.get("site_label"),
-                        "Columna de publicación": publication_column_for_site(site.get("site_label")),
-                        "Si el brand marca SI": "Crear y publicar en este sitio",
-                        "Si el brand marca NO": "No publicar en este sitio",
+                        "Cómo indicarlo": publication_column_for_site(site.get("site_label")),
+                        "SI": "Incluir",
+                        "NO": "No incluir",
                     }
                     for site in sites
                 ]
@@ -2444,10 +2629,9 @@ def render_commercial_input_center():
         st.markdown(
             """
             <div class="commercial-input-note">
-                <strong>Lo que completa el brand:</strong> textos comerciales, beneficios, materiales, cuidados,
-                tecnologias y tags adicionales. <strong>Para separar varios valores usa solo |</strong>.
-                Catalog Control Center convierte ese separador en bullets del Body HTML y en listas compatibles con Shopify.
-                La app obtiene tallas, variantes, Body HTML, tags tecnicos, color web, tipo de prenda y clase desde las fuentes internas.
+                <strong>Completa únicamente las columnas del formato.</strong>
+                Para separar varias características, materiales, cuidados, tecnologías o palabras adicionales usa solo <strong>|</strong>.
+                Todo lo demás se prepara automáticamente.
             </div>
             """,
             unsafe_allow_html=True,

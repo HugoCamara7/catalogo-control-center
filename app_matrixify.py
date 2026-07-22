@@ -13968,6 +13968,7 @@ def render_login_styles():
             border-radius:16px;
             background:#FFFFFF;
             box-shadow:0 28px 80px rgba(0,0,0,.28);
+            color-scheme:light;
         }
         .login-head {
             padding:32px 32px 34px;
@@ -14050,6 +14051,8 @@ def render_login_styles():
         }
         .st-key-login_form_area {
             padding:24px 32px 28px;
+            background:#FFFFFF;
+            color-scheme:light;
         }
         .st-key-login_form_area label {
             color:#1E293B !important;
@@ -14058,9 +14061,39 @@ def render_login_styles():
         .st-key-login_form_area .stTextInput input {
             border-radius:12px;
             min-height:48px;
-            background:#F8FAFC;
-            border:1px solid #CBD5E1;
+            background:#F8FAFC !important;
+            border:1px solid #CBD5E1 !important;
             font-size:15px;
+            color:#0F172A !important;
+            caret-color:#0F172A !important;
+            -webkit-text-fill-color:#0F172A !important;
+            opacity:1 !important;
+            color-scheme:light !important;
+        }
+        .st-key-login_form_area .stTextInput input::placeholder {
+            color:#64748B !important;
+            -webkit-text-fill-color:#64748B !important;
+            opacity:1 !important;
+        }
+        .st-key-login_form_area div[data-baseweb="input"],
+        .st-key-login_form_area div[data-baseweb="base-input"] {
+            background:#F8FAFC !important;
+            color:#0F172A !important;
+            color-scheme:light !important;
+        }
+        .st-key-login_form_area .stTextInput input:-webkit-autofill,
+        .st-key-login_form_area .stTextInput input:-webkit-autofill:hover,
+        .st-key-login_form_area .stTextInput input:-webkit-autofill:focus {
+            -webkit-text-fill-color:#0F172A !important;
+            caret-color:#0F172A !important;
+            -webkit-box-shadow:0 0 0 1000px #F8FAFC inset !important;
+            box-shadow:0 0 0 1000px #F8FAFC inset !important;
+            transition:background-color 9999s ease-out 0s;
+        }
+        .st-key-login_form_area .stTextInput button,
+        .st-key-login_form_area .stTextInput svg {
+            color:#475569 !important;
+            fill:currentColor !important;
         }
         .st-key-login_form_area .stButton button {
             width:100%;

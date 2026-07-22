@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -1697,7 +1697,7 @@ def _commercial_dictionary_rows(brand_name):
         "Caracteristicas": "Beneficios o bullets separados por |.",
         "Materiales": "Materiales/composicion separados por |. Se usa para Body HTML y metafields si aplica.",
         "Cuidados": "Cuidados separados por |. Se usa para Body HTML.",
-        "Tecnologia": "Tecnologias separadas por | o coma. La app resuelve custom.tecnologia y custom.logo.",
+        "Tecnologia": "Tecnologias separadas solo por |. La app resuelve custom.tecnologia y custom.logo.",
         "Tags adicionales": f"Solo tags comerciales adicionales separados por |. {auto_tags_note}",
         "Fecha publicacion": "Fecha sugerida si aplica. Puede quedar vacia.",
     }
@@ -1816,7 +1816,7 @@ def _commercial_input_blank_df(brand_name, rows=100):
 
 def build_brand_commercial_input_workbook(brand_name):
     from openpyxl.comments import Comment
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.worksheet.datavalidation import DataValidation
     from openpyxl.utils import get_column_letter
 
@@ -1839,7 +1839,8 @@ def build_brand_commercial_input_workbook(brand_name):
         {"Seccion": "Regla clave", "Campo": "Tags adicionales", "Detalle": "Brand solo completa tags comerciales extra en Tags adicionales, separados por |."},
         {"Seccion": "Publicacion", "Campo": "Columnas PUBLICAR_*", "Detalle": "Usar SI para publicar/considerar ese sitio y NO para mantener apagado/no publicar en ese sitio."},
         {"Seccion": "Publicacion", "Campo": "Carga completa", "Detalle": "La app debe respetar las columnas SI/NO por sitio aunque el input incluya todos los modelos."},
-        {"Seccion": "Separadores", "Campo": "Listas", "Detalle": "Usar | en Caracteristicas, Materiales, Cuidados y Tags adicionales. Tecnologia acepta | o coma."},
+        {"Seccion": "Separadores", "Campo": "Listas", "Detalle": "Usar solamente | para separar beneficios, materiales, cuidados, tecnologias y tags adicionales. No usar comas, punto y coma ni saltos de linea como separador."},
+        {"Seccion": "Separadores", "Campo": "Que hace la app", "Detalle": "El brand escribe valores simples separados por |. Catalog Control Center los convierte internamente en bullets para Body HTML y en listas compatibles con Shopify."},
         {"Seccion": "Automatico", "Campo": "Informacion fuente", "Detalle": "La app completa o valida Cod Mod Col, tipo de prenda, color, tecnologias, clase y reglas web desde sus fuentes."},
     ]
     for index, example in examples_df.iterrows():
@@ -1935,15 +1936,9 @@ def build_brand_commercial_input_workbook(brand_name):
                 letter = column_cells[0].column_letter
                 width = min(max(len(clean_value(column_cells[0].value)) + 4, 16), 42)
                 ws.column_dimensions[letter].width = width
-            if ws.title not in {"INPUT_COMERCIAL"}:
-                ws.protection.sheet = True
         ws = wb["INPUT_COMERCIAL"]
-        ws.protection.sheet = True
-        ws.protection.selectLockedCells = False
-        ws.protection.selectUnlockedCells = True
-        for row in ws.iter_rows(min_row=2, max_row=COMMERCIAL_INPUT_MAX_ROWS + 1):
-            for cell in row:
-                cell.protection = Protection(locked=False)
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{COMMERCIAL_INPUT_MAX_ROWS + 1}"
+        ws.row_dimensions[1].height = 34
         column_positions = {cell.value: cell.column for cell in ws[1]}
         for column in columns:
             col_idx = column_positions.get(column)
@@ -1957,12 +1952,6 @@ def build_brand_commercial_input_workbook(brand_name):
             else:
                 header.fill = optional_fill
             header.comment = Comment(clean_value(dictionary_df.loc[dictionary_df["Nombre exacto"].eq(column), "Descripcion"].head(1).squeeze()), "Catalog Control Center")
-        if "Marca" in column_positions:
-            col_letter = get_column_letter(column_positions["Marca"])
-            for row_idx in range(2, COMMERCIAL_INPUT_MAX_ROWS + 2):
-                cell = ws[f"{col_letter}{row_idx}"]
-                cell.value = brand_label
-                cell.protection = Protection(locked=True)
         si_no_validation = DataValidation(type="list", formula1='"SI,NO"', allow_blank=False)
         ws.add_data_validation(si_no_validation)
         for column in site_columns:
@@ -2118,6 +2107,13 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                 if row_status == "Listo":
                     row_status = "Con advertencia"
                 row_messages.append(f"{list_column} contiene separadores vacios ||.")
+            if value and any(separator in value for separator in [",", ";", "\n", "\r"]):
+                if row_status == "Listo":
+                    row_status = "Con advertencia"
+                row_messages.append(
+                    f"{list_column} debe usar solo | para separar valores. "
+                    "La app convierte | en listas compatibles con Shopify y bullets del Body HTML."
+                )
         description = normalized.get("Descripcion")
         visible_len = len(strip_html(description))
         if description and visible_len < 150:
@@ -2174,79 +2170,92 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
 
 
 def render_commercial_input_center():
-    st.markdown('<div class="section-card"><h2>Descargar input comercial</h2>', unsafe_allow_html=True)
-    st.caption("Genera un formato liviano por marca: 15 columnas base, sitios SI/NO y solo 3 hojas.")
     brand_options = configured_commercial_brands()
-    selected_brand = st.selectbox("Marca", brand_options, key="commercial_input_brand")
-    sites = sites_for_commercial_brand(selected_brand)
-    if not sites:
-        st.warning("No encontre sitios asociados para esta marca en la configuracion actual.")
-    else:
-        st.dataframe(
-            pd.DataFrame(
+    with st.container(key="commercial_input_download_panel"):
+        st.markdown(
+            """
+            <div class="commercial-input-heading">
+                <p>Formato por marca</p>
+                <h2>Descargar input comercial</h2>
+                <span>3 hojas editables · sin tallas · sin Body HTML · listo para completar</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        selected_brand = st.selectbox("Marca", brand_options, key="commercial_input_brand")
+        sites = sites_for_commercial_brand(selected_brand)
+        if not sites:
+            st.warning("No encontre sitios asociados para esta marca en la configuracion actual.")
+        else:
+            site_rules = pd.DataFrame(
                 [
                     {
                         "Sitio": site.get("site_label"),
-                        "Columna input": publication_column_for_site(site.get("site_label")),
-                        "Dominio": site.get("store_domain"),
+                        "Columna de publicación": publication_column_for_site(site.get("site_label")),
+                        "Si el brand marca SI": "Crear y publicar en este sitio",
+                        "Si el brand marca NO": "No publicar en este sitio",
                     }
                     for site in sites
                 ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-    workbook_bytes = build_brand_commercial_input_workbook(selected_brand)
-    file_date = datetime.now().strftime("%Y%m%d")
-    file_brand = re.sub(r"[^A-Za-z0-9]+", "_", selected_brand).strip("_").upper()
-    st.download_button(
-        "Descargar formato input por marca",
-        data=workbook_bytes,
-        file_name=f"Input_Catalogo_{file_brand}_{file_date}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_brand_commercial_input",
-    )
-    st.info(
-        "Brand no llena tallas, Body HTML ni tags tradicionales. "
-        "La app arma variantes desde BigQuery/ARTI, genera Body HTML desde textos comerciales "
-        "y agrega automaticamente marca, Mod-Col, tipo, color, clase y tecnologias."
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
+            )
+            st.dataframe(site_rules, use_container_width=True, hide_index=True)
 
-    st.markdown('<div class="section-card"><h2>Validar input comercial</h2>', unsafe_allow_html=True)
-    uploaded = st.file_uploader("Subir input comercial completado", type=["xlsx", "xls"], key="validate_brand_commercial_input")
-    if uploaded is not None and st.button("Analizar input comercial", type="primary", key="analyze_brand_commercial_input"):
-        preview_df, report_df, summary_df = validate_brand_commercial_input(uploaded, selected_brand)
-        st.session_state["brand_input_preview_df"] = preview_df
-        st.session_state["brand_input_report_df"] = report_df
-        st.session_state["brand_input_summary_df"] = summary_df
-    summary_df = st.session_state.get("brand_input_summary_df")
-    preview_df = st.session_state.get("brand_input_preview_df")
-    report_df = st.session_state.get("brand_input_report_df")
-    if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
-        cols = st.columns(min(4, len(summary_df)))
-        for idx, row in summary_df.iterrows():
-            cols[idx % len(cols)].metric(clean_value(row.get("Indicador")), int(row.get("Valor", 0)))
-        if isinstance(preview_df, pd.DataFrame) and not preview_df.empty:
-            st.subheader("Vista previa")
-            st.dataframe(preview_df, use_container_width=True, hide_index=True)
-        if isinstance(report_df, pd.DataFrame) and not report_df.empty:
-            st.subheader("Errores y advertencias")
-            st.dataframe(report_df, use_container_width=True, hide_index=True)
+        workbook_bytes = build_brand_commercial_input_workbook(selected_brand)
+        file_date = datetime.now().strftime("%Y%m%d")
+        file_brand = re.sub(r"[^A-Za-z0-9]+", "_", selected_brand).strip("_").upper()
         st.download_button(
-            "Descargar reporte de validacion",
-            data=dataframe_to_excel_bytes(
-                {
-                    "Resumen": summary_df,
-                    "Vista previa": preview_df if isinstance(preview_df, pd.DataFrame) else pd.DataFrame(),
-                    "Errores y advertencias": report_df if isinstance(report_df, pd.DataFrame) else pd.DataFrame(),
-                }
-            ),
-            file_name=f"reporte_validacion_input_{file_brand}_{file_date}.xlsx",
+            f"Descargar input editable de {selected_brand}",
+            data=workbook_bytes,
+            file_name=f"Input_Catalogo_{file_brand}_{file_date}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_brand_input_validation_report",
+            key="download_brand_commercial_input",
         )
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div class="commercial-input-note">
+                <strong>Lo que completa el brand:</strong> textos comerciales, beneficios, materiales, cuidados,
+                tecnologias y tags adicionales. <strong>Para separar varios valores usa solo |</strong>.
+                Catalog Control Center convierte ese separador en bullets del Body HTML y en listas compatibles con Shopify.
+                La app obtiene tallas, variantes, Body HTML, tags tecnicos, color web, tipo de prenda y clase desde las fuentes internas.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with st.container(key="commercial_input_validate_panel"):
+        st.markdown('<div class="commercial-input-heading"><p>Revisión antes de crear</p><h2>Validar input comercial</h2></div>', unsafe_allow_html=True)
+        uploaded = st.file_uploader("Subir input comercial completado", type=["xlsx", "xls"], key="validate_brand_commercial_input")
+        if uploaded is not None and st.button("Analizar input comercial", type="primary", key="analyze_brand_commercial_input"):
+            preview_df, report_df, summary_df = validate_brand_commercial_input(uploaded, selected_brand)
+            st.session_state["brand_input_preview_df"] = preview_df
+            st.session_state["brand_input_report_df"] = report_df
+            st.session_state["brand_input_summary_df"] = summary_df
+        summary_df = st.session_state.get("brand_input_summary_df")
+        preview_df = st.session_state.get("brand_input_preview_df")
+        report_df = st.session_state.get("brand_input_report_df")
+        if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
+            cols = st.columns(min(4, len(summary_df)))
+            for idx, row in summary_df.iterrows():
+                cols[idx % len(cols)].metric(clean_value(row.get("Indicador")), int(row.get("Valor", 0)))
+            if isinstance(preview_df, pd.DataFrame) and not preview_df.empty:
+                st.subheader("Vista previa")
+                st.dataframe(preview_df, use_container_width=True, hide_index=True)
+            if isinstance(report_df, pd.DataFrame) and not report_df.empty:
+                st.subheader("Errores y advertencias")
+                st.dataframe(report_df, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Descargar reporte de validacion",
+                data=dataframe_to_excel_bytes(
+                    {
+                        "Resumen": summary_df,
+                        "Vista previa": preview_df if isinstance(preview_df, pd.DataFrame) else pd.DataFrame(),
+                        "Errores y advertencias": report_df if isinstance(report_df, pd.DataFrame) else pd.DataFrame(),
+                    }
+                ),
+                file_name=f"reporte_validacion_input_{file_brand}_{file_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_brand_input_validation_report",
+            )
 
 
 CENTRY_BASE_COLUMNS = [
@@ -6119,6 +6128,10 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         expected[column] = pd.to_numeric(expected[column], errors="coerce").fillna(0)
 
     products_df, variants_df = flatten_shopify_for_kpis(shopify_products)
+    if not products_df.empty and "Fotos" in products_df.columns:
+        shopify_no_photo_all = products_df[pd.to_numeric(products_df["Fotos"], errors="coerce").fillna(0) <= 0].copy()
+    else:
+        shopify_no_photo_all = pd.DataFrame(columns=list(products_df.columns) if isinstance(products_df, pd.DataFrame) else [])
     shopify_model_keys = {clean_value(value).upper() for value in products_df.get("Mod-Col", pd.Series(dtype=object)) if clean_value(value)}
     shopify_variant_skus = {clean_value(value) for value in variants_df.get("Variant SKU", pd.Series(dtype=object)) if clean_value(value)}
     product_status_by_key = products_df.drop_duplicates("Mod-Col").set_index("Mod-Col").to_dict("index") if not products_df.empty and "Mod-Col" in products_df.columns else {}
@@ -6414,6 +6427,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "modelos_listos_venta": web_visible,
         "modelos_sin_precio": int(len(no_price_models)),
         "modelos_sin_foto": int(len(no_photo_models)),
+        "productos_shopify_sin_foto_total": int(len(shopify_no_photo_all)),
         "stock_ecomm_rows": int(stock_ecomm_rows),
         "stock_ecomm_units": int(stock_ecomm_units),
         "stock_ecomm_models": int(stock_ecomm_models),
@@ -6430,6 +6444,8 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             {"Indicador": "Modelos no creados en Shopify", "Valor": kpis["modelos_no_creados_shopify"], "Lectura": "Existe en fuente pero no en Shopify."},
             {"Indicador": "Modelos creados pero no visibles", "Valor": kpis["modelos_creados_no_visibles"], "Lectura": "Creado con stock eComm, pero no cumple stock/precio/foto/activo/publicado."},
             {"Indicador": "Modelos visibles reales web", "Valor": kpis["modelos_visibles_reales_web"], "Lectura": "Activo, publicado Online Store, con stock Shopify, precio y foto."},
+            {"Indicador": "Modelos con stock eComm sin foto", "Valor": kpis["modelos_sin_foto"], "Lectura": "Modelo-color creado en Shopify, con stock eComm, pero sin fotos Shopify. Esta es la base operativa del KPI."},
+            {"Indicador": "Productos Shopify sin foto total", "Valor": kpis["productos_shopify_sin_foto_total"], "Lectura": "Total bruto de productos Shopify sin fotos, sin filtrar por stock eComm ni por necesidad de venta web."},
         ]
     )
     model_stock["Creado_con_stock"] = model_stock["Debe estar visible"] & model_stock["Producto_creado"]
@@ -6503,6 +6519,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "missing_models_fields": missing_models_fields,
         "no_price_models": no_price_models,
         "no_photo_models": no_photo_models,
+        "shopify_no_photo_all": shopify_no_photo_all,
         "no_shopify_stock_models": no_shopify_stock_models,
         "stock_location_activation_audit": stock_location_activation_audit,
         "non_visible_web": non_visible_web,
@@ -10188,6 +10205,7 @@ def inject_custom_css(config):
             margin-right:8px !important;
         }}
         div.st-key-operation_nav_kpis button,
+        div.st-key-operation_nav_input button,
         div.st-key-load_mode_complete button,
         div.st-key-load_mode_partial button,
         div.st-key-reset_load_workspace button,
@@ -10216,6 +10234,7 @@ def inject_custom_css(config):
             transition:background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease !important;
         }}
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
+        div.st-key-operation_nav_input button [data-testid="stMarkdownContainer"],
         div.st-key-load_mode_complete button [data-testid="stMarkdownContainer"],
         div.st-key-load_mode_partial button [data-testid="stMarkdownContainer"],
         div.st-key-reset_load_workspace button [data-testid="stMarkdownContainer"],
@@ -10225,6 +10244,7 @@ def inject_custom_css(config):
             text-align:left !important;
         }}
         div.st-key-operation_nav_kpis button p,
+        div.st-key-operation_nav_input button p,
         div.st-key-load_mode_complete button p,
         div.st-key-load_mode_partial button p,
         div.st-key-reset_load_workspace button p,
@@ -10239,6 +10259,7 @@ def inject_custom_css(config):
             white-space:normal !important;
         }}
         div.st-key-operation_nav_kpis button::before,
+        div.st-key-operation_nav_input button::before,
         div.st-key-load_mode_complete button::before,
         div.st-key-load_mode_partial button::before,
         div.st-key-reset_load_workspace button::before,
@@ -10259,6 +10280,9 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V5'/%3E%3Cpath d='M4 19h16'/%3E%3Cpath d='M8 16v-5'/%3E%3Cpath d='M12 16V8'/%3E%3Cpath d='M16 16v-9'/%3E%3C/svg%3E") !important;
         }}
+        div.st-key-operation_nav_input button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
+        }}
         div.st-key-load_mode_complete button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 16V7'/%3E%3Cpath d='m8 11 4-4 4 4'/%3E%3Cpath d='M20 16.5A4.5 4.5 0 0 0 15.5 12h-.6A6 6 0 1 0 4 15.5'/%3E%3Cpath d='M4 18h16'/%3E%3C/svg%3E") !important;
         }}
@@ -10272,6 +10296,7 @@ def inject_custom_css(config):
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22v-5'/%3E%3Cpath d='M9 7V2'/%3E%3Cpath d='M15 7V2'/%3E%3Cpath d='M6 7h12v5a6 6 0 0 1-12 0V7Z'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-operation_nav_kpis button:hover,
+        div.st-key-operation_nav_input button:hover,
         div.st-key-load_mode_complete button:hover,
         div.st-key-load_mode_partial button:hover,
         div.st-key-reset_load_workspace button:hover,
@@ -10485,6 +10510,53 @@ def inject_custom_css(config):
         .section-card p, .section-card .caption {{
             color: var(--text-muted);
             font-size: 13px;
+        }}
+        .st-key-commercial_input_download_panel,
+        .st-key-commercial_input_validate_panel {{
+            margin:0 0 22px !important;
+            padding:26px 28px !important;
+            border:1px solid #DDE6F2 !important;
+            border-radius:22px !important;
+            background:#FFFFFF !important;
+            box-shadow:0 12px 24px rgba(15,23,42,0.055) !important;
+        }}
+        .commercial-input-heading {{
+            margin:0 0 18px !important;
+        }}
+        .commercial-input-heading p {{
+            margin:0 0 5px !important;
+            color:#2563EB !important;
+            font-size:11px !important;
+            font-weight:900 !important;
+            letter-spacing:.12em !important;
+            text-transform:uppercase !important;
+        }}
+        .commercial-input-heading h2 {{
+            margin:0 !important;
+            color:#0B1B46 !important;
+            font-size:25px !important;
+            line-height:1.15 !important;
+            font-weight:900 !important;
+        }}
+        .commercial-input-heading span {{
+            display:block !important;
+            margin-top:7px !important;
+            color:#64748B !important;
+            font-size:13px !important;
+            font-weight:650 !important;
+        }}
+        .commercial-input-note {{
+            margin-top:16px !important;
+            padding:14px 16px !important;
+            border:1px solid #BFDBFE !important;
+            border-radius:14px !important;
+            background:#F0F7FF !important;
+            color:#1E3A5F !important;
+            font-size:13px !important;
+            line-height:1.55 !important;
+        }}
+        .commercial-input-note strong {{
+            color:#0B3D91 !important;
         }}
         .source-grid {{
             display: grid;
@@ -12655,7 +12727,7 @@ def render_non_visible_combo_table(combo_df):
             <div class="commercial-subtitle">Causas del bloqueo comercial</div>
             <div class="flow-cause-grid">
                 <div class="flow-cause"><span>Stock faltante</span><strong>{format_kpi_number(stock_missing)}</strong></div>
-                <div class="flow-cause"><span>Imagen faltante</span><strong>{format_kpi_number(image_missing)}</strong></div>
+                <div class="flow-cause" title="Modelo-color creado, con stock eComm, sin foto Shopify dentro del universo de venta web. No es el total bruto de Shopify sin imagen."><span>Sin foto web</span><strong>{format_kpi_number(image_missing)}</strong></div>
                 <div class="flow-cause"><span>Precio faltante</span><strong>{format_kpi_number(price_missing)}</strong></div>
             </div>
             <div class="flow-actions">
@@ -13260,7 +13332,8 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 "Auditoria sucursales stock": result.get("stock_location_activation_audit", pd.DataFrame()),
                 "Sin stock Shopify": result.get("no_shopify_stock_models", pd.DataFrame()),
                 "Sin precio": result["no_price_models"],
-                "Sin foto": result["no_photo_models"],
+                "Sin foto stock eComm": result["no_photo_models"],
+                "Sin foto total Shopify": result.get("shopify_no_photo_all", pd.DataFrame()),
             }
         )
         st.session_state[kpi_excel_key] = excel_bytes

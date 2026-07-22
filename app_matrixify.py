@@ -1843,18 +1843,6 @@ def build_brand_commercial_input_workbook(brand_name):
         {"Seccion": "Separadores", "Campo": "Que hace la app", "Detalle": "El brand escribe valores simples separados por |. Catalog Control Center los convierte internamente en bullets para Body HTML y en listas compatibles con Shopify."},
         {"Seccion": "Automatico", "Campo": "Informacion fuente", "Detalle": "La app completa o valida Cod Mod Col, tipo de prenda, color, tecnologias, clase y reglas web desde sus fuentes."},
     ]
-    for index, example in examples_df.iterrows():
-        guide_rows.append(
-            {
-                "Seccion": "Ejemplo",
-                "Campo": f"Fila ejemplo {index + 1}",
-                "Detalle": " | ".join(
-                    f"{column}: {clean_value(value)}"
-                    for column, value in example.items()
-                    if clean_value(value)
-                ),
-            }
-        )
     sites_df = pd.DataFrame(
         [
             {
@@ -1908,7 +1896,8 @@ def build_brand_commercial_input_workbook(brand_name):
     )
     sheets = {
         "INPUT_COMERCIAL": _commercial_input_blank_df(brand_label),
-        "GUIA": pd.DataFrame(guide_rows),
+        # La guia replica el input real: un ejemplo por clase y cada dato en su propia celda.
+        "GUIA": examples_df,
         "DICCIONARIO": dictionary_compact,
     }
     buffer = io.BytesIO()
@@ -1916,6 +1905,35 @@ def build_brand_commercial_input_workbook(brand_name):
         for sheet_name, df in sheets.items():
             repair_mojibake_dataframe(df).to_excel(writer, index=False, sheet_name=sheet_name[:31])
         wb = writer.book
+        guide_ws = wb["GUIA"]
+        guide_last_column = max(1, len(columns))
+        guide_ws.insert_rows(1, amount=4)
+        guide_ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=guide_last_column)
+        guide_ws.cell(1, 1).value = f"EJEMPLO COMPLETADO - {brand_label}"
+        guide_ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=guide_last_column)
+        guide_ws.cell(2, 1).value = (
+            "Cada fila es un ejemplo listo para copiar: una celda por campo. "
+            "Usa solamente | para separar caracteristicas, materiales, cuidados, tecnologias y tags adicionales."
+        )
+        guide_header_row = 5
+        guide_first_example_row = guide_header_row + 1
+        guide_last_example_row = guide_header_row + max(1, len(examples_df))
+        rules_title_row = guide_last_example_row + 2
+        guide_ws.merge_cells(
+            start_row=rules_title_row,
+            start_column=1,
+            end_row=rules_title_row,
+            end_column=guide_last_column,
+        )
+        guide_ws.cell(rules_title_row, 1).value = "REGLAS DE LLENADO"
+        rules_header_row = rules_title_row + 1
+        for column_index, title in enumerate(["Seccion", "Campo", "Detalle"], start=1):
+            guide_ws.cell(rules_header_row, column_index).value = title
+        for row_offset, guide_row in enumerate(guide_rows, start=1):
+            target_row = rules_header_row + row_offset
+            guide_ws.cell(target_row, 1).value = clean_value(guide_row.get("Seccion"))
+            guide_ws.cell(target_row, 2).value = clean_value(guide_row.get("Campo"))
+            guide_ws.cell(target_row, 3).value = clean_value(guide_row.get("Detalle"))
         thin = Side(style="thin", color="D9E2EF")
         header_fill = PatternFill("solid", fgColor="DCEBFF")
         required_fill = PatternFill("solid", fgColor="FFE8E8")
@@ -1932,10 +1950,45 @@ def build_brand_commercial_input_workbook(brand_name):
                 cell.font = Font(bold=True, color="001B44")
                 cell.fill = header_fill
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            for column_cells in ws.columns:
-                letter = column_cells[0].column_letter
-                width = min(max(len(clean_value(column_cells[0].value)) + 4, 16), 42)
+            for column_index in range(1, ws.max_column + 1):
+                letter = get_column_letter(column_index)
+                header_value = ws.cell(row=1, column=column_index).value
+                width = min(max(len(clean_value(header_value)) + 4, 16), 42)
                 ws.column_dimensions[letter].width = width
+        guide_ws.freeze_panes = f"A{guide_first_example_row}"
+        guide_ws.auto_filter.ref = (
+            f"A{guide_header_row}:{get_column_letter(guide_last_column)}{guide_last_example_row}"
+        )
+        guide_ws.row_dimensions[1].height = 30
+        guide_ws.row_dimensions[2].height = 42
+        guide_ws.cell(1, 1).font = Font(bold=True, color="FFFFFF", size=15)
+        guide_ws.cell(1, 1).fill = PatternFill("solid", fgColor="005AA8")
+        guide_ws.cell(1, 1).alignment = Alignment(horizontal="left", vertical="center")
+        guide_ws.cell(2, 1).font = Font(color="334155", size=11)
+        guide_ws.cell(2, 1).fill = PatternFill("solid", fgColor="EAF3FF")
+        guide_ws.cell(2, 1).alignment = Alignment(vertical="center", wrap_text=True)
+        for cell in guide_ws[guide_header_row]:
+            cell.font = Font(bold=True, color="001B44")
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        guide_ws.row_dimensions[guide_header_row].height = 36
+        for row_index in range(guide_first_example_row, guide_last_example_row + 1):
+            guide_ws.row_dimensions[row_index].height = 58
+            for cell in guide_ws[row_index]:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+        guide_ws.cell(rules_title_row, 1).font = Font(bold=True, color="FFFFFF", size=12)
+        guide_ws.cell(rules_title_row, 1).fill = PatternFill("solid", fgColor="172554")
+        guide_ws.cell(rules_title_row, 1).alignment = Alignment(vertical="center")
+        guide_ws.row_dimensions[rules_title_row].height = 26
+        for cell in guide_ws[rules_header_row][:3]:
+            cell.font = Font(bold=True, color="001B44")
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        guide_ws.column_dimensions["A"].width = 24
+        guide_ws.column_dimensions["B"].width = 22
+        guide_ws.column_dimensions["C"].width = 28
+        for column_index in range(4, guide_last_column + 1):
+            guide_ws.column_dimensions[get_column_letter(column_index)].width = 24
         ws = wb["INPUT_COMERCIAL"]
         ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{COMMERCIAL_INPUT_MAX_ROWS + 1}"
         ws.row_dimensions[1].height = 34
@@ -9814,6 +9867,52 @@ def inject_custom_css(config):
             background: #F8FAFC !important;
             border: 1px solid #DDE6F2 !important;
         }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card {{
+            padding: 12px 14px !important;
+            margin: 6px 0 20px !important;
+            min-height: 0 !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card > div,
+        section[data-testid="stSidebar"] .st-key-site_picker_card [data-testid="stVerticalBlock"] {{
+            min-height: 0 !important;
+            gap: 0 !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card [data-testid="stHorizontalBlock"] {{
+            align-items: center !important;
+            gap: 10px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card [data-testid="column"] {{
+            min-width: 0 !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card .site-picker-logo {{
+            width: 78px !important;
+            height: 50px !important;
+            margin: 0 !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card .site-picker-logo img {{
+            max-width: 70px !important;
+            max-height: 36px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card .stSelectbox label {{
+            display: block !important;
+            margin: 0 0 5px !important;
+            padding: 0 !important;
+            color: #172554 !important;
+            font-size: 13px !important;
+            line-height: 1 !important;
+            font-weight: 950 !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"],
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] {{
+            min-height: 42px !important;
+        }}
+        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
+            height: 42px !important;
+            min-height: 42px !important;
+            border-radius: 12px !important;
+            padding-left: 12px !important;
+            padding-right: 10px !important;
+        }}
         .forus-sidebar {{
             border-radius: 24px;
             padding: 22px 20px;
@@ -13694,26 +13793,19 @@ def main():
         else f"<span>{current_brand_name[:2].upper()}</span>"
     )
     with st.sidebar.container(key="site_picker_card"):
-        st.markdown(
-            f"""
-            <div class="site-picker-visual" aria-hidden="true">
-                <div class="site-picker-logo">{current_logo_html}</div>
-                <div class="site-picker-copy">
-                    <p class="site-picker-kicker">Sitio activo</p>
-                    <p class="site-picker-name">{current_site_name}</p>
-                </div>
-                <div class="site-picker-chevron">⌄</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        selected_site_label = st.selectbox(
-            "Sitio destino",
-            list(site_options),
-            index=list(site_options).index(current_site_label),
-            key="site_picker",
-            label_visibility="collapsed",
-        )
+        logo_column, selector_column = st.columns([0.32, 0.68], gap="small", vertical_alignment="center")
+        with logo_column:
+            st.markdown(
+                f'<div class="site-picker-logo" aria-hidden="true">{current_logo_html}</div>',
+                unsafe_allow_html=True,
+            )
+        with selector_column:
+            selected_site_label = st.selectbox(
+                "Sitio activo",
+                list(site_options),
+                index=list(site_options).index(current_site_label),
+                key="site_picker",
+            )
     selected_site_key = site_options[selected_site_label]
     brand_config = get_brand_config(selected_site_key)
     shopify_config = get_shopify_config(selected_site_key)

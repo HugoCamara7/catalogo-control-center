@@ -501,6 +501,86 @@ def format_technology(value):
     return json.dumps(items, ensure_ascii=False)
 
 
+def technology_metafield_column(brand_config=None):
+    site_key = clean((brand_config or {}).get("site_key")).lower()
+    if site_key == "columbia":
+        return "Metafield: custom.tecnologia [list.single_line_text_field]"
+    return "Metafield: custom.tecnologia [single_line_text_field]"
+
+
+def site_uses_technology_logo_metaobjects(brand_config=None):
+    return clean((brand_config or {}).get("site_key")).lower() == "columbia"
+
+
+def format_technology_for_site(value, brand_config=None):
+    items = split_technology_items(value)
+    if not items:
+        return ""
+    if technology_metafield_column(brand_config).endswith("[list.single_line_text_field]"):
+        return json.dumps(items, ensure_ascii=False)
+    return " | ".join(items)
+
+
+def site_specific_product_metafield_columns(brand_config=None):
+    site_key = clean((brand_config or {}).get("site_key")).lower()
+    if site_key == "hush_puppies":
+        return [
+            "Metafield: custom.estilo [single_line_text_field]",
+            "Metafield: custom.categoria_de_tecnologia [single_line_text_field]",
+        ]
+    if site_key == "vans":
+        return [
+            "Metafield: custom.composicion [multi_line_text_field]",
+            "Metafield: custom.codigo_de_referencia [single_line_text_field]",
+        ]
+    return []
+
+
+def site_specific_product_metafields(product, brand_config=None):
+    site_key = clean((brand_config or {}).get("site_key")).lower()
+    values = {}
+    if site_key == "hush_puppies":
+        values["Metafield: custom.estilo [single_line_text_field]"] = row_first_existing(
+            product,
+            [
+                "Estilo",
+                "Estilo ",
+                "Metafield: custom.estilo [single_line_text_field]",
+            ],
+        )
+        values["Metafield: custom.categoria_de_tecnologia [single_line_text_field]"] = row_first_existing(
+            product,
+            [
+                "Categoria de Tecnologia",
+                "Categoría de Tecnología",
+                "Categoria Tecnologia",
+                "Metafield: custom.categoria_de_tecnologia [single_line_text_field]",
+            ],
+        )
+    elif site_key == "vans":
+        values["Metafield: custom.composicion [multi_line_text_field]"] = row_first_existing(
+            product,
+            [
+                "Materiales",
+                "Materialidad",
+                "Composicion",
+                "Composición",
+                "Composition",
+                "Metafield: custom.composicion [multi_line_text_field]",
+            ],
+        )
+        values["Metafield: custom.codigo_de_referencia [single_line_text_field]"] = row_first_existing(
+            product,
+            [
+                "Codigo de referencia",
+                "Código de referencia",
+                "Codigo referencia",
+                "Metafield: custom.codigo_de_referencia [single_line_text_field]",
+            ],
+        )
+    return values
+
+
 def technology_logo_slug(value):
     text = clean(value).lower()
     compound_replacements = {
@@ -1962,7 +2042,7 @@ def read_arti_source(
     )
 
 
-def prepare_matrixify_context(matrixify_source):
+def prepare_matrixify_context(matrixify_source, brand_config=None):
     if isinstance(matrixify_source, pd.DataFrame):
         matrixify_df = matrixify_source.copy()
         matrixify_columns = list(matrixify_df.columns)
@@ -1973,8 +2053,25 @@ def prepare_matrixify_context(matrixify_source):
     end_column = "Metafield: custom.guia_de_tallas [page_reference]"
     if end_column in matrixify_columns:
         matrixify_columns = matrixify_columns[: matrixify_columns.index(end_column) + 1]
+    selected_technology_column = technology_metafield_column(brand_config)
+    technology_columns = {
+        "Metafield: custom.tecnologia [list.single_line_text_field]",
+        "Metafield: custom.tecnologia [single_line_text_field]",
+    }
+    matrixify_columns = [
+        column
+        for column in matrixify_columns
+        if column not in technology_columns or column == selected_technology_column
+    ]
+    if not site_uses_technology_logo_metaobjects(brand_config):
+        matrixify_columns = [
+            column
+            for column in matrixify_columns
+            if column != "Metafield: custom.logo [list.metaobject_reference]"
+        ]
+
     required_columns = [
-        *CRITICAL_PRODUCT_METAFIELD_COLUMNS,
+        *critical_product_metafield_columns(brand_config),
         SIBLINGS_COLUMN,
         SIBLINGS_COLOR_COLUMN,
         CUSTOM_SIBLINGS_COLUMN,
@@ -2157,7 +2254,7 @@ def find_technology_column(df):
     return ""
 
 
-def fill_top_row_product_fields(output_df, input_df, tech_col=None):
+def fill_top_row_product_fields(output_df, input_df, tech_col=None, brand_config=None):
     if output_df is None or output_df.empty or input_df is None or input_df.empty:
         return output_df
     if PRODUCT_KEY_COLUMN not in output_df.columns:
@@ -2182,11 +2279,15 @@ def fill_top_row_product_fields(output_df, input_df, tech_col=None):
         technology_value = tech_by_key.get(key, "")
         if technology_value:
             logo_col = "Metafield: custom.logo [list.metaobject_reference]"
-            tech_field_col = "Metafield: custom.tecnologia [list.single_line_text_field]"
-            if logo_col in output_df.columns and not clean(row.get(logo_col)):
+            tech_field_col = technology_metafield_column(brand_config)
+            if (
+                site_uses_technology_logo_metaobjects(brand_config)
+                and logo_col in output_df.columns
+                and not clean(row.get(logo_col))
+            ):
                 output_df.at[idx, logo_col] = format_technology_logos(technology_value)
             if tech_field_col in output_df.columns and not clean(row.get(tech_field_col)):
-                output_df.at[idx, tech_field_col] = format_technology(technology_value)
+                output_df.at[idx, tech_field_col] = format_technology_for_site(technology_value, brand_config)
         publication_date = publication_by_key.get(key, "")
         if publication_date and PUBLICATION_DATE_COLUMN in output_df.columns and not clean(row.get(PUBLICATION_DATE_COLUMN)):
             output_df.at[idx, PUBLICATION_DATE_COLUMN] = publication_date
@@ -2292,6 +2393,23 @@ CRITICAL_PRODUCT_METAFIELD_COLUMNS = [
     "Metafield: custom.descripcion_corta [single_line_text_field]",
     "Metafield: custom.pais_de_fabricacion [single_line_text_field]",
 ]
+
+
+def critical_product_metafield_columns(brand_config=None):
+    columns = [
+        column
+        for column in CRITICAL_PRODUCT_METAFIELD_COLUMNS
+        if column
+        not in {
+            "Metafield: custom.tecnologia [list.single_line_text_field]",
+            "Metafield: custom.logo [list.metaobject_reference]",
+        }
+    ]
+    columns.append(technology_metafield_column(brand_config))
+    if site_uses_technology_logo_metaobjects(brand_config):
+        columns.append("Metafield: custom.logo [list.metaobject_reference]")
+    columns.extend(site_specific_product_metafield_columns(brand_config))
+    return columns
 PUBLICATION_DATE_COLUMN = "Publication Publish Date"
 PUBLICATION_DATE_CANDIDATES = [
     "Publication Publish Date",
@@ -2674,7 +2792,7 @@ def build_matrixify_updates(
 
 def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None):
     brand_config = brand_config or get_brand_config()
-    matrixify_columns, matrixify_df = prepare_matrixify_context(matrixify_source)
+    matrixify_columns, matrixify_df = prepare_matrixify_context(matrixify_source, brand_config)
     product_by_key, product_by_handle, variant_by_sku = build_existing_lookup(matrixify_df)
 
     input_df = ensure_mod_col_column(input_df.dropna(how="all").copy())
@@ -2972,63 +3090,104 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     output[column] = 0
 
             if is_first:
-                output.update(
-                    {
-                        "Metafield: custom.pais_de_fabricacion [single_line_text_field]": clean(
-                            product.get("Metafield: custom.pais_de_fabricacion [single_line_text_field]")
+                product_metafields = {
+                        "Metafield: custom.pais_de_fabricacion [single_line_text_field]": row_first_existing(
+                            product,
+                            [
+                                "Metafield: custom.pais_de_fabricacion [single_line_text_field]",
+                                "Pais de fabricacion",
+                                "País de fabricación",
+                                "Pais de Fabricacion",
+                            ],
                         ),
-                        "Metafield: custom.logo [list.metaobject_reference]": format_technology_logos(
-                            technology_value
-                        ),
-                        "Metafield: custom.color_forus [single_line_text_field]": clean(
-                            product.get("Metafield: custom.color_forus [single_line_text_field]")
+                        "Metafield: custom.color_forus [single_line_text_field]": row_first_existing(
+                            product,
+                            [
+                                "Metafield: custom.color_forus [single_line_text_field]",
+                                "Color Forus",
+                                "Color web/filtro",
+                                "Color web",
+                            ],
                         ),
                         "Metafield: theme.siblings_color [single_line_text_field]": color_web,
                         "Metafield: theme.siblings [single_line_text_field]": siblings_value,
                         "Metafield: custom.siblings_color [single_line_text_field]": color_web,
                         "Metafield: custom.siblings [single_line_text_field]": siblings_value,
-                        "Metafield: custom.grupo_color [single_line_text_field]": clean(
-                            product.get("Metafield: custom.grupo_color [single_line_text_field]")
+                        "Metafield: custom.grupo_color [single_line_text_field]": row_first_existing(
+                            product,
+                            [
+                                "Metafield: custom.grupo_color [single_line_text_field]",
+                                "Grupo Color",
+                                "Grupo de color",
+                                "Color web/filtro",
+                            ],
                         ),
-                        "Metafield: custom.genero [single_line_text_field]": clean(
-                            product.get("Metafield: custom.genero [single_line_text_field]")
+                        "Metafield: custom.genero [single_line_text_field]": row_first_existing(
+                            product,
+                            ["Metafield: custom.genero [single_line_text_field]", "Genero", "Género"],
                         ),
-                        "Metafield: custom.tipo [single_line_text_field]": clean(
-                            product.get("Metafield: custom.tipo [single_line_text_field]")
+                        "Metafield: custom.tipo [single_line_text_field]": row_first_existing(
+                            product,
+                            ["Metafield: custom.tipo [single_line_text_field]", "Tipo de prenda", "Tipo"],
                         ),
-                        "Metafield: custom.descripcion_corta [single_line_text_field]": clean(
-                            product.get("Metafield: custom.descripcion_corta [single_line_text_field]")
+                        "Metafield: custom.descripcion_corta [single_line_text_field]": row_first_existing(
+                            product,
+                            [
+                                "Metafield: custom.descripcion_corta [single_line_text_field]",
+                                "Descripcion corta",
+                                "Descripción corta",
+                                "Descripcion",
+                            ],
                         ),
-                        "Metafield: custom.nombre_corto [single_line_text_field]": clean(
-                            product.get("Metafield: custom.nombre_corto [single_line_text_field]")
+                        "Metafield: custom.nombre_corto [single_line_text_field]": row_first_existing(
+                            product,
+                            [
+                                "Metafield: custom.nombre_corto [single_line_text_field]",
+                                "Nombre corto",
+                                "Nombre de Producto",
+                                "Nombre",
+                            ],
                         ),
                         "Metafield: custom.codigo_modelo_color [id]": clean(
                             product.get("Metafield: custom.codigo_modelo_color [id]")
                         )
                         or key,
-                        "Metafield: custom.materialidad [single_line_text_field]": clean(
-                            product.get("Metafield: custom.materialidad [single_line_text_field]")
+                        "Metafield: custom.materialidad [single_line_text_field]": row_first_existing(
+                            product,
+                            [
+                                "Metafield: custom.materialidad [single_line_text_field]",
+                                "Materialidad",
+                                "Materiales",
+                                "Material",
+                            ],
                         ),
                         "Metafield: custom.marca [single_line_text_field]": product_brand_label,
                         "Metafield: custom.sub_categoria [single_line_text_field]": clean(
                             product.get("Metafield: custom.sub_categoria [single_line_text_field]")
                         )
                         or product_type,
-                        "Metafield: custom.categoria [single_line_text_field]": clean(
-                            product.get("Metafield: custom.categoria [single_line_text_field]")
+                        "Metafield: custom.categoria [single_line_text_field]": row_first_existing(
+                            product,
+                            ["Metafield: custom.categoria [single_line_text_field]", "Categoria", "Categoría", "Clase"],
                         ),
                         "Metafield: custom.guia_de_tallas [page_reference]": clean(
                             product.get("Metafield: custom.guia_de_tallas [page_reference]")
-                        ),
-                        "Metafield: custom.tecnologia [list.single_line_text_field]": format_technology(
-                            technology_value
                         ),
                         "Metafield: custom.deporte [list.single_line_text_field]": format_technology(
                             product.get("Metafield: custom.deporte [list.single_line_text_field]")
                         ),
                         "Metafield: mm-google-shopping.custom_product [boolean]": "FALSE",
                     }
+                product_metafields[technology_metafield_column(brand_config)] = format_technology_for_site(
+                    technology_value,
+                    brand_config,
                 )
+                if site_uses_technology_logo_metaobjects(brand_config):
+                    product_metafields["Metafield: custom.logo [list.metaobject_reference]"] = format_technology_logos(
+                        technology_value
+                    )
+                product_metafields.update(site_specific_product_metafields(product, brand_config))
+                output.update(product_metafields)
                 for column in matrixify_columns:
                     if not str(column).startswith("Metafield: ") or clean(output.get(column)):
                         continue
@@ -3074,12 +3233,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     issues.extend(new_type_warnings_to_issues(type_warnings_df))
 
     output_df = pd.DataFrame(rows, columns=matrixify_columns)
-    output_df = fill_top_row_product_fields(output_df, input_df, tech_col)
+    output_df = fill_top_row_product_fields(output_df, input_df, tech_col, brand_config)
     sial_df = pd.DataFrame(sial_rows, columns=get_sial_columns(brand_config))
     sial_df = coalesce_duplicate_columns(sial_df)
     issues_df = pd.DataFrame(issues)
     output_df, sial_df, issues_df = final_variant_filter(output_df, sial_df, issues_df)
-    output_df = fill_top_row_product_fields(output_df, input_df, tech_col)
+    output_df = fill_top_row_product_fields(output_df, input_df, tech_col, brand_config)
     sial_df = coalesce_duplicate_columns(sial_df)
     skipped_df = pd.DataFrame(
         skipped_rows,

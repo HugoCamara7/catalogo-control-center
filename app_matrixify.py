@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -1400,11 +1400,16 @@ def dataframe_to_excel_bytes(sheets):
     return buffer
 
 
-COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V3_2026-07-22"
+COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V5_2026-07-22"
 COMMERCIAL_INPUT_MAX_ROWS = 5000
 COMMERCIAL_INPUT_REQUIRED_COLUMNS = [
     "Mod-Col",
     "Marca",
+    "Genero",
+    "Clase",
+    "Tipo de prenda",
+    "Color Comercial",
+    "Color web/filtro",
     "Nombre de Producto",
     "Descripcion",
 ]
@@ -1445,6 +1450,84 @@ COMMERCIAL_BRAND_ALLOWED_CLASSES = {
     "HUSH PUPPIES KIDS": ["Calzado", "Vestuario", "Accesorios"],
     "ACCESORIOS HP": ["Accesorios"],
     "KEDS": ["Calzado"],
+}
+
+# El input sigue siendo comercial: estos extras cambian por marca, mientras
+# siblings, logos, guias, categorias tecnicas y relaciones los arma la app.
+COMMERCIAL_BRAND_INPUT_PROFILES = {
+    "COLUMBIA": {
+        "site_profile": "Columbia.pe",
+        "extra_columns": ["Tecnologia", "Pais de fabricacion"],
+        "technology_type": "list.single_line_text_field",
+        "technology_example": "Omni-Tech|Omni-Shield",
+    },
+    "ROCKFORD": {
+        "site_profile": "Rockford.pe",
+        "extra_columns": ["Tecnologia", "Pais de fabricacion"],
+        "technology_type": "single_line_text_field",
+        "technology_example": "Libre de arrugas",
+    },
+    "MOUNTAIN HARDWEAR": {
+        "site_profile": "Rockford.pe",
+        "extra_columns": ["Tecnologia", "Pais de fabricacion"],
+        "technology_type": "single_line_text_field",
+        "technology_example": "Tecnologia comercial si aplica",
+    },
+    "PATAGONIA": {
+        "site_profile": "Rockford.pe",
+        "extra_columns": ["Tecnologia", "Pais de fabricacion"],
+        "technology_type": "single_line_text_field",
+        "technology_example": "Tecnologia comercial si aplica",
+    },
+    "SOREL": {
+        "site_profile": "Rockford.pe",
+        "extra_columns": ["Tecnologia", "Pais de fabricacion"],
+        "technology_type": "single_line_text_field",
+        "technology_example": "Tecnologia comercial si aplica",
+    },
+    "HUSH PUPPIES": {
+        "site_profile": "HushPuppies.pe",
+        "extra_columns": ["Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion"],
+        "technology_type": "single_line_text_field",
+        "technology_example": "Bounce Plus",
+    },
+    "HUSH PUPPIES KIDS": {
+        "site_profile": "HushPuppies.pe",
+        "extra_columns": ["Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion"],
+        "technology_type": "single_line_text_field",
+        "technology_example": "Bounce Plus",
+    },
+    "ACCESORIOS HP": {
+        "site_profile": "HushPuppies.pe",
+        "extra_columns": ["Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion"],
+        "technology_type": "single_line_text_field",
+        "technology_example": "Tecnologia comercial si aplica",
+    },
+    "KEDS": {
+        "site_profile": "HushPuppies.pe",
+        "extra_columns": ["Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion"],
+        "technology_type": "single_line_text_field",
+        "technology_example": "Tecnologia comercial si aplica",
+    },
+    "VANS": {
+        "site_profile": "Vans.pe",
+        "extra_columns": ["Tecnologia", "Codigo de referencia"],
+        "technology_type": "single_line_text_field",
+        "technology_example": "ComfyCush",
+    },
+}
+
+COMMERCIAL_BRAND_DISPLAY_NAMES = {
+    "COLUMBIA": "Columbia",
+    "ROCKFORD": "Rockford",
+    "MOUNTAIN HARDWEAR": "Mountain Hardwear",
+    "PATAGONIA": "Patagonia",
+    "SOREL": "Sorel",
+    "HUSH PUPPIES": "Hush Puppies",
+    "HUSH PUPPIES KIDS": "Hush Puppies Kids",
+    "ACCESORIOS HP": "Accesorios HP",
+    "KEDS": "Keds",
+    "VANS": "Vans",
 }
 
 COMMERCIAL_CLASS_EXAMPLES = {
@@ -1506,6 +1589,33 @@ def commercial_allowed_classes_for_brand(brand_name):
     return COMMERCIAL_BRAND_ALLOWED_CLASSES.get(display_key, ["Calzado", "Vestuario", "Accesorios"])
 
 
+def commercial_brand_display_name(brand_name):
+    brand_key = normalize_brand_name(brand_name)
+    return COMMERCIAL_BRAND_DISPLAY_NAMES.get(
+        brand_key,
+        brand_display_name(brand_name, clean_value(brand_name)),
+    )
+
+
+def commercial_input_profile_for_brand(brand_name):
+    brand_key = normalize_brand_name(brand_name)
+    if "HUSH PUPPIES" in brand_key and "KIDS" in brand_key:
+        brand_key = "HUSH PUPPIES KIDS"
+    profile = COMMERCIAL_BRAND_INPUT_PROFILES.get(brand_key)
+    if profile:
+        return dict(profile)
+    display_key = normalize_brand_name(brand_display_name(brand_name, brand_name))
+    profile = COMMERCIAL_BRAND_INPUT_PROFILES.get(display_key)
+    if profile:
+        return dict(profile)
+    return {
+        "site_profile": clean_value(brand_name),
+        "extra_columns": [],
+        "technology_type": "single_line_text_field",
+        "technology_example": "",
+    }
+
+
 def commercial_product_type_rules_for_brand(brand_name):
     allowed_classes = {_input_norm_key(item) for item in commercial_allowed_classes_for_brand(brand_name)}
     rows = []
@@ -1521,12 +1631,12 @@ def configured_commercial_brands():
     brands = {}
     for config in SITE_CONFIGS.values():
         for brand in config.get("allowed_arti_brands", []):
-            display = brand_display_name(brand, brand.title())
-            brands[_input_norm_key(display)] = display
+            display = commercial_brand_display_name(brand)
+            brands[normalize_brand_name(brand)] = display
     for config in SITE_CONFIGS.values():
-        display = brand_display_name(config.get("label"), config.get("label", ""))
+        display = commercial_brand_display_name(config.get("label"))
         if display:
-            brands[_input_norm_key(display)] = display
+            brands.setdefault(normalize_brand_name(config.get("label")), display)
     return [brands[key] for key in sorted(brands)]
 
 
@@ -1553,78 +1663,82 @@ def publication_column_for_site(site_label):
 
 def commercial_input_metafields_for_brand(brand_name):
     brand_key = normalize_brand_name(brand_name)
+    profile = commercial_input_profile_for_brand(brand_name)
+
+    def metafield_row(name, key, data_type="single_line_text_field", appears="NO", rule="La app lo calcula automaticamente.", owner="Catalog Control Center"):
+        return {
+            "Nombre visible": name,
+            "Namespace": "custom",
+            "Key": key,
+            "Tipo de dato": data_type,
+            "Responsable": owner,
+            "Aparece en input": appears,
+            "Regla": rule,
+        }
+
     common = [
-        {
-            "Nombre visible": "Marca",
-            "Namespace": "custom",
-            "Key": "marca",
-            "Tipo de dato": "single_line_text_field",
-            "Responsable": "Catalog Control Center",
-            "Aparece en input": "NO",
-            "Regla": "Se toma de la marca seleccionada; Brand no debe cambiarla.",
-        },
-        {
-            "Nombre visible": "Tipo de prenda",
-            "Namespace": "custom",
-            "Key": "tipo",
-            "Tipo de dato": "single_line_text_field",
-            "Responsable": "Catalog Control Center",
-            "Aparece en input": "SI",
-            "Regla": "Debe normalizarse/pluralizarse segun diccionario web.",
-        },
-        {
-            "Nombre visible": "Guia de talla",
-            "Namespace": "custom",
-            "Key": "guia_de_tallas",
-            "Tipo de dato": "page_reference",
-            "Responsable": "Catalog Control Center",
-            "Aparece en input": "SI",
-            "Regla": "Se valida por marca, categoria, genero y tipo de prenda.",
-        },
-        {
-            "Nombre visible": "Materialidad",
-            "Namespace": "custom",
-            "Key": "materialidad",
-            "Tipo de dato": "single_line_text_field",
-            "Responsable": "Brand",
-            "Aparece en input": "SI",
-            "Regla": "No borrar si viene vacio; se usa si Brand lo informa.",
-        },
+        metafield_row("Marca", "marca", rule="Se toma de la marca seleccionada; Brand no debe cambiarla."),
+        metafield_row("Codigo Modelo Color", "codigo_modelo_color", "id", rule="Se toma de Mod-Col y se usa como llave principal."),
+        metafield_row("Tipo", "tipo", appears="SI", rule="Se toma de Tipo de prenda y se pluraliza segun el diccionario web.", owner="Brand / Catalog Control Center"),
+        metafield_row("Guia de tallas", "guia_de_tallas", "page_reference", rule="La app la asigna por marca, clase, genero y tipo; Brand no la llena."),
+        metafield_row("Categoria", "categoria", rule="La app la deriva de Clase y del diccionario por sitio."),
+        metafield_row("Sub Categoria", "sub_categoria", rule="La app la deriva del tipo de prenda normalizado."),
+        metafield_row("Nombre corto", "nombre_corto", rule="La app lo deriva de Nombre de Producto."),
+        metafield_row("Descripcion corta", "descripcion_corta", rule="La app la deriva de Descripcion."),
+        metafield_row("Genero", "genero", rule="La app normaliza el Genero informado y ARTI."),
+        metafield_row("Grupo Color", "grupo_color", rule="La app lo obtiene del color web/filtro y sus equivalencias."),
+        metafield_row("Color Forus", "color_forus", rule="La app lo obtiene del color web/filtro; no usa el codigo de color."),
+        metafield_row("Siblings", "siblings", rule="La app relaciona automaticamente los colores del mismo modelo."),
+        metafield_row("Siblings color", "siblings_color", rule="La app lo genera con el color visible del producto."),
+        metafield_row("Materialidad", "materialidad", appears="SI", rule="Se toma de Materiales sin borrar valores si el input viene vacio.", owner="Brand / Catalog Control Center"),
     ]
+    if "Tecnologia" in profile.get("extra_columns", []):
+        common.append(
+            metafield_row(
+                "Tecnologia",
+                "tecnologia",
+                profile.get("technology_type", "single_line_text_field"),
+                appears="SI",
+                rule="Brand informa nombres separados por | cuando hay mas de uno; la app normaliza el valor segun el sitio.",
+                owner="Brand / Catalog Control Center",
+            )
+        )
     if brand_key == "COLUMBIA":
+        common.append(
+            metafield_row(
+                "Logo",
+                "logo",
+                "list.metaobject_reference",
+                rule="La app resuelve los GID desde Tecnologia; Brand nunca llena logos ni GID.",
+            )
+        )
+    if profile.get("site_profile") in {"HushPuppies.pe", "Rockford.pe"}:
+        common.append(metafield_row("Logo", "logo", rule="Campo tecnico del sitio; Brand no lo llena y un vacio no borra el valor actual."))
+    if "Pais de fabricacion" in profile.get("extra_columns", []):
+        common.append(
+            metafield_row(
+                "Pais de Fabricacion",
+                "pais_de_fabricacion",
+                appears="SI",
+                rule="Se toma del input cuando Brand lo conoce; vacio no borra el valor existente.",
+                owner="Brand",
+            )
+        )
+    if "Categoria de Tecnologia" in profile.get("extra_columns", []):
         common.extend(
             [
-                {
-                    "Nombre visible": "Tecnologia",
-                    "Namespace": "custom",
-                    "Key": "tecnologia",
-                    "Tipo de dato": "list.single_line_text_field",
-                    "Responsable": "Brand / Catalog Control Center",
-                    "Aparece en input": "SI",
-                    "Regla": "Separar por | o coma; se normaliza a nombres permitidos.",
-                },
-                {
-                    "Nombre visible": "Logo",
-                    "Namespace": "custom",
-                    "Key": "logo",
-                    "Tipo de dato": "list.metaobject_reference",
-                    "Responsable": "Catalog Control Center",
-                    "Aparece en input": "NO",
-                    "Regla": "Se resuelve desde tecnologias detectadas; no pedir GID a Brand.",
-                },
+                metafield_row("Categoria de Tecnologia", "categoria_de_tecnologia", appears="SI", rule="Clasificacion comercial de la tecnologia Hush Puppies si aplica.", owner="Brand"),
+                metafield_row("Estilo", "estilo", appears="SI", rule="Estilo comercial Hush Puppies si aplica; vacio no borra el valor existente.", owner="Brand"),
             ]
         )
-    if brand_key in {"HUSH PUPPIES", "VANS", "ROCKFORD"}:
-        common.append(
-            {
-                "Nombre visible": "Composicion",
-                "Namespace": "custom",
-                "Key": "composicion",
-                "Tipo de dato": "multi_line_text_field",
-                "Responsable": "Brand",
-                "Aparece en input": "SI",
-                "Regla": "Se usa para informacion comercial y body si corresponde.",
-            }
+    if profile.get("site_profile") == "Vans.pe":
+        common.extend(
+            [
+                metafield_row("Composicion", "composicion", "multi_line_text_field", appears="SI", rule="Se toma de Materiales y tambien alimenta el Body HTML.", owner="Brand / Catalog Control Center"),
+                metafield_row("Codigo de referencia", "codigo_de_referencia", appears="SI", rule="Referencia comercial Vans si existe; vacio no borra el valor actual.", owner="Brand"),
+                metafield_row("Productos relacionados", "productos_relacionados", rule="La app conserva o genera relaciones; Brand no llena IDs ni referencias."),
+                metafield_row("Sibling", "sibling", rule="La app conserva o genera la relacion; Brand no la llena."),
+            ]
         )
     return pd.DataFrame(common)
 
@@ -1643,10 +1757,10 @@ def commercial_input_columns_for_brand(brand_name):
         "Caracteristicas",
         "Materiales",
         "Cuidados",
-        "Tecnologia",
-        "Tags adicionales",
-        "Fecha publicacion",
     ]
+    profile = commercial_input_profile_for_brand(brand_name)
+    base_columns.extend(profile.get("extra_columns", []))
+    base_columns.extend(["Tags adicionales", "Fecha publicacion"])
     site_columns = [publication_column_for_site(site["site_label"]) for site in sites_for_commercial_brand(brand_name)]
     return base_columns + site_columns
 
@@ -1654,6 +1768,7 @@ def commercial_input_columns_for_brand(brand_name):
 def _commercial_values_rows(brand_name):
     sites = sites_for_commercial_brand(brand_name)
     allowed_classes = commercial_allowed_classes_for_brand(brand_name)
+    profile = commercial_input_profile_for_brand(brand_name)
     values = []
     for item in ["Hombre", "Mujer", "Unisex", "Nino", "Nina", "Bebe"]:
         values.append({"Lista": "Genero", "Valor": item, "Marca": brand_name, "Observacion": ""})
@@ -1670,8 +1785,18 @@ def _commercial_values_rows(brand_name):
         guide = clean_value(rule.get("guide"))
         if guide:
             values.append({"Lista": "Guia de talla", "Valor": guide, "Marca": rule.get("brand", ""), "Observacion": rule.get("family", "")})
-    for item in ["Omni-Tech", "Omni-Heat Infinity", "Omni-Shield", "Omni-Grip", "OutDry", "Techlite", "Thermarator"]:
-        values.append({"Lista": "Tecnologia", "Valor": item, "Marca": "Columbia", "Observacion": "Solo si aplica."})
+    if normalize_brand_name(brand_name) == "COLUMBIA":
+        for item in ["Omni-Tech", "Omni-Heat Infinity", "Omni-Shield", "Omni-Grip", "OutDry", "Techlite", "Thermarator"]:
+            values.append({"Lista": "Tecnologia", "Valor": item, "Marca": "Columbia", "Observacion": "Solo si aplica."})
+    elif profile.get("technology_example"):
+        values.append(
+            {
+                "Lista": "Tecnologia",
+                "Valor": profile["technology_example"].split("|")[0],
+                "Marca": brand_name,
+                "Observacion": "Ejemplo comercial; no limita otros valores validos del sitio.",
+            }
+        )
     for site in sites:
         values.append({"Lista": "Sitios asociados", "Valor": site["site_label"], "Marca": brand_name, "Observacion": publication_column_for_site(site["site_label"])})
     return pd.DataFrame(values)
@@ -1680,9 +1805,13 @@ def _commercial_values_rows(brand_name):
 def _commercial_dictionary_rows(brand_name):
     columns = commercial_input_columns_for_brand(brand_name)
     allowed_classes = commercial_allowed_classes_for_brand(brand_name)
+    profile = commercial_input_profile_for_brand(brand_name)
+    auto_tag_fields = "marca, Mod-Col, tipo de prenda, color y clase"
+    if "Tecnologia" in columns:
+        auto_tag_fields += ", ademas de las tecnologias informadas"
     auto_tags_note = (
         "La app agrega automaticamente los tags tradicionales desde ARTI/BigQuery/Shopify: "
-        "marca, Mod-Col, tipo de prenda, color, clase y tecnologias. Brand no debe escribirlos aqui."
+        f"{auto_tag_fields}. Brand no debe escribirlos aqui."
     )
     descriptions = {
         "Mod-Col": "Codigo modelo-color real. Es la llave principal del producto.",
@@ -1697,7 +1826,15 @@ def _commercial_dictionary_rows(brand_name):
         "Caracteristicas": "Beneficios o bullets separados por |.",
         "Materiales": "Materiales/composicion separados por |. Se usa para Body HTML y metafields si aplica.",
         "Cuidados": "Cuidados separados por |. Se usa para Body HTML.",
-        "Tecnologia": "Tecnologias separadas solo por |. La app resuelve custom.tecnologia y custom.logo.",
+        "Tecnologia": (
+            "Tecnologias separadas solo por |. La app actualiza custom.tecnologia y, para Columbia, resuelve tambien los logos sin pedir GID al Brand."
+            if profile.get("technology_type") == "list.single_line_text_field"
+            else "Tecnologia comercial del producto. Si excepcionalmente hay mas de una, separarlas solo por |."
+        ),
+        "Categoria de Tecnologia": "Clasificacion comercial de la tecnologia Hush Puppies. Informar un solo valor si aplica.",
+        "Estilo": "Estilo comercial Hush Puppies si aplica. Vacio no borra el valor actual de Shopify.",
+        "Pais de fabricacion": "Pais de fabricacion si la marca dispone del dato. Vacio no borra Shopify.",
+        "Codigo de referencia": "Codigo o referencia comercial Vans si existe. Vacio no borra Shopify.",
         "Tags adicionales": f"Solo tags comerciales adicionales separados por |. {auto_tags_note}",
         "Fecha publicacion": "Fecha sugerida si aplica. Puede quedar vacia.",
     }
@@ -1714,7 +1851,11 @@ def _commercial_dictionary_rows(brand_name):
         "Caracteristicas": "Impermeable|Respirable|Capucha ajustable",
         "Materiales": "Exterior: 100% poliester|Forro: malla respirable",
         "Cuidados": "Lavar con agua fria|No usar blanqueador",
-        "Tecnologia": "Omni-Tech|Omni-Shield",
+        "Tecnologia": profile.get("technology_example", ""),
+        "Categoria de Tecnologia": "Confort",
+        "Estilo": "Urbano",
+        "Pais de fabricacion": "Vietnam",
+        "Codigo de referencia": "VN000Y7HBKA",
         "Tags adicionales": "Outdoor|Uso diario|Nueva temporada",
         "Fecha publicacion": "2026-08-01 09:00",
     }
@@ -1751,11 +1892,19 @@ def _commercial_dictionary_rows(brand_name):
                     "Materiales": "Product.bodyHtml/custom.materialidad",
                     "Cuidados": "Product.bodyHtml",
                     "Tecnologia": "custom.tecnologia/custom.logo",
+                    "Categoria de Tecnologia": "custom.categoria_de_tecnologia",
+                    "Estilo": "custom.estilo",
+                    "Pais de fabricacion": "custom.pais_de_fabricacion",
+                    "Codigo de referencia": "custom.codigo_de_referencia",
                     "Tipo de prenda": "Product.productType/custom.tipo",
                 }.get(column, "Publication" if is_site else "Auxiliar"),
-                "Namespace": "custom" if column in {"Tecnologia", "Tipo de prenda", "Materiales"} else "",
+                "Namespace": "custom" if column in {"Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion", "Codigo de referencia", "Tipo de prenda", "Materiales"} else "",
                 "Key": {
                     "Tecnologia": "tecnologia/logo",
+                    "Categoria de Tecnologia": "categoria_de_tecnologia",
+                    "Estilo": "estilo",
+                    "Pais de fabricacion": "pais_de_fabricacion",
+                    "Codigo de referencia": "codigo_de_referencia",
                     "Tipo de prenda": "tipo",
                     "Materiales": "materialidad",
                 }.get(column, ""),
@@ -1767,9 +1916,10 @@ def _commercial_dictionary_rows(brand_name):
 
 
 def _commercial_examples_df(brand_name):
-    brand_label = brand_display_name(brand_name, brand_name)
+    brand_label = commercial_brand_display_name(brand_name)
     columns = commercial_input_columns_for_brand(brand_name)
     allowed_classes = commercial_allowed_classes_for_brand(brand_name)
+    profile = commercial_input_profile_for_brand(brand_name)
     site_values = {column: "NO" for column in columns if column.startswith("PUBLICAR_")}
     if site_values:
         first_site_col = next(iter(site_values))
@@ -1794,8 +1944,12 @@ def _commercial_examples_df(brand_name):
                 "Tecnologia": (
                     "Techlite" if class_name == "Calzado" and normalize_brand_name(brand_name) == "COLUMBIA"
                     else "Omni-Shield" if class_name == "Vestuario" and normalize_brand_name(brand_name) == "COLUMBIA"
-                    else ""
+                    else profile.get("technology_example", "")
                 ),
+                "Categoria de Tecnologia": "Confort" if profile.get("site_profile") == "HushPuppies.pe" else "",
+                "Estilo": "Urbano" if profile.get("site_profile") == "HushPuppies.pe" else "",
+                "Pais de fabricacion": "Vietnam",
+                "Codigo de referencia": "VN000Y7HBKA" if profile.get("site_profile") == "Vans.pe" else "",
                 "Tags adicionales": example.get("Tags", ""),
                 "Fecha publicacion": "",
                 **site_values,
@@ -1807,7 +1961,7 @@ def _commercial_examples_df(brand_name):
 def _commercial_input_blank_df(brand_name, rows=100):
     columns = commercial_input_columns_for_brand(brand_name)
     df = pd.DataFrame([{column: "" for column in columns} for _ in range(rows)])
-    df["Marca"] = brand_display_name(brand_name, brand_name)
+    df["Marca"] = commercial_brand_display_name(brand_name)
     for column in columns:
         if column.startswith("PUBLICAR_"):
             df[column] = "NO"
@@ -1820,7 +1974,8 @@ def build_brand_commercial_input_workbook(brand_name):
     from openpyxl.worksheet.datavalidation import DataValidation
     from openpyxl.utils import get_column_letter
 
-    brand_label = brand_display_name(brand_name, brand_name)
+    brand_label = commercial_brand_display_name(brand_name)
+    profile = commercial_input_profile_for_brand(brand_label)
     sites = sites_for_commercial_brand(brand_label)
     columns = commercial_input_columns_for_brand(brand_label)
     site_columns = [column for column in columns if column.startswith("PUBLICAR_")]
@@ -1828,20 +1983,40 @@ def build_brand_commercial_input_workbook(brand_name):
     dictionary_df = _commercial_dictionary_rows(brand_label)
     values_df = _commercial_values_rows(brand_label)
     examples_df = _commercial_examples_df(brand_label)
+    separated_fields = [
+        field
+        for field in ["Caracteristicas", "Materiales", "Cuidados", "Tecnologia", "Tags adicionales"]
+        if field in columns
+    ]
+    separated_fields_text = ", ".join(separated_fields)
+    automatic_tag_fields = "marca, Mod-Col, tipo de prenda, color y clase"
+    if "Tecnologia" in columns:
+        automatic_tag_fields += ", ademas de las tecnologias informadas"
     guide_rows = [
         {"Seccion": "Resumen", "Campo": "Marca", "Detalle": brand_label},
         {"Seccion": "Resumen", "Campo": "Version formato", "Detalle": COMMERCIAL_INPUT_TEMPLATE_VERSION},
+        {"Seccion": "Resumen", "Campo": "Sitio Shopify", "Detalle": profile.get("site_profile", "")},
+        {
+            "Seccion": "Resumen",
+            "Campo": "Campos adaptados",
+            "Detalle": (
+                f"Columnas comerciales adicionales para {brand_label}: "
+                f"{', '.join(profile.get('extra_columns', [])) or 'ninguna'}."
+            ),
+        },
         {"Seccion": "Regla clave", "Campo": "Maximo de hojas", "Detalle": "El archivo operativo usa solo INPUT_COMERCIAL, GUIA y DICCIONARIO."},
         {"Seccion": "Regla clave", "Campo": "Tallas", "Detalle": "Brand no llena tallas. La app crea variantes desde BigQuery/ARTI y excluye tallas invalidas."},
         {"Seccion": "Regla clave", "Campo": "Clases permitidas", "Detalle": f"Para {brand_label} solo se permiten: {', '.join(allowed_classes)}."},
         {"Seccion": "Regla clave", "Campo": "Body HTML", "Detalle": "Brand no llena Body HTML. La app lo genera desde Descripcion, Caracteristicas, Materiales y Cuidados."},
-        {"Seccion": "Regla clave", "Campo": "Tags tradicionales", "Detalle": "Brand no llena tags tradicionales. La app agrega marca, Mod-Col, tipo de prenda, color, clase y tecnologias automaticamente."},
+        {"Seccion": "Regla clave", "Campo": "Metafields automaticos", "Detalle": "Brand no llena siblings, logos/GID, guia de tallas, categoria, subcategoria, grupo color ni relaciones. La app los calcula o conserva."},
+        {"Seccion": "Regla clave", "Campo": "Tecnologia", "Detalle": "El Brand informa nombres comerciales. Para Columbia la app resuelve custom.tecnologia y los GID de custom.logo; para los demas sitios usa la definicion propia del metafield."},
+        {"Seccion": "Regla clave", "Campo": "Tags tradicionales", "Detalle": f"Brand no llena tags tradicionales. La app agrega automaticamente {automatic_tag_fields}."},
         {"Seccion": "Regla clave", "Campo": "Tags adicionales", "Detalle": "Brand solo completa tags comerciales extra en Tags adicionales, separados por |."},
         {"Seccion": "Publicacion", "Campo": "Columnas PUBLICAR_*", "Detalle": "Usar SI para publicar/considerar ese sitio y NO para mantener apagado/no publicar en ese sitio."},
         {"Seccion": "Publicacion", "Campo": "Carga completa", "Detalle": "La app debe respetar las columnas SI/NO por sitio aunque el input incluya todos los modelos."},
-        {"Seccion": "Separadores", "Campo": "Listas", "Detalle": "Usar solamente | para separar beneficios, materiales, cuidados, tecnologias y tags adicionales. No usar comas, punto y coma ni saltos de linea como separador."},
+        {"Seccion": "Separadores", "Campo": "Listas", "Detalle": f"Usar solamente | en: {separated_fields_text}. No usar comas, punto y coma ni saltos de linea como separador."},
         {"Seccion": "Separadores", "Campo": "Que hace la app", "Detalle": "El brand escribe valores simples separados por |. Catalog Control Center los convierte internamente en bullets para Body HTML y en listas compatibles con Shopify."},
-        {"Seccion": "Automatico", "Campo": "Informacion fuente", "Detalle": "La app completa o valida Cod Mod Col, tipo de prenda, color, tecnologias, clase y reglas web desde sus fuentes."},
+        {"Seccion": "Automatico", "Campo": "Informacion fuente", "Detalle": "La app completa o valida Cod Mod Col, tipo de prenda, color, clase y reglas web desde sus fuentes. La guia de tallas tambien es automatica."},
     ]
     sites_df = pd.DataFrame(
         [
@@ -1913,7 +2088,7 @@ def build_brand_commercial_input_workbook(brand_name):
         guide_ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=guide_last_column)
         guide_ws.cell(2, 1).value = (
             "Cada fila es un ejemplo listo para copiar: una celda por campo. "
-            "Usa solamente | para separar caracteristicas, materiales, cuidados, tecnologias y tags adicionales."
+            f"Usa solamente | para separar: {separated_fields_text}."
         )
         guide_header_row = 5
         guide_first_example_row = guide_header_row + 1
@@ -2077,7 +2252,7 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
     df = repair_mojibake_dataframe(df)
     if df.empty:
         return df, pd.DataFrame([{"Fila": "", "Campo": "Archivo", "Estado": "Bloqueado", "Mensaje": "El input no tiene filas reales."}]), pd.DataFrame()
-    brand_label = brand_display_name(brand_name, brand_name)
+    brand_label = commercial_brand_display_name(brand_name)
     expected_columns = commercial_input_columns_for_brand(brand_label)
     site_columns = [column for column in expected_columns if column.startswith("PUBLICAR_")]
     allowed_classes = commercial_allowed_classes_for_brand(brand_label)
@@ -2088,6 +2263,9 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
         "Nombre de Producto": ["Nombre de Producto", "Nombre web o Title", "Title", "Titulo", "Título", "Nombre Producto"],
         "Materiales": ["Materiales", "Materiales o composicion", "Materiales o composición", "Composicion", "Composición"],
         "Tecnologia": ["Tecnologia", "Tecnología", "Tecnologias", "Tecnologías", "Technology"],
+        "Categoria de Tecnologia": ["Categoria de Tecnologia", "Categoría de Tecnología", "Categoria Tecnologia", "Technology Category"],
+        "Pais de fabricacion": ["Pais de fabricacion", "País de fabricación", "Pais Fabricacion", "Country of origin", "Country"],
+        "Codigo de referencia": ["Codigo de referencia", "Código de referencia", "Codigo referencia", "Reference code", "Referencia"],
         "Tags adicionales": ["Tags adicionales", "Tags sugeridos", "Tags extra", "Tags"],
         "Color Comercial": ["Color Comercial", "Color comercial", "Color Comercial ", "Color"],
         "Color web/filtro": ["Color web/filtro", "Color Web", "Color Forus", "Color visible", "Color filtro"],
@@ -3944,6 +4122,7 @@ TECHNOLOGY_LOGO_METAOBJECT_GIDS = {
 
 TECHNOLOGY_SOURCE_COLUMNS = [
     "Metafield: custom.tecnologia [list.single_line_text_field]",
+    "Metafield: custom.tecnologia [single_line_text_field]",
     "Tecnologias ",
     "Tecnologias",
     "Tecnología",
@@ -4038,7 +4217,7 @@ def _technology_text_from_records(*records):
 def _explicit_technology_items(*records):
     from generate_columbia_matrixify import split_technology_items
 
-    explicit_columns = TECHNOLOGY_SOURCE_COLUMNS[:7]
+    explicit_columns = TECHNOLOGY_SOURCE_COLUMNS[:8]
     items = []
     seen = set()
     for record in records:
@@ -4857,7 +5036,11 @@ def build_shopify_update_preview(
                 }
             )
         elif operation == "technologies":
-            from generate_columbia_matrixify import format_technology
+            from generate_columbia_matrixify import (
+                format_technology_for_site,
+                site_uses_technology_logo_metaobjects,
+                technology_metafield_column,
+            )
 
             technology_names, logo_refs = detect_product_technologies(row, product, brand_config)
             if not technology_names:
@@ -4870,13 +5053,30 @@ def build_shopify_update_preview(
                     }
                 )
                 continue
-            technology_value = format_technology(", ".join(technology_names))
-            logo_value = ", ".join(dict.fromkeys(clean_value(value) for value in logo_refs if clean_value(value)))
-            current_technology = clean_value(product.get("Metafield: custom.tecnologia [list.single_line_text_field]"))
-            current_logo = clean_value(product.get("Metafield: custom.logo [list.metaobject_reference]"))
-            logo_resolved, logo_missing = _validate_logo_metaobject_refs(shopify_config, logo_value)
+            technology_column = technology_metafield_column(brand_config)
+            technology_type = "list.single_line_text_field" if "[list.single_line_text_field]" in technology_column else "single_line_text_field"
+            uses_logo_metaobjects = site_uses_technology_logo_metaobjects(brand_config)
+            technology_value = format_technology_for_site(" | ".join(technology_names), brand_config)
+            logo_value = (
+                ", ".join(dict.fromkeys(clean_value(value) for value in logo_refs if clean_value(value)))
+                if uses_logo_metaobjects
+                else ""
+            )
+            current_technology = clean_value(
+                product.get(technology_column)
+                or product.get("Metafield: custom.tecnologia [list.single_line_text_field]")
+                or product.get("Metafield: custom.tecnologia [single_line_text_field]")
+            )
+            current_logo = clean_value(product.get("Metafield: custom.logo [list.metaobject_reference]")) if uses_logo_metaobjects else ""
+            logo_resolved, logo_missing = (
+                _validate_logo_metaobject_refs(shopify_config, logo_value)
+                if uses_logo_metaobjects
+                else ([], [])
+            )
             status = "OK"
-            observation = f"{len(technology_names)} tecnologia(s), {len(_split_tags(logo_value))} logo(s)"
+            observation = f"{len(technology_names)} tecnologia(s)"
+            if uses_logo_metaobjects:
+                observation += f", {len(_split_tags(logo_value))} logo(s)"
             if logo_missing:
                 status = "PARCIAL"
                 observation = f"{observation}. Faltan logo/metaobject: {', '.join(logo_missing)}"
@@ -4891,26 +5091,31 @@ def build_shopify_update_preview(
                 )
             elif logo_value and shopify_config:
                 observation = f"{observation}. Logos validados: {len(logo_resolved)}"
-            rows.append(
-                {
+            preview_row = {
                     "Accion": "Actualizar",
                     "Sitio": brand_config["site_label"],
                     "Operacion": "technologies",
                     "Mod-Col": product_key,
                     "Product ID": product_id,
                     "Handle": product.get("Handle"),
-                    "Campo": "Metafield: custom.tecnologia + Metafield: custom.logo",
-                    "Valor actual": f"tecnologia: {current_technology} | logo: {current_logo}",
+                    "Campo": "Metafield: custom.tecnologia + Metafield: custom.logo" if uses_logo_metaobjects else "Metafield: custom.tecnologia",
+                    "Valor actual": f"tecnologia: {current_technology} | logo: {current_logo}" if uses_logo_metaobjects else current_technology,
                     "Valor nuevo": technology_value,
-                    "Valor nuevo logos": logo_value,
-                    "Logos validados": ", ".join(logo_resolved),
-                    "Logos faltantes": ", ".join(logo_missing),
-                    "Metafield: custom.tecnologia [list.single_line_text_field]": technology_value,
-                    "Metafield: custom.logo [list.metaobject_reference]": logo_value,
+                    "Tipo tecnologia": technology_type,
                     "Estado": status,
                     "Observacion": observation,
                 }
-            )
+            preview_row[technology_column] = technology_value
+            if uses_logo_metaobjects:
+                preview_row.update(
+                    {
+                        "Valor nuevo logos": logo_value,
+                        "Logos validados": ", ".join(logo_resolved),
+                        "Logos faltantes": ", ".join(logo_missing),
+                        "Metafield: custom.logo [list.metaobject_reference]": logo_value,
+                    }
+                )
+            rows.append(preview_row)
         elif operation == "photos":
             current_images = clean_value(product.get("Image Src"))
             if only_missing_images and current_images:
@@ -5069,11 +5274,31 @@ def apply_shopify_preview(shopify_config, preview_df, progress_callback=None):
                     alt_text=clean_value(row.get("Handle")) or clean_value(row.get("Mod-Col")),
                 )
             elif operation == "technologies":
-                technology_value = clean_value(
-                    row.get("Valor nuevo") or row.get("Metafield: custom.tecnologia [list.single_line_text_field]")
+                from generate_columbia_matrixify import (
+                    site_uses_technology_logo_metaobjects,
+                    technology_metafield_column,
                 )
-                logo_value = clean_value(
-                    row.get("Valor nuevo logos") or row.get("Metafield: custom.logo [list.metaobject_reference]")
+
+                technology_column = technology_metafield_column(brand_config)
+                technology_type = clean_value(row.get("Tipo tecnologia")) or (
+                    "list.single_line_text_field"
+                    if "[list.single_line_text_field]" in technology_column
+                    else "single_line_text_field"
+                )
+                technology_value = clean_value(
+                    row.get("Valor nuevo")
+                    or row.get(technology_column)
+                    or row.get("Metafield: custom.tecnologia [list.single_line_text_field]")
+                    or row.get("Metafield: custom.tecnologia [single_line_text_field]")
+                )
+                uses_logo_metaobjects = site_uses_technology_logo_metaobjects(brand_config)
+                logo_value = (
+                    clean_value(
+                        row.get("Valor nuevo logos")
+                        or row.get("Metafield: custom.logo [list.metaobject_reference]")
+                    )
+                    if uses_logo_metaobjects
+                    else ""
                 )
                 updated_parts = []
                 failed_parts = []
@@ -5086,8 +5311,12 @@ def apply_shopify_preview(shopify_config, preview_df, progress_callback=None):
                                     "ownerId": product_id,
                                     "namespace": "custom",
                                     "key": "tecnologia",
-                                    "type": "list.single_line_text_field",
-                                    "value": _list_text_metafield_value(technology_value),
+                                    "type": technology_type,
+                                    "value": (
+                                        _list_text_metafield_value(technology_value)
+                                        if technology_type == "list.single_line_text_field"
+                                        else technology_value
+                                    ),
                                 }
                             ],
                         )
@@ -14412,7 +14641,12 @@ api_version = "{DEFAULT_API_VERSION}"
                     if update_operation == "photos":
                         st.info("REPLACE elimina las fotos actuales del producto y sube las 10 URLs nuevas. MERGE agrega las URLs nuevas sin borrar las actuales.")
                     if update_operation == "technologies":
-                        st.info("Se actualizaran los metacampos custom.tecnologia y custom.logo. Los logos se resuelven contra los metaobjetos definidos en Shopify.")
+                        from generate_columbia_matrixify import site_uses_technology_logo_metaobjects
+
+                        if site_uses_technology_logo_metaobjects(brand_config):
+                            st.info("Se actualizaran custom.tecnologia y custom.logo. Los logos se resuelven contra los metaobjetos definidos en Columbia.")
+                        else:
+                            st.info("Se actualizara custom.tecnologia con el tipo definido para este sitio. No se enviaran logos de Columbia.")
                     if update_operation == "size_guides":
                         st.warning(
                             "Las guías de talla son page_reference. La vista previa y el Excel quedan listos, "

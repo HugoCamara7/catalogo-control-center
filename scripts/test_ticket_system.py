@@ -1,3 +1,4 @@
+import io
 import sys
 import shutil
 import unittest
@@ -111,6 +112,20 @@ class CatalogTicketTests(unittest.TestCase):
         self.assertEqual(ticket["summary"]["variants"], 7)
         self.assertEqual(len(ticket["versions"]), 1)
 
+    def test_03b_ticket_accepts_streamlit_bytesio_attachments(self):
+        ticket = self.service.create_ticket(
+            self.brand,
+            brand="Columbia",
+            sites=["Columbia.pe"],
+            filename="input_streamlit.xlsx",
+            input_bytes=io.BytesIO(b"input-streamlit"),
+            report_bytes=io.BytesIO(b"report-streamlit"),
+            summary={"products": 1, "blocked": 0},
+        )
+        version = ticket["versions"][0]
+        self.assertEqual(self.store.get_artifact(version["input_path"]), b"input-streamlit")
+        self.assertEqual(self.store.get_artifact(version["report_path"]), b"report-streamlit")
+
     def test_04_duplicate_ticket_is_prevented(self):
         self.create_ticket("duplicate")
         with self.assertRaises(TicketConflictError):
@@ -138,11 +153,11 @@ class CatalogTicketTests(unittest.TestCase):
         reassigned = self.service.assign(self.admin, ticket["code"], self.operator_two["user"])
         self.assertEqual(reassigned["assignee"], self.operator_two["user"])
 
-    def test_09_second_operator_cannot_steal_ticket(self):
+    def test_09_second_operator_can_reassign_ticket(self):
         ticket = self.create_ticket()
         self.service.assign(self.operator, ticket["code"], self.operator["user"])
-        with self.assertRaises(TicketConflictError):
-            self.service.assign(self.operator_two, ticket["code"], self.operator_two["user"])
+        reassigned = self.service.assign(self.operator_two, ticket["code"], self.operator_two["user"])
+        self.assertEqual(reassigned["assignee"], self.operator_two["user"])
 
     def test_10_request_correction_records_structured_observation(self):
         ticket = self.create_ticket()

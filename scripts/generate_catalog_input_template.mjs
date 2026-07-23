@@ -1,185 +1,321 @@
-import fs from "node:fs/promises";
-import path from "node:path";
+from pathlib import Path
+import re
 
-const artifactToolModule = process.env.ARTIFACT_TOOL_PATH || "@oai/artifact-tool";
-const { SpreadsheetFile, Workbook } = await import(artifactToolModule);
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
-const outputDir = process.argv[2] || "outputs";
-const outputName = process.argv[3] || process.env.CATALOG_TEMPLATE_OUTPUT_NAME || "formato_input_catalog_control_center.xlsx";
-const outputPath = path.join(outputDir, outputName);
 
-const inputColumns = [
-  ["Mod-Col", "Identificacion", "SI", "Codigo modelo-color. Ej: 2092991-NRY", "2092991-NRY"],
-  ["Codigo modelo", "Campo tecnico autogenerado", "NO", "La app lo puede obtener desde Mod-Col/ARTI. No lo llena la marca.", "2092991"],
-  ["Codigo color", "Campo tecnico autogenerado", "NO", "La app lo puede obtener desde Mod-Col/ARTI. No lo llena la marca.", "NRY"],
-  ["Marca", "Marca y clasificacion", "SI", "Marca destino.", "Columbia"],
-  ["Genero", "Marca y clasificacion", "SI", "Hombre, Mujer, Unisex, Nino, Nina.", "Mujer"],
-  ["Categoria", "Marca y clasificacion", "SI", "Calzado, Vestuario o Accesorios.", "Vestuario"],
-  ["Sub Categoria", "Marca y clasificacion", "NO", "Subcategoria comercial.", "Casacas"],
-  ["Tipo de prenda", "Marca y clasificacion", "SI", "Tipo pluralizado para Shopify.", "Casacas"],
-  ["Color web", "Marca y clasificacion", "SI", "Nombre visible del color.", "Negro"],
-  ["Title", "Descripcion y contenido", "SI", "Nombre comercial final.", "Casaca Impermeable Mujer Arcadia II"],
-  ["Body HTML", "Descripcion y contenido", "NO", "HTML final si ya viene armado.", ""],
-  ["Descripcion", "Descripcion y contenido", "NO", "Descripcion base.", "Casaca impermeable y respirable para lluvia."],
-  ["Caracteristicas", "Descripcion y contenido", "NO", "Beneficios principales.", "Costuras selladas; capucha ajustable"],
-  ["Materiales", "Descripcion y contenido", "NO", "Composicion/materialidad.", "100% poliester"],
-  ["Cuidados", "Descripcion y contenido", "NO", "Instrucciones de cuidado.", "Lavar con agua fria; no usar lejia"],
-  ["Talla", "Campo tecnico autogenerado", "SI", "La app la obtiene desde BigQuery/ARTI. No inventar ni cargar tallas teoricas.", "M"],
-  ["SKU", "Campo tecnico autogenerado", "SI", "La app lo obtiene desde BigQuery/ARTI. Obligatorio por variante.", "5327440"],
-  ["EAN", "Campo tecnico autogenerado", "NO", "La app lo obtiene desde BigQuery/ARTI si existe.", "7800000000000"],
-  ["Precio", "Campo tecnico autogenerado", "SI", "La app lo obtiene desde Shopify/ARTI si existe; la marca solo completa si se solicita.", "299.90"],
-  ["Compare At Price", "Campo tecnico autogenerado", "NO", "Precio antes si aplica desde fuente comercial/ARTI.", ""],
-  ["Stock disponible", "Campo tecnico autogenerado", "NO", "Stock eComm referencial desde BigQuery.", "12"],
-  ["Tecnologia", "Tecnologias y metacampos", "NO", "Separar por coma.", "Omni-Tech, Omni-Shield"],
-  ["Logo tecnologia", "Tecnologias y metacampos", "NO", "Nombre o GID de metaobjeto.", "Omni Tech, Omni Shield"],
-  ["Guia de tallas", "Campo tecnico autogenerado", "NO", "La app la resuelve por categoria, tipo de prenda y genero.", "CLB_MUJER_TOPS"],
-  ["Tags sugeridos", "Campo tecnico autogenerado", "NO", "La app los sugiere con marca, categoria, genero, tipo, tecnologia y Mod-Col.", "Columbia, Vestuario, Mujer, Casacas"],
-  ["Handle sugerido", "Campo tecnico autogenerado", "NO", "No llenar manualmente. Formula: tipo de prenda + genero + marca + Mod-Col.", "casacas-mujer-columbia-2092991-nry"],
-  ["SEO Title", "SEO y tags", "NO", "Titulo SEO opcional.", ""],
-  ["SEO Description", "SEO y tags", "NO", "Descripcion SEO opcional.", ""],
-  ["Fecha publicacion", "Programacion", "NO", "yyyy-mm-dd hh:mm.", ""],
-  ["Observaciones", "Control", "NO", "Notas de revision.", "Ejemplo referencial, no cargar sin revisar."],
-];
+ROOT = Path(__file__).resolve().parents[1]
 
-const productTypes = [
-  ["Valor recibido", "Normalizado", "Singular", "Plural Shopify", "Categoria", "Subcategoria", "Familia guia", "Puede talla unica", "Ejemplo"],
-  ["zapatilla, footwear, sneaker", "Zapatilla", "Zapatilla", "Zapatillas", "Calzado", "Zapatillas", "Calzado", "NO", "Zapatilla Hombre Konos"],
-  ["casaca, chaqueta, jacket", "Casaca", "Casaca", "Casacas", "Vestuario", "Casacas", "Vestuario TOPS", "NO", "Casaca Impermeable Mujer"],
-  ["polo, camiseta, t-shirt", "Polo", "Polo", "Polos", "Vestuario", "Polos", "Vestuario TOPS", "NO", "Polo Hombre"],
-  ["pantalon, pants, jogger", "Pantalon", "Pantalon", "Pantalones", "Vestuario", "Pantalones", "Vestuario BOTTOMS", "NO", "Pantalon Trekking Mujer"],
-  ["short, shorts, bermuda, falda", "Short", "Short", "Shorts", "Vestuario", "Shorts", "Vestuario BOTTOMS", "NO", "Short Hombre Outdoor"],
-  ["gorro, beanie, jockey", "Gorro", "Gorro", "Gorros", "Accesorios", "Gorros", "Accesorios", "SI", "Gorro Cachalot"],
-  ["mochila, bolso, cartera, bag", "Bolso", "Bolso", "Bolsos", "Accesorios", "Bolsos", "Accesorios", "SI", "Bolso Outdoor"],
-  ["slip on, slip-on", "Slip On", "Slip On", "Slip Ons", "Calzado", "Slip Ons", "Calzado", "NO", "Slip On Vans"],
-  ["crema renovadora, cleaner", "Crema renovadora", "Crema renovadora", "Cremas renovadoras", "Accesorios", "Cuidado", "Sin guia", "SI", "Crema renovadora"],
-];
+JOBS = [
+    {
+        "source": Path(r"C:\Users\hcamara\OneDrive - Peru Forus S.A\Documentos\Crear Vestuario 03-06-2026.xlsx"),
+        "output": ROOT / "outputs" / "INPUT_CREAR_VESTUARIO_03-06-2026.xlsx",
+        "category": "Vestuario",
+        "site": "Rockford.pe",
+    },
+    {
+        "source": Path(r"C:\Users\hcamara\OneDrive - Peru Forus S.A\Documentos\Crear Calzado Rockford 03-06-2026.xlsx"),
+        "output": ROOT / "outputs" / "INPUT_CREAR_CALZADO_ROCKFORD_03-06-2026.xlsx",
+        "category": "Calzado",
+        "site": "Rockford.pe",
+    },
+]
 
-const sizeGuides = [
-  ["Prioridad", "Marca", "Categoria", "Tipo prenda", "Genero", "Grupo edad", "Guia Shopify", "Familia", "Estado", "Regla"],
-  [100, "Columbia", "Calzado", "*", "Hombre", "Adulto", "CLB_HOMBRE_CALZADO", "Calzado", "Activo", "Marca + categoria + genero"],
-  [100, "Columbia", "Calzado", "*", "Mujer", "Adulto", "CLB_MUJER_CALZADO", "Calzado", "Activo", "Marca + categoria + genero"],
-  [95, "Columbia", "Vestuario", "Casacas, Polos, Polerones, Camisas, Blusas, Chalecos", "Mujer", "Adulto", "CLB_MUJER_TOPS", "Vestuario TOPS", "Activo", "Marca + categoria + genero + tipo TOPS"],
-  [95, "Columbia", "Vestuario", "Casacas, Polos, Polerones, Camisas, Blusas, Chalecos", "Hombre", "Adulto", "CLB_HOMBRE_TOPS", "Vestuario TOPS", "Activo", "Marca + categoria + genero + tipo TOPS"],
-  [95, "Columbia", "Vestuario", "Pantalones, Shorts, Bermudas, Faldas, Leggings, Joggers", "Mujer", "Adulto", "CLB_MUJER_BOTTOMS", "Vestuario BOTTOMS", "Activo", "Marca + categoria + genero + tipo BOTTOMS"],
-  [95, "Columbia", "Vestuario", "Pantalones, Shorts, Bermudas, Faldas, Leggings, Joggers", "Hombre", "Adulto", "CLB_HOMBRE_BOTTOMS", "Vestuario BOTTOMS", "Activo", "Marca + categoria + genero + tipo BOTTOMS"],
-  [60, "*", "Accesorios", "*", "*", "*", "", "Accesorios", "Revision", "No asignar guia automatica si no hay confianza"],
-];
+INPUT_COLUMNS = [
+    "Mod-Col",
+    "Marca",
+    "Handle Input",
+    "Title",
+    "Body HTML",
+    "Type",
+    "Color Comercial",
+    "Color Web",
+    "Tags",
+    "Metafield: custom.materialidad [single_line_text_field]",
+    "Metafield: custom.pais_de_fabricacion [single_line_text_field]",
+    "Metafield: custom.marca [single_line_text_field]",
+    "Metafield: custom.color_forus [single_line_text_field]",
+    "Metafield: custom.siblings_color [single_line_text_field]",
+    "Metafield: custom.grupo_color [single_line_text_field]",
+    "Metafield: custom.genero [single_line_text_field]",
+    "Metafield: custom.tipo [single_line_text_field]",
+    "Metafield: custom.descripcion_corta [single_line_text_field]",
+    "Metafield: custom.nombre_corto [single_line_text_field]",
+    "Metafield: custom.codigo_modelo_color [id]",
+    "Metafield: custom.sub_categoria [single_line_text_field]",
+    "Metafield: custom.categoria [single_line_text_field]",
+    "Metafield: custom.guia_de_tallas [page_reference]",
+    "Metafield: custom.tecnologia [list.single_line_text_field]",
+    "Caracteristicas",
+    "Material",
+    "Cuidado",
+]
 
-const categories = [
-  ["Categoria", "Subcategoria", "Familia", "Tipo prenda relacionado", "Genero permitido", "Grupo edad", "Guia esperada", "Estado", "Observaciones"],
-  ["Calzado", "Zapatillas", "Calzado", "Zapatillas", "Hombre, Mujer, Unisex, Nino, Nina", "Adulto/Ninos", "Guia calzado", "Activo", "Nunca talla unica automatica"],
-  ["Vestuario", "Casacas", "Vestuario TOPS", "Casacas", "Hombre, Mujer, Unisex", "Adulto/Ninos", "CLB_*_TOPS", "Activo", "Usar tallas reales de BigQuery"],
-  ["Vestuario", "Polos", "Vestuario TOPS", "Polos", "Hombre, Mujer, Unisex", "Adulto/Ninos", "CLB_*_TOPS", "Activo", "Usar tallas reales de BigQuery"],
-  ["Vestuario", "Pantalones", "Vestuario BOTTOMS", "Pantalones", "Hombre, Mujer, Unisex", "Adulto/Ninos", "CLB_*_BOTTOMS", "Activo", "Usar tallas reales de BigQuery"],
-  ["Vestuario", "Shorts", "Vestuario BOTTOMS", "Shorts", "Hombre, Mujer, Unisex", "Adulto/Ninos", "CLB_*_BOTTOMS", "Activo", "Usar tallas reales de BigQuery"],
-  ["Accesorios", "Gorros", "Accesorios", "Gorros", "Hombre, Mujer, Unisex", "Adulto/Ninos", "Revision", "Activo", "Puede ser talla unica o varias tallas segun fuente"],
-];
 
-const values = [
-  ["Lista", "Valor"],
-  ["Marcas", "Columbia"],
-  ["Marcas", "Rockford"],
-  ["Marcas", "Hush Puppies"],
-  ["Marcas", "Vans"],
-  ["Generos", "Hombre"],
-  ["Generos", "Mujer"],
-  ["Generos", "Unisex"],
-  ["Categorias", "Calzado"],
-  ["Categorias", "Vestuario"],
-  ["Categorias", "Accesorios"],
-  ["Estados", "ACTIVE"],
-  ["Estados", "DRAFT"],
-  ["Publicacion", "TRUE"],
-  ["Publicacion", "FALSE"],
-];
+def clean(value):
+    if pd.isna(value):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
 
-const errors = [
-  ["Codigo", "Nivel", "Descripcion", "Causa probable", "Solucion recomendada", "Campo"],
-  ["CAT-001", "Bloqueo", "Falta Mod-Col", "Input incompleto", "Completar codigo modelo-color", "Mod-Col"],
-  ["CAT-002", "Bloqueo", "Variante sin SKU", "SKU no vino de BigQuery/ARTI", "Revisar Cod Int por talla", "SKU"],
-  ["CAT-003", "Bloqueo", "Talla invalida", "Talla K, 0, 000 o vacia", "Usar solo talla valida fuente", "Talla"],
-  ["CAT-004", "Bloqueo", "Guia incompatible", "Calzado con guia vestuario o viceversa", "Corregir guia o dejar en revision", "Guia de tallas"],
-  ["CAT-005", "Advertencia", "Tipo no reconocido", "Sinonimo no existe en diccionario", "Agregar regla en catalog_rules.py", "Tipo de prenda"],
-  ["CAT-006", "Advertencia", "HTML corregido", "Traia script/style/eventos o etiquetas no permitidas", "Revisar vista previa", "Body HTML"],
-];
 
-function writeMatrix(sheet, startCell, rows) {
-  const startCol = startCell.match(/[A-Z]+/)[0];
-  const startRow = Number(startCell.match(/\d+/)[0]);
-  const colIndex = colToIndex(startCol);
-  const range = sheet.getRangeByIndexes(startRow - 1, colIndex, rows.length, rows[0].length);
-  range.values = rows;
-  return range;
-}
+def pick(row, *names):
+    for name in names:
+        value = clean(row.get(name))
+        if value:
+            return value
+    return ""
 
-function colToIndex(col) {
-  let n = 0;
-  for (const ch of col) n = n * 26 + (ch.charCodeAt(0) - 64);
-  return n - 1;
-}
 
-function styleTable(sheet, rangeAddress, headerFill = "#0B5CAD") {
-  const range = sheet.getRange(rangeAddress);
-  range.format.borders = { preset: "all", style: "thin", color: "#D9E2EF" };
-  const header = sheet.getRange(rangeAddress.replace(/\d+:.+/, "1:" + rangeAddress.split(":")[1].replace(/\d+/, "1")));
-  header.format = { fill: headerFill, font: { bold: true, color: "#FFFFFF" } };
-  range.format.wrapText = true;
-  range.format.autofitColumns();
-}
+def title_case(value):
+    text = clean(value).lower()
+    if not text:
+        return ""
+    return normalize_text_tokens(" ".join(part[:1].upper() + part[1:] for part in text.split()))
 
-const workbook = Workbook.create();
 
-const input = workbook.worksheets.add("INPUT_COMERCIAL");
-input.showGridLines = false;
-input.getRange("A1:AD1").values = [inputColumns.map((item) => item[0])];
-input.getRange("A2:AD2").values = [inputColumns.map((item) => item[4])];
-input.getRange("A3:AD3").values = [inputColumns.map((item) => item[3])];
-input.getRange("A1:AD3").format.wrapText = true;
-input.getRange("A1:AD1").format = { fill: "#0B5CAD", font: { bold: true, color: "#FFFFFF" } };
-input.getRange("A2:AD2").format = { fill: "#EAF3FF" };
-input.getRange("A3:AD3").format = { fill: "#F8FAFC", font: { color: "#526071" } };
-input.getRange("A1:AD50").format.borders = { preset: "all", style: "thin", color: "#D9E2EF" };
-input.freezePanes.freezeRows(1);
-input.freezePanes.freezeColumns(1);
-input.getRange("A:AD").format.autofitColumns();
-input.getRange("A1:AD50").format.rowHeight = 24;
-input.getRange("D:D").dataValidation = { rule: { type: "list", values: ["Columbia", "Rockford", "Hush Puppies", "Vans", "Patagonia", "Sorel", "Mountain Hardwear"] } };
-input.getRange("E:E").dataValidation = { rule: { type: "list", values: ["Hombre", "Mujer", "Unisex", "Nino", "Nina", "Bebe"] } };
-input.getRange("F:F").dataValidation = { rule: { type: "list", values: ["Calzado", "Vestuario", "Accesorios"] } };
+def normalize_text_tokens(value):
+    text = clean(value)
+    replacements = {
+        "M/l": "M/L",
+        "M/c": "M/C",
+        "O/s": "O/S",
+        "Rkf": "RKF",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
-const dict = workbook.worksheets.add("DICCIONARIO_COLUMNAS");
-const dictRows = [["Nombre exacto", "Grupo", "Obligatorio", "Descripcion", "Ejemplo", "Destino Shopify", "Regla"]];
-for (const [name, group, required, desc, example] of inputColumns) {
-  dictRows.push([name, group, required, desc, example, name === "SKU" ? "Variant.sku" : name === "Body HTML" ? "Product.bodyHtml" : name === "Tecnologia" ? "custom.tecnologia" : "Producto / reporte", required === "SI" ? "Bloquea si esta vacio" : "Advertencia o autocompletado"]);
-}
-writeMatrix(dict, "A1", dictRows);
-styleTable(dict, `A1:G${dictRows.length}`);
 
-const types = workbook.worksheets.add("TIPOS_PRENDA");
-writeMatrix(types, "A1", productTypes);
-styleTable(types, `A1:I${productTypes.length}`, "#174EA6");
+def slug(value):
+    text = clean(value).lower()
+    replacements = {
+        "á": "a",
+        "é": "e",
+        "í": "i",
+        "ó": "o",
+        "ú": "u",
+        "ñ": "n",
+        "ü": "u",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return text.strip("-")
 
-const guides = workbook.worksheets.add("GUIAS_TALLA");
-writeMatrix(guides, "A1", sizeGuides);
-styleTable(guides, `A1:J${sizeGuides.length}`, "#2563EB");
 
-const cats = workbook.worksheets.add("CATEGORIAS");
-writeMatrix(cats, "A1", categories);
-styleTable(cats, `A1:I${categories.length}`, "#0F766E");
+def join_unique(values, separator=","):
+    result = []
+    seen = set()
+    for value in values:
+        text = clean(value)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return separator.join(result)
 
-const vals = workbook.worksheets.add("VALORES_PERMITIDOS");
-writeMatrix(vals, "A1", values);
-styleTable(vals, `A1:B${values.length}`, "#6D28D9");
 
-const err = workbook.worksheets.add("ERRORES_Y_ADVERTENCIAS");
-writeMatrix(err, "A1", errors);
-styleTable(err, `A1:F${errors.length}`, "#B91C1C");
+def build_technology(row):
+    return join_unique(
+        [
+            pick(row, "Tecnología", "Tecnologia"),
+            pick(row, "Tecnología 2", "Tecnologia 2"),
+            pick(row, "Tecnología 3", "Tecnologia 3"),
+        ]
+    )
 
-for (const sheet of workbook.worksheets.items) {
-  sheet.getUsedRange(true)?.format?.autofitColumns?.();
-}
 
-await fs.mkdir(outputDir, { recursive: true });
-const xlsx = await SpreadsheetFile.exportXlsx(workbook);
-await xlsx.save(outputPath);
-console.log(outputPath);
+def build_features(row, category):
+    source_bullets = clean(row.get("Bullets"))
+    if source_bullets:
+        return source_bullets
+
+    common = [
+        ("Tipo producto", title_case(row.get("Tipo Producto"))),
+        ("Genero", title_case(pick(row, "Género", "Genero"))),
+        ("Color", title_case(pick(row, "Color Primario", "Color Comercial (Bullet)"))),
+        ("Ocasion", title_case(pick(row, "Ocasión", "Ocasion"))),
+        ("Actividad", title_case(row.get("Actividad"))),
+        ("Tecnologia", build_technology(row)),
+        ("Material", title_case(row.get("Material"))),
+        ("Composicion", clean(row.get("Composición"))),
+        ("Ajuste", title_case(row.get("Tipo de Ajuste"))),
+        ("Producto sustentable", title_case(row.get("Producto Sustentable"))),
+    ]
+    apparel = [
+        ("Tipo manga", title_case(row.get("Tipo Manga"))),
+        ("Calce", title_case(row.get("Calce"))),
+        ("Tipo cuello", title_case(row.get("Tipo Cuello"))),
+        ("Forro", title_case(row.get("Forro"))),
+        ("Bolsillos", title_case(row.get("Bolsillos"))),
+        ("Longitud", title_case(row.get("Longitud"))),
+    ]
+    footwear = [
+        ("Forro", title_case(pick(row, "FORRO", "Forro"))),
+        ("Suela", title_case(row.get("SUELA"))),
+        ("Tipo taco", title_case(row.get("Tipo Taco"))),
+        ("Altura taco", clean(row.get("ALTURA_TACO (CMS)"))),
+        ("Altura cana", clean(row.get("ALTURA_CANA (CMS)"))),
+        ("Plataforma", title_case(row.get("PLATAFORMA"))),
+        ("Punta", title_case(row.get("FORMA DE LA PUNTA"))),
+    ]
+
+    pairs = common + (footwear if category == "Calzado" else apparel)
+    return "\n".join(f"{label}: {value}" for label, value in pairs if value)
+
+
+def convert_file(job):
+    df = pd.read_excel(job["source"], sheet_name=0, dtype=object).dropna(how="all")
+    rows = []
+
+    for _, row in df.iterrows():
+        mod_col = clean(row.get("Mod-Col")).upper()
+        if not mod_col:
+            continue
+
+        product_type = title_case(row.get("Tipo Producto"))
+        gender = title_case(pick(row, "Género", "Genero"))
+        color = title_case(pick(row, "Color Primario", "Color Comercial (Bullet)"))
+        material = title_case(row.get("Material"))
+        model_name = clean(row.get("Nombre del Modelo")) or clean(row.get("Modelo"))
+        name = normalize_text_tokens(clean(row.get("Nombre"))) or " ".join(
+            part for part in [product_type, "Para", gender, material, model_name, color, "Rockford"] if part
+        )
+        description = clean(row.get("Descripción"))
+        tech = build_technology(row)
+        short_description = " ".join(part for part in [product_type, gender, material] if part)
+        tags = join_unique(
+            [
+                "Rockford",
+                job["category"],
+                product_type,
+                gender,
+                color,
+                material,
+                title_case(pick(row, "Ocasión", "Ocasion")),
+                title_case(row.get("Actividad")),
+                title_case(row.get("Producto Sustentable")),
+                tech,
+                mod_col,
+            ]
+        )
+
+        rows.append(
+            {
+                "Mod-Col": mod_col,
+                "Marca": "ROCKFORD",
+                "Handle Input": slug(f"{name} {mod_col}"),
+                "Title": name,
+                "Body HTML": description,
+                "Type": product_type,
+                "Color Comercial": color,
+                "Color Web": color,
+                "Tags": tags,
+                "Metafield: custom.materialidad [single_line_text_field]": material,
+                "Metafield: custom.pais_de_fabricacion [single_line_text_field]": "",
+                "Metafield: custom.marca [single_line_text_field]": "Rockford",
+                "Metafield: custom.color_forus [single_line_text_field]": color,
+                "Metafield: custom.siblings_color [single_line_text_field]": color,
+                "Metafield: custom.grupo_color [single_line_text_field]": color,
+                "Metafield: custom.genero [single_line_text_field]": gender,
+                "Metafield: custom.tipo [single_line_text_field]": product_type,
+                "Metafield: custom.descripcion_corta [single_line_text_field]": short_description,
+                "Metafield: custom.nombre_corto [single_line_text_field]": model_name or name,
+                "Metafield: custom.codigo_modelo_color [id]": mod_col,
+                "Metafield: custom.sub_categoria [single_line_text_field]": product_type,
+                "Metafield: custom.categoria [single_line_text_field]": job["category"],
+                "Metafield: custom.guia_de_tallas [page_reference]": "",
+                "Metafield: custom.tecnologia [list.single_line_text_field]": tech,
+                "Caracteristicas": build_features(row, job["category"]),
+                "Material": material,
+                "Cuidado": clean(row.get("Cuidado Lavado")),
+            }
+        )
+
+    return pd.DataFrame(rows, columns=INPUT_COLUMNS)
+
+
+def format_workbook(path):
+    wb = load_workbook(path)
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    thin = Side(style="thin", color="D9E2F3")
+    border = Border(top=thin, bottom=thin, left=thin, right=thin)
+
+    for ws in wb.worksheets:
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                cell.border = border
+        ws.freeze_panes = "A2"
+        ws.row_dimensions[1].height = 42
+        ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+
+    ws = wb["Input"]
+    widths = {"A": 22, "B": 16, "C": 58, "D": 62, "E": 86, "F": 20, "G": 18, "H": 18, "I": 72}
+    for idx in range(1, ws.max_column + 1):
+        letter = get_column_letter(idx)
+        ws.column_dimensions[letter].width = widths.get(letter, 30)
+
+    wb.save(path)
+
+
+def write_output(job):
+    job["output"].parent.mkdir(parents=True, exist_ok=True)
+    output_df = convert_file(job)
+
+    instructions = pd.DataFrame(
+        [
+            ("Sitio destino", f"Seleccionar {job['site']} en la app."),
+            ("Marca", "Se dejo ROCKFORD para validar contra el sitio Rockford.pe."),
+            ("Unidad de carga", "Una fila por codigo modelo-color. No incluir tallas."),
+            ("Tallas", "La app debe cruzar variantes desde ARTI/SIAL por Mod-Col."),
+            ("Fotos", "No se incluyen URLs en el input comercial."),
+            ("Categoria", f"Se mapeo como {job['category']} para todos los productos de este archivo."),
+        ],
+        columns=["Regla", "Detalle"],
+    )
+    mapping = pd.DataFrame(
+        [
+            ("Mod-Col", "Mod-Col / custom.codigo_modelo_color"),
+            ("Nombre", "Title"),
+            ("Descripción", "Body HTML"),
+            ("Tipo Producto", "Type / custom.tipo / custom.sub_categoria"),
+            ("Color Primario", "Color Comercial / Color Web / grupo_color"),
+            ("Material", "custom.materialidad / Material"),
+            ("Género", "custom.genero"),
+            ("Tecnología 1-3", "custom.tecnologia"),
+            ("Cuidado Lavado", "Cuidado"),
+        ],
+        columns=["Origen", "Destino input"],
+    )
+
+    with pd.ExcelWriter(job["output"], engine="openpyxl") as writer:
+        output_df.to_excel(writer, index=False, sheet_name="Input")
+        instructions.to_excel(writer, index=False, sheet_name="Instrucciones")
+        mapping.to_excel(writer, index=False, sheet_name="Mapeo")
+    format_workbook(job["output"])
+    return job["output"], len(output_df)
+
+
+def main():
+    for job in JOBS:
+        output, rows = write_output(job)
+        print(f"{output} | filas: {rows}")
+
+
+if __name__ == "__main__":
+    main()

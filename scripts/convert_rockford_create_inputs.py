@@ -8,8 +8,21 @@ from openpyxl.utils import get_column_letter
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = Path(r"C:\Users\hcamara\OneDrive - Peru Forus S.A\Documentos\Rockford Accesorios 03-06-2026.xlsx")
-OUTPUT = ROOT / "outputs" / "INPUT_ROCKFORD_ACCESORIOS_03-06-2026.xlsx"
+
+JOBS = [
+    {
+        "source": Path(r"C:\Users\hcamara\OneDrive - Peru Forus S.A\Documentos\Crear Vestuario 03-06-2026.xlsx"),
+        "output": ROOT / "outputs" / "INPUT_CREAR_VESTUARIO_03-06-2026.xlsx",
+        "category": "Vestuario",
+        "site": "Rockford.pe",
+    },
+    {
+        "source": Path(r"C:\Users\hcamara\OneDrive - Peru Forus S.A\Documentos\Crear Calzado Rockford 03-06-2026.xlsx"),
+        "output": ROOT / "outputs" / "INPUT_CREAR_CALZADO_ROCKFORD_03-06-2026.xlsx",
+        "category": "Calzado",
+        "site": "Rockford.pe",
+    },
+]
 
 INPUT_COLUMNS = [
     "Mod-Col",
@@ -50,11 +63,32 @@ def clean(value):
     return str(value).strip()
 
 
+def pick(row, *names):
+    for name in names:
+        value = clean(row.get(name))
+        if value:
+            return value
+    return ""
+
+
 def title_case(value):
     text = clean(value).lower()
     if not text:
         return ""
-    return " ".join(part.capitalize() for part in text.split())
+    return normalize_text_tokens(" ".join(part[:1].upper() + part[1:] for part in text.split()))
+
+
+def normalize_text_tokens(value):
+    text = clean(value)
+    replacements = {
+        "M/l": "M/L",
+        "M/c": "M/C",
+        "O/s": "O/S",
+        "Rkf": "RKF",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
 
 def slug(value):
@@ -81,7 +115,7 @@ def join_unique(values, separator=","):
         text = clean(value)
         if not text:
             continue
-        key = text.lower()
+        key = text.casefold()
         if key in seen:
             continue
         seen.add(key)
@@ -89,65 +123,96 @@ def join_unique(values, separator=","):
     return separator.join(result)
 
 
-def bullets(row):
-    pairs = [
-        ("Tipo Producto", title_case(row.get("Tipo Producto"))),
-        ("Genero", title_case(row.get("Género") or row.get("Genero"))),
-        ("Color", title_case(row.get("Color Primario"))),
-        ("Marca", "Rockford"),
-        ("Ocasion", title_case(row.get("Ocasión"))),
+def build_technology(row):
+    return join_unique(
+        [
+            pick(row, "Tecnología", "Tecnologia"),
+            pick(row, "Tecnología 2", "Tecnologia 2"),
+            pick(row, "Tecnología 3", "Tecnologia 3"),
+        ]
+    )
+
+
+def build_features(row, category):
+    source_bullets = clean(row.get("Bullets"))
+    if source_bullets:
+        return source_bullets
+
+    common = [
+        ("Tipo producto", title_case(row.get("Tipo Producto"))),
+        ("Genero", title_case(pick(row, "Género", "Genero"))),
+        ("Color", title_case(pick(row, "Color Primario", "Color Comercial (Bullet)"))),
+        ("Ocasion", title_case(pick(row, "Ocasión", "Ocasion"))),
+        ("Actividad", title_case(row.get("Actividad"))),
+        ("Tecnologia", build_technology(row)),
         ("Material", title_case(row.get("Material"))),
-        ("Producto Sustentable", title_case(row.get("Producto Sustentable"))),
-        ("Tipo de Ajuste", title_case(row.get("Tipo de Ajuste"))),
-        ("Alto", clean(row.get("Alto"))),
-        ("Ancho", clean(row.get("Ancho "))),
-        ("Profundidad", clean(row.get("Profundidad"))),
-        ("Capacidad Litros", clean(row.get("Capacitadad Litros"))),
-        ("Compartimentos", clean(row.get("Compartimentos"))),
-        ("N Compartimentos", clean(row.get("N° Compartimentos"))),
+        ("Composicion", clean(row.get("Composición"))),
+        ("Ajuste", title_case(row.get("Tipo de Ajuste"))),
+        ("Producto sustentable", title_case(row.get("Producto Sustentable"))),
     ]
+    apparel = [
+        ("Tipo manga", title_case(row.get("Tipo Manga"))),
+        ("Calce", title_case(row.get("Calce"))),
+        ("Tipo cuello", title_case(row.get("Tipo Cuello"))),
+        ("Forro", title_case(row.get("Forro"))),
+        ("Bolsillos", title_case(row.get("Bolsillos"))),
+        ("Longitud", title_case(row.get("Longitud"))),
+    ]
+    footwear = [
+        ("Forro", title_case(pick(row, "FORRO", "Forro"))),
+        ("Suela", title_case(row.get("SUELA"))),
+        ("Tipo taco", title_case(row.get("Tipo Taco"))),
+        ("Altura taco", clean(row.get("ALTURA_TACO (CMS)"))),
+        ("Altura cana", clean(row.get("ALTURA_CANA (CMS)"))),
+        ("Plataforma", title_case(row.get("PLATAFORMA"))),
+        ("Punta", title_case(row.get("FORMA DE LA PUNTA"))),
+    ]
+
+    pairs = common + (footwear if category == "Calzado" else apparel)
     return "\n".join(f"{label}: {value}" for label, value in pairs if value)
 
 
-def technology(row):
-    return join_unique([row.get("Tecnología"), row.get("Tecnología 2"), row.get("Tecnología 3")])
-
-
-def convert():
-    df = pd.read_excel(SOURCE, sheet_name=0, dtype=object).dropna(how="all")
+def convert_file(job):
+    df = pd.read_excel(job["source"], sheet_name=0, dtype=object).dropna(how="all")
     rows = []
+
     for _, row in df.iterrows():
         mod_col = clean(row.get("Mod-Col")).upper()
+        if not mod_col:
+            continue
+
         product_type = title_case(row.get("Tipo Producto"))
-        gender = title_case(row.get("Género") or row.get("Genero"))
-        color = title_case(row.get("Color Primario") or row.get("Color Comercial (Bullet)"))
-        name = clean(row.get("Nombre")) or " ".join(part for part in [product_type, gender, color, "Rockford"] if part)
-        model_name = clean(row.get("Nombre del Modelo")) or clean(row.get("Modelo"))
+        gender = title_case(pick(row, "Género", "Genero"))
+        color = title_case(pick(row, "Color Primario", "Color Comercial (Bullet)"))
         material = title_case(row.get("Material"))
+        model_name = clean(row.get("Nombre del Modelo")) or clean(row.get("Modelo"))
+        name = normalize_text_tokens(clean(row.get("Nombre"))) or " ".join(
+            part for part in [product_type, "Para", gender, material, model_name, color, "Rockford"] if part
+        )
         description = clean(row.get("Descripción"))
-        tech = technology(row)
+        tech = build_technology(row)
+        short_description = " ".join(part for part in [product_type, gender, material] if part)
         tags = join_unique(
             [
                 "Rockford",
-                "Accesorios",
+                job["category"],
                 product_type,
                 gender,
                 color,
                 material,
-                title_case(row.get("Ocasión")),
+                title_case(pick(row, "Ocasión", "Ocasion")),
+                title_case(row.get("Actividad")),
                 title_case(row.get("Producto Sustentable")),
                 tech,
                 mod_col,
-            ],
-            separator=",",
+            ]
         )
-        handle = slug(f"{name} {mod_col}")
-        short_description = " ".join(part for part in [product_type, gender] if part)
+
         rows.append(
             {
                 "Mod-Col": mod_col,
                 "Marca": "ROCKFORD",
-                "Handle Input": handle,
+                "Handle Input": slug(f"{name} {mod_col}"),
                 "Title": name,
                 "Body HTML": description,
                 "Type": product_type,
@@ -166,14 +231,15 @@ def convert():
                 "Metafield: custom.nombre_corto [single_line_text_field]": model_name or name,
                 "Metafield: custom.codigo_modelo_color [id]": mod_col,
                 "Metafield: custom.sub_categoria [single_line_text_field]": product_type,
-                "Metafield: custom.categoria [single_line_text_field]": "Accesorios",
+                "Metafield: custom.categoria [single_line_text_field]": job["category"],
                 "Metafield: custom.guia_de_tallas [page_reference]": "",
                 "Metafield: custom.tecnologia [list.single_line_text_field]": tech,
-                "Caracteristicas": clean(row.get("Bullets")) or bullets(row),
+                "Caracteristicas": build_features(row, job["category"]),
                 "Material": material,
                 "Cuidado": clean(row.get("Cuidado Lavado")),
             }
         )
+
     return pd.DataFrame(rows, columns=INPUT_COLUMNS)
 
 
@@ -196,33 +262,35 @@ def format_workbook(path):
                 cell.border = border
         ws.freeze_panes = "A2"
         ws.row_dimensions[1].height = 42
+        ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
 
     ws = wb["Input"]
-    widths = {"A": 20, "B": 18, "C": 58, "D": 58, "E": 82, "F": 18, "G": 18, "H": 18, "I": 68}
+    widths = {"A": 22, "B": 16, "C": 58, "D": 62, "E": 86, "F": 20, "G": 18, "H": 18, "I": 72}
     for idx in range(1, ws.max_column + 1):
         letter = get_column_letter(idx)
         ws.column_dimensions[letter].width = widths.get(letter, 30)
-    ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
 
     wb.save(path)
 
 
-def main():
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    output_df = convert()
+def write_output(job):
+    job["output"].parent.mkdir(parents=True, exist_ok=True)
+    output_df = convert_file(job)
+
     instructions = pd.DataFrame(
         [
-            ("Sitio destino", "Seleccionar Rockford.pe en la app."),
-            ("Marca", "Se dejo ROCKFORD para pasar validacion y usar carpeta de imagenes ROCKFORD."),
-            ("Una fila por producto-color", "No incluir tallas. Las variantes salen desde ARTI por Mod-Col."),
-            ("Categoria", "Se mapeo como Accesorios para todos los productos del archivo."),
-            ("Fotos", "La app generara URLs usando el Mod-Col y la carpeta ROCKFORD."),
-            ("Revision", "Revisar especialmente pais de fabricacion y guia de tallas si aplica."),
+            ("Sitio destino", f"Seleccionar {job['site']} en la app."),
+            ("Marca", "Se dejo ROCKFORD para validar contra el sitio Rockford.pe."),
+            ("Unidad de carga", "Una fila por codigo modelo-color. No incluir tallas."),
+            ("Tallas", "La app debe cruzar variantes desde ARTI/SIAL por Mod-Col."),
+            ("Fotos", "No se incluyen URLs en el input comercial."),
+            ("Categoria", f"Se mapeo como {job['category']} para todos los productos de este archivo."),
         ],
         columns=["Regla", "Detalle"],
     )
     mapping = pd.DataFrame(
         [
+            ("Mod-Col", "Mod-Col / custom.codigo_modelo_color"),
             ("Nombre", "Title"),
             ("Descripción", "Body HTML"),
             ("Tipo Producto", "Type / custom.tipo / custom.sub_categoria"),
@@ -234,12 +302,19 @@ def main():
         ],
         columns=["Origen", "Destino input"],
     )
-    with pd.ExcelWriter(OUTPUT, engine="openpyxl") as writer:
+
+    with pd.ExcelWriter(job["output"], engine="openpyxl") as writer:
         output_df.to_excel(writer, index=False, sheet_name="Input")
         instructions.to_excel(writer, index=False, sheet_name="Instrucciones")
         mapping.to_excel(writer, index=False, sheet_name="Mapeo")
-    format_workbook(OUTPUT)
-    print(OUTPUT)
+    format_workbook(job["output"])
+    return job["output"], len(output_df)
+
+
+def main():
+    for job in JOBS:
+        output, rows = write_output(job)
+        print(f"{output} | filas: {rows}")
 
 
 if __name__ == "__main__":

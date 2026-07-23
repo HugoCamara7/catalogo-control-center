@@ -10897,6 +10897,9 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button,
         div.st-key-operation_nav_input button,
+        div.st-key-operation_nav_tickets button,
+        div.st-key-brand_portal_input button,
+        div.st-key-brand_portal_tickets button,
         div.st-key-load_mode_complete button,
         div.st-key-load_mode_partial button,
         div.st-key-reset_load_workspace button,
@@ -10926,6 +10929,9 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_input button [data-testid="stMarkdownContainer"],
+        div.st-key-operation_nav_tickets button [data-testid="stMarkdownContainer"],
+        div.st-key-brand_portal_input button [data-testid="stMarkdownContainer"],
+        div.st-key-brand_portal_tickets button [data-testid="stMarkdownContainer"],
         div.st-key-load_mode_complete button [data-testid="stMarkdownContainer"],
         div.st-key-load_mode_partial button [data-testid="stMarkdownContainer"],
         div.st-key-reset_load_workspace button [data-testid="stMarkdownContainer"],
@@ -10936,6 +10942,9 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button p,
         div.st-key-operation_nav_input button p,
+        div.st-key-operation_nav_tickets button p,
+        div.st-key-brand_portal_input button p,
+        div.st-key-brand_portal_tickets button p,
         div.st-key-load_mode_complete button p,
         div.st-key-load_mode_partial button p,
         div.st-key-reset_load_workspace button p,
@@ -10951,6 +10960,9 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button::before,
         div.st-key-operation_nav_input button::before,
+        div.st-key-operation_nav_tickets button::before,
+        div.st-key-brand_portal_input button::before,
+        div.st-key-brand_portal_tickets button::before,
         div.st-key-load_mode_complete button::before,
         div.st-key-load_mode_partial button::before,
         div.st-key-reset_load_workspace button::before,
@@ -10974,6 +10986,13 @@ def inject_custom_css(config):
         div.st-key-operation_nav_input button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
         }}
+        div.st-key-operation_nav_tickets button::before,
+        div.st-key-brand_portal_tickets button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='4' width='16' height='16' rx='2'/%3E%3Cpath d='M8 9h8M8 13h8M8 17h5'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-brand_portal_input button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
+        }}
         div.st-key-load_mode_complete button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 16V7'/%3E%3Cpath d='m8 11 4-4 4 4'/%3E%3Cpath d='M20 16.5A4.5 4.5 0 0 0 15.5 12h-.6A6 6 0 1 0 4 15.5'/%3E%3Cpath d='M4 18h16'/%3E%3C/svg%3E") !important;
         }}
@@ -10988,6 +11007,9 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button:hover,
         div.st-key-operation_nav_input button:hover,
+        div.st-key-operation_nav_tickets button:hover,
+        div.st-key-brand_portal_input button:hover,
+        div.st-key-brand_portal_tickets button:hover,
         div.st-key-load_mode_complete button:hover,
         div.st-key-load_mode_partial button:hover,
         div.st-key-reset_load_workspace button:hover,
@@ -14520,14 +14542,26 @@ def render_ticket_styles():
         .ticket-state.green{background:#ECFDF5;border-color:#A7F3D0;color:#047857}
         .ticket-state.red{background:#FEF2F2;border-color:#FECACA;color:#B91C1C}
         .ticket-state.gray{background:#F1F5F9;border-color:#CBD5E1;color:#475569}
-        .ticket-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:12px 0 18px}
-        .ticket-summary>div{padding:14px;border:1px solid #D9E2EF;border-radius:10px;background:#fff;min-height:76px}
-        .ticket-summary small{display:block;color:#64748B;font-weight:750;margin-bottom:6px}
-        .ticket-summary strong{display:block;color:#0B1B46;font-size:21px}
+        .ticket-detail-header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px 20px 16px;border:1px solid #D9E2EF;border-radius:14px 14px 0 0;background:#fff}
+        .ticket-detail-header h2{margin:0;color:#0B1B46;font-size:22px;line-height:1.15}
+        .ticket-detail-header p{margin:5px 0 0;color:#64748B;font-size:13px}
+        .ticket-detail-shell{padding:0 20px 20px;border:1px solid #D9E2EF;border-top:0;border-radius:0 0 14px 14px;background:#fff;margin:0 0 16px}
+        .ticket-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0;padding:16px 0}
+        .ticket-summary>div{padding:13px 14px;border:1px solid #E2E8F0;border-radius:10px;background:#F8FAFC;min-height:80px}
+        .ticket-summary small{display:block;color:#64748B;font-size:11px;font-weight:850;text-transform:uppercase;margin-bottom:7px}
+        .ticket-summary strong{display:block;color:#0B1B46;font-size:18px;line-height:1.15}
+        .ticket-summary span{display:block;margin-top:5px;color:#475569;font-size:12px;line-height:1.35;overflow-wrap:anywhere}
+        .ticket-section{padding:18px 20px;border:1px solid #D9E2EF;border-radius:14px;background:#fff;margin:16px 0}
+        .ticket-section h3{margin:0 0 4px;color:#0B1B46;font-size:18px}
+        .ticket-section > p{margin:0 0 14px;color:#64748B;font-size:13px}
+        .ticket-section-label{margin:0 0 10px;color:#2563EB;font-size:11px;font-weight:900;text-transform:uppercase}
+        .ticket-info-line{margin:0;padding:10px 12px;border-radius:9px;background:#F8FAFC;color:#64748B;font-size:12px;line-height:1.4}
+        .ticket-action-note{padding:12px 14px;border:1px solid #DBEAFE;border-radius:10px;background:#F8FBFF;color:#334155;font-size:13px;line-height:1.45}
+        .ticket-comments-empty{padding:14px;border:1px dashed #CBD5E1;border-radius:10px;background:#F8FAFC;color:#64748B;font-size:13px}
         .ticket-event{padding:10px 12px;border-left:3px solid #93C5FD;background:#F8FAFC;margin:7px 0;border-radius:0 8px 8px 0}
         .ticket-event strong{color:#0B1B46}.ticket-event small{color:#64748B}
         @media(max-width:1100px){.ticket-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
-        @media(max-width:900px){.ticket-summary,.ticket-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:900px){.ticket-summary,.ticket-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ticket-detail-header{align-items:flex-start;flex-direction:column}}
         </style>
         """,
         unsafe_allow_html=True,
@@ -14714,26 +14748,29 @@ def render_ticket_detail(service, actor, code):
     status = ticket.get("status")
     status_label = STATE_LABELS.get(status, status)
     status_color = _ticket_state_color(status)
-    st.markdown(
-        f"### {escape(ticket.get('code', ''))} &nbsp; <span class=\"ticket-state {status_color}\">{escape(status_label)}</span>",
-        unsafe_allow_html=True,
-    )
     summary = ticket.get("summary", {})
     st.markdown(
         f"""
-        <div class="ticket-summary">
-          <div><small>Marca y sitios</small><strong>{escape(ticket.get('brand',''))}</strong><span>{escape(', '.join(ticket.get('sites', [])))}</span></div>
-          <div><small>Productos</small><strong>{int(summary.get('products',0))}</strong><span>{int(summary.get('model_colors',0))} modelo-color</span></div>
-          <div><small>Solicitante</small><strong style="font-size:15px">{escape(ticket.get('requester',''))}</strong><span>{escape(ticket.get('filename',''))}</span></div>
-          <div><small>Responsable</small><strong style="font-size:15px">{escape(ticket.get('assignee') or 'Sin asignar')}</strong><span>{escape(PRIORITY_LABELS.get(ticket.get('priority'), ticket.get('priority','')))}</span></div>
+        <div class="ticket-detail-header">
+          <div><p>Solicitud de catálogo</p><h2>{escape(ticket.get('code', ''))}</h2></div>
+          <span class="ticket-state {status_color}">{escape(status_label)}</span>
+        </div>
+        <div class="ticket-detail-shell">
+          <div class="ticket-summary">
+            <div><small>Marca y sitios</small><strong>{escape(ticket.get('brand',''))}</strong><span>{escape(', '.join(ticket.get('sites', [])))}</span></div>
+            <div><small>Productos</small><strong>{int(summary.get('products',0))}</strong><span>{int(summary.get('model_colors',0))} modelo-color</span></div>
+            <div><small>Solicitante</small><strong style="font-size:14px">{escape(ticket.get('requester',''))}</strong><span>{escape(ticket.get('filename',''))}</span></div>
+            <div><small>Responsable</small><strong style="font-size:14px">{escape(ticket.get('assignee') or 'Sin asignar')}</strong><span>{escape(PRIORITY_LABELS.get(ticket.get('priority'), ticket.get('priority','')))}</span></div>
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
     latest_version = (ticket.get("versions") or [{}])[-1]
-    st.caption(
-        f"Versión validada {latest_version.get('number', 1)} de {len(ticket.get('versions', []))} · "
-        f"Hash {clean_value(latest_version.get('hash'))[:12]} · Plantilla {clean_value(ticket.get('template_version'))}"
+    st.markdown(
+        f'<p class="ticket-info-line">Versión validada {latest_version.get("number", 1)} de {len(ticket.get("versions", []))} · '
+        f'Hash {escape(clean_value(latest_version.get("hash"))[:12])} · Plantilla {escape(clean_value(ticket.get("template_version")))}</p>',
+        unsafe_allow_html=True,
     )
     with st.expander("Vista previa de la solicitud", expanded=False):
         preview_cols = st.columns(3)
@@ -14750,24 +14787,26 @@ def render_ticket_detail(service, actor, code):
             )
         else:
             st.caption("El detalle completo está disponible en el archivo de validación descargable.")
-    download_cols = st.columns(3)
-    try:
-        if latest_version.get("input_path"):
-            download_cols[0].download_button(
-                "Descargar input validado",
-                service.store.get_artifact(latest_version["input_path"]),
-                file_name=latest_version.get("filename") or ticket.get("filename") or "input.xlsx",
-                key=f"ticket_input_{code}_{latest_version.get('number', 1)}",
-            )
-        if latest_version.get("report_path"):
-            download_cols[1].download_button(
-                "Descargar validación",
-                service.store.get_artifact(latest_version["report_path"]),
-                file_name=f"{code}_validacion_v{latest_version.get('number',1)}.xlsx",
-                key=f"ticket_report_{code}_{latest_version.get('number', 1)}",
-            )
-    except TicketError as exc:
-        st.warning(f"No se pudo descargar un adjunto: {exc}")
+    with st.container(border=True):
+        st.markdown('<p class="ticket-section-label">Documentación</p><h3>Archivos y validación</h3><p>Descarga la versión validada o su reporte antes de continuar la gestión.</p>', unsafe_allow_html=True)
+        download_cols = st.columns(3)
+        try:
+            if latest_version.get("input_path"):
+                download_cols[0].download_button(
+                    "Descargar input validado",
+                    service.store.get_artifact(latest_version["input_path"]),
+                    file_name=latest_version.get("filename") or ticket.get("filename") or "input.xlsx",
+                    key=f"ticket_input_{code}_{latest_version.get('number', 1)}",
+                )
+            if latest_version.get("report_path"):
+                download_cols[1].download_button(
+                    "Descargar validación",
+                    service.store.get_artifact(latest_version["report_path"]),
+                    file_name=f"{code}_validacion_v{latest_version.get('number',1)}.xlsx",
+                    key=f"ticket_report_{code}_{latest_version.get('number', 1)}",
+                )
+        except TicketError as exc:
+            st.warning(f"No se pudo descargar un adjunto: {exc}")
     if ticket.get("warnings"):
         with st.expander(f"Advertencias ({len(ticket['warnings'])})"):
             for warning in ticket["warnings"][:100]:
@@ -14797,7 +14836,8 @@ def render_ticket_detail(service, actor, code):
         )
     role = actor.get("role")
     if role == ROLE_BRAND and status == STATE_OBSERVED:
-        st.warning("Operaciones solicitó una corrección. Adjunta una nueva versión; la anterior se conservará.")
+        st.markdown('<div class="ticket-section"><p class="ticket-section-label">Corrección requerida</p><h3>Enviar una nueva versión</h3><p>La versión anterior se conservará para mantener la trazabilidad.</p></div>', unsafe_allow_html=True)
+        st.warning("Operaciones solicitó una corrección.")
         correction = st.file_uploader("Archivo corregido", type=["xlsx", "xls"], key=f"ticket_correction_{code}")
         correction_comment = st.text_area("Respuesta a la observación", key=f"ticket_correction_comment_{code}")
         if correction is not None and st.button("Validar y enviar corrección", type="primary", key=f"submit_correction_{code}"):
@@ -14825,7 +14865,12 @@ def render_ticket_detail(service, actor, code):
                 except TicketError as exc:
                     st.error(str(exc))
     if role in {ROLE_OPERATOR, ROLE_ADMIN}:
-        st.markdown("#### Acciones internas")
+        st.markdown(
+            '<div class="ticket-section"><p class="ticket-section-label">Gestión operativa</p><h3>Acciones internas</h3>'
+            '<p>Asigna responsables, define prioridad y lleva la solicitud por cada etapa sin perder trazabilidad.</p>'
+            '<div class="ticket-action-note">Las acciones disponibles se adaptan automáticamente al estado actual de la solicitud.</div></div>',
+            unsafe_allow_html=True,
+        )
         if role == ROLE_ADMIN:
             current_priority = ticket.get("priority", "normal")
             priority_options = list(PRIORITIES)
@@ -14944,7 +14989,11 @@ def render_ticket_detail(service, actor, code):
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-    st.markdown("#### Comentarios")
+    st.markdown(
+        '<div class="ticket-section"><p class="ticket-section-label">Colaboración</p><h3>Comentarios</h3>'
+        '<p>Deja contexto para la marca y el equipo operativo. Cada mensaje queda registrado en el historial.</p></div>',
+        unsafe_allow_html=True,
+    )
     comment = st.text_area("Agregar comentario", key=f"ticket_comment_{code}", label_visibility="collapsed", placeholder="Escribe un comentario para el equipo...")
     if st.button("Publicar comentario", key=f"add_ticket_comment_{code}"):
         try:
@@ -14952,7 +15001,10 @@ def render_ticket_detail(service, actor, code):
             st.rerun()
         except TicketError as exc:
             st.error(str(exc))
-    for item in reversed(ticket.get("comments", [])):
+    comments = list(reversed(ticket.get("comments", [])))
+    if not comments:
+        st.markdown('<div class="ticket-comments-empty">Aún no hay comentarios para esta solicitud.</div>', unsafe_allow_html=True)
+    for item in comments:
         st.markdown(f"**{escape(item.get('user',''))}** · {escape(item.get('created_at',''))}<br>{escape(item.get('message',''))}", unsafe_allow_html=True)
     with st.expander("Historial y auditoría", expanded=False):
         for event in reversed(ticket.get("events", [])):

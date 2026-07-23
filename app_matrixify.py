@@ -14063,11 +14063,36 @@ def _normalize_auth_username(value):
     return clean_value(value).strip().casefold()
 
 
+TICKET_OPERATOR_USERS = (
+    "hugo.camara@forus.pe",
+    "luis.nunez@forus.pe",
+)
 COMMERCIAL_INPUT_ONLY_USERS = {"comercial@forus.pe"}
+
+
+def is_ticket_operator_user(username):
+    return _normalize_auth_username(username) in set(TICKET_OPERATOR_USERS)
+
+
+def ticket_operator_users():
+    return list(TICKET_OPERATOR_USERS)
+
+
+def ticket_operator_display_name(username):
+    labels = {
+        "hugo.camara@forus.pe": "Hugo Camara",
+        "luis.nunez@forus.pe": "Luis Nunez",
+    }
+    normalized = _normalize_auth_username(username)
+    return labels.get(normalized, normalized)
 
 
 def auth_access_scope(username):
     normalized_username = _normalize_auth_username(username)
+    if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
+        return ROLE_BRAND
+    if normalized_username in set(TICKET_OPERATOR_USERS):
+        return ROLE_OPERATOR
     try:
         auth_config = dict(st.secrets.get("app_auth", {}))
     except Exception:
@@ -14089,9 +14114,7 @@ def auth_access_scope(username):
     if configured_scope in {ROLE_ADMIN, "administrator", "administrador", "full"}:
         return ROLE_ADMIN
     if configured_scope in {"commercial", "comercial", "input_comercial", "commercial_input"}:
-        return "commercial_input"
-    if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
-        return "commercial_input"
+        return ROLE_BRAND
     return ROLE_ADMIN
 
 
@@ -14114,6 +14137,8 @@ def auth_allowed_brands(username, role=None):
         values = []
     allowed = []
     configured_labels = configured_commercial_brands()
+    if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
+        return configured_labels
     configured_by_key = {_input_norm_key(label): label for label in configured_labels}
     for value in values:
         label = configured_by_key.get(_input_norm_key(value))
@@ -14126,7 +14151,7 @@ def auth_allowed_brands(username, role=None):
 
 def current_ticket_actor():
     username = clean_value(st.session_state.get("auth_user"))
-    role = clean_value(st.session_state.get("auth_scope") or auth_access_scope(username)).casefold()
+    role = ROLE_OPERATOR if is_ticket_operator_user(username) else ROLE_BRAND
     return TicketService.actor(username, role, auth_allowed_brands(username, role))
 
 
@@ -14165,6 +14190,7 @@ def get_ticket_service():
         notifier=MockNotificationAdapter(),
         jobs=MockJobAdapter(),
         sla_hours=sla,
+        operator_users=ticket_operator_users(),
     )
     return service, persistent_backend
 
@@ -14871,39 +14897,40 @@ def render_ticket_detail(service, actor, code):
             '<div class="ticket-action-note">Las acciones disponibles se adaptan automáticamente al estado actual de la solicitud.</div></div>',
             unsafe_allow_html=True,
         )
-        if role == ROLE_ADMIN:
-            current_priority = ticket.get("priority", "normal")
-            priority_options = list(PRIORITIES)
-            priority_col, priority_action = st.columns([2, 1])
-            selected_priority = priority_col.selectbox(
-                "Prioridad y SLA",
-                priority_options,
-                index=priority_options.index(current_priority) if current_priority in priority_options else 1,
-                format_func=lambda value: PRIORITY_LABELS.get(value, value),
-                key=f"ticket_priority_{code}",
-            )
-            if priority_action.button("Actualizar prioridad", key=f"save_ticket_priority_{code}"):
-                try:
-                    service.set_priority(actor, code, selected_priority)
-                    st.rerun()
-                except TicketError as exc:
-                    st.error(str(exc))
+        current_priority = ticket.get("priority", "normal")
+        priority_options = list(PRIORITIES)
+        priority_col, priority_action = st.columns([2, 1])
+        selected_priority = priority_col.selectbox(
+            "Prioridad y SLA",
+            priority_options,
+            index=priority_options.index(current_priority) if current_priority in priority_options else 1,
+            format_func=lambda value: PRIORITY_LABELS.get(value, value),
+            key=f"ticket_priority_{code}",
+        )
+        if priority_action.button("Actualizar prioridad", key=f"save_ticket_priority_{code}"):
+            try:
+                service.set_priority(actor, code, selected_priority)
+                st.rerun()
+            except TicketError as exc:
+                st.error(str(exc))
         if status in {STATE_PENDING, STATE_ASSIGNED, STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED, STATE_APPROVED, STATE_FAILED}:
-            assign_cols = st.columns([1, 2])
-            if assign_cols[0].button("Asignarme", key=f"assign_me_{code}"):
+            assign_cols = st.columns([2, 1])
+            operator_options = ticket_operator_users()
+            current_assignee = _normalize_auth_username(ticket.get("assignee"))
+            assignee_index = operator_options.index(current_assignee) if current_assignee in operator_options else 0
+            assignee = assign_cols[0].selectbox(
+                "Responsable de carga",
+                operator_options,
+                index=assignee_index,
+                format_func=ticket_operator_display_name,
+                key=f"assign_user_{code}",
+            )
+            if assign_cols[1].button("Guardar responsable", key=f"assign_other_{code}"):
                 try:
-                    service.assign(actor, code, actor.get("user"))
+                    service.assign(actor, code, assignee)
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-            if role == ROLE_ADMIN:
-                assignee = assign_cols[1].text_input("Asignar a", value=ticket.get("assignee", ""), key=f"assign_user_{code}")
-                if assign_cols[1].button("Guardar responsable", key=f"assign_other_{code}"):
-                    try:
-                        service.assign(actor, code, assignee)
-                        st.rerun()
-                    except TicketError as exc:
-                        st.error(str(exc))
         if status in {STATE_PENDING, STATE_ASSIGNED, STATE_CORRECTED}:
             if st.button("Iniciar revisión", key=f"review_{code}"):
                 try:
@@ -14969,26 +14996,38 @@ def render_ticket_detail(service, actor, code):
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-        if role == ROLE_ADMIN and status == STATE_LOADING:
+        if status == STATE_LOADING:
             mock_cols = st.columns(3)
-            if mock_cols[0].button("Simular completado", key=f"complete_mock_{code}"):
+            close_note = st.text_input("Detalle de cierre", key=f"close_ticket_note_{code}", placeholder="Carga completada y validada en Shopify")
+            if mock_cols[0].button("Marcar finalizado", type="primary", key=f"complete_mock_{code}"):
                 try:
-                    service.record_job_result(actor, code, success=True, result={"mode": "mock", "processed": summary.get("products", 0)})
+                    service.record_job_result(actor, code, success=True, result={"processed": summary.get("products", 0), "detail": clean_value(close_note), "closed_by": actor.get("user")})
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-            if mock_cols[1].button("Simular con observaciones", key=f"complete_obs_mock_{code}"):
+            if mock_cols[1].button("Finalizar con observaciones", key=f"complete_obs_mock_{code}"):
                 try:
-                    service.record_job_result(actor, code, success=True, observations=True, result={"mode": "mock"})
+                    service.record_job_result(actor, code, success=True, observations=True, result={"detail": clean_value(close_note), "closed_by": actor.get("user")})
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-            if mock_cols[2].button("Simular fallo", key=f"fail_mock_{code}"):
+            if mock_cols[2].button("Registrar error", key=f"fail_mock_{code}"):
                 try:
-                    service.record_job_result(actor, code, success=False, error="Fallo simulado para validación funcional.")
+                    service.record_job_result(actor, code, success=False, error=clean_value(close_note) or "Error registrado por Operaciones.")
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
+        if is_ticket_operator_user(actor.get("user")) and status not in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_CANCELED}:
+            with st.expander("Eliminar solicitud", expanded=False):
+                delete_reason = st.text_area("Motivo de eliminación", key=f"delete_ticket_reason_{code}")
+                delete_confirm = st.checkbox("Confirmo que deseo eliminar esta solicitud", key=f"delete_ticket_confirm_{code}")
+                if st.button("Eliminar solicitud", key=f"delete_ticket_{code}", disabled=not delete_confirm):
+                    try:
+                        service.cancel_ticket(actor, code, delete_reason)
+                        st.success("Solicitud eliminada y registrada en el historial.")
+                        st.rerun()
+                    except TicketError as exc:
+                        st.error(str(exc))
     st.markdown(
         '<div class="ticket-section"><p class="ticket-section-label">Colaboración</p><h3>Comentarios</h3>'
         '<p>Deja contexto para la marca y el equipo operativo. Cada mensaje queda registrado en el historial.</p></div>',
@@ -15027,7 +15066,8 @@ def main():
     auth_scope = auth_access_scope(auth_user)
     st.session_state["auth_scope"] = auth_scope
     commercial_input_only = auth_scope == "commercial_input"
-    ticket_actor = current_ticket_actor() if auth_scope in {ROLE_BRAND, ROLE_OPERATOR, ROLE_ADMIN} else None
+    ticket_actor = current_ticket_actor()
+    ticket_operator = ticket_actor.get("role") == ROLE_OPERATOR
     with st.sidebar.container(key="logout_card"):
         user_label = auth_user or "Usuario"
         st.caption(f"Sesion: {user_label}")
@@ -15093,7 +15133,7 @@ def main():
         else:
             render_commercial_input_center(forced_brands=allowed_brands, actor=ticket_actor)
         return
-    if auth_scope == ROLE_OPERATOR:
+    if ticket_operator:
         st.sidebar.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
         with st.sidebar.container(key="operator_ticket_navigation"):
             st.markdown("**Bandeja de solicitudes**")
@@ -15180,7 +15220,7 @@ api_version = "{DEFAULT_API_VERSION}"
         service, backend = get_ticket_service()
         if backend == "local":
             st.warning("Modo local de prueba: configura el backend GitHub antes de habilitarlo para varios usuarios.")
-        render_ticket_inbox(service, ticket_actor, brand_view=False)
+        render_ticket_inbox(service, ticket_actor, brand_view=not ticket_operator)
         return
 
     render_stepper(ui_config, current_step=current_flow_step())

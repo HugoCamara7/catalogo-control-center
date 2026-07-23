@@ -75,12 +75,12 @@ TRANSITIONS = {
         STATE_PENDING: {STATE_CANCELED},
     },
     ROLE_OPERATOR: {
-        STATE_PENDING: {STATE_ASSIGNED, STATE_REVIEW},
-        STATE_ASSIGNED: {STATE_REVIEW},
-        STATE_REVIEW: {STATE_OBSERVED, STATE_APPROVED, STATE_REJECTED},
-        STATE_CORRECTED: {STATE_REVIEW, STATE_OBSERVED, STATE_APPROVED},
-        STATE_APPROVED: {STATE_LOADING},
-        STATE_FAILED: {STATE_LOADING},
+        STATE_PENDING: {STATE_ASSIGNED, STATE_REVIEW, STATE_CANCELED},
+        STATE_ASSIGNED: {STATE_REVIEW, STATE_CANCELED},
+        STATE_REVIEW: {STATE_OBSERVED, STATE_APPROVED, STATE_REJECTED, STATE_CANCELED},
+        STATE_CORRECTED: {STATE_REVIEW, STATE_OBSERVED, STATE_APPROVED, STATE_CANCELED},
+        STATE_APPROVED: {STATE_LOADING, STATE_CANCELED},
+        STATE_FAILED: {STATE_LOADING, STATE_CANCELED},
     },
     ROLE_ADMIN: {
         STATE_PENDING: {STATE_ASSIGNED, STATE_REVIEW, STATE_REJECTED, STATE_CANCELED},
@@ -481,12 +481,17 @@ class MockJobAdapter:
 
 
 class TicketService:
-    def __init__(self, store, notifier=None, jobs=None, sla_hours=None):
+    def __init__(self, store, notifier=None, jobs=None, sla_hours=None, operator_users=None):
         self.store = store
         self.notifier = notifier or MockNotificationAdapter()
         self.jobs = jobs or MockJobAdapter()
         self.sla_hours = {"low": 120, "normal": 72, "high": 24, "urgent": 8}
         self.sla_hours.update(sla_hours or {})
+        self.operator_users = {
+            normalize_text(user).casefold()
+            for user in (operator_users or [])
+            if normalize_text(user)
+        }
 
     @staticmethod
     def actor(user, role, brands=None):
@@ -631,19 +636,17 @@ class TicketService:
         ticket = self.get_ticket(actor, code)
         if actor.get("role") not in {ROLE_OPERATOR, ROLE_ADMIN}:
             raise TicketPermissionError("Tu rol no puede asignar solicitudes.")
-        if actor.get("role") == ROLE_OPERATOR and normalize_text(assignee).casefold() != actor.get("user"):
-            raise TicketPermissionError("Un operador solo puede asignarse la tarea a sí mismo.")
+        self._assert_operator_roster(actor)
+        assignee = normalize_text(assignee).casefold()
+        if not assignee:
+            raise TicketValidationError("Selecciona un responsable de carga.")
+        if self.operator_users and assignee not in self.operator_users:
+            raise TicketPermissionError("El responsable seleccionado no pertenece al equipo de carga.")
         active_states = {STATE_PENDING, STATE_ASSIGNED, STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED, STATE_APPROVED, STATE_FAILED}
         if ticket.get("status") not in active_states:
             raise TicketValidationError("La solicitud ya no está disponible para asignación.")
-        if (
-            actor.get("role") == ROLE_OPERATOR
-            and ticket.get("assignee")
-            and ticket.get("assignee") != actor.get("user")
-        ):
-            raise TicketConflictError("La solicitud ya fue tomada por otro operador.")
         before = ticket.get("assignee", "")
-        ticket["assignee"] = normalize_text(assignee).casefold()
+        ticket["assignee"] = assignee
         previous_status = ticket.get("status")
         if previous_status == STATE_PENDING:
             ticket["status"] = STATE_ASSIGNED
@@ -705,8 +708,9 @@ class TicketService:
         return self._save(ticket)
 
     def set_priority(self, actor, code, priority):
-        if actor.get("role") != ROLE_ADMIN:
-            raise TicketPermissionError("Solo un administrador puede cambiar la prioridad.")
+        if actor.get("role") not in {ROLE_OPERATOR, ROLE_ADMIN}:
+            raise TicketPermissionError("Tu rol no puede cambiar la prioridad.")
+        self._assert_operator_roster(actor)
         if priority not in PRIORITIES:
             raise TicketValidationError("Prioridad inválida.")
         ticket = self.get_ticket(actor, code)
@@ -739,14 +743,30 @@ class TicketService:
         return self._transition(ticket, actor, STATE_LOADING, ticket["job"].get("message"))
 
     def record_job_result(self, actor, code, *, success, observations=False, result=None, error=""):
-        if actor.get("role") not in {ROLE_SYSTEM, ROLE_ADMIN}:
-            raise TicketPermissionError("Solo el worker puede cerrar una carga.")
-        ticket = self.get_ticket(self.actor(actor.get("user"), ROLE_ADMIN), code)
+        if actor.get("role") not in {ROLE_SYSTEM, ROLE_OPERATOR, ROLE_ADMIN}:
+            raise TicketPermissionError("Tu rol no puede cerrar una carga.")
+        if actor.get("role") == ROLE_SYSTEM:
+            ticket = self.get_ticket(self.actor(actor.get("user"), ROLE_ADMIN), code)
+        else:
+            self._assert_operator_roster(actor)
+            ticket = self.get_ticket(actor, code)
+            self._assert_internal_owner(actor, ticket)
         target = STATE_COMPLETED_OBS if success and observations else STATE_COMPLETED if success else STATE_FAILED
         ticket["result"] = dict(result or {})
         if error:
             ticket["result"]["error"] = normalize_text(error)
         return self._transition(ticket, {**actor, "role": ROLE_SYSTEM}, target, error or "Job finalizado")
+
+    def cancel_ticket(self, actor, code, comment):
+        if actor.get("role") not in {ROLE_OPERATOR, ROLE_ADMIN}:
+            raise TicketPermissionError("Tu rol no puede eliminar solicitudes.")
+        self._assert_operator_roster(actor)
+        if not normalize_text(comment):
+            raise TicketValidationError("Indica el motivo de la eliminación.")
+        ticket = self.get_ticket(actor, code)
+        if ticket.get("status") in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_CANCELED}:
+            raise TicketValidationError("La solicitud ya está cerrada y no puede eliminarse.")
+        return self._transition(ticket, actor, STATE_CANCELED, f"Solicitud eliminada por Operaciones: {normalize_text(comment)}")
 
     def change_state(self, actor, code, target, comment=""):
         ticket = self.get_ticket(actor, code)
@@ -794,10 +814,15 @@ class TicketService:
         recipients = sorted({normalize_text(item).casefold() for item in recipients if normalize_text(item)})
         ticket.setdefault("notifications", []).append(self.notifier.notify(ticket, event, recipients, message))
 
-    @staticmethod
-    def _assert_internal_owner(actor, ticket, allow_take_unassigned=False):
+    def _assert_operator_roster(self, actor):
+        user = normalize_text(actor.get("user")).casefold()
+        if self.operator_users and user not in self.operator_users:
+            raise TicketPermissionError("Solo los responsables de carga autorizados pueden gestionar solicitudes.")
+
+    def _assert_internal_owner(self, actor, ticket, allow_take_unassigned=False):
         if actor.get("role") not in {ROLE_OPERATOR, ROLE_ADMIN}:
             raise TicketPermissionError("Tu rol no puede ejecutar esta acción interna.")
+        self._assert_operator_roster(actor)
         if actor.get("role") == ROLE_ADMIN:
             return
         assignee = normalize_text(ticket.get("assignee")).casefold()

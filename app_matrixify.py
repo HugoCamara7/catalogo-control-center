@@ -33,6 +33,7 @@ from ticket_system import (
     ROLE_OPERATOR,
     STATE_APPROVED,
     STATE_ASSIGNED,
+    STATE_CANCELED,
     STATE_COMPLETED,
     STATE_COMPLETED_OBS,
     STATE_CORRECTED,
@@ -14092,7 +14093,9 @@ def auth_access_scope(username):
     if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
         return ROLE_BRAND
     if normalized_username in set(TICKET_OPERATOR_USERS):
-        return ROLE_OPERATOR
+        # Hugo y Luis administran toda la aplicacion. Su permiso especial de
+        # bandeja de solicitudes se determina por identidad en current_ticket_actor.
+        return ROLE_ADMIN
     try:
         auth_config = dict(st.secrets.get("app_auth", {}))
     except Exception:
@@ -15132,16 +15135,6 @@ def main():
             render_ticket_inbox(service, ticket_actor, brand_view=True)
         else:
             render_commercial_input_center(forced_brands=allowed_brands, actor=ticket_actor)
-        return
-    if ticket_operator:
-        st.sidebar.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
-        with st.sidebar.container(key="operator_ticket_navigation"):
-            st.markdown("**Bandeja de solicitudes**")
-            st.caption("Revisión, observaciones, aprobación y carga simulada")
-        service, backend = get_ticket_service()
-        if backend == "local":
-            st.warning("Modo local de prueba: configura [ticketing] backend='github' para producción multiusuario.")
-        render_ticket_inbox(service, ticket_actor, brand_view=False)
         return
     render_allowed_brands_card(brand_config)
     nav_options = ["KPIs de catálogo", "Input comercial", "Solicitudes", "Carga de catálogo"]

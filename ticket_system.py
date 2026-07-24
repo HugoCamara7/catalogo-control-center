@@ -616,11 +616,14 @@ class MockJobAdapter:
     def start(self, ticket):
         return {
             "id": f"MOCK-{uuid.uuid4().hex[:12].upper()}",
-            "status": "queued",
+            "status": "awaiting_external_result",
             "created_at": utc_now(),
             "mode": "mock",
             "progress": 0,
-            "message": "Job simulado en cola. No se disparó GitHub Actions ni Shopify.",
+            "message": (
+                "Carga iniciada en el flujo operativo. Esperando el resultado "
+                "verificable del proceso externo."
+            ),
         }
 
 

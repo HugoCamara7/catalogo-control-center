@@ -15214,7 +15214,11 @@ def render_ticket_detail(service, actor, code):
     role = actor.get("role")
     # Comercial consulta únicamente el avance y resultado; las marcas conservan
     # sus flujos de corrección cuando una solicitud queda observada.
-    commercial_status_only = normalize_key(actor.get("user")) in COMMERCIAL_INPUT_ONLY_USERS
+    # El portal comercial solo requiere una comparación estable de correo; no
+    # depende del normalizador de columnas del catálogo.
+    commercial_status_only = clean_value(actor.get("user")).strip().lower() in {
+        clean_value(email).strip().lower() for email in COMMERCIAL_INPUT_ONLY_USERS
+    }
     if commercial_status_only:
         _render_ticket_public_status(ticket, status, status_label, summary, job, saved_result)
         return

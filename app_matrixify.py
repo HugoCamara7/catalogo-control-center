@@ -14554,27 +14554,21 @@ def render_ticket_styles():
     st.markdown(
         """
         <style>
-        .ticket-hero{padding:16px 18px;border:1px solid #D9E2EF;background:#fff;border-radius:12px;margin:0 0 12px}
-        .ticket-hero p{margin:0 0 5px;color:#2563EB;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:0}
-        .ticket-hero h1{margin:0;color:#0B1B46;font-size:23px;line-height:1.15}
-        .ticket-hero span{display:block;margin-top:5px;color:#64748B;font-size:13px}
+        .ticket-hero{padding:15px 18px;border:1px solid #D9E2EF;background:#fff;border-radius:12px;margin:0 0 12px}
+        .ticket-hero p{margin:0 0 5px;color:#2563EB;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.06em}
+        .ticket-hero h1{margin:0;color:#0B1B46;font-size:25px;line-height:1.15}.ticket-hero span{display:block;margin-top:5px;color:#64748B;font-size:13px}
         .ticket-kpi-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:0 0 12px}
-        .ticket-kpi-card{min-height:68px;padding:10px 11px;border:1px solid #D9E2EF;border-radius:10px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.04)}
-        .ticket-kpi-card small{display:block;min-height:27px;color:#40516E;font-size:11px;font-weight:800;line-height:1.2}
-        .ticket-kpi-card strong{display:block;margin-top:3px;color:#0B1B46;font-size:21px;line-height:1;font-weight:900}
-        .ticket-kpi-card.blue{border-color:#BFDBFE;background:#F8FBFF}.ticket-kpi-card.blue strong{color:#2563EB}
-        .ticket-kpi-card.amber{border-color:#FDE6BD;background:#FFFDF8}.ticket-kpi-card.amber strong{color:#C56A00}
-        .ticket-kpi-card.red{border-color:#FECACA;background:#FFF9F9}.ticket-kpi-card.red strong{color:#DC2626}
-        .ticket-kpi-card.green{border-color:#BBF7D0;background:#F7FFF9}.ticket-kpi-card.green strong{color:#15803D}
-        .ticket-kpi-card.slate{background:#fff}.ticket-filter-panel{padding:14px 16px 4px;border:1px solid #D9E2EF;border-radius:12px;background:#fff;margin:0 0 16px}
-        .ticket-filter-title{margin:0 0 8px;color:#0B1B46;font-size:15px;line-height:1.2}
-        .ticket-filter-panel h3{margin:0 0 8px;color:#0B1B46;font-size:15px}
+        .ticket-kpi-card{min-height:64px;padding:10px 11px;border:1px solid #D9E2EF;border-radius:10px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.04)}
+        .ticket-kpi-card small{display:block;min-height:24px;color:#40516E;font-size:10px;font-weight:850;line-height:1.2}.ticket-kpi-card strong{display:block;margin-top:3px;color:#0B1B46;font-size:20px;line-height:1;font-weight:900}
+        .ticket-kpi-card.blue{border-color:#BFDBFE;background:#F8FBFF}.ticket-kpi-card.blue strong{color:#2563EB}.ticket-kpi-card.amber{border-color:#FDE6BD;background:#FFFDF8}.ticket-kpi-card.amber strong{color:#C56A00}.ticket-kpi-card.red{border-color:#FECACA;background:#FFF9F9}.ticket-kpi-card.red strong{color:#DC2626}.ticket-kpi-card.green{border-color:#BBF7D0;background:#F7FFF9}.ticket-kpi-card.green strong{color:#15803D}.ticket-kpi-card.slate{background:#fff}
+        .ticket-filter-panel{padding:12px 14px 4px;border:1px solid #D9E2EF;border-radius:12px;background:#fff;margin:0 0 12px}.ticket-filter-title{margin:0 0 8px;color:#0B1B46;font-size:15px;line-height:1.2}.ticket-filter-panel h3{margin:0 0 8px;color:#0B1B46;font-size:15px}
         .ticket-state{display:inline-flex;align-items:center;min-height:28px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:850;border:1px solid #CBD5E1;background:#F8FAFC;color:#334155}
         .ticket-state.blue{background:#EFF6FF;border-color:#BFDBFE;color:#1D4ED8}
         .ticket-state.yellow{background:#FFFBEB;border-color:#FDE68A;color:#A16207}
         .ticket-state.green{background:#ECFDF5;border-color:#A7F3D0;color:#047857}
         .ticket-state.red{background:#FEF2F2;border-color:#FECACA;color:#B91C1C}
         .ticket-state.gray{background:#F1F5F9;border-color:#CBD5E1;color:#475569}
+        .ticket-workspace{display:grid;grid-template-columns:minmax(280px,34%) minmax(0,1fr);gap:12px;align-items:start}.ticket-list-panel,.ticket-detail-panel{border:1px solid #D9E2EF;border-radius:12px;background:#fff}.ticket-list-panel{padding:10px;max-height:calc(100vh - 250px);overflow:auto}.ticket-list-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:2px 3px 9px}.ticket-list-title strong{color:#0B1B46;font-size:14px}.ticket-list-title span{color:#64748B;font-size:12px}.ticket-list-card{width:100%;padding:11px!important;margin:0 0 7px!important;border:1px solid #E2E8F0!important;border-radius:10px!important;background:#fff!important;text-align:left!important;box-shadow:none!important;color:#0B1B46!important}.ticket-list-card:hover{border-color:#93C5FD!important;background:#F8FBFF!important}.ticket-list-card.active{border-color:#2563EB!important;background:#EFF6FF!important;box-shadow:0 0 0 1px #2563EB!important}.ticket-list-card .ticket-code{display:block;font-size:12px;font-weight:900}.ticket-list-card .ticket-list-main{display:flex;justify-content:space-between;gap:8px;margin-top:5px;font-size:13px;font-weight:800}.ticket-list-card .ticket-list-meta{display:block;margin-top:5px;color:#64748B;font-size:11px;line-height:1.35}.ticket-list-card .ticket-list-meta b{color:#334155;font-weight:800}
         .ticket-detail-header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px 12px;border:1px solid #D9E2EF;border-radius:12px 12px 0 0;background:#fff}
         .ticket-detail-header h2{margin:0;color:#0B1B46;font-size:19px;line-height:1.15}
         .ticket-detail-header p{margin:5px 0 0;color:#64748B;font-size:13px}
@@ -14600,8 +14594,9 @@ def render_ticket_styles():
         .ticket-result-grid div{padding:10px;border:1px solid #E2E8F0;border-radius:9px;background:#F8FAFC}
         .ticket-result-grid small{display:block;color:#64748B;font-size:10px;font-weight:800;text-transform:uppercase}
         .ticket-result-grid strong{display:block;margin-top:4px;color:#0B1B46;font-size:19px}
-        @media(max-width:1100px){.ticket-kpi-grid,.ticket-result-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
-        @media(max-width:900px){.ticket-summary,.ticket-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ticket-detail-header{align-items:flex-start;flex-direction:column}}
+        .ticket-chip-row{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}.ticket-chip{display:inline-flex;align-items:center;min-height:24px;padding:3px 8px;border:1px solid #E2E8F0;border-radius:999px;background:#F8FAFC;color:#475569;font-size:11px;font-weight:750}.ticket-stepper{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin:0 0 12px;padding:10px;border:1px solid #E2E8F0;border-radius:10px;background:#F8FAFC}.ticket-step{position:relative;min-height:38px;padding:4px 5px;color:#94A3B8;font-size:10px;font-weight:850;text-align:center;line-height:1.2}.ticket-step:before{content:'';display:block;width:17px;height:17px;margin:0 auto 4px;border-radius:50%;background:#CBD5E1;border:3px solid #fff;box-shadow:0 0 0 1px #CBD5E1}.ticket-step.done,.ticket-step.active{color:#0B1B46}.ticket-step.done:before{background:#16A34A;box-shadow:0 0 0 1px #16A34A}.ticket-step.active:before{background:#2563EB;box-shadow:0 0 0 1px #2563EB}.ticket-compact-alert{padding:10px 12px;border:1px solid #DBEAFE;border-radius:9px;background:#F8FBFF;color:#1E3A5F;font-size:12px;line-height:1.4;margin:8px 0}.ticket-tab-note{margin:0 0 9px;color:#64748B;font-size:12px}
+        @media(max-width:1100px){.ticket-kpi-grid,.ticket-result-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.ticket-workspace{grid-template-columns:1fr}.ticket-list-panel{max-height:360px}}
+        @media(max-width:900px){.ticket-summary,.ticket-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ticket-detail-header{align-items:flex-start;flex-direction:column}.ticket-stepper{grid-template-columns:repeat(3,minmax(0,1fr))}}
         </style>
         """,
         unsafe_allow_html=True,
@@ -14925,22 +14920,68 @@ def render_full_load_ticket_queue(brand_config):
             _render_full_load_ticket_close(service, actor, ticket, latest_version)
 
 
+def _ticket_workflow_step(status):
+    if status in {STATE_PENDING, STATE_ASSIGNED}:
+        return 1
+    if status in {STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED}:
+        return 2
+    if status in {STATE_APPROVED, STATE_DRY_RUN, STATE_READY_EXECUTE}:
+        return 3
+    if status == STATE_LOADING:
+        return 4
+    if status == STATE_VALIDATING:
+        return 5
+    if status in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_REJECTED, STATE_CANCELED, STATE_FAILED}:
+        return 6
+    return 1
+
+
+def _render_ticket_stepper(status):
+    steps = ["Solicitud", "Revisión", "Aprobación", "Carga", "Validación", "Finalizada"]
+    current = _ticket_workflow_step(status)
+    rendered = []
+    for index, label in enumerate(steps):
+        position = index + 1
+        tone = "done" if position < current else ("active" if position == current else "")
+        rendered.append(f'<div class="ticket-step {tone}"><b>{index + 1}</b><span>{escape(label)}</span></div>')
+    st.markdown(f'<div class="ticket-stepper">{"".join(rendered)}</div>', unsafe_allow_html=True)
+
+
+def _ticket_card_html(ticket, selected=False):
+    status = clean_value(ticket.get("status"))
+    summary = ticket.get("summary") if isinstance(ticket.get("summary"), dict) else {}
+    code = clean_value(ticket.get("code"))
+    age = f"{ticket_age_hours(ticket):.0f} h"
+    status_label = STATE_LABELS.get(status, status)
+    priority = PRIORITY_LABELS.get(ticket.get("priority"), ticket.get("priority", "Normal"))
+    active_class = " selected" if selected else ""
+    return (
+        f'<div class="ticket-list-card{active_class}">'
+        f'<div class="ticket-card-top"><strong>{escape(code)}</strong>'
+        f'<span class="ticket-state {_ticket_state_color(status)}">{escape(status_label)}</span></div>'
+        f'<div class="ticket-card-brand">{escape(clean_value(ticket.get("brand")) or "Sin marca")}</div>'
+        f'<div class="ticket-chip-row"><span>{escape(priority)}</span><span>{escape(ticket.get("assignee") or "Sin asignar")}</span>'
+        f'<span>{safe_int_value(summary.get("products"), 0)} productos</span><span>{escape(age)}</span></div>'
+        f'<small>{escape(clean_value(ticket.get("requester")))}</small></div>'
+    )
+
+
 def render_ticket_inbox(service, actor, brand_view=False):
+    """Bandeja master-detail: conserva el servicio de tickets y simplifica su operación."""
     render_ticket_styles()
-    widget_key = f"ticket_open_{actor.get('role')}"
+    role_key = clean_value(actor.get("role")) or "user"
     deleted_code = clean_value(st.session_state.pop("_catalog_ticket_deleted", ""))
     if deleted_code:
         st.session_state.pop("selected_catalog_ticket", None)
-        st.session_state.pop(widget_key, None)
 
-    title = "Mis solicitudes de catálogo" if brand_view else "Centro de solicitudes de catálogo"
+    title = "Mis solicitudes" if brand_view else "Solicitudes de catálogo"
     subtitle = (
-        "Consulta tus archivos, observaciones y resultados."
+        "Consulta el avance, las observaciones y el resultado de tus solicitudes."
         if brand_view
-        else "Prioriza, asigna y controla cada solicitud desde su recepción hasta el cierre."
+        else "Revisa, asigna y cierra solicitudes sin perder trazabilidad."
     )
     st.markdown(
-        f'<div class="ticket-hero"><p>Flujo controlado</p><h1>{escape(title)}</h1><span>{escape(subtitle)}</span></div>',
+        f'<div class="ticket-hero"><p>Gestión de catálogo</p><h1>{escape(title)}</h1><span>{escape(subtitle)}</span></div>',
         unsafe_allow_html=True,
     )
     if deleted_code:
@@ -14950,74 +14991,73 @@ def render_ticket_inbox(service, actor, brand_view=False):
     except TicketError as exc:
         st.error(f"No se pudo leer la bandeja: {exc}")
         return
-    actor_user = clean_value(actor.get("user")).casefold()
-    recent_notifications = []
-    for ticket in all_tickets:
-        for notification in ticket.get("notifications", []):
-            recipients = {clean_value(value).casefold() for value in notification.get("recipients", [])}
-            if not recipients or actor_user in recipients or actor.get("role") == ROLE_ADMIN:
-                recent_notifications.append({
-                    "Fecha": clean_value(notification.get("created_at")).replace("T", " ")[:16],
-                    "Ticket": ticket.get("code"),
-                    "Mensaje": notification.get("message"),
-                    "Canal": "Interna" if notification.get("channel") == "internal" else notification.get("channel"),
-                })
-    if recent_notifications:
-        recent_notifications = sorted(recent_notifications, key=lambda item: item["Fecha"], reverse=True)[:20]
-        with st.expander(f"Notificaciones recientes ({len(recent_notifications)})"):
-            st.dataframe(pd.DataFrame(recent_notifications), use_container_width=True, hide_index=True)
+
+    quick_key = f"ticket_quick_filter_{role_key}"
+    if quick_key not in st.session_state:
+        st.session_state[quick_key] = "all"
     if not brand_view:
-        states = [ticket.get("status") for ticket in all_tickets]
+        states = [item.get("status") for item in all_tickets]
         kpis = [
-            ("Pendientes", states.count(STATE_PENDING), "blue"),
-            ("Sin asignar", sum(1 for item in all_tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_REJECTED}), "amber"),
-            ("En revisión", states.count(STATE_REVIEW), "amber"),
-            ("En carga", states.count(STATE_LOADING), "blue"),
-            ("Completados", states.count(STATE_COMPLETED) + states.count(STATE_COMPLETED_OBS), "green"),
-            ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets), "red"),
+            ("Pendientes", states.count(STATE_PENDING), "pending"),
+            ("Sin asignar", sum(1 for item in all_tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_REJECTED, STATE_CANCELED}), "unassigned"),
+            ("En revisión", sum(1 for value in states if value in {STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED}), "review"),
+            ("En carga", sum(1 for value in states if value in {STATE_LOADING, STATE_VALIDATING}), "loading"),
+            ("Completados", sum(1 for value in states if value in {STATE_COMPLETED, STATE_COMPLETED_OBS}), "completed"),
+            ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets), "overdue"),
         ]
-        render_ticket_kpi_grid(kpis)
-    with st.expander("Buscar y filtrar solicitudes", expanded=False):
-        filter_cols = st.columns([1.2, 1, 1, 1, 1.2])
-        brands = sorted({clean_value(item.get("brand")) for item in all_tickets if clean_value(item.get("brand"))})
-        statuses = sorted({item.get("status") for item in all_tickets if item.get("status")})
-        assignees = sorted({clean_value(item.get("assignee")) for item in all_tickets if clean_value(item.get("assignee"))})
+        kpi_cols = st.columns(6, gap="small")
+        for column, (label, value, filter_value) in zip(kpi_cols, kpis):
+            active = st.session_state[quick_key] == filter_value
+            if column.button(f"{label}\n{value}", key=f"ticket_kpi_{role_key}_{filter_value}", use_container_width=True, type="primary" if active else "secondary"):
+                st.session_state[quick_key] = "all" if active else filter_value
+                st.rerun()
+
+    brands = sorted({clean_value(item.get("brand")) for item in all_tickets if clean_value(item.get("brand"))})
+    statuses = sorted({item.get("status") for item in all_tickets if item.get("status")})
+    assignees = sorted({clean_value(item.get("assignee")) for item in all_tickets if clean_value(item.get("assignee"))})
+    sites = sorted({site for item in all_tickets for site in item.get("sites", []) if clean_value(site)})
+    load_type_labels = {"complete": "Completa", "partial": "Parcial"}
+    load_types = sorted({clean_value(item.get("load_type")) for item in all_tickets if clean_value(item.get("load_type"))})
+    filter_prefix = f"ticket_filter_{role_key}"
+    clear_keys = [
+        f"{filter_prefix}_search", f"{filter_prefix}_brand", f"{filter_prefix}_state",
+        f"{filter_prefix}_priority", f"{filter_prefix}_assignee", f"{filter_prefix}_site",
+        f"{filter_prefix}_type", f"{filter_prefix}_from", f"{filter_prefix}_to",
+    ]
+    filter_head, clear_head = st.columns([8, 1])
+    with clear_head:
+        if st.button("Limpiar", key=f"{filter_prefix}_clear", use_container_width=True):
+            for key in clear_keys:
+                st.session_state.pop(key, None)
+            st.session_state[quick_key] = "all"
+            st.rerun()
+    with filter_head:
+        filter_cols = st.columns([1.45, 1, 1, 1, 1.1], gap="small")
         with filter_cols[0]:
-            search = st.text_input("Buscar", placeholder="Ticket, Mod-Col, archivo o usuario", key=f"ticket_search_{actor.get('role')}")
+            search = st.text_input("Buscar", placeholder="Código, archivo o solicitante", key=f"{filter_prefix}_search")
         with filter_cols[1]:
-            brand_filter = st.selectbox("Marca", ["Todas"] + brands, key=f"ticket_brand_filter_{actor.get('role')}")
+            brand_filter = st.selectbox("Marca", ["Todas"] + brands, key=f"{filter_prefix}_brand")
         with filter_cols[2]:
             state_label_options = ["Todos"] + [STATE_LABELS.get(value, value) for value in statuses]
-            state_label = st.selectbox("Estado", state_label_options, key=f"ticket_state_filter_{actor.get('role')}")
+            state_label = st.selectbox("Estado", state_label_options, key=f"{filter_prefix}_state")
         with filter_cols[3]:
-            priority_label = st.selectbox("Prioridad", ["Todas"] + [PRIORITY_LABELS[key] for key in PRIORITIES], key=f"ticket_priority_filter_{actor.get('role')}")
+            priority_label = st.selectbox("Prioridad", ["Todas"] + [PRIORITY_LABELS[key] for key in PRIORITIES], key=f"{filter_prefix}_priority")
         with filter_cols[4]:
-            assignee_filter = st.selectbox("Responsable", ["Todos"] + assignees, key=f"ticket_assignee_filter_{actor.get('role')}")
-        secondary_filters = st.columns([1, 1, 1, 1])
-        sites = sorted({site for item in all_tickets for site in item.get("sites", []) if clean_value(site)})
-        load_types = sorted({clean_value(item.get("load_type")) for item in all_tickets if clean_value(item.get("load_type"))})
-        with secondary_filters[0]:
-            site_filter = st.selectbox("Sitio", ["Todos"] + sites, key=f"ticket_site_filter_{actor.get('role')}")
-        with secondary_filters[1]:
-            load_type_labels = {"complete": "Completa", "partial": "Parcial"}
-            load_type_label = st.selectbox(
-                "Tipo de carga",
-                ["Todas"] + [load_type_labels.get(value, value.title()) for value in load_types],
-                key=f"ticket_load_filter_{actor.get('role')}",
-            )
-        with secondary_filters[2]:
-            date_from = st.date_input("Desde", value=None, key=f"ticket_date_from_{actor.get('role')}")
-        with secondary_filters[3]:
-            date_to = st.date_input("Hasta", value=None, key=f"ticket_date_to_{actor.get('role')}")
-    state_filter = ""
-    if state_label != "Todos":
-        state_filter = next((key for key, value in STATE_LABELS.items() if value == state_label), "")
-    priority_filter = ""
-    if priority_label != "Todas":
-        priority_filter = next((key for key, value in PRIORITY_LABELS.items() if value == priority_label), "")
-    load_type_filter = ""
-    if load_type_label != "Todas":
-        load_type_filter = next((key for key, value in load_type_labels.items() if value == load_type_label), "")
+            assignee_filter = st.selectbox("Responsable", ["Todos"] + assignees, key=f"{filter_prefix}_assignee")
+    with st.expander("Más filtros", expanded=False):
+        secondary = st.columns(4, gap="small")
+        with secondary[0]:
+            site_filter = st.selectbox("Sitio", ["Todos"] + sites, key=f"{filter_prefix}_site")
+        with secondary[1]:
+            load_type_label = st.selectbox("Tipo de carga", ["Todas"] + [load_type_labels.get(value, value.title()) for value in load_types], key=f"{filter_prefix}_type")
+        with secondary[2]:
+            date_from = st.date_input("Desde", value=None, key=f"{filter_prefix}_from")
+        with secondary[3]:
+            date_to = st.date_input("Hasta", value=None, key=f"{filter_prefix}_to")
+
+    state_filter = next((key for key, value in STATE_LABELS.items() if value == state_label), "") if state_label != "Todos" else ""
+    priority_filter = next((key for key, value in PRIORITY_LABELS.items() if value == priority_label), "") if priority_label != "Todas" else ""
+    load_type_filter = next((key for key, value in load_type_labels.items() if value == load_type_label), "") if load_type_label != "Todas" else ""
     filters = {
         "brand": "" if brand_filter == "Todas" else brand_filter,
         "status": state_filter,
@@ -15033,21 +15073,39 @@ def render_ticket_inbox(service, actor, brand_view=False):
     except TicketError as exc:
         st.error(str(exc))
         return
+    quick_filter = st.session_state.get(quick_key, "all")
+    if quick_filter == "pending":
+        tickets = [item for item in tickets if item.get("status") == STATE_PENDING]
+    elif quick_filter == "unassigned":
+        tickets = [item for item in tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_REJECTED, STATE_CANCELED}]
+    elif quick_filter == "review":
+        tickets = [item for item in tickets if item.get("status") in {STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED}]
+    elif quick_filter == "loading":
+        tickets = [item for item in tickets if item.get("status") in {STATE_LOADING, STATE_VALIDATING}]
+    elif quick_filter == "completed":
+        tickets = [item for item in tickets if item.get("status") in {STATE_COMPLETED, STATE_COMPLETED_OBS}]
+    elif quick_filter == "overdue":
+        tickets = [item for item in tickets if ticket_is_overdue(item)]
+
     if not tickets:
-        st.info("No hay solicitudes que coincidan con los filtros.")
+        st.info("No hay solicitudes que coincidan con los filtros actuales.")
         return
-    table_df = _ticket_table(tickets)
-    st.dataframe(table_df, use_container_width=True, hide_index=True)
-    ticket_codes = [ticket.get("code") for ticket in tickets]
-    if st.session_state.get(widget_key) not in ticket_codes:
-        st.session_state.pop(widget_key, None)
-    if st.session_state.get("selected_catalog_ticket") not in ticket_codes:
-        st.session_state.pop("selected_catalog_ticket", None)
-    selected_default = st.session_state.get("selected_catalog_ticket")
-    selected_index = ticket_codes.index(selected_default) if selected_default in ticket_codes else 0
-    selected_code = st.selectbox("Abrir solicitud", ticket_codes, index=selected_index, key=widget_key)
-    st.session_state["selected_catalog_ticket"] = selected_code
-    render_ticket_detail(service, actor, selected_code)
+    ticket_codes = [clean_value(ticket.get("code")) for ticket in tickets]
+    selected_code = clean_value(st.session_state.get("selected_catalog_ticket"))
+    if selected_code not in ticket_codes:
+        selected_code = ticket_codes[0]
+        st.session_state["selected_catalog_ticket"] = selected_code
+    list_col, detail_col = st.columns([0.38, 0.62], gap="large")
+    with list_col:
+        st.markdown(f'<div class="ticket-list-panel"><strong>Solicitudes</strong><span>{len(tickets)} encontradas</span></div>', unsafe_allow_html=True)
+        for ticket in tickets:
+            code = clean_value(ticket.get("code"))
+            st.markdown(_ticket_card_html(ticket, selected=code == selected_code), unsafe_allow_html=True)
+            if st.button("Ver detalle", key=f"ticket_card_{role_key}_{code}", use_container_width=True, type="primary" if code == selected_code else "secondary"):
+                st.session_state["selected_catalog_ticket"] = code
+                st.rerun()
+    with detail_col:
+        render_ticket_detail(service, actor, selected_code)
 
 
 def _render_ticket_public_status(ticket, status, status_label, summary, job, saved_result):
@@ -15082,6 +15140,65 @@ def _render_ticket_public_status(ticket, status, status_label, summary, job, sav
         st.info(message)
 
 
+def _render_ticket_execution_summary(ticket, summary, job, saved_result, code, latest_version, status, status_label):
+    """Renderiza el avance y el cierre sin depender de controles de sesión."""
+    total = max(
+        safe_int_value(job.get("total"), 0),
+        safe_int_value(summary.get("products"), 0),
+    )
+    processed = safe_int_value(job.get("processed"), 0)
+    progress = safe_int_value(job.get("progress"), 0)
+    if total:
+        progress = max(progress, round((processed / total) * 100))
+    progress = max(0, min(100, progress))
+
+    status_detail = clean_value(job.get("message")) or clean_value(ticket.get("public_result", {}).get("message"))
+    if not status_detail:
+        status_detail = "Aún no hay un proceso externo iniciado para esta solicitud."
+    st.markdown(
+        f'<div class="ticket-compact-alert"><strong>{escape(status_label)}</strong><br>{escape(status_detail)}</div>',
+        unsafe_allow_html=True,
+    )
+    metrics = st.columns(4)
+    metrics[0].metric("Productos", total)
+    metrics[1].metric("Procesados", processed)
+    metrics[2].metric("Pendientes", max(total - processed, 0))
+    metrics[3].metric("Avance", f"{progress}%")
+    if job:
+        st.progress(progress / 100.0)
+
+    if not saved_result:
+        return
+
+    result = saved_result
+    public_result = ticket.get("public_result", {})
+    processed_result = safe_int_value(public_result.get("processed"), safe_int_value(result.get("processed"), processed))
+    errors_result = safe_int_value(public_result.get("errors"), safe_int_value(result.get("errors"), 0))
+    warnings_result = safe_int_value(result.get("warnings"), safe_int_value(result.get("partial"), 0))
+    created_result = safe_int_value(result.get("created"), safe_int_value(result.get("created_products"), 0))
+    updated_result = safe_int_value(result.get("updated"), safe_int_value(result.get("updated_products"), 0))
+    successful_result = safe_int_value(result.get("successful"), safe_int_value(result.get("ok"), created_result + updated_result))
+    if not successful_result and processed_result:
+        successful_result = max(processed_result - errors_result - warnings_result, 0)
+    success_rate = round((successful_result / processed_result) * 100) if processed_result else 0
+    st.markdown(
+        f'''<div class="ticket-result-grid">
+            <div><small>Correctos</small><strong>{successful_result}</strong></div>
+            <div><small>Actualizados</small><strong>{updated_result}</strong></div>
+            <div><small>Advertencias</small><strong>{warnings_result}</strong></div>
+            <div><small>Fallidos</small><strong>{errors_result}</strong></div>
+            <div><small>Éxito</small><strong>{success_rate}%</strong></div>
+        </div>''',
+        unsafe_allow_html=True,
+    )
+    st.download_button(
+        "Descargar reporte final",
+        dataframe_to_excel_bytes({"Resultado": pd.DataFrame([result])}),
+        file_name=f"{code}_resultado_final.xlsx",
+        key=f"ticket_final_report_{code}",
+    )
+
+
 def render_ticket_detail(service, actor, code):
     try:
         ticket = service.get_ticket(actor, code)
@@ -15107,24 +15224,25 @@ def render_ticket_detail(service, actor, code):
           <div><p>Solicitud de catálogo</p><h2>{escape(ticket.get('code', ''))}</h2></div>
           <span class="ticket-state {status_color}">{escape(status_label)}</span>
         </div>
-        <div class="ticket-detail-shell">
-          <div class="ticket-summary">
-            <div><small>Marca y sitios</small><strong>{escape(ticket.get('brand',''))}</strong><span>{escape(', '.join(ticket.get('sites', [])))}</span></div>
-            <div><small>Productos</small><strong>{int(summary.get('products',0))}</strong><span>{int(summary.get('model_colors',0))} modelo-color</span></div>
-            <div><small>Solicitante</small><strong style="font-size:14px">{escape(ticket.get('requester',''))}</strong><span>{escape(ticket.get('filename',''))}</span></div>
-            <div><small>Responsable</small><strong style="font-size:14px">{escape(ticket.get('assignee') or 'Sin asignar')}</strong><span>{escape(PRIORITY_LABELS.get(ticket.get('priority'), ticket.get('priority','')))}</span></div>
-          </div>
+        <div class="ticket-chip-row ticket-detail-chips">
+          <span>{escape(ticket.get('brand') or 'Sin marca')}</span>
+          <span>{escape(', '.join(ticket.get('sites', [])) or 'Sin sitio')}</span>
+          <span>{safe_int_value(summary.get('products'), 0)} productos</span>
+          <span>{escape(PRIORITY_LABELS.get(ticket.get('priority'), ticket.get('priority','Normal')))}</span>
+          <span>{escape(ticket.get('assignee') or 'Sin asignar')}</span>
+          <span>{escape(ticket.get('requester') or 'Sin solicitante')}</span>
         </div>
         """,
         unsafe_allow_html=True,
     )
     latest_version = (ticket.get("versions") or [{}])[-1]
-    st.markdown(
-        f'<p class="ticket-info-line">Versión validada {latest_version.get("number", 1)} de {len(ticket.get("versions", []))} · '
-        f'Hash {escape(clean_value(latest_version.get("hash"))[:12])} · Plantilla {escape(clean_value(ticket.get("template_version")))}</p>',
-        unsafe_allow_html=True,
-    )
-    with st.expander("Vista previa de la solicitud", expanded=False):
+    _render_ticket_stepper(status)
+    alert_message = clean_value(job.get("message")) or clean_value(ticket.get("public_result", {}).get("message"))
+    if not alert_message:
+        alert_message = "Solicitud lista para gestión operativa." if status in {STATE_PENDING, STATE_ASSIGNED, STATE_REVIEW} else status_label
+    st.markdown(f'<div class="ticket-compact-alert">{escape(alert_message)}</div>', unsafe_allow_html=True)
+    tab_summary, tab_products, tab_files, tab_activity = st.tabs(["Resumen", "Productos", "Archivo y validación", "Actividad"])
+    with tab_products:
         preview_cols = st.columns(3)
         preview_cols[0].metric("Productos nuevos", int(summary.get("new_products", 0)))
         preview_cols[1].metric("Productos a actualizar", int(summary.get("updated_products", 0)))
@@ -15139,7 +15257,7 @@ def render_ticket_detail(service, actor, code):
             )
         else:
             st.caption("El detalle completo está disponible en el archivo de validación descargable.")
-    with st.expander("Archivos y validación", expanded=False):
+    with tab_files:
         download_cols = st.columns(3)
         try:
             if latest_version.get("input_path"):
@@ -15158,80 +15276,21 @@ def render_ticket_detail(service, actor, code):
                 )
         except TicketError as exc:
             st.warning(f"No se pudo descargar un adjunto: {exc}")
-    if ticket.get("warnings"):
-        with st.expander(f"Advertencias ({len(ticket['warnings'])})"):
-            for warning in ticket["warnings"][:100]:
-                st.write(f"- {warning}")
-    if ticket.get("observations"):
-        with st.expander(f"Observaciones activas ({len(ticket['observations'])})", expanded=status == STATE_OBSERVED):
-            observations_df = pd.DataFrame(ticket["observations"])
-            if not observations_df.empty:
-                st.dataframe(observations_df, use_container_width=True, hide_index=True)
-    if job:
-        total_job = max(
-            safe_int_value(job.get("total"), 0),
-            safe_int_value(summary.get("products"), 0),
-        )
-        processed_job = safe_int_value(job.get("processed"), 0)
-        progress = safe_int_value(job.get("progress"), 0)
-        if total_job:
-            progress = max(progress, round((processed_job / total_job) * 100))
-        progress = max(0, min(100, progress))
-        st.markdown(
-            '<div class="ticket-process"><strong>Seguimiento de carga</strong>'
-            '<span>Registra el inicio y el cierre una vez verificada la carga en Shopify.</span></div>',
-            unsafe_allow_html=True,
-        )
-        st.progress(progress / 100.0)
+        if ticket.get("warnings"):
+            with st.expander(f"Advertencias ({len(ticket['warnings'])})"):
+                for warning in ticket["warnings"][:100]:
+                    st.write(f"- {warning}")
+        if ticket.get("observations"):
+            with st.expander(f"Observaciones activas ({len(ticket['observations'])})", expanded=status == STATE_OBSERVED):
+                observations_df = pd.DataFrame(ticket["observations"])
+                if not observations_df.empty:
+                    st.dataframe(observations_df, use_container_width=True, hide_index=True)
+    with tab_summary:
         st.caption(
-            f"{processed_job}/{total_job or '—'} productos procesados · {progress}%"
+            f"Versión {latest_version.get('number', 1)} de {len(ticket.get('versions', []))} · "
+            f"Archivo: {clean_value(latest_version.get('filename')) or clean_value(ticket.get('filename')) or 'Sin archivo'}"
         )
-    if saved_result:
-        result = saved_result
-        public_result = ticket.get("public_result", {})
-        result_status = clean_value(public_result.get("status")) or status_label
-        result_message = clean_value(public_result.get("message")) or clean_value(result.get("message"))
-        st.markdown("#### Cierre de la solicitud")
-        if status == STATE_COMPLETED:
-            st.success(
-                f"{result_status}. El archivo quedó registrado como cargado"
-                + (f": {result_message}" if result_message else ".")
-            )
-        elif status == STATE_COMPLETED_OBS:
-            st.warning(
-                f"{result_status}. La carga terminó y conserva observaciones"
-                + (f": {result_message}" if result_message else ".")
-            )
-        processed_result = safe_int_value(public_result.get("processed"), safe_int_value(result.get("processed"), 0))
-        errors_result = safe_int_value(public_result.get("errors"), safe_int_value(result.get("errors"), 0))
-        warnings_result = safe_int_value(result.get("warnings"), safe_int_value(result.get("partial"), 0))
-        created_result = safe_int_value(result.get("created"), safe_int_value(result.get("created_products"), 0))
-        updated_result = safe_int_value(result.get("updated"), safe_int_value(result.get("updated_products"), 0))
-        successful_result = safe_int_value(result.get("successful"), safe_int_value(result.get("ok"), created_result + updated_result))
-        if not successful_result and processed_result:
-            successful_result = max(processed_result - errors_result - warnings_result, 0)
-        success_rate = round((successful_result / processed_result) * 100) if processed_result else 0
-        st.markdown(
-            f'''<div class="ticket-result-grid">
-                <div><small>Productos totales</small><strong>{processed_result}</strong></div>
-                <div><small>Cargados correctamente</small><strong>{successful_result}</strong></div>
-                <div><small>Actualizados</small><strong>{updated_result}</strong></div>
-                <div><small>Con advertencias</small><strong>{warnings_result}</strong></div>
-                <div><small>Fallidos</small><strong>{errors_result}</strong></div>
-                <div><small>Éxito</small><strong>{success_rate}%</strong></div>
-            </div>''',
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"Archivo: {clean_value(result.get('filename')) or latest_version.get('filename') or ticket.get('filename') or 'Sin nombre'}"
-            f" · Finalizado por: {clean_value(result.get('closed_by')) or 'Operaciones'}"
-        )
-        download_cols[2].download_button(
-            "Descargar reporte final",
-            dataframe_to_excel_bytes({"Resultado": pd.DataFrame([result])}),
-            file_name=f"{code}_resultado_final.xlsx",
-            key=f"ticket_final_report_{code}",
-        )
+        _render_ticket_execution_summary(ticket, summary, job, saved_result, code, latest_version, status, status_label)
     role = actor.get("role")
     if role == ROLE_BRAND and status == STATE_OBSERVED:
         st.markdown('<div class="ticket-section"><p class="ticket-section-label">Corrección requerida</p><h3>Enviar una nueva versión</h3><p>La versión anterior se conservará para mantener la trazabilidad.</p></div>', unsafe_allow_html=True)
@@ -15390,10 +15449,10 @@ def render_ticket_detail(service, actor, code):
                 key=f"close_ticket_confirmed_{code}",
             )
             has_incidents = close_outcome == "Completada con incidencias"
-            processed_count = max(
-                safe_int_value(job.get("processed"), 0),
-                safe_int_value(summary.get("products"), 0),
-            )
+            # El cierre solo se habilita cuando el proceso dejó evidencia real.
+            # El total solicitado no cuenta como un resultado verificable.
+            processed_count = safe_int_value(job.get("processed"), 0)
+            has_verifiable_result = bool(saved_result) or processed_count > 0
             close_result = {
                 "processed": processed_count,
                 "errors": 0,
@@ -15407,11 +15466,13 @@ def render_ticket_detail(service, actor, code):
                 "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
             }
             final_label = "Finalizar con incidencias" if has_incidents else "Finalizar solicitud de carga"
+            if not has_verifiable_result:
+                st.caption("El cierre se habilitará cuando la carga registre al menos un producto procesado o un resultado final.")
             if st.button(
                 final_label,
                 type="primary",
                 key=f"complete_load_{code}",
-                disabled=not close_confirmed,
+                disabled=not (close_confirmed and has_verifiable_result),
             ):
                 try:
                     service.record_job_result(
@@ -15438,30 +15499,31 @@ def render_ticket_detail(service, actor, code):
                         st.rerun()
                     except TicketError as exc:
                         st.error(str(exc))
-    st.markdown(
-        '<div class="ticket-section"><p class="ticket-section-label">Colaboración</p><h3>Comentarios</h3>'
-        '<p>Deja contexto para la marca y el equipo operativo. Cada mensaje queda registrado en el historial.</p></div>',
-        unsafe_allow_html=True,
-    )
-    comment = st.text_area("Agregar comentario", key=f"ticket_comment_{code}", label_visibility="collapsed", placeholder="Escribe un comentario para el equipo...")
-    if st.button("Publicar comentario", key=f"add_ticket_comment_{code}"):
-        try:
-            service.add_comment(actor, code, comment)
-            st.rerun()
-        except TicketError as exc:
-            st.error(str(exc))
-    comments = list(reversed(ticket.get("comments", [])))
-    if not comments:
-        st.markdown('<div class="ticket-comments-empty">Aún no hay comentarios para esta solicitud.</div>', unsafe_allow_html=True)
-    for item in comments:
-        st.markdown(f"**{escape(item.get('user',''))}** · {escape(item.get('created_at',''))}<br>{escape(item.get('message',''))}", unsafe_allow_html=True)
-    with st.expander("Historial y auditoría", expanded=False):
-        for event in reversed(ticket.get("events", [])):
-            state_text = STATE_LABELS.get(event.get("to_state"), event.get("to_state", ""))
-            st.markdown(
-                f'<div class="ticket-event"><strong>{escape(state_text or event.get("action", ""))}</strong><br><small>{escape(event.get("created_at", ""))} · {escape(event.get("user", ""))}</small><br>{escape(event.get("detail", ""))}</div>',
-                unsafe_allow_html=True,
-            )
+    with tab_activity:
+        st.markdown(
+            '<div class="ticket-section"><p class="ticket-section-label">Colaboración</p><h3>Actividad y comentarios</h3>'
+            '<p>Deja contexto para la marca y el equipo operativo. Cada mensaje queda registrado en el historial.</p></div>',
+            unsafe_allow_html=True,
+        )
+        comment = st.text_area("Agregar comentario", key=f"ticket_comment_{code}", label_visibility="collapsed", placeholder="Escribe un comentario para el equipo...")
+        if st.button("Publicar comentario", key=f"add_ticket_comment_{code}"):
+            try:
+                service.add_comment(actor, code, comment)
+                st.rerun()
+            except TicketError as exc:
+                st.error(str(exc))
+        comments = list(reversed(ticket.get("comments", [])))
+        if not comments:
+            st.markdown('<div class="ticket-comments-empty">Aún no hay comentarios para esta solicitud.</div>', unsafe_allow_html=True)
+        for item in comments:
+            st.markdown(f"**{escape(item.get('user',''))}** · {escape(item.get('created_at',''))}<br>{escape(item.get('message',''))}", unsafe_allow_html=True)
+        with st.expander("Historial y auditoría", expanded=False):
+            for event in reversed(ticket.get("events", [])):
+                state_text = STATE_LABELS.get(event.get("to_state"), event.get("to_state", ""))
+                st.markdown(
+                    f'<div class="ticket-event"><strong>{escape(state_text or event.get("action", ""))}</strong><br><small>{escape(event.get("created_at", ""))} · {escape(event.get("user", ""))}</small><br>{escape(event.get("detail", ""))}</div>',
+                    unsafe_allow_html=True,
+                )
 
 
 def main():

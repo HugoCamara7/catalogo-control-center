@@ -14554,9 +14554,9 @@ def render_ticket_styles():
     st.markdown(
         """
         <style>
-        .ticket-hero{padding:15px 18px;border:1px solid #D9E2EF;background:#fff;border-radius:12px;margin:0 0 12px}
-        .ticket-hero p{margin:0 0 5px;color:#2563EB;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.06em}
-        .ticket-hero h1{margin:0;color:#0B1B46;font-size:25px;line-height:1.15}.ticket-hero span{display:block;margin-top:5px;color:#64748B;font-size:13px}
+        .ticket-hero{padding:18px 20px;border:1px solid #D9E2EF;border-left:4px solid #2563EB;background:#fff;border-radius:12px;margin:0 0 12px;box-shadow:0 10px 24px rgba(15,23,42,.035)}
+        .ticket-hero p{margin:0 0 6px;color:#2563EB;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}
+        .ticket-hero h1{margin:0;color:#0B1B46;font-size:25px;line-height:1.15}.ticket-hero span{display:block;margin-top:6px;color:#64748B;font-size:13px}
         .ticket-kpi-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:0 0 12px}
         .ticket-kpi-card{min-height:64px;padding:10px 11px;border:1px solid #D9E2EF;border-radius:10px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.04)}
         .ticket-kpi-card small{display:block;min-height:24px;color:#40516E;font-size:10px;font-weight:850;line-height:1.2}.ticket-kpi-card strong{display:block;margin-top:3px;color:#0B1B46;font-size:20px;line-height:1;font-weight:900}
@@ -14569,6 +14569,7 @@ def render_ticket_styles():
         .ticket-state.red{background:#FEF2F2;border-color:#FECACA;color:#B91C1C}
         .ticket-state.gray{background:#F1F5F9;border-color:#CBD5E1;color:#475569}
         .ticket-workspace{display:grid;grid-template-columns:minmax(280px,34%) minmax(0,1fr);gap:12px;align-items:start}.ticket-list-panel,.ticket-detail-panel{border:1px solid #D9E2EF;border-radius:12px;background:#fff}.ticket-list-panel{padding:10px;max-height:calc(100vh - 250px);overflow:auto}.ticket-list-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:2px 3px 9px}.ticket-list-title strong{color:#0B1B46;font-size:14px}.ticket-list-title span{color:#64748B;font-size:12px}.ticket-list-card{width:100%;padding:11px!important;margin:0 0 7px!important;border:1px solid #E2E8F0!important;border-radius:10px!important;background:#fff!important;text-align:left!important;box-shadow:none!important;color:#0B1B46!important}.ticket-list-card:hover{border-color:#93C5FD!important;background:#F8FBFF!important}.ticket-list-card.active{border-color:#2563EB!important;background:#EFF6FF!important;box-shadow:0 0 0 1px #2563EB!important}.ticket-list-card .ticket-code{display:block;font-size:12px;font-weight:900}.ticket-list-card .ticket-list-main{display:flex;justify-content:space-between;gap:8px;margin-top:5px;font-size:13px;font-weight:800}.ticket-list-card .ticket-list-meta{display:block;margin-top:5px;color:#64748B;font-size:11px;line-height:1.35}.ticket-list-card .ticket-list-meta b{color:#334155;font-weight:800}
+        .ticket-inbox-heading{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:14px 0 9px}.ticket-inbox-heading h2{margin:0;color:#0B1B46;font-size:18px}.ticket-inbox-heading p{margin:4px 0 0;color:#64748B;font-size:12px}.ticket-inbox-count{display:inline-flex;align-items:center;justify-content:center;min-width:92px;padding:7px 10px;border:1px solid #BFDBFE;border-radius:999px;background:#F8FBFF;color:#1D4ED8;font-size:12px;font-weight:850}.ticket-request-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0 0 12px}.ticket-request-card{position:relative;min-height:128px;padding:13px 14px;border:1px solid #D9E2EF;border-radius:11px;background:#fff;box-shadow:0 8px 20px rgba(15,23,42,.035);overflow:hidden}.ticket-request-card:before{content:'';position:absolute;top:0;left:0;width:4px;height:100%;background:#94A3B8}.ticket-request-card.blue:before{background:#2563EB}.ticket-request-card.yellow:before{background:#D97706}.ticket-request-card.green:before{background:#16A34A}.ticket-request-card.red:before{background:#DC2626}.ticket-request-card.selected{border-color:#60A5FA;background:#F8FBFF;box-shadow:0 0 0 1px #60A5FA,0 10px 22px rgba(37,99,235,.08)}.ticket-request-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.ticket-request-code{display:block;color:#0B1B46;font-size:14px;font-weight:900;letter-spacing:.01em}.ticket-request-brand{margin:8px 0 5px;color:#1E3A5F;font-size:14px;font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ticket-request-meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}.ticket-request-meta span{display:inline-flex;align-items:center;min-height:22px;padding:2px 7px;border-radius:999px;background:#F1F5F9;color:#475569;font-size:10px;font-weight:800}.ticket-request-requester{display:block;margin-top:9px;color:#64748B;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ticket-quick-view{margin:0 0 8px}.ticket-quick-view .stSelectbox{max-width:310px}@media(max-width:1100px){.ticket-request-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:680px){.ticket-request-grid{grid-template-columns:1fr}.ticket-inbox-heading{align-items:flex-start;flex-direction:column}}
         .ticket-detail-header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px 12px;border:1px solid #D9E2EF;border-radius:12px 12px 0 0;background:#fff}
         .ticket-detail-header h2{margin:0;color:#0B1B46;font-size:19px;line-height:1.15}
         .ticket-detail-header p{margin:5px 0 0;color:#64748B;font-size:13px}
@@ -14954,15 +14955,17 @@ def _ticket_card_html(ticket, selected=False):
     age = f"{ticket_age_hours(ticket):.0f} h"
     status_label = STATE_LABELS.get(status, status)
     priority = PRIORITY_LABELS.get(ticket.get("priority"), ticket.get("priority", "Normal"))
+    tone = _ticket_state_color(status)
+    products = safe_int_value(summary.get("products"), 0)
+    product_label = f"{products} modelo-color" if products == 1 else f"{products} modelo-colores"
     active_class = " selected" if selected else ""
     return (
-        f'<div class="ticket-list-card{active_class}">'
-        f'<div class="ticket-card-top"><strong>{escape(code)}</strong>'
-        f'<span class="ticket-state {_ticket_state_color(status)}">{escape(status_label)}</span></div>'
-        f'<div class="ticket-card-brand">{escape(clean_value(ticket.get("brand")) or "Sin marca")}</div>'
-        f'<div class="ticket-chip-row"><span>{escape(priority)}</span><span>{escape(ticket.get("assignee") or "Sin asignar")}</span>'
-        f'<span>{safe_int_value(summary.get("products"), 0)} productos</span><span>{escape(age)}</span></div>'
-        f'<small>{escape(clean_value(ticket.get("requester")))}</small></div>'
+        f'<div class="ticket-request-card {tone}{active_class}">'
+        f'<div class="ticket-request-top"><strong class="ticket-request-code">{escape(code)}</strong>'
+        f'<span class="ticket-state {tone}">{escape(status_label)}</span></div>'
+        f'<div class="ticket-request-brand">{escape(clean_value(ticket.get("brand")) or "Sin marca")}</div>'
+        f'<div class="ticket-request-meta"><span>{escape(priority)}</span><span>{escape(product_label)}</span><span>{escape(age)}</span></div>'
+        f'<small class="ticket-request-requester">{escape(clean_value(ticket.get("requester")) or "Sin solicitante")}</small></div>'
     )
 
 
@@ -15005,12 +15008,30 @@ def render_ticket_inbox(service, actor, brand_view=False):
             ("Completados", sum(1 for value in states if value in {STATE_COMPLETED, STATE_COMPLETED_OBS}), "completed"),
             ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets), "overdue"),
         ]
-        kpi_cols = st.columns(6, gap="small")
-        for column, (label, value, filter_value) in zip(kpi_cols, kpis):
-            active = st.session_state[quick_key] == filter_value
-            if column.button(f"{label}\n{value}", key=f"ticket_kpi_{role_key}_{filter_value}", use_container_width=True, type="primary" if active else "secondary"):
-                st.session_state[quick_key] = "all" if active else filter_value
-                st.rerun()
+        kpi_tones = {
+            "pending": "blue", "unassigned": "yellow", "review": "yellow",
+            "loading": "blue", "completed": "green", "overdue": "red",
+        }
+        kpi_html = "".join(
+            f'<div class="ticket-kpi-card {kpi_tones.get(filter_value, "blue")}"><small>{escape(label)}</small><strong>{value}</strong></div>'
+            for label, value, filter_value in kpis
+        )
+        st.markdown(f'<div class="ticket-kpi-grid">{kpi_html}</div>', unsafe_allow_html=True)
+        quick_labels = {
+            "Todas": "all", "Pendientes": "pending", "Sin asignar": "unassigned",
+            "En revisión": "review", "En carga": "loading", "Completados": "completed", "Vencidos": "overdue",
+        }
+        quick_selector_key = f"{quick_key}_selector"
+        if quick_selector_key not in st.session_state:
+            current = st.session_state.get(quick_key, "all")
+            st.session_state[quick_selector_key] = next(
+                (label for label, value in quick_labels.items() if value == current), "Todas"
+            )
+        quick_label = st.selectbox(
+            "Vista rápida", list(quick_labels), key=quick_selector_key,
+            help="Filtra la bandeja por estado sin cambiar de pantalla.",
+        )
+        st.session_state[quick_key] = quick_labels[quick_label]
 
     brands = sorted({clean_value(item.get("brand")) for item in all_tickets if clean_value(item.get("brand"))})
     statuses = sorted({item.get("status") for item in all_tickets if item.get("status")})
@@ -15023,6 +15044,7 @@ def render_ticket_inbox(service, actor, brand_view=False):
         f"{filter_prefix}_search", f"{filter_prefix}_brand", f"{filter_prefix}_state",
         f"{filter_prefix}_priority", f"{filter_prefix}_assignee", f"{filter_prefix}_site",
         f"{filter_prefix}_type", f"{filter_prefix}_from", f"{filter_prefix}_to",
+        f"{quick_key}_selector",
     ]
     filter_head, clear_head = st.columns([8, 1])
     with clear_head:
@@ -15095,17 +15117,31 @@ def render_ticket_inbox(service, actor, brand_view=False):
     if selected_code not in ticket_codes:
         selected_code = ticket_codes[0]
         st.session_state["selected_catalog_ticket"] = selected_code
-    list_col, detail_col = st.columns([0.38, 0.62], gap="large")
-    with list_col:
-        st.markdown(f'<div class="ticket-list-panel"><strong>Solicitudes</strong><span>{len(tickets)} encontradas</span></div>', unsafe_allow_html=True)
-        for ticket in tickets:
-            code = clean_value(ticket.get("code"))
-            st.markdown(_ticket_card_html(ticket, selected=code == selected_code), unsafe_allow_html=True)
-            if st.button("Ver detalle", key=f"ticket_card_{role_key}_{code}", use_container_width=True, type="primary" if code == selected_code else "secondary"):
-                st.session_state["selected_catalog_ticket"] = code
-                st.rerun()
-    with detail_col:
-        render_ticket_detail(service, actor, selected_code)
+    st.markdown(
+        f'<div class="ticket-list-panel"><strong>Solicitudes encontradas</strong><span>{len(tickets)} activas en esta vista</span></div>',
+        unsafe_allow_html=True,
+    )
+    visible_cards = tickets[:12]
+    st.markdown(
+        f'<div class="ticket-request-grid">{"".join(_ticket_card_html(ticket, clean_value(ticket.get("code")) == selected_code) for ticket in visible_cards)}</div>',
+        unsafe_allow_html=True,
+    )
+    if len(tickets) > len(visible_cards):
+        st.caption(f"Mostrando las primeras {len(visible_cards)} solicitudes de {len(tickets)}. Usa los filtros para acotar la bandeja.")
+
+    ticket_labels = {
+        clean_value(ticket.get("code")): f"{clean_value(ticket.get('code'))} · {clean_value(ticket.get('brand')) or 'Sin marca'}"
+        for ticket in tickets
+    }
+    selected_code = st.selectbox(
+        "Abrir solicitud",
+        ticket_codes,
+        index=ticket_codes.index(selected_code),
+        format_func=lambda value: ticket_labels.get(value, value),
+        key=f"ticket_open_{role_key}",
+    )
+    st.session_state["selected_catalog_ticket"] = selected_code
+    render_ticket_detail(service, actor, selected_code)
 
 
 def _render_ticket_public_status(ticket, status, status_label, summary, job, saved_result):

@@ -14573,6 +14573,19 @@ def render_ticket_styles():
         .ticket-detail-header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px 12px;border:1px solid #D9E2EF;border-radius:12px 12px 0 0;background:#fff}
         .ticket-detail-header h2{margin:0;color:#0B1B46;font-size:19px;line-height:1.15}
         .ticket-detail-header p{margin:5px 0 0;color:#64748B;font-size:13px}
+        .brand-request-summary{margin:12px 0;padding:16px;border:1px solid #D9E2EF;border-radius:8px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.035)}
+        .brand-request-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+        .brand-request-eyebrow{margin:0 0 5px;color:#2563EB;font-size:10px;font-weight:900;letter-spacing:.08em}
+        .brand-request-heading h2{margin:0;color:#0B1B46;font-size:20px;line-height:1.2}
+        .brand-request-heading p:not(.brand-request-eyebrow){margin:5px 0 0;color:#64748B;font-size:12px}
+        .brand-request-kpis,.brand-request-results{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:14px 0 10px}
+        .brand-request-kpi,.brand-request-result{min-height:76px;padding:10px 12px;border:1px solid #E2E8F0;border-radius:8px;background:#F8FAFC}
+        .brand-request-kpi.blue{border-color:#BFDBFE;background:#F8FBFF}.brand-request-kpi.green,.brand-request-result.green{border-color:#BBF7D0;background:#F0FDF4}.brand-request-kpi.yellow,.brand-request-result.yellow{border-color:#FDE68A;background:#FFFBEB}.brand-request-result.red{border-color:#FECACA;background:#FEF2F2}
+        .brand-request-kpi small,.brand-request-result small{display:block;color:#64748B;font-size:11px;font-weight:800}.brand-request-kpi strong,.brand-request-result strong{display:block;margin-top:6px;color:#0B1B46;font-size:22px;line-height:1}.brand-request-kpi.green strong,.brand-request-result.green strong{color:#047857}.brand-request-kpi.yellow strong,.brand-request-result.yellow strong{color:#A16207}.brand-request-result.red strong{color:#B91C1C}
+        .brand-request-progress{margin:12px 0 10px}.brand-request-progress-head{display:flex;align-items:center;justify-content:space-between;gap:12px;color:#475569;font-size:12px;font-weight:800}.brand-request-track{height:7px;margin-top:7px;overflow:hidden;border-radius:999px;background:#E2E8F0}.brand-request-track span{display:block;height:100%;border-radius:inherit;background:#2563EB}
+        .brand-request-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 0}.brand-request-meta div{padding:9px 10px;border-radius:8px;background:#F8FAFC}.brand-request-meta small{display:block;color:#64748B;font-size:10px;font-weight:800}.brand-request-meta strong{display:block;margin-top:4px;color:#1E3A5F;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .brand-request-note{margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;font-weight:750}.brand-request-note.complete{background:#ECFDF5;color:#047857}.brand-request-note.review{background:#FFFBEB;color:#A16207}.brand-request-note.active{background:#EFF6FF;color:#1D4ED8}
+        @media(max-width:900px){.brand-request-kpis,.brand-request-results{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-request-meta{grid-template-columns:1fr}.brand-request-heading{flex-direction:column;align-items:flex-start}}@media(max-width:520px){.brand-request-kpis,.brand-request-results{grid-template-columns:1fr}}
         .ticket-detail-shell{padding:0 16px 16px;border:1px solid #D9E2EF;border-top:0;border-radius:0 0 12px 12px;background:#fff;margin:0 0 12px}
         .ticket-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0;padding:12px 0}
         .ticket-summary>div{padding:10px 11px;border:1px solid #E2E8F0;border-radius:9px;background:#F8FAFC;min-height:66px}
@@ -15145,35 +15158,87 @@ def render_ticket_inbox(service, actor, brand_view=False):
 
 
 def _render_ticket_public_status(ticket, status, status_label, summary, job, saved_result):
-    """Vista compacta para Comercial: solo el estado y resultado de su solicitud."""
+    """Vista de seguimiento para Comercial, sin acciones internas ni datos sensibles."""
     code = clean_value(ticket.get("code"))
-    st.markdown(
-        f'<div class="ticket-detail-header"><div><p>Solicitud de catálogo</p><h2>{escape(code)}</h2></div>'
-        f'<span class="ticket-state {_ticket_state_color(status)}">{escape(status_label)}</span></div>',
-        unsafe_allow_html=True,
+    is_closed = status in {STATE_COMPLETED, STATE_COMPLETED_OBS}
+    public_result = ticket.get("public_result") if isinstance(ticket.get("public_result"), dict) else {}
+    successful = safe_int_value(public_result.get("successful"), safe_int_value(saved_result.get("successful"), 0))
+    warnings = safe_int_value(public_result.get("warnings"), safe_int_value(saved_result.get("warnings"), 0))
+    errors = safe_int_value(public_result.get("errors"), safe_int_value(saved_result.get("errors"), 0))
+    result_processed = safe_int_value(
+        public_result.get("processed"),
+        safe_int_value(saved_result.get("processed"), successful + warnings + errors),
     )
-    total = max(safe_int_value(summary.get("products"), 0), safe_int_value(job.get("total"), 0))
-    processed = safe_int_value(job.get("processed"), 0)
+    if result_processed and not successful:
+        successful = max(result_processed - warnings - errors, 0)
+
+    total = max(
+        safe_int_value(summary.get("products"), 0),
+        safe_int_value(job.get("total"), 0),
+        result_processed,
+        successful + warnings + errors,
+    )
+    processed = max(safe_int_value(job.get("processed"), 0), result_processed)
     progress = safe_int_value(job.get("progress"), 0)
-    if total:
+    if is_closed:
+        # El cierre es la fuente de verdad: un ticket finalizado no debe mostrar 0%.
+        processed = max(processed, total)
+        progress = 100
+    elif total:
         progress = max(progress, round((processed / total) * 100))
     progress = max(0, min(100, progress))
-    cols = st.columns(3)
-    cols[0].metric("Productos", total)
-    cols[1].metric("Procesados", processed)
-    cols[2].metric("Avance", f"{progress}%")
-    if status in {STATE_COMPLETED, STATE_COMPLETED_OBS} and saved_result:
-        has_observations = status == STATE_COMPLETED_OBS
-        message = clean_value(ticket.get("public_result", {}).get("message")) or clean_value(saved_result.get("message"))
-        (st.warning if has_observations else st.success)(message or ("Carga completada con incidencias." if has_observations else "Carga completada."))
-        result_cols = st.columns(3)
-        result_cols[0].metric("Correctos", safe_int_value(saved_result.get("successful"), safe_int_value(saved_result.get("processed"), 0)))
-        result_cols[1].metric("Advertencias", safe_int_value(saved_result.get("warnings"), 0))
-        result_cols[2].metric("Fallidos", safe_int_value(saved_result.get("errors"), 0))
+
+    sites = ticket.get("sites", [])
+    if isinstance(sites, (list, tuple, set)):
+        site_text = ", ".join(clean_value(site) for site in sites if clean_value(site))
     else:
-        st.progress(progress / 100.0)
-        message = clean_value(job.get("message")) or "Solicitud recibida. El equipo de catálogo la está gestionando."
-        st.info(message)
+        site_text = clean_value(sites)
+    brand = clean_value(ticket.get("brand")) or "Marca"
+    owner = clean_value(ticket.get("assigned_to")) or "Equipo de catálogo"
+    update_text = clean_value(job.get("updated_at")) or clean_value(ticket.get("updated_at")) or "En seguimiento"
+    result_total = max(successful + warnings + errors, processed, total)
+    success_rate = round((successful / result_total) * 100) if result_total else (100 if is_closed else 0)
+    state_class = _ticket_state_color(status)
+
+    st.markdown(
+        f'''<section class="brand-request-summary">
+            <div class="brand-request-heading">
+                <div><p class="brand-request-eyebrow">SEGUIMIENTO DE CARGA</p><h2>Solicitud {escape(code)}</h2>
+                <p>{escape(brand)}{(" · " + escape(site_text)) if site_text else ""}</p></div>
+                <span class="ticket-state {state_class}">{escape(status_label)}</span>
+            </div>
+            <div class="brand-request-kpis">
+                <div class="brand-request-kpi"><small>PRODUCTOS</small><strong>{total}</strong></div>
+                <div class="brand-request-kpi blue"><small>PROCESADOS</small><strong>{processed}/{total}</strong></div>
+                <div class="brand-request-kpi {'green' if is_closed else 'blue'}"><small>AVANCE</small><strong>{progress}%</strong></div>
+                <div class="brand-request-kpi"><small>PRIORIDAD</small><strong>{escape(clean_value(ticket.get('priority')) or 'Normal')}</strong></div>
+            </div>
+            <div class="brand-request-progress"><div class="brand-request-progress-head"><span>Progreso de la solicitud</span><span>{progress}%</span></div>
+                <div class="brand-request-track"><span style="width:{progress}%"></span></div></div>
+            <div class="brand-request-meta"><div><small>RESPONSABLE</small><strong>{escape(owner)}</strong></div>
+                <div><small>ULTIMA ACTUALIZACION</small><strong>{escape(update_text)}</strong></div>
+                <div><small>ESTADO</small><strong>{escape(status_label)}</strong></div></div>
+        </section>''',
+        unsafe_allow_html=True,
+    )
+
+    if is_closed:
+        has_observations = status == STATE_COMPLETED_OBS or warnings > 0 or errors > 0
+        message = clean_value(public_result.get("message")) or clean_value(saved_result.get("message"))
+        note = message or ("La carga finalizo con incidencias para revisar." if has_observations else "Carga finalizada y registrada.")
+        st.markdown(
+            f'''<div class="brand-request-results">
+                <div class="brand-request-result green"><small>CORRECTOS</small><strong>{successful}</strong></div>
+                <div class="brand-request-result yellow"><small>ADVERTENCIAS</small><strong>{warnings}</strong></div>
+                <div class="brand-request-result red"><small>FALLIDOS</small><strong>{errors}</strong></div>
+                <div class="brand-request-result {'yellow' if has_observations else 'green'}"><small>EXITO</small><strong>{success_rate}%</strong></div>
+            </div>
+            <div class="brand-request-note {'review' if has_observations else 'complete'}">{escape(note)}</div>''',
+            unsafe_allow_html=True,
+        )
+    else:
+        message = clean_value(job.get("message")) or "Solicitud recibida. El equipo de catalogo la esta gestionando."
+        st.markdown(f'<div class="brand-request-note active">{escape(message)}</div>', unsafe_allow_html=True)
 
 
 def _render_ticket_execution_summary(ticket, summary, job, saved_result, code, latest_version, status, status_label):

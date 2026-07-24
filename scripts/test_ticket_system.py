@@ -25,7 +25,9 @@ from ticket_system import (  # noqa: E402
     STATE_LOADING,
     STATE_OBSERVED,
     STATE_PENDING,
+    STATE_READY_EXECUTE,
     STATE_REVIEW,
+    STATE_WAITING_BRAND,
     TicketConflictError,
     TicketPermissionError,
     TicketService,
@@ -169,7 +171,7 @@ class CatalogTicketTests(unittest.TestCase):
             "Corregir material",
             [{"Producto": "ABC-001", "Campo": "Material", "Valor encontrado": "", "Correccion recomendada": "Completar"}],
         )
-        self.assertEqual(observed["status"], STATE_OBSERVED)
+        self.assertEqual(observed["status"], STATE_WAITING_BRAND)
         self.assertEqual(observed["observations"][0]["status"], "open")
 
     def test_11_correction_creates_new_version_and_preserves_previous(self):
@@ -221,7 +223,7 @@ class CatalogTicketTests(unittest.TestCase):
         ticket = self.prepare_approved()
         simulated = self.service.run_dry_run(self.operator, ticket["code"])
         self.assertEqual(simulated["dry_run"]["status"], "completed")
-        self.assertEqual(simulated["status"], STATE_APPROVED)
+        self.assertEqual(simulated["status"], STATE_READY_EXECUTE)
 
     def test_16_load_requires_dry_run(self):
         ticket = self.prepare_approved()
@@ -262,7 +264,8 @@ class CatalogTicketTests(unittest.TestCase):
         self.service.assign(self.operator, ticket["code"], self.operator["user"])
         reviewed = self.service.start_review(self.operator, ticket["code"])
         actions = [event["action"] for event in reviewed["events"]]
-        self.assertIn("ticket_created", actions)
+        self.assertIn("request_received", actions)
+        self.assertIn("pending_assignment", actions)
         self.assertIn("assigned", actions)
         self.assertIn("status_changed", actions)
 
@@ -298,6 +301,13 @@ class CatalogTicketTests(unittest.TestCase):
     def test_26_artifact_path_traversal_is_blocked(self):
         with self.assertRaises(TicketPermissionError):
             self.store.get_artifact("../fuera.txt")
+
+    def test_27_operator_deletes_ticket_from_inbox(self):
+        ticket = self.create_ticket("delete")
+        deleted = self.service.cancel_ticket(self.operator, ticket["code"], "Solicitud duplicada")
+        self.assertTrue(deleted["deleted"])
+        self.assertIsNone(self.store.get_ticket(ticket["code"]))
+        self.assertEqual(self.service.list_tickets(self.operator), [])
 
 
 if __name__ == "__main__":

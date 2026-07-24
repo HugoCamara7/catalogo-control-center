@@ -14694,66 +14694,27 @@ def _ticket_matches_active_site(ticket, brand_config):
 
 def _render_full_load_ticket_close(service, actor, ticket, latest_version):
     code = clean_value(ticket.get("code"))
-    job = ticket.get("job") if isinstance(ticket.get("job"), dict) else {}
-    job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    job_status = clean_value(job.get("status")).casefold()
-    final_statuses = {"completed", "completed_with_incidents", "completed_with_issues", "failed"}
-    has_result = bool(
-        job
-        and job_status in final_statuses
-        and (
-            job_result
-            or safe_int_value(job.get("processed"), 0)
-            or safe_int_value(job.get("ok"), 0)
-            or safe_int_value(job.get("partial"), 0)
-            or safe_int_value(job.get("errors"), 0)
-            or job_status == "failed"
-        )
-    )
-
     st.markdown("#### Resultado y cierre")
-    if not has_result:
-        st.info(
-            "La solicitud está en ejecución o esperando el resultado verificable del proceso externo. "
-            "No se puede cerrar hasta recibir dicho resultado."
-        )
-        return
-
-    external_result = {**job_result}
-    for field in ("processed", "ok", "partial", "errors", "created", "updated", "warnings"):
-        if field not in external_result and field in job:
-            external_result[field] = job.get(field)
-    processed = safe_int_value(external_result.get("processed"), safe_int_value(job.get("processed"), 0))
-    errors = safe_int_value(external_result.get("errors"), safe_int_value(job.get("errors"), 0))
-    warnings = safe_int_value(external_result.get("warnings"), safe_int_value(external_result.get("partial"), safe_int_value(job.get("partial"), 0)))
-    successful = safe_int_value(external_result.get("successful"), safe_int_value(external_result.get("ok"), max(processed - errors - warnings, 0)))
-    success_rate = round((successful / processed) * 100) if processed else 0
-    st.markdown(
-        f'''<div class="ticket-result-grid">
-            <div><small>Total</small><strong>{processed}</strong></div>
-            <div><small>Correctos</small><strong>{successful}</strong></div>
-            <div><small>Actualizados</small><strong>{safe_int_value(external_result.get("updated"), 0)}</strong></div>
-            <div><small>Advertencias</small><strong>{warnings}</strong></div>
-            <div><small>Fallidos</small><strong>{errors}</strong></div>
-            <div><small>Éxito</small><strong>{success_rate}%</strong></div>
-        </div>''',
-        unsafe_allow_html=True,
+    processed = safe_int_value(ticket.get("summary", {}).get("products"), 0)
+    outcome = st.selectbox(
+        "Resultado de la carga",
+        ["Completada", "Completada con incidencias"],
+        key=f"full_load_close_outcome_{code}",
     )
-    note = st.text_area("Comentario de cierre", key=f"full_load_close_note_{code}")
+    note = st.text_area("Comentario de cierre", key=f"full_load_close_note_{code}", placeholder="Resume la carga o las incidencias encontradas.")
     confirmed = st.checkbox(
-        "Confirmo que revisé el resultado final reportado por el proceso.",
+        "Confirmo que la carga fue revisada y puede cerrarse.",
         key=f"full_load_close_confirmed_{code}",
     )
-    has_incidents = bool(errors or warnings or job_status == "failed")
+    has_incidents = outcome == "Completada con incidencias"
     label = "Finalizar solicitud con incidencias" if has_incidents else "Finalizar solicitud de carga"
     if st.button(label, type="primary", key=f"full_load_complete_{code}", disabled=not confirmed):
         result = {
-            **external_result,
             "processed": processed,
-            "errors": errors,
-            "warnings": warnings,
-            "successful": successful,
-            "message": clean_value(note) or clean_value(external_result.get("message")) or "Carga finalizada y registrada.",
+            "errors": 0,
+            "warnings": 1 if has_incidents else 0,
+            "successful": processed,
+            "message": clean_value(note) or "Carga finalizada y registrada.",
             "detail": clean_value(note),
             "closed_by": actor.get("user"),
             "filename": latest_version.get("filename") or ticket.get("filename"),
@@ -14764,10 +14725,9 @@ def _render_full_load_ticket_close(service, actor, ticket, latest_version):
             service.record_job_result(
                 actor,
                 code,
-                success=job_status != "failed",
-                observations=has_incidents and job_status != "failed",
+                success=True,
+                observations=has_incidents,
                 result=result,
-                error=clean_value(external_result.get("error")) if job_status == "failed" else "",
             )
             st.rerun()
         except TicketError as exc:
@@ -15090,6 +15050,38 @@ def render_ticket_inbox(service, actor, brand_view=False):
     render_ticket_detail(service, actor, selected_code)
 
 
+def _render_ticket_public_status(ticket, status, status_label, summary, job, saved_result):
+    """Vista compacta para Comercial: solo el estado y resultado de su solicitud."""
+    code = clean_value(ticket.get("code"))
+    st.markdown(
+        f'<div class="ticket-detail-header"><div><p>Solicitud de catálogo</p><h2>{escape(code)}</h2></div>'
+        f'<span class="ticket-state {_ticket_state_color(status)}">{escape(status_label)}</span></div>',
+        unsafe_allow_html=True,
+    )
+    total = max(safe_int_value(summary.get("products"), 0), safe_int_value(job.get("total"), 0))
+    processed = safe_int_value(job.get("processed"), 0)
+    progress = safe_int_value(job.get("progress"), 0)
+    if total:
+        progress = max(progress, round((processed / total) * 100))
+    progress = max(0, min(100, progress))
+    cols = st.columns(3)
+    cols[0].metric("Productos", total)
+    cols[1].metric("Procesados", processed)
+    cols[2].metric("Avance", f"{progress}%")
+    if status in {STATE_COMPLETED, STATE_COMPLETED_OBS} and saved_result:
+        has_observations = status == STATE_COMPLETED_OBS
+        message = clean_value(ticket.get("public_result", {}).get("message")) or clean_value(saved_result.get("message"))
+        (st.warning if has_observations else st.success)(message or ("Carga completada con incidencias." if has_observations else "Carga completada."))
+        result_cols = st.columns(3)
+        result_cols[0].metric("Correctos", safe_int_value(saved_result.get("successful"), safe_int_value(saved_result.get("processed"), 0)))
+        result_cols[1].metric("Advertencias", safe_int_value(saved_result.get("warnings"), 0))
+        result_cols[2].metric("Fallidos", safe_int_value(saved_result.get("errors"), 0))
+    else:
+        st.progress(progress / 100.0)
+        message = clean_value(job.get("message")) or "Solicitud recibida. El equipo de catálogo la está gestionando."
+        st.info(message)
+
+
 def render_ticket_detail(service, actor, code):
     try:
         ticket = service.get_ticket(actor, code)
@@ -15101,27 +15093,14 @@ def render_ticket_detail(service, actor, code):
     status_color = _ticket_state_color(status)
     summary = ticket.get("summary", {})
     job = ticket.get("job") if isinstance(ticket.get("job"), dict) else {}
-    job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
     saved_result = ticket.get("result") if isinstance(ticket.get("result"), dict) else {}
-    final_job_statuses = {
-        "completed",
-        "completed_with_incidents",
-        "completed_with_issues",
-        "failed",
-    }
-    job_status = clean_value(job.get("status")).casefold()
-    has_verified_job_result = bool(
-        job
-        and job_status in final_job_statuses
-        and (
-            job_result
-            or safe_int_value(job.get("processed"), 0)
-            or safe_int_value(job.get("ok"), 0)
-            or safe_int_value(job.get("partial"), 0)
-            or safe_int_value(job.get("errors"), 0)
-            or job_status == "failed"
-        )
-    )
+    role = actor.get("role")
+    # Comercial consulta únicamente el avance y resultado; las marcas conservan
+    # sus flujos de corrección cuando una solicitud queda observada.
+    commercial_status_only = normalize_key(actor.get("user")) in COMMERCIAL_INPUT_ONLY_USERS
+    if commercial_status_only:
+        _render_ticket_public_status(ticket, status, status_label, summary, job, saved_result)
+        return
     st.markdown(
         f"""
         <div class="ticket-detail-header">
@@ -15160,8 +15139,7 @@ def render_ticket_detail(service, actor, code):
             )
         else:
             st.caption("El detalle completo está disponible en el archivo de validación descargable.")
-    with st.container(border=True):
-        st.markdown('<p class="ticket-section-label">Documentación</p><h3>Archivos y validación</h3><p>Descarga la versión validada o su reporte antes de continuar la gestión.</p>', unsafe_allow_html=True)
+    with st.expander("Archivos y validación", expanded=False):
         download_cols = st.columns(3)
         try:
             if latest_version.get("input_path"):
@@ -15199,23 +15177,15 @@ def render_ticket_detail(service, actor, code):
         if total_job:
             progress = max(progress, round((processed_job / total_job) * 100))
         progress = max(0, min(100, progress))
-        job_message = clean_value(job.get("message")) or "Esperando actualización del proceso."
         st.markdown(
-            f'<div class="ticket-process"><strong>Proceso de carga</strong>'
-            f'<span>{escape(job_message)}</span></div>',
+            '<div class="ticket-process"><strong>Seguimiento de carga</strong>'
+            '<span>Registra el inicio y el cierre una vez verificada la carga en Shopify.</span></div>',
             unsafe_allow_html=True,
         )
         st.progress(progress / 100.0)
         st.caption(
-            f"Job {clean_value(job.get('id')) or 'pendiente'} · "
-            f"{clean_value(job.get('status')) or status_label} · "
-            f"{processed_job}/{total_job or '—'} productos · {progress}%"
+            f"{processed_job}/{total_job or '—'} productos procesados · {progress}%"
         )
-        if job.get("mode") == "mock" and not has_verified_job_result:
-            st.info(
-                "La solicitud está en carga, pero aún no hay un resultado verificable "
-                "del proceso externo. El cierre quedará bloqueado hasta recibirlo."
-            )
     if saved_result:
         result = saved_result
         public_result = ticket.get("public_result", {})
@@ -15294,9 +15264,8 @@ def render_ticket_detail(service, actor, code):
                     st.error(str(exc))
     if role in {ROLE_OPERATOR, ROLE_ADMIN}:
         st.markdown(
-            '<div class="ticket-section"><p class="ticket-section-label">Gestión operativa</p><h3>Acciones internas</h3>'
-            '<p>Asigna responsables, define prioridad y lleva la solicitud por cada etapa sin perder trazabilidad.</p>'
-            '<div class="ticket-action-note">Las acciones disponibles se adaptan automáticamente al estado actual de la solicitud.</div></div>',
+            '<div class="ticket-section"><p class="ticket-section-label">Gestión interna</p>'
+            '<h3>Gestionar solicitud</h3></div>',
             unsafe_allow_html=True,
         )
         current_priority = ticket.get("priority", "normal")
@@ -15379,13 +15348,13 @@ def render_ticket_detail(service, actor, code):
                     st.error(str(exc))
         if status == STATE_APPROVED:
             run_cols = st.columns(2)
-            if run_cols[0].button("Ejecutar simulación", key=f"dry_run_{code}"):
+            if run_cols[0].button("Validar solicitud", key=f"dry_run_{code}"):
                 try:
                     service.run_dry_run(actor, code)
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-            if ticket.get("dry_run", {}).get("status") == "completed" and run_cols[1].button("Marcar carga iniciada", type="primary", key=f"start_load_{code}"):
+            if ticket.get("dry_run", {}).get("status") == "completed" and run_cols[1].button("Registrar carga iniciada", type="primary", key=f"start_load_{code}"):
                 try:
                     service.start_load(actor, code)
                     st.rerun()
@@ -15401,81 +15370,60 @@ def render_ticket_detail(service, actor, code):
         if status in {STATE_LOADING, STATE_VALIDATING}:
             st.markdown(
                 '<div class="ticket-section"><p class="ticket-section-label">Cierre operativo</p>'
-                '<h3>Resultado y cierre</h3>'
-                '<p>El cierre se habilita únicamente cuando el proceso externo reporte un resultado final verificable.</p></div>',
+                '<h3>Finalizar carga</h3>'
+                '<p>Cuando verifiques la carga en Shopify, registra aquí el resultado final.</p></div>',
                 unsafe_allow_html=True,
             )
-            if not has_verified_job_result:
-                st.info(
-                    "Aún no hay resultados finales del proceso externo. Puedes seguir el avance "
-                    "en esta misma solicitud; el botón de finalización se habilitará al recibir el resultado."
-                )
-            else:
-                external_result = {**job_result}
-                for field in ("processed", "ok", "partial", "errors", "created", "updated", "warnings"):
-                    if field not in external_result and field in job:
-                        external_result[field] = job.get(field)
-                processed_count = safe_int_value(
-                    external_result.get("processed"),
-                    safe_int_value(job.get("processed"), safe_int_value(summary.get("products"), 0)),
-                )
-                error_count = safe_int_value(external_result.get("errors"), safe_int_value(job.get("errors"), 0))
-                warnings_count = safe_int_value(external_result.get("warnings"), safe_int_value(external_result.get("partial"), safe_int_value(job.get("partial"), 0)))
-                success_count = safe_int_value(external_result.get("successful"), safe_int_value(external_result.get("ok"), max(processed_count - error_count - warnings_count, 0)))
-                success_rate = round((success_count / processed_count) * 100) if processed_count else 0
-                st.markdown(
-                    f'''<div class="ticket-result-grid">
-                        <div><small>Productos totales</small><strong>{processed_count}</strong></div>
-                        <div><small>Cargados correctamente</small><strong>{success_count}</strong></div>
-                        <div><small>Actualizados</small><strong>{safe_int_value(external_result.get("updated"), 0)}</strong></div>
-                        <div><small>Con advertencias</small><strong>{warnings_count}</strong></div>
-                        <div><small>Fallidos</small><strong>{error_count}</strong></div>
-                        <div><small>Éxito</small><strong>{success_rate}%</strong></div>
-                    </div>''',
-                    unsafe_allow_html=True,
-                )
-                close_note = st.text_area(
-                    "Comentario de cierre",
-                    key=f"close_ticket_note_{code}",
-                    placeholder="Resumen breve de la carga y de cualquier incidencia.",
-                )
-                close_confirmed = st.checkbox(
-                    "Confirmo que revisé el resultado final reportado por el proceso.",
-                    key=f"close_ticket_confirmed_{code}",
-                )
-                close_result = {
-                    **external_result,
-                    "processed": processed_count,
-                    "errors": error_count,
-                    "warnings": warnings_count,
-                    "successful": success_count,
-                    "message": clean_value(close_note) or clean_value(external_result.get("message")) or "Carga finalizada y registrada.",
-                    "detail": clean_value(close_note),
-                    "closed_by": actor.get("user"),
-                    "filename": latest_version.get("filename") or ticket.get("filename"),
-                    "file_version": latest_version.get("number", 1),
-                    "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
-                }
-                final_has_incidents = bool(error_count or warnings_count or job_status == "failed")
-                final_label = "Finalizar solicitud con incidencias" if final_has_incidents else "Finalizar solicitud de carga"
-                if st.button(
-                    final_label,
-                    type="primary",
-                    key=f"complete_load_{code}",
-                    disabled=not close_confirmed,
-                ):
-                    try:
-                        service.record_job_result(
-                            actor,
-                            code,
-                            success=job_status != "failed",
-                            observations=final_has_incidents and job_status != "failed",
-                            result=close_result,
-                            error=clean_value(external_result.get("error")) if job_status == "failed" else "",
-                        )
-                        st.rerun()
-                    except TicketError as exc:
-                        st.error(str(exc))
+            close_cols = st.columns([1, 2])
+            close_outcome = close_cols[0].selectbox(
+                "Resultado",
+                ["Completada", "Completada con incidencias"],
+                key=f"close_ticket_outcome_{code}",
+            )
+            close_note = close_cols[1].text_area(
+                "Comentario de cierre",
+                key=f"close_ticket_note_{code}",
+                placeholder="Resumen breve de la carga y de cualquier incidencia.",
+            )
+            close_confirmed = st.checkbox(
+                "Confirmo que revisé la carga en Shopify y puedo cerrar la solicitud.",
+                key=f"close_ticket_confirmed_{code}",
+            )
+            has_incidents = close_outcome == "Completada con incidencias"
+            processed_count = max(
+                safe_int_value(job.get("processed"), 0),
+                safe_int_value(summary.get("products"), 0),
+            )
+            close_result = {
+                "processed": processed_count,
+                "errors": 0,
+                "warnings": 1 if has_incidents else 0,
+                "successful": processed_count,
+                "message": clean_value(close_note) or "Carga finalizada y registrada.",
+                "detail": clean_value(close_note),
+                "closed_by": actor.get("user"),
+                "filename": latest_version.get("filename") or ticket.get("filename"),
+                "file_version": latest_version.get("number", 1),
+                "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
+            }
+            final_label = "Finalizar con incidencias" if has_incidents else "Finalizar solicitud de carga"
+            if st.button(
+                final_label,
+                type="primary",
+                key=f"complete_load_{code}",
+                disabled=not close_confirmed,
+            ):
+                try:
+                    service.record_job_result(
+                        actor,
+                        code,
+                        success=True,
+                        observations=has_incidents,
+                        result=close_result,
+                    )
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
         if is_ticket_operator_user(actor.get("user")):
             with st.expander("Eliminar solicitud", expanded=False):
                 delete_reason = st.text_area("Motivo de eliminación", key=f"delete_ticket_reason_{code}")

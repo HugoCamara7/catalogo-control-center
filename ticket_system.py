@@ -616,14 +616,11 @@ class MockJobAdapter:
     def start(self, ticket):
         return {
             "id": f"MOCK-{uuid.uuid4().hex[:12].upper()}",
-            "status": "awaiting_external_result",
+            "status": "in_progress",
             "created_at": utc_now(),
             "mode": "mock",
             "progress": 0,
-            "message": (
-                "Carga iniciada en el flujo operativo. Esperando el resultado "
-                "verificable del proceso externo."
-            ),
+            "message": "Carga iniciada. Pendiente de cierre por el equipo de catalogo.",
         }
 
 

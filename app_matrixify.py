@@ -14652,16 +14652,24 @@ def _ticket_table(tickets):
 
 def render_ticket_inbox(service, actor, brand_view=False):
     render_ticket_styles()
-    title = "Mis solicitudes de catálogo" if brand_view else "Bandeja de solicitudes de catálogo"
+    widget_key = f"ticket_open_{actor.get('role')}"
+    deleted_code = clean_value(st.session_state.pop("_catalog_ticket_deleted", ""))
+    if deleted_code:
+        st.session_state.pop("selected_catalog_ticket", None)
+        st.session_state.pop(widget_key, None)
+
+    title = "Mis solicitudes de catálogo" if brand_view else "Centro de solicitudes de catálogo"
     subtitle = (
         "Consulta tus archivos, observaciones y resultados."
         if brand_view
-        else "Revisa, asigna y controla cada solicitud antes de autorizar una carga."
+        else "Prioriza, asigna y controla cada solicitud desde su recepción hasta el cierre."
     )
     st.markdown(
         f'<div class="ticket-hero"><p>Flujo controlado</p><h1>{escape(title)}</h1><span>{escape(subtitle)}</span></div>',
         unsafe_allow_html=True,
     )
+    if deleted_code:
+        st.success(f"La solicitud {deleted_code} fue eliminada y ya no aparece en la bandeja.")
     try:
         all_tickets = service.list_tickets(actor)
     except TicketError as exc:
@@ -14761,9 +14769,13 @@ def render_ticket_inbox(service, actor, brand_view=False):
     table_df = _ticket_table(tickets)
     st.dataframe(table_df, use_container_width=True, hide_index=True)
     ticket_codes = [ticket.get("code") for ticket in tickets]
+    if st.session_state.get(widget_key) not in ticket_codes:
+        st.session_state.pop(widget_key, None)
+    if st.session_state.get("selected_catalog_ticket") not in ticket_codes:
+        st.session_state.pop("selected_catalog_ticket", None)
     selected_default = st.session_state.get("selected_catalog_ticket")
     selected_index = ticket_codes.index(selected_default) if selected_default in ticket_codes else 0
-    selected_code = st.selectbox("Abrir solicitud", ticket_codes, index=selected_index, key=f"ticket_open_{actor.get('role')}")
+    selected_code = st.selectbox("Abrir solicitud", ticket_codes, index=selected_index, key=widget_key)
     st.session_state["selected_catalog_ticket"] = selected_code
     render_ticket_detail(service, actor, selected_code)
 
@@ -15020,14 +15032,17 @@ def render_ticket_detail(service, actor, code):
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-        if is_ticket_operator_user(actor.get("user")) and status not in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_CANCELED}:
+        if is_ticket_operator_user(actor.get("user")):
             with st.expander("Eliminar solicitud", expanded=False):
                 delete_reason = st.text_area("Motivo de eliminación", key=f"delete_ticket_reason_{code}")
                 delete_confirm = st.checkbox("Confirmo que deseo eliminar esta solicitud", key=f"delete_ticket_confirm_{code}")
                 if st.button("Eliminar solicitud", key=f"delete_ticket_{code}", disabled=not delete_confirm):
                     try:
                         service.cancel_ticket(actor, code, delete_reason)
-                        st.success("Solicitud eliminada y registrada en el historial.")
+                        # El selectbox ya fue instanciado en esta ejecución. La
+                        # limpieza se difiere al inicio del siguiente rerun para
+                        # evitar que Streamlit restaure el ticket eliminado.
+                        st.session_state["_catalog_ticket_deleted"] = code
                         st.rerun()
                     except TicketError as exc:
                         st.error(str(exc))

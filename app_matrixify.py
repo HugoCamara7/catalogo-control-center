@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -14554,14 +14554,14 @@ def render_ticket_styles():
     st.markdown(
         """
         <style>
-        .ticket-hero{padding:20px 24px;border:1px solid #D9E2EF;background:#fff;border-radius:14px;margin:0 0 16px}
+        .ticket-hero{padding:16px 18px;border:1px solid #D9E2EF;background:#fff;border-radius:12px;margin:0 0 12px}
         .ticket-hero p{margin:0 0 5px;color:#2563EB;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:0}
-        .ticket-hero h1{margin:0;color:#0B1B46;font-size:26px;line-height:1.15}
-        .ticket-hero span{display:block;margin-top:7px;color:#64748B;font-size:15px}
-        .ticket-kpi-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:0 0 16px}
-        .ticket-kpi-card{min-height:88px;padding:13px 15px;border:1px solid #D9E2EF;border-radius:12px;background:#fff;box-shadow:0 12px 25px rgba(15,23,42,.05)}
-        .ticket-kpi-card small{display:block;min-height:30px;color:#40516E;font-size:12px;font-weight:800;line-height:1.2}
-        .ticket-kpi-card strong{display:block;margin-top:7px;color:#0B1B46;font-size:27px;line-height:1;font-weight:900}
+        .ticket-hero h1{margin:0;color:#0B1B46;font-size:23px;line-height:1.15}
+        .ticket-hero span{display:block;margin-top:5px;color:#64748B;font-size:13px}
+        .ticket-kpi-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:0 0 12px}
+        .ticket-kpi-card{min-height:68px;padding:10px 11px;border:1px solid #D9E2EF;border-radius:10px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.04)}
+        .ticket-kpi-card small{display:block;min-height:27px;color:#40516E;font-size:11px;font-weight:800;line-height:1.2}
+        .ticket-kpi-card strong{display:block;margin-top:3px;color:#0B1B46;font-size:21px;line-height:1;font-weight:900}
         .ticket-kpi-card.blue{border-color:#BFDBFE;background:#F8FBFF}.ticket-kpi-card.blue strong{color:#2563EB}
         .ticket-kpi-card.amber{border-color:#FDE6BD;background:#FFFDF8}.ticket-kpi-card.amber strong{color:#C56A00}
         .ticket-kpi-card.red{border-color:#FECACA;background:#FFF9F9}.ticket-kpi-card.red strong{color:#DC2626}
@@ -14575,17 +14575,17 @@ def render_ticket_styles():
         .ticket-state.green{background:#ECFDF5;border-color:#A7F3D0;color:#047857}
         .ticket-state.red{background:#FEF2F2;border-color:#FECACA;color:#B91C1C}
         .ticket-state.gray{background:#F1F5F9;border-color:#CBD5E1;color:#475569}
-        .ticket-detail-header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px 20px 16px;border:1px solid #D9E2EF;border-radius:14px 14px 0 0;background:#fff}
-        .ticket-detail-header h2{margin:0;color:#0B1B46;font-size:22px;line-height:1.15}
+        .ticket-detail-header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px 12px;border:1px solid #D9E2EF;border-radius:12px 12px 0 0;background:#fff}
+        .ticket-detail-header h2{margin:0;color:#0B1B46;font-size:19px;line-height:1.15}
         .ticket-detail-header p{margin:5px 0 0;color:#64748B;font-size:13px}
-        .ticket-detail-shell{padding:0 20px 20px;border:1px solid #D9E2EF;border-top:0;border-radius:0 0 14px 14px;background:#fff;margin:0 0 16px}
-        .ticket-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0;padding:16px 0}
-        .ticket-summary>div{padding:13px 14px;border:1px solid #E2E8F0;border-radius:10px;background:#F8FAFC;min-height:80px}
+        .ticket-detail-shell{padding:0 16px 16px;border:1px solid #D9E2EF;border-top:0;border-radius:0 0 12px 12px;background:#fff;margin:0 0 12px}
+        .ticket-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0;padding:12px 0}
+        .ticket-summary>div{padding:10px 11px;border:1px solid #E2E8F0;border-radius:9px;background:#F8FAFC;min-height:66px}
         .ticket-summary small{display:block;color:#64748B;font-size:11px;font-weight:850;text-transform:uppercase;margin-bottom:7px}
-        .ticket-summary strong{display:block;color:#0B1B46;font-size:18px;line-height:1.15}
+        .ticket-summary strong{display:block;color:#0B1B46;font-size:16px;line-height:1.15}
         .ticket-summary span{display:block;margin-top:5px;color:#475569;font-size:12px;line-height:1.35;overflow-wrap:anywhere}
-        .ticket-section{padding:18px 20px;border:1px solid #D9E2EF;border-radius:14px;background:#fff;margin:16px 0}
-        .ticket-section h3{margin:0 0 4px;color:#0B1B46;font-size:18px}
+        .ticket-section{padding:14px 16px;border:1px solid #D9E2EF;border-radius:12px;background:#fff;margin:12px 0}
+        .ticket-section h3{margin:0 0 4px;color:#0B1B46;font-size:16px}
         .ticket-section > p{margin:0 0 14px;color:#64748B;font-size:13px}
         .ticket-section-label{margin:0 0 10px;color:#2563EB;font-size:11px;font-weight:900;text-transform:uppercase}
         .ticket-info-line{margin:0;padding:10px 12px;border-radius:9px;background:#F8FAFC;color:#64748B;font-size:12px;line-height:1.4}
@@ -14593,7 +14593,14 @@ def render_ticket_styles():
         .ticket-comments-empty{padding:14px;border:1px dashed #CBD5E1;border-radius:10px;background:#F8FAFC;color:#64748B;font-size:13px}
         .ticket-event{padding:10px 12px;border-left:3px solid #93C5FD;background:#F8FAFC;margin:7px 0;border-radius:0 8px 8px 0}
         .ticket-event strong{color:#0B1B46}.ticket-event small{color:#64748B}
-        @media(max-width:1100px){.ticket-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+        .ticket-process{padding:12px 14px;border:1px solid #DBEAFE;border-radius:10px;background:#F8FBFF;margin:10px 0}
+        .ticket-process strong{display:block;color:#0B1B46;font-size:14px;margin-bottom:4px}
+        .ticket-process span{color:#64748B;font-size:12px}
+        .ticket-result-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:10px 0}
+        .ticket-result-grid div{padding:10px;border:1px solid #E2E8F0;border-radius:9px;background:#F8FAFC}
+        .ticket-result-grid small{display:block;color:#64748B;font-size:10px;font-weight:800;text-transform:uppercase}
+        .ticket-result-grid strong{display:block;margin-top:4px;color:#0B1B46;font-size:19px}
+        @media(max-width:1100px){.ticket-kpi-grid,.ticket-result-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
         @media(max-width:900px){.ticket-summary,.ticket-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ticket-detail-header{align-items:flex-start;flex-direction:column}}
         </style>
         """,
@@ -14687,84 +14694,80 @@ def _ticket_matches_active_site(ticket, brand_config):
 
 def _render_full_load_ticket_close(service, actor, ticket, latest_version):
     code = clean_value(ticket.get("code"))
-    summary = ticket.get("summary") or {}
-    st.markdown("#### Registrar resultado de la carga")
-    st.caption(
-        "Cuando termines la carga y la revisión en Shopify, cierra la solicitud aquí. "
-        "El equipo comercial verá inmediatamente el resultado."
+    job = ticket.get("job") if isinstance(ticket.get("job"), dict) else {}
+    job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    job_status = clean_value(job.get("status")).casefold()
+    final_statuses = {"completed", "completed_with_incidents", "completed_with_issues", "failed"}
+    has_result = bool(
+        job
+        and job_status in final_statuses
+        and (
+            job_result
+            or safe_int_value(job.get("processed"), 0)
+            or safe_int_value(job.get("ok"), 0)
+            or safe_int_value(job.get("partial"), 0)
+            or safe_int_value(job.get("errors"), 0)
+            or job_status == "failed"
+        )
     )
-    close_metrics = st.columns(2)
-    processed_count = close_metrics[0].number_input(
-        "Productos procesados",
-        min_value=0,
-        value=max(0, safe_int_value(summary.get("products"), 0)),
-        step=1,
-        key=f"full_load_close_processed_{code}",
+
+    st.markdown("#### Resultado y cierre")
+    if not has_result:
+        st.info(
+            "La solicitud está en ejecución o esperando el resultado verificable del proceso externo. "
+            "No se puede cerrar hasta recibir dicho resultado."
+        )
+        return
+
+    external_result = {**job_result}
+    for field in ("processed", "ok", "partial", "errors", "created", "updated", "warnings"):
+        if field not in external_result and field in job:
+            external_result[field] = job.get(field)
+    processed = safe_int_value(external_result.get("processed"), safe_int_value(job.get("processed"), 0))
+    errors = safe_int_value(external_result.get("errors"), safe_int_value(job.get("errors"), 0))
+    warnings = safe_int_value(external_result.get("warnings"), safe_int_value(external_result.get("partial"), safe_int_value(job.get("partial"), 0)))
+    successful = safe_int_value(external_result.get("successful"), safe_int_value(external_result.get("ok"), max(processed - errors - warnings, 0)))
+    success_rate = round((successful / processed) * 100) if processed else 0
+    st.markdown(
+        f'''<div class="ticket-result-grid">
+            <div><small>Total</small><strong>{processed}</strong></div>
+            <div><small>Correctos</small><strong>{successful}</strong></div>
+            <div><small>Actualizados</small><strong>{safe_int_value(external_result.get("updated"), 0)}</strong></div>
+            <div><small>Advertencias</small><strong>{warnings}</strong></div>
+            <div><small>Fallidos</small><strong>{errors}</strong></div>
+            <div><small>Éxito</small><strong>{success_rate}%</strong></div>
+        </div>''',
+        unsafe_allow_html=True,
     )
-    error_count = close_metrics[1].number_input(
-        "Productos con error",
-        min_value=0,
-        value=0,
-        step=1,
-        key=f"full_load_close_errors_{code}",
-    )
-    close_note = st.text_area(
-        "Resultado u observaciones",
-        key=f"full_load_close_note_{code}",
-        placeholder="Ejemplo: carga completada y revisada en Shopify.",
-    )
-    close_confirmed = st.checkbox(
-        "Confirmo que la carga terminó y revisé el resultado en Shopify.",
+    note = st.text_area("Comentario de cierre", key=f"full_load_close_note_{code}")
+    confirmed = st.checkbox(
+        "Confirmo que revisé el resultado final reportado por el proceso.",
         key=f"full_load_close_confirmed_{code}",
     )
-    close_result = {
-        "processed": int(processed_count),
-        "errors": int(error_count),
-        "message": clean_value(close_note) or "Carga completada y validada en Shopify.",
-        "detail": clean_value(close_note),
-        "closed_by": actor.get("user"),
-        "filename": latest_version.get("filename") or ticket.get("filename"),
-        "file_version": latest_version.get("number", 1),
-        "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
-    }
-    close_cols = st.columns(3)
-    if close_cols[0].button(
-        "Finalizar carga",
-        type="primary",
-        key=f"full_load_complete_{code}",
-        disabled=not close_confirmed,
-        use_container_width=True,
-    ):
-        try:
-            service.record_job_result(actor, code, success=True, result=close_result)
-            st.success(f"La solicitud {code} quedó finalizada.")
-            st.rerun()
-        except TicketError as exc:
-            st.error(str(exc))
-    if close_cols[1].button(
-        "Finalizar con observaciones",
-        key=f"full_load_complete_obs_{code}",
-        disabled=not close_confirmed,
-        use_container_width=True,
-    ):
-        try:
-            service.record_job_result(actor, code, success=True, observations=True, result=close_result)
-            st.rerun()
-        except TicketError as exc:
-            st.error(str(exc))
-    if close_cols[2].button(
-        "Registrar incidencia",
-        key=f"full_load_fail_{code}",
-        disabled=not close_confirmed,
-        use_container_width=True,
-    ):
+    has_incidents = bool(errors or warnings or job_status == "failed")
+    label = "Finalizar solicitud con incidencias" if has_incidents else "Finalizar solicitud de carga"
+    if st.button(label, type="primary", key=f"full_load_complete_{code}", disabled=not confirmed):
+        result = {
+            **external_result,
+            "processed": processed,
+            "errors": errors,
+            "warnings": warnings,
+            "successful": successful,
+            "message": clean_value(note) or clean_value(external_result.get("message")) or "Carga finalizada y registrada.",
+            "detail": clean_value(note),
+            "closed_by": actor.get("user"),
+            "filename": latest_version.get("filename") or ticket.get("filename"),
+            "file_version": latest_version.get("number", 1),
+            "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
+        }
         try:
             service.record_job_result(
                 actor,
                 code,
-                success=False,
-                result=close_result,
-                error=clean_value(close_note) or "Incidencia registrada por Operaciones.",
+                success=job_status != "failed",
+                observations=has_incidents and job_status != "failed",
+                result=result,
+                error=clean_value(external_result.get("error")) if job_status == "failed" else "",
             )
             st.rerun()
         except TicketError as exc:
@@ -14777,12 +14780,15 @@ def render_full_load_ticket_queue(brand_config):
         return
     try:
         service, _ = get_ticket_service()
-        tickets = [
+        all_full_load_tickets = [
             ticket
             for ticket in service.list_tickets(actor)
             if clean_value(ticket.get("load_type")).casefold() == "complete"
             and ticket.get("status") in FULL_LOAD_TICKET_STATES
-            and _ticket_matches_active_site(ticket, brand_config)
+        ]
+        tickets = [ticket for ticket in all_full_load_tickets if _ticket_matches_active_site(ticket, brand_config)]
+        other_site_tickets = [
+            ticket for ticket in all_full_load_tickets if not _ticket_matches_active_site(ticket, brand_config)
         ]
     except TicketError as exc:
         st.warning(f"No se pudo consultar la bandeja de cargas pendientes: {exc}")
@@ -14792,6 +14798,7 @@ def render_full_load_ticket_queue(brand_config):
         return
 
     tickets.sort(key=lambda item: clean_value(item.get("created_at")), reverse=True)
+    other_site_tickets.sort(key=lambda item: clean_value(item.get("created_at")), reverse=True)
     with st.container(border=True):
         header_cols = st.columns([4, 1])
         header_cols[0].markdown("### Cargas pendientes")
@@ -14800,8 +14807,43 @@ def render_full_load_ticket_queue(brand_config):
         )
         header_cols[1].metric("Pendientes", len(tickets))
         if not tickets:
-            st.info("No hay solicitudes aprobadas pendientes para el sitio activo.")
+            if other_site_tickets:
+                site_rows = []
+                for ticket in other_site_tickets:
+                    site_rows.append(
+                        {
+                            "Ticket": ticket.get("code"),
+                            "Sitio": ", ".join(ticket.get("sites") or []) or "Sin sitio",
+                            "Marca": ticket.get("brand"),
+                            "Estado": STATE_LABELS.get(ticket.get("status"), ticket.get("status")),
+                            "Responsable": ticket.get("assignee") or "Sin asignar",
+                            "Productos": safe_int_value((ticket.get("summary") or {}).get("products"), 0),
+                        }
+                    )
+                st.warning(
+                    "No hay solicitudes pendientes para el sitio activo. Hay solicitudes pendientes para otra web; "
+                    "cambia el Sitio activo a la web indicada para prepararlas, cargarlas y cerrarlas."
+                )
+                st.dataframe(pd.DataFrame(site_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No hay solicitudes pendientes para el sitio activo.")
+            with st.expander("Como cerrar una solicitud de carga"):
+                st.markdown(
+                    "1. Selecciona el sitio correcto y descarga el input validado.\n"
+                    "2. Usa **Preparar para carga** para validar el archivo. Esta prueba no cierra la solicitud.\n"
+                    "3. Usa **Marcar carga iniciada** antes de ejecutar la carga real en Shopify.\n"
+                    "4. Cuando la carga real termine, vuelve a esta sección y registra **Finalizar carga**, "
+                    "**Finalizar con observaciones** o **Registrar incidencia**."
+                )
             return
+
+        with st.expander("Como cerrar una solicitud de carga"):
+            st.markdown(
+                "1. Descarga el input validado y usa **Preparar para carga**. Esta prueba valida, pero no cierra el ticket.\n"
+                "2. Usa **Marcar carga iniciada** antes de ejecutar la carga real.\n"
+                "3. Ejecuta y verifica la carga en Shopify.\n"
+                "4. Registra **Finalizar carga**, **Finalizar con observaciones** o **Registrar incidencia**."
+            )
 
         queue_rows = []
         for ticket in tickets:
@@ -14969,18 +15011,13 @@ def render_ticket_inbox(service, actor, brand_view=False):
         kpis = [
             ("Pendientes", states.count(STATE_PENDING), "blue"),
             ("Sin asignar", sum(1 for item in all_tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_REJECTED}), "amber"),
-            ("Asignados a mí", sum(1 for item in all_tickets if item.get("assignee") == actor.get("user")), "blue"),
             ("En revisión", states.count(STATE_REVIEW), "amber"),
-            ("Observados", states.count(STATE_OBSERVED), "red"),
-            ("Aprobados", states.count(STATE_APPROVED), "green"),
             ("En carga", states.count(STATE_LOADING), "blue"),
-            ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets), "red"),
             ("Completados", states.count(STATE_COMPLETED) + states.count(STATE_COMPLETED_OBS), "green"),
-            ("Fallidos", states.count(STATE_FAILED), "red"),
+            ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets), "red"),
         ]
         render_ticket_kpi_grid(kpis)
-    with st.container(border=True):
-        st.markdown("<h3 class=\"ticket-filter-title\">Buscar y filtrar solicitudes</h3>", unsafe_allow_html=True)
+    with st.expander("Buscar y filtrar solicitudes", expanded=False):
         filter_cols = st.columns([1.2, 1, 1, 1, 1.2])
         brands = sorted({clean_value(item.get("brand")) for item in all_tickets if clean_value(item.get("brand"))})
         statuses = sorted({item.get("status") for item in all_tickets if item.get("status")})
@@ -15063,6 +15100,28 @@ def render_ticket_detail(service, actor, code):
     status_label = STATE_LABELS.get(status, status)
     status_color = _ticket_state_color(status)
     summary = ticket.get("summary", {})
+    job = ticket.get("job") if isinstance(ticket.get("job"), dict) else {}
+    job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    saved_result = ticket.get("result") if isinstance(ticket.get("result"), dict) else {}
+    final_job_statuses = {
+        "completed",
+        "completed_with_incidents",
+        "completed_with_issues",
+        "failed",
+    }
+    job_status = clean_value(job.get("status")).casefold()
+    has_verified_job_result = bool(
+        job
+        and job_status in final_job_statuses
+        and (
+            job_result
+            or safe_int_value(job.get("processed"), 0)
+            or safe_int_value(job.get("ok"), 0)
+            or safe_int_value(job.get("partial"), 0)
+            or safe_int_value(job.get("errors"), 0)
+            or job_status == "failed"
+        )
+    )
     st.markdown(
         f"""
         <div class="ticket-detail-header">
@@ -15130,18 +15189,36 @@ def render_ticket_detail(service, actor, code):
             observations_df = pd.DataFrame(ticket["observations"])
             if not observations_df.empty:
                 st.dataframe(observations_df, use_container_width=True, hide_index=True)
-    if ticket.get("job"):
-        job = ticket.get("job", {})
-        progress = max(0, min(100, safe_int_value(job.get("progress"), 0)))
-        st.markdown("#### Estado del proceso")
+    if job:
+        total_job = max(
+            safe_int_value(job.get("total"), 0),
+            safe_int_value(summary.get("products"), 0),
+        )
+        processed_job = safe_int_value(job.get("processed"), 0)
+        progress = safe_int_value(job.get("progress"), 0)
+        if total_job:
+            progress = max(progress, round((processed_job / total_job) * 100))
+        progress = max(0, min(100, progress))
+        job_message = clean_value(job.get("message")) or "Esperando actualización del proceso."
+        st.markdown(
+            f'<div class="ticket-process"><strong>Proceso de carga</strong>'
+            f'<span>{escape(job_message)}</span></div>',
+            unsafe_allow_html=True,
+        )
         st.progress(progress / 100.0)
         st.caption(
-            f"Job {clean_value(job.get('id')) or 'pendiente'} · {clean_value(job.get('status')) or status_label} · {progress}%"
+            f"Job {clean_value(job.get('id')) or 'pendiente'} · "
+            f"{clean_value(job.get('status')) or status_label} · "
+            f"{processed_job}/{total_job or '—'} productos · {progress}%"
         )
-    if ticket.get("result"):
-        result = ticket.get("result", {})
+        if job.get("mode") == "mock" and not has_verified_job_result:
+            st.info(
+                "La solicitud está en carga, pero aún no hay un resultado verificable "
+                "del proceso externo. El cierre quedará bloqueado hasta recibirlo."
+            )
+    if saved_result:
+        result = saved_result
         public_result = ticket.get("public_result", {})
-        result_df = pd.DataFrame([result])
         result_status = clean_value(public_result.get("status")) or status_label
         result_message = clean_value(public_result.get("message")) or clean_value(result.get("message"))
         st.markdown("#### Cierre de la solicitud")
@@ -15155,18 +15232,33 @@ def render_ticket_detail(service, actor, code):
                 f"{result_status}. La carga terminó y conserva observaciones"
                 + (f": {result_message}" if result_message else ".")
             )
-        result_cols = st.columns(4)
-        result_cols[0].metric("Productos procesados", safe_int_value(public_result.get("processed"), safe_int_value(result.get("processed"), 0)))
-        result_cols[1].metric("Errores registrados", safe_int_value(public_result.get("errors"), safe_int_value(result.get("errors"), 0)))
-        result_cols[2].metric("Versión cargada", clean_value(result.get("file_version")) or latest_version.get("number", 1))
-        result_cols[3].metric("Finalizado por", clean_value(result.get("closed_by")) or "Operaciones")
+        processed_result = safe_int_value(public_result.get("processed"), safe_int_value(result.get("processed"), 0))
+        errors_result = safe_int_value(public_result.get("errors"), safe_int_value(result.get("errors"), 0))
+        warnings_result = safe_int_value(result.get("warnings"), safe_int_value(result.get("partial"), 0))
+        created_result = safe_int_value(result.get("created"), safe_int_value(result.get("created_products"), 0))
+        updated_result = safe_int_value(result.get("updated"), safe_int_value(result.get("updated_products"), 0))
+        successful_result = safe_int_value(result.get("successful"), safe_int_value(result.get("ok"), created_result + updated_result))
+        if not successful_result and processed_result:
+            successful_result = max(processed_result - errors_result - warnings_result, 0)
+        success_rate = round((successful_result / processed_result) * 100) if processed_result else 0
+        st.markdown(
+            f'''<div class="ticket-result-grid">
+                <div><small>Productos totales</small><strong>{processed_result}</strong></div>
+                <div><small>Cargados correctamente</small><strong>{successful_result}</strong></div>
+                <div><small>Actualizados</small><strong>{updated_result}</strong></div>
+                <div><small>Con advertencias</small><strong>{warnings_result}</strong></div>
+                <div><small>Fallidos</small><strong>{errors_result}</strong></div>
+                <div><small>Éxito</small><strong>{success_rate}%</strong></div>
+            </div>''',
+            unsafe_allow_html=True,
+        )
         st.caption(
             f"Archivo: {clean_value(result.get('filename')) or latest_version.get('filename') or ticket.get('filename') or 'Sin nombre'}"
+            f" · Finalizado por: {clean_value(result.get('closed_by')) or 'Operaciones'}"
         )
-        st.dataframe(result_df, use_container_width=True, hide_index=True)
         download_cols[2].download_button(
             "Descargar reporte final",
-            dataframe_to_excel_bytes({"Resultado": result_df}),
+            dataframe_to_excel_bytes({"Resultado": pd.DataFrame([result])}),
             file_name=f"{code}_resultado_final.xlsx",
             key=f"ticket_final_report_{code}",
         )
@@ -15309,83 +15401,81 @@ def render_ticket_detail(service, actor, code):
         if status in {STATE_LOADING, STATE_VALIDATING}:
             st.markdown(
                 '<div class="ticket-section"><p class="ticket-section-label">Cierre operativo</p>'
-                '<h3>Cerrar carga de catálogo</h3>'
-                '<p>Cuando termines la carga y la revisión en Shopify, registra aquí el resultado. '
-                'La solicitud se actualizará para Operaciones y para el equipo comercial.</p></div>',
+                '<h3>Resultado y cierre</h3>'
+                '<p>El cierre se habilita únicamente cuando el proceso externo reporte un resultado final verificable.</p></div>',
                 unsafe_allow_html=True,
             )
-            close_metrics = st.columns(2)
-            processed_count = close_metrics[0].number_input(
-                "Productos procesados",
-                min_value=0,
-                value=max(0, safe_int_value(summary.get("products"), 0)),
-                step=1,
-                key=f"close_ticket_processed_{code}",
-            )
-            error_count = close_metrics[1].number_input(
-                "Productos con error",
-                min_value=0,
-                value=0,
-                step=1,
-                key=f"close_ticket_errors_{code}",
-            )
-            close_note = st.text_area(
-                "Resultado u observaciones de la carga",
-                key=f"close_ticket_note_{code}",
-                placeholder="Ejemplo: carga completada y revisada en Shopify.",
-            )
-            close_confirmed = st.checkbox(
-                "Confirmo que la carga terminó y que revisé el resultado en Shopify.",
-                key=f"close_ticket_confirmed_{code}",
-            )
-            close_result = {
-                "processed": int(processed_count),
-                "errors": int(error_count),
-                "message": clean_value(close_note) or "Carga completada y validada en Shopify.",
-                "detail": clean_value(close_note),
-                "closed_by": actor.get("user"),
-                "filename": latest_version.get("filename") or ticket.get("filename"),
-                "file_version": latest_version.get("number", 1),
-                "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
-            }
-            close_cols = st.columns(3)
-            if close_cols[0].button(
-                "Finalizar carga",
-                type="primary",
-                key=f"complete_load_{code}",
-                disabled=not close_confirmed,
-            ):
-                try:
-                    service.record_job_result(actor, code, success=True, result=close_result)
-                    st.rerun()
-                except TicketError as exc:
-                    st.error(str(exc))
-            if close_cols[1].button(
-                "Finalizar con observaciones",
-                key=f"complete_obs_load_{code}",
-                disabled=not close_confirmed,
-            ):
-                try:
-                    service.record_job_result(actor, code, success=True, observations=True, result=close_result)
-                    st.rerun()
-                except TicketError as exc:
-                    st.error(str(exc))
-            if close_cols[2].button(
-                "Registrar incidencia",
-                key=f"fail_load_{code}",
-                disabled=not close_confirmed,
-            ):
-                try:
-                    service.record_job_result(
-                        actor,
-                        code,
-                        success=False,
-                        result=close_result,
-                        error=clean_value(close_note) or "Incidencia registrada por Operaciones.",
-                    )
-                    st.rerun()
-                except TicketError as exc:
-                    st.error(str(exc))
+            if not has_verified_job_result:
+                st.info(
+                    "Aún no hay resultados finales del proceso externo. Puedes seguir el avance "
+                    "en esta misma solicitud; el botón de finalización se habilitará al recibir el resultado."
+                )
+            else:
+                external_result = {**job_result}
+                for field in ("processed", "ok", "partial", "errors", "created", "updated", "warnings"):
+                    if field not in external_result and field in job:
+                        external_result[field] = job.get(field)
+                processed_count = safe_int_value(
+                    external_result.get("processed"),
+                    safe_int_value(job.get("processed"), safe_int_value(summary.get("products"), 0)),
+                )
+                error_count = safe_int_value(external_result.get("errors"), safe_int_value(job.get("errors"), 0))
+                warnings_count = safe_int_value(external_result.get("warnings"), safe_int_value(external_result.get("partial"), safe_int_value(job.get("partial"), 0)))
+                success_count = safe_int_value(external_result.get("successful"), safe_int_value(external_result.get("ok"), max(processed_count - error_count - warnings_count, 0)))
+                success_rate = round((success_count / processed_count) * 100) if processed_count else 0
+                st.markdown(
+                    f'''<div class="ticket-result-grid">
+                        <div><small>Productos totales</small><strong>{processed_count}</strong></div>
+                        <div><small>Cargados correctamente</small><strong>{success_count}</strong></div>
+                        <div><small>Actualizados</small><strong>{safe_int_value(external_result.get("updated"), 0)}</strong></div>
+                        <div><small>Con advertencias</small><strong>{warnings_count}</strong></div>
+                        <div><small>Fallidos</small><strong>{error_count}</strong></div>
+                        <div><small>Éxito</small><strong>{success_rate}%</strong></div>
+                    </div>''',
+                    unsafe_allow_html=True,
+                )
+                close_note = st.text_area(
+                    "Comentario de cierre",
+                    key=f"close_ticket_note_{code}",
+                    placeholder="Resumen breve de la carga y de cualquier incidencia.",
+                )
+                close_confirmed = st.checkbox(
+                    "Confirmo que revisé el resultado final reportado por el proceso.",
+                    key=f"close_ticket_confirmed_{code}",
+                )
+                close_result = {
+                    **external_result,
+                    "processed": processed_count,
+                    "errors": error_count,
+                    "warnings": warnings_count,
+                    "successful": success_count,
+                    "message": clean_value(close_note) or clean_value(external_result.get("message")) or "Carga finalizada y registrada.",
+                    "detail": clean_value(close_note),
+                    "closed_by": actor.get("user"),
+                    "filename": latest_version.get("filename") or ticket.get("filename"),
+                    "file_version": latest_version.get("number", 1),
+                    "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
+                }
+                final_has_incidents = bool(error_count or warnings_count or job_status == "failed")
+                final_label = "Finalizar solicitud con incidencias" if final_has_incidents else "Finalizar solicitud de carga"
+                if st.button(
+                    final_label,
+                    type="primary",
+                    key=f"complete_load_{code}",
+                    disabled=not close_confirmed,
+                ):
+                    try:
+                        service.record_job_result(
+                            actor,
+                            code,
+                            success=job_status != "failed",
+                            observations=final_has_incidents and job_status != "failed",
+                            result=close_result,
+                            error=clean_value(external_result.get("error")) if job_status == "failed" else "",
+                        )
+                        st.rerun()
+                    except TicketError as exc:
+                        st.error(str(exc))
         if is_ticket_operator_user(actor.get("user")):
             with st.expander("Eliminar solicitud", expanded=False):
                 delete_reason = st.text_area("Motivo de eliminación", key=f"delete_ticket_reason_{code}")

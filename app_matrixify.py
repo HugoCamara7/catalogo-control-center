@@ -37,13 +37,17 @@ from ticket_system import (
     STATE_COMPLETED,
     STATE_COMPLETED_OBS,
     STATE_CORRECTED,
+    STATE_DRY_RUN,
     STATE_FAILED,
     STATE_LABELS,
     STATE_LOADING,
     STATE_OBSERVED,
     STATE_PENDING,
+    STATE_PREPARING,
+    STATE_READY_EXECUTE,
     STATE_REJECTED,
     STATE_REVIEW,
+    STATE_VALIDATING,
     TicketConflictError,
     TicketError,
     TicketPermissionError,
@@ -14650,6 +14654,275 @@ def _ticket_table(tickets):
     return pd.DataFrame(rows)
 
 
+FULL_LOAD_TICKET_STATES = {
+    STATE_APPROVED,
+    STATE_PREPARING,
+    STATE_DRY_RUN,
+    STATE_READY_EXECUTE,
+    STATE_LOADING,
+    STATE_VALIDATING,
+    STATE_FAILED,
+}
+
+
+def _full_load_site_tokens(value):
+    token = _input_norm_key(value)
+    tokens = {token} if token else set()
+    if token.endswith("pe") and len(token) > 2:
+        tokens.add(token[:-2])
+    if token.endswith("myshopifycom"):
+        tokens.add(token[: -len("myshopifycom")])
+    return {item for item in tokens if item}
+
+
+def _ticket_matches_active_site(ticket, brand_config):
+    active_tokens = set()
+    for key in ("site_label", "site_key", "brand_name", "brand", "shop_domain"):
+        active_tokens.update(_full_load_site_tokens(brand_config.get(key)))
+    ticket_tokens = set()
+    for value in list(ticket.get("sites") or []) + [ticket.get("brand")]:
+        ticket_tokens.update(_full_load_site_tokens(value))
+    return bool(active_tokens & ticket_tokens)
+
+
+def _render_full_load_ticket_close(service, actor, ticket, latest_version):
+    code = clean_value(ticket.get("code"))
+    summary = ticket.get("summary") or {}
+    st.markdown("#### Registrar resultado de la carga")
+    st.caption(
+        "Cuando termines la carga y la revisión en Shopify, cierra la solicitud aquí. "
+        "El equipo comercial verá inmediatamente el resultado."
+    )
+    close_metrics = st.columns(2)
+    processed_count = close_metrics[0].number_input(
+        "Productos procesados",
+        min_value=0,
+        value=max(0, safe_int_value(summary.get("products"), 0)),
+        step=1,
+        key=f"full_load_close_processed_{code}",
+    )
+    error_count = close_metrics[1].number_input(
+        "Productos con error",
+        min_value=0,
+        value=0,
+        step=1,
+        key=f"full_load_close_errors_{code}",
+    )
+    close_note = st.text_area(
+        "Resultado u observaciones",
+        key=f"full_load_close_note_{code}",
+        placeholder="Ejemplo: carga completada y revisada en Shopify.",
+    )
+    close_confirmed = st.checkbox(
+        "Confirmo que la carga terminó y revisé el resultado en Shopify.",
+        key=f"full_load_close_confirmed_{code}",
+    )
+    close_result = {
+        "processed": int(processed_count),
+        "errors": int(error_count),
+        "message": clean_value(close_note) or "Carga completada y validada en Shopify.",
+        "detail": clean_value(close_note),
+        "closed_by": actor.get("user"),
+        "filename": latest_version.get("filename") or ticket.get("filename"),
+        "file_version": latest_version.get("number", 1),
+        "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
+    }
+    close_cols = st.columns(3)
+    if close_cols[0].button(
+        "Finalizar carga",
+        type="primary",
+        key=f"full_load_complete_{code}",
+        disabled=not close_confirmed,
+        use_container_width=True,
+    ):
+        try:
+            service.record_job_result(actor, code, success=True, result=close_result)
+            st.success(f"La solicitud {code} quedó finalizada.")
+            st.rerun()
+        except TicketError as exc:
+            st.error(str(exc))
+    if close_cols[1].button(
+        "Finalizar con observaciones",
+        key=f"full_load_complete_obs_{code}",
+        disabled=not close_confirmed,
+        use_container_width=True,
+    ):
+        try:
+            service.record_job_result(actor, code, success=True, observations=True, result=close_result)
+            st.rerun()
+        except TicketError as exc:
+            st.error(str(exc))
+    if close_cols[2].button(
+        "Registrar incidencia",
+        key=f"full_load_fail_{code}",
+        disabled=not close_confirmed,
+        use_container_width=True,
+    ):
+        try:
+            service.record_job_result(
+                actor,
+                code,
+                success=False,
+                result=close_result,
+                error=clean_value(close_note) or "Incidencia registrada por Operaciones.",
+            )
+            st.rerun()
+        except TicketError as exc:
+            st.error(str(exc))
+
+
+def render_full_load_ticket_queue(brand_config):
+    actor = current_ticket_actor()
+    if actor.get("role") not in {ROLE_OPERATOR, ROLE_ADMIN}:
+        return
+    try:
+        service, _ = get_ticket_service()
+        tickets = [
+            ticket
+            for ticket in service.list_tickets(actor)
+            if clean_value(ticket.get("load_type")).casefold() == "complete"
+            and ticket.get("status") in FULL_LOAD_TICKET_STATES
+            and _ticket_matches_active_site(ticket, brand_config)
+        ]
+    except TicketError as exc:
+        st.warning(f"No se pudo consultar la bandeja de cargas pendientes: {exc}")
+        return
+    except Exception as exc:
+        st.warning(f"La bandeja de cargas pendientes no está disponible: {exc}")
+        return
+
+    tickets.sort(key=lambda item: clean_value(item.get("created_at")), reverse=True)
+    with st.container(border=True):
+        header_cols = st.columns([4, 1])
+        header_cols[0].markdown("### Cargas pendientes")
+        header_cols[0].caption(
+            "Descarga el input aprobado, ejecuta la carga con el flujo inferior y registra el cierre sin salir de esta pantalla."
+        )
+        header_cols[1].metric("Pendientes", len(tickets))
+        if not tickets:
+            st.info("No hay solicitudes aprobadas pendientes para el sitio activo.")
+            return
+
+        queue_rows = []
+        for ticket in tickets:
+            queue_rows.append(
+                {
+                    "Ticket": ticket.get("code"),
+                    "Marca": ticket.get("brand"),
+                    "Solicitante": ticket.get("requester"),
+                    "Productos": safe_int_value((ticket.get("summary") or {}).get("products"), 0),
+                    "Estado": STATE_LABELS.get(ticket.get("status"), ticket.get("status")),
+                    "Prioridad": PRIORITY_LABELS.get(ticket.get("priority"), ticket.get("priority")),
+                    "Responsable": ticket.get("assignee") or "Sin asignar",
+                }
+            )
+        st.dataframe(pd.DataFrame(queue_rows), use_container_width=True, hide_index=True)
+
+        ticket_codes = [clean_value(ticket.get("code")) for ticket in tickets]
+        selected_code = st.selectbox(
+            "Solicitud para cargar",
+            ticket_codes,
+            format_func=lambda value: next(
+                (
+                    f"{value} · {STATE_LABELS.get(item.get('status'), item.get('status'))} · "
+                    f"{safe_int_value((item.get('summary') or {}).get('products'), 0)} productos"
+                    for item in tickets
+                    if clean_value(item.get("code")) == value
+                ),
+                value,
+            ),
+            key=f"full_load_ticket_{brand_config.get('site_key')}",
+        )
+        try:
+            ticket = service.get_ticket(actor, selected_code)
+        except TicketError as exc:
+            st.error(str(exc))
+            return
+
+        latest_version = (ticket.get("versions") or [{}])[-1]
+        detail_cols = st.columns(4)
+        detail_cols[0].metric("Ticket", ticket.get("code"))
+        detail_cols[1].metric("Productos", safe_int_value((ticket.get("summary") or {}).get("products"), 0))
+        detail_cols[2].metric("Estado", STATE_LABELS.get(ticket.get("status"), ticket.get("status")))
+        detail_cols[3].metric("Responsable", ticket.get("assignee") or "Sin asignar")
+
+        download_cols = st.columns(2)
+        if latest_version.get("input_path"):
+            try:
+                download_cols[0].download_button(
+                    "Descargar input validado",
+                    data=service.store.get_artifact(latest_version["input_path"]),
+                    file_name=latest_version.get("filename") or ticket.get("filename") or "input_validado.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"full_load_download_input_{selected_code}",
+                    use_container_width=True,
+                )
+            except (TicketError, OSError) as exc:
+                download_cols[0].warning(f"No se pudo descargar el input: {exc}")
+        if latest_version.get("report_path"):
+            try:
+                download_cols[1].download_button(
+                    "Descargar validación",
+                    data=service.store.get_artifact(latest_version["report_path"]),
+                    file_name=f"validacion_{selected_code}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"full_load_download_report_{selected_code}",
+                    use_container_width=True,
+                )
+            except (TicketError, OSError) as exc:
+                download_cols[1].warning(f"No se pudo descargar el reporte: {exc}")
+
+        actor_user = _normalize_auth_username(actor.get("user"))
+        assignee = _normalize_auth_username(ticket.get("assignee"))
+        can_manage = actor.get("role") == ROLE_ADMIN or assignee == actor_user
+        if not assignee:
+            if st.button(
+                "Asignarme esta carga",
+                key=f"full_load_assign_me_{selected_code}",
+                use_container_width=True,
+            ):
+                try:
+                    service.assign(actor, selected_code, actor.get("user"))
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+            st.info("Asígnate la solicitud para preparar, iniciar y cerrar la carga.")
+            return
+        if not can_manage:
+            st.info(f"Esta solicitud está asignada a {ticket.get('assignee')}. Puedes descargar los archivos para consulta.")
+            return
+
+        status = ticket.get("status")
+        if status in {STATE_APPROVED, STATE_PREPARING, STATE_FAILED}:
+            if st.button(
+                "Preparar para carga",
+                type="primary",
+                key=f"full_load_prepare_{selected_code}",
+                use_container_width=True,
+            ):
+                try:
+                    service.run_dry_run(actor, selected_code)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+        elif status == STATE_DRY_RUN:
+            st.info("La solicitud está ejecutando su validación previa.")
+        elif status == STATE_READY_EXECUTE:
+            if st.button(
+                "Marcar carga iniciada",
+                type="primary",
+                key=f"full_load_start_{selected_code}",
+                use_container_width=True,
+            ):
+                try:
+                    service.start_load(actor, selected_code)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+        elif status in {STATE_LOADING, STATE_VALIDATING}:
+            _render_full_load_ticket_close(service, actor, ticket, latest_version)
+
+
 def render_ticket_inbox(service, actor, brand_view=False):
     render_ticket_styles()
     widget_key = f"ticket_open_{actor.get('role')}"
@@ -14866,8 +15139,30 @@ def render_ticket_detail(service, actor, code):
             f"Job {clean_value(job.get('id')) or 'pendiente'} · {clean_value(job.get('status')) or status_label} · {progress}%"
         )
     if ticket.get("result"):
-        result_df = pd.DataFrame([ticket.get("result", {})])
-        st.markdown("#### Resultado final")
+        result = ticket.get("result", {})
+        public_result = ticket.get("public_result", {})
+        result_df = pd.DataFrame([result])
+        result_status = clean_value(public_result.get("status")) or status_label
+        result_message = clean_value(public_result.get("message")) or clean_value(result.get("message"))
+        st.markdown("#### Cierre de la solicitud")
+        if status == STATE_COMPLETED:
+            st.success(
+                f"{result_status}. El archivo quedó registrado como cargado"
+                + (f": {result_message}" if result_message else ".")
+            )
+        elif status == STATE_COMPLETED_OBS:
+            st.warning(
+                f"{result_status}. La carga terminó y conserva observaciones"
+                + (f": {result_message}" if result_message else ".")
+            )
+        result_cols = st.columns(4)
+        result_cols[0].metric("Productos procesados", safe_int_value(public_result.get("processed"), safe_int_value(result.get("processed"), 0)))
+        result_cols[1].metric("Errores registrados", safe_int_value(public_result.get("errors"), safe_int_value(result.get("errors"), 0)))
+        result_cols[2].metric("Versión cargada", clean_value(result.get("file_version")) or latest_version.get("number", 1))
+        result_cols[3].metric("Finalizado por", clean_value(result.get("closed_by")) or "Operaciones")
+        st.caption(
+            f"Archivo: {clean_value(result.get('filename')) or latest_version.get('filename') or ticket.get('filename') or 'Sin nombre'}"
+        )
         st.dataframe(result_df, use_container_width=True, hide_index=True)
         download_cols[2].download_button(
             "Descargar reporte final",
@@ -14998,37 +15293,96 @@ def render_ticket_detail(service, actor, code):
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-            if ticket.get("dry_run", {}).get("status") == "completed" and run_cols[1].button("Iniciar carga simulada", type="primary", key=f"start_load_{code}"):
+            if ticket.get("dry_run", {}).get("status") == "completed" and run_cols[1].button("Marcar carga iniciada", type="primary", key=f"start_load_{code}"):
                 try:
                     service.start_load(actor, code)
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
         if status == STATE_FAILED:
-            if st.button("Reintentar carga simulada", type="primary", key=f"retry_load_{code}"):
+            if st.button("Reintentar carga", type="primary", key=f"retry_load_{code}"):
                 try:
                     service.start_load(actor, code)
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-        if status == STATE_LOADING:
-            mock_cols = st.columns(3)
-            close_note = st.text_input("Detalle de cierre", key=f"close_ticket_note_{code}", placeholder="Carga completada y validada en Shopify")
-            if mock_cols[0].button("Marcar finalizado", type="primary", key=f"complete_mock_{code}"):
+        if status in {STATE_LOADING, STATE_VALIDATING}:
+            st.markdown(
+                '<div class="ticket-section"><p class="ticket-section-label">Cierre operativo</p>'
+                '<h3>Cerrar carga de catálogo</h3>'
+                '<p>Cuando termines la carga y la revisión en Shopify, registra aquí el resultado. '
+                'La solicitud se actualizará para Operaciones y para el equipo comercial.</p></div>',
+                unsafe_allow_html=True,
+            )
+            close_metrics = st.columns(2)
+            processed_count = close_metrics[0].number_input(
+                "Productos procesados",
+                min_value=0,
+                value=max(0, safe_int_value(summary.get("products"), 0)),
+                step=1,
+                key=f"close_ticket_processed_{code}",
+            )
+            error_count = close_metrics[1].number_input(
+                "Productos con error",
+                min_value=0,
+                value=0,
+                step=1,
+                key=f"close_ticket_errors_{code}",
+            )
+            close_note = st.text_area(
+                "Resultado u observaciones de la carga",
+                key=f"close_ticket_note_{code}",
+                placeholder="Ejemplo: carga completada y revisada en Shopify.",
+            )
+            close_confirmed = st.checkbox(
+                "Confirmo que la carga terminó y que revisé el resultado en Shopify.",
+                key=f"close_ticket_confirmed_{code}",
+            )
+            close_result = {
+                "processed": int(processed_count),
+                "errors": int(error_count),
+                "message": clean_value(close_note) or "Carga completada y validada en Shopify.",
+                "detail": clean_value(close_note),
+                "closed_by": actor.get("user"),
+                "filename": latest_version.get("filename") or ticket.get("filename"),
+                "file_version": latest_version.get("number", 1),
+                "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
+            }
+            close_cols = st.columns(3)
+            if close_cols[0].button(
+                "Finalizar carga",
+                type="primary",
+                key=f"complete_load_{code}",
+                disabled=not close_confirmed,
+            ):
                 try:
-                    service.record_job_result(actor, code, success=True, result={"processed": summary.get("products", 0), "detail": clean_value(close_note), "closed_by": actor.get("user")})
+                    service.record_job_result(actor, code, success=True, result=close_result)
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-            if mock_cols[1].button("Finalizar con observaciones", key=f"complete_obs_mock_{code}"):
+            if close_cols[1].button(
+                "Finalizar con observaciones",
+                key=f"complete_obs_load_{code}",
+                disabled=not close_confirmed,
+            ):
                 try:
-                    service.record_job_result(actor, code, success=True, observations=True, result={"detail": clean_value(close_note), "closed_by": actor.get("user")})
+                    service.record_job_result(actor, code, success=True, observations=True, result=close_result)
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-            if mock_cols[2].button("Registrar error", key=f"fail_mock_{code}"):
+            if close_cols[2].button(
+                "Registrar incidencia",
+                key=f"fail_load_{code}",
+                disabled=not close_confirmed,
+            ):
                 try:
-                    service.record_job_result(actor, code, success=False, error=clean_value(close_note) or "Error registrado por Operaciones.")
+                    service.record_job_result(
+                        actor,
+                        code,
+                        success=False,
+                        result=close_result,
+                        error=clean_value(close_note) or "Incidencia registrada por Operaciones.",
+                    )
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
@@ -15873,6 +16227,8 @@ api_version = "{DEFAULT_API_VERSION}"
         else:
             st.info("Sube los archivos requeridos para generar la carga parcial.")
         return
+
+    render_full_load_ticket_queue(brand_config)
 
     with st.container(key="sources_upload_panel"):
         render_sources_card(

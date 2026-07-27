@@ -14072,7 +14072,29 @@ TICKET_OPERATOR_USERS = (
     "hugo.camara@forus.pe",
     "luis.nunez@forus.pe",
 )
-COMMERCIAL_INPUT_ONLY_USERS = {"comercial@forus.pe"}
+BRAND_PORTAL_USERS = (
+    "comercial@forus.pe",
+    "alejandro.mosqueira@forus.pe",
+    "clara.gallastegui@forus.pe",
+    "natalia.ludowieg@forus.pe",
+    "daniela.ballon@forus.pe",
+    "mario.biggio@forus.pe",
+    "nicolas.rodriguez@forus.pe",
+    "alejandro.espinoza@forus.pe",
+)
+COMMERCIAL_INPUT_ONLY_USERS = set(BRAND_PORTAL_USERS)
+AUTH_USER_DISPLAY_NAMES = {
+    "hugo.camara@forus.pe": "Hugo Camara",
+    "luis.nunez@forus.pe": "Luis Nunez",
+    "comercial@forus.pe": "Equipo Comercial",
+    "alejandro.mosqueira@forus.pe": "Alejandro Mosqueira",
+    "clara.gallastegui@forus.pe": "Clara Gallastegui",
+    "natalia.ludowieg@forus.pe": "Natalia Ludowieg",
+    "daniela.ballon@forus.pe": "Daniela Ballon",
+    "mario.biggio@forus.pe": "Mario Biggio",
+    "nicolas.rodriguez@forus.pe": "Nicolas Rodriguez",
+    "alejandro.espinoza@forus.pe": "Alejandro Espinoza",
+}
 
 
 def is_ticket_operator_user(username):
@@ -14083,23 +14105,29 @@ def ticket_operator_users():
     return list(TICKET_OPERATOR_USERS)
 
 
-def ticket_operator_display_name(username):
-    labels = {
-        "hugo.camara@forus.pe": "Hugo Camara",
-        "luis.nunez@forus.pe": "Luis Nunez",
-    }
+def auth_display_name(username):
     normalized = _normalize_auth_username(username)
-    return labels.get(normalized, normalized)
+    label = AUTH_USER_DISPLAY_NAMES.get(normalized)
+    if label:
+        return label
+    if "@" in normalized:
+        local_part = normalized.split("@", 1)[0]
+        return " ".join(part.capitalize() for part in re.split(r"[._-]+", local_part) if part)
+    return normalized or "Usuario"
+
+
+def ticket_operator_display_name(username):
+    return auth_display_name(username)
 
 
 def auth_access_scope(username):
     normalized_username = _normalize_auth_username(username)
-    if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
-        return ROLE_BRAND
     if normalized_username in set(TICKET_OPERATOR_USERS):
         # Hugo y Luis administran toda la aplicacion. Su permiso especial de
         # bandeja de solicitudes se determina por identidad en current_ticket_actor.
         return ROLE_ADMIN
+    if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
+        return ROLE_BRAND
     try:
         auth_config = dict(st.secrets.get("app_auth", {}))
     except Exception:
@@ -15647,7 +15675,8 @@ def main():
     ticket_operator = ticket_actor.get("role") == ROLE_OPERATOR
     with st.sidebar.container(key="logout_card"):
         user_label = auth_user or "Usuario"
-        st.caption(f"Sesion: {user_label}")
+        display_user = auth_display_name(user_label)
+        st.caption(f"Sesion: {display_user} · {user_label}")
         if st.button("Cerrar sesion"):
             st.session_state.pop("authenticated", None)
             st.session_state.pop("auth_user", None)

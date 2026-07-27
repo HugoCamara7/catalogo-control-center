@@ -14184,6 +14184,176 @@ def auth_allowed_brands(username, role=None):
     return allowed
 
 
+USER_ACTIVITY_LOG_PATH = Path("outputs") / "user_activity_log.jsonl"
+USER_ACTIVITY_LOG_COLUMNS = [
+    "fecha",
+    "usuario",
+    "nombre",
+    "rol",
+    "accion",
+    "modulo",
+    "sitio",
+    "detalle",
+]
+
+
+def auth_scope_label(scope):
+    scope_value = clean_value(scope).casefold()
+    if scope_value == ROLE_ADMIN:
+        return "Administrador"
+    if scope_value == ROLE_OPERATOR:
+        return "Operaciones"
+    if scope_value == ROLE_BRAND:
+        return "Portal Brand"
+    if scope_value in {"commercial_input", "input_comercial", "comercial"}:
+        return "Portal Comercial"
+    return "Usuario"
+
+
+def can_view_user_activity_log(username=None):
+    return is_ticket_operator_user(username or st.session_state.get("auth_user", ""))
+
+
+def log_user_activity(action, detail="", user=None, site_key="", module="", extra=None):
+    username = _normalize_auth_username(user or st.session_state.get("auth_user", ""))
+    if not username:
+        return
+    try:
+        record = {
+            "fecha": datetime.now(timezone(timedelta(hours=-5))).strftime("%Y-%m-%d %H:%M:%S"),
+            "usuario": username,
+            "nombre": auth_display_name(username),
+            "rol": auth_scope_label(auth_access_scope(username)),
+            "accion": clean_value(action),
+            "modulo": clean_value(module),
+            "sitio": clean_value(site_key),
+            "detalle": clean_value(detail),
+        }
+        if extra:
+            record["extra"] = extra
+        USER_ACTIVITY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with USER_ACTIVITY_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        # La auditoria nunca debe bloquear login, carga o sincronizacion.
+        return
+
+
+def read_user_activity_log(limit=300):
+    if not USER_ACTIVITY_LOG_PATH.exists():
+        return pd.DataFrame(columns=USER_ACTIVITY_LOG_COLUMNS)
+    records = []
+    try:
+        lines = USER_ACTIVITY_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return pd.DataFrame(columns=USER_ACTIVITY_LOG_COLUMNS)
+    for line in lines[-max(int(limit), 1):]:
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        records.append({column: payload.get(column, "") for column in USER_ACTIVITY_LOG_COLUMNS})
+    return pd.DataFrame(records, columns=USER_ACTIVITY_LOG_COLUMNS)
+
+
+def render_sidebar_account_card(username=None):
+    username = _normalize_auth_username(username or st.session_state.get("auth_user", ""))
+    if not username:
+        return
+    display_name = auth_display_name(username)
+    role_label = auth_scope_label(auth_access_scope(username))
+    initials = "".join(part[:1] for part in display_name.split()[:2]).upper() or "U"
+    st.sidebar.markdown(
+        f"""
+        <style>
+        section[data-testid="stSidebar"] .ccc-account-card {{
+            background: #ffffff;
+            border: 1px solid #d7e4f4;
+            border-radius: 18px;
+            padding: 14px 16px;
+            margin: 8px 0 18px;
+            box-shadow: 0 14px 32px rgba(15, 43, 83, 0.08);
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }}
+        section[data-testid="stSidebar"] .ccc-account-avatar {{
+            width: 44px;
+            height: 44px;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #0b5cab, #2f73ff);
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 900;
+            letter-spacing: 0.03em;
+            flex: 0 0 auto;
+        }}
+        section[data-testid="stSidebar"] .ccc-account-meta {{
+            min-width: 0;
+            line-height: 1.2;
+        }}
+        section[data-testid="stSidebar"] .ccc-account-role {{
+            color: #2f73ff;
+            font-size: 11px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 3px;
+        }}
+        section[data-testid="stSidebar"] .ccc-account-name {{
+            color: #061735;
+            font-size: 14px;
+            font-weight: 900;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 220px;
+        }}
+        section[data-testid="stSidebar"] .ccc-account-email {{
+            color: #64748b;
+            font-size: 11px;
+            margin-top: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 220px;
+        }}
+        </style>
+        <div class="ccc-account-card">
+            <div class="ccc-account-avatar">{escape(initials)}</div>
+            <div class="ccc-account-meta">
+                <div class="ccc-account-role">{escape(role_label)}</div>
+                <div class="ccc-account-name">{escape(display_name)}</div>
+                <div class="ccc-account-email">{escape(username)}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_sidebar_user_activity_log(username=None):
+    if not can_view_user_activity_log(username):
+        return
+    with st.sidebar.expander("Auditoria de usuarios", expanded=False):
+        log_df = read_user_activity_log(limit=500)
+        if log_df.empty:
+            st.caption("Aun no hay actividad registrada.")
+            return
+        view_df = log_df.tail(80).iloc[::-1].reset_index(drop=True)
+        st.dataframe(view_df[["fecha", "nombre", "accion", "modulo"]], hide_index=True, use_container_width=True)
+        csv_data = log_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "Descargar log",
+            data=csv_data,
+            file_name="auditoria_usuarios_catalog_control_center.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+
 def current_ticket_actor():
     username = clean_value(st.session_state.get("auth_user"))
     role = ROLE_OPERATOR if is_ticket_operator_user(username) else ROLE_BRAND
@@ -14520,10 +14690,12 @@ def require_login():
         normalized_username = _normalize_auth_username(username)
         expected = users.get(normalized_username)
         if expected and hmac.compare_digest(clean_value(password), expected):
+            log_user_activity("Inicio de sesion", "Ingreso correcto.", user=normalized_username, module="Login")
             st.session_state["authenticated"] = True
             st.session_state["auth_user"] = normalized_username
             st.session_state["auth_scope"] = auth_access_scope(normalized_username)
             st.rerun()
+        log_user_activity("Login fallido", "Credenciales invalidas.", user=normalized_username, module="Login")
         st.error("Usuario o contrasena incorrectos.")
     return False
 
@@ -15673,14 +15845,18 @@ def main():
     commercial_input_only = auth_scope == "commercial_input"
     ticket_actor = current_ticket_actor()
     ticket_operator = ticket_actor.get("role") == ROLE_OPERATOR
+    if auth_user and st.session_state.get("_activity_logged_user") != auth_user:
+        log_user_activity("Sesion activa", "Usuario entro a la app.", user=auth_user, module="App")
+        st.session_state["_activity_logged_user"] = auth_user
+    render_sidebar_account_card(auth_user)
+    render_sidebar_user_activity_log(auth_user)
     with st.sidebar.container(key="logout_card"):
-        user_label = auth_user or "Usuario"
-        display_user = auth_display_name(user_label)
-        st.caption(f"Sesion: {display_user} · {user_label}")
         if st.button("Cerrar sesion"):
+            log_user_activity("Cierre de sesion", "Sesion cerrada desde sidebar.", user=auth_user, module="Login")
             st.session_state.pop("authenticated", None)
             st.session_state.pop("auth_user", None)
             st.session_state.pop("auth_scope", None)
+            st.session_state.pop("_activity_logged_user", None)
             st.rerun()
     site_options = {config["site_label"]: key for key, config in SITE_CONFIGS.items()}
     current_site_label = clean_value(st.session_state.get("site_picker")) or next(iter(site_options))

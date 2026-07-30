@@ -10945,6 +10945,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button,
         div.st-key-operation_nav_input button,
         div.st-key-operation_nav_tickets button,
+        div.st-key-operation_nav_audit button,
         div.st-key-brand_portal_input button,
         div.st-key-brand_portal_tickets button,
         div.st-key-load_mode_complete button,
@@ -10977,6 +10978,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_input button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_tickets button [data-testid="stMarkdownContainer"],
+        div.st-key-operation_nav_audit button [data-testid="stMarkdownContainer"],
         div.st-key-brand_portal_input button [data-testid="stMarkdownContainer"],
         div.st-key-brand_portal_tickets button [data-testid="stMarkdownContainer"],
         div.st-key-load_mode_complete button [data-testid="stMarkdownContainer"],
@@ -10990,6 +10992,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button p,
         div.st-key-operation_nav_input button p,
         div.st-key-operation_nav_tickets button p,
+        div.st-key-operation_nav_audit button p,
         div.st-key-brand_portal_input button p,
         div.st-key-brand_portal_tickets button p,
         div.st-key-load_mode_complete button p,
@@ -11008,6 +11011,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button::before,
         div.st-key-operation_nav_input button::before,
         div.st-key-operation_nav_tickets button::before,
+        div.st-key-operation_nav_audit button::before,
         div.st-key-brand_portal_input button::before,
         div.st-key-brand_portal_tickets button::before,
         div.st-key-load_mode_complete button::before,
@@ -11034,8 +11038,12 @@ def inject_custom_css(config):
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-operation_nav_tickets button::before,
+        div.st-key-operation_nav_audit button::before,
         div.st-key-brand_portal_tickets button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='4' width='16' height='16' rx='2'/%3E%3Cpath d='M8 9h8M8 13h8M8 17h5'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-operation_nav_audit button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-brand_portal_input button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
@@ -11055,6 +11063,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button:hover,
         div.st-key-operation_nav_input button:hover,
         div.st-key-operation_nav_tickets button:hover,
+        div.st-key-operation_nav_audit button:hover,
         div.st-key-brand_portal_input button:hover,
         div.st-key-brand_portal_tickets button:hover,
         div.st-key-load_mode_complete button:hover,
@@ -14696,6 +14705,7 @@ def render_audit_center():
         unsafe_allow_html=True,
     )
 
+    render_ticket_styles()   # aporta .ticket-kpi-grid y .ticket-kpi-card
     servicio = get_audit_service()
     if not servicio.persistente:
         st.warning(
@@ -14770,13 +14780,29 @@ def render_audit_center():
         "Usuario": e.get("nombre"),
         "Rol": e.get("rol"),
         "Modulo": e.get("modulo"),
-        "Solicitud": e.get("solicitud"),
         "Accion": e.get("accion"),
+        "Detalle": clean_value(e.get("detalle")) or clean_value(e.get("marca")),
+        "Solicitud": e.get("solicitud"),
         "Cambio": (f'{e.get("estado_anterior")} -> {e.get("estado_nuevo")}'
                    if e.get("estado_nuevo") else ""),
         "Resultado": e.get("resultado"),
     } for e in datos["filas"]])
-    st.dataframe(tabla, use_container_width=True, hide_index=True)
+    st.dataframe(
+        tabla,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Fecha": st.column_config.TextColumn("Fecha y hora", width="medium"),
+            "Usuario": st.column_config.TextColumn("Usuario", width="medium"),
+            "Rol": st.column_config.TextColumn("Rol", width="small"),
+            "Modulo": st.column_config.TextColumn("Módulo", width="small"),
+            "Accion": st.column_config.TextColumn("Acción", width="medium"),
+            "Detalle": st.column_config.TextColumn("Detalle", width="large"),
+            "Solicitud": st.column_config.TextColumn("Solicitud", width="small"),
+            "Cambio": st.column_config.TextColumn("Cambio de estado", width="medium"),
+            "Resultado": st.column_config.TextColumn("Resultado", width="small"),
+        },
+    )
 
     nav = st.columns([1, 1, 3, 1.4, 1.4])
     if nav[0].button("Anterior", key="audit_prev", disabled=datos["pagina"] <= 1,

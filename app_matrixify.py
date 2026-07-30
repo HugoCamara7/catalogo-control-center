@@ -10066,6 +10066,33 @@ def inject_custom_css(config):
             --card-bg: #FFFFFF;
             --text-main: #0F172A;
             --text-muted: #64748B;
+            --c-surface: #FFFFFF;
+            --c-border: #DDE6F2;
+            --c-text: #0F172A;
+            --c-navy-900: #0B1B46;
+            --c-navy-800: #172554;
+            --c-text-muted: #64748B;
+            --c-surface-soft: #F8FAFC;
+            --c-border-soft: #E2E8F0;
+            --c-text-soft: #475569;
+            --c-accent-soft: #BFDBFE;
+            --c-bg: #F6F8FC;
+            --c-bg-sidebar: #F3F6FB;
+            --c-link: #2563EB;
+            --c-forus-action: #005AA8;
+            --c-forus: #17269A;
+            --c-shopify: #95BF47;
+            --c-ok-bg: #EAF7EF;
+            --c-ok-text: #1B6B45;
+            --c-warn-bg: #FDF3E3;
+            --c-warn-text: #8A5A0B;
+            --c-bad-bg: #FDECEC;
+            --c-bad-text: #9B2C2C;
+            --c-ok: #10B981;
+            --c-warn: #F59E0B;
+            --c-bad: #EF4444;
+            --c-border-hair: #E6EBF2;
+            --c-accent-bg: #E6F1FB;
         }}
         .stApp {{ background: var(--bg-main); color: var(--text-main); }}
         header[data-testid="stHeader"] {{
@@ -10095,8 +10122,8 @@ def inject_custom_css(config):
             pointer-events: none !important;
         }}
         section[data-testid="stSidebar"] {{
-            background: #F3F6FB;
-            border-right: 1px solid #DDE6F2;
+            background: var(--c-bg-sidebar);
+            border-right: 1px solid var(--c-border);
             display: block !important;
             visibility: visible !important;
             min-width: 360px !important;
@@ -10144,12 +10171,12 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] p,
         section[data-testid="stSidebar"] label,
         section[data-testid="stSidebar"] span {{
-            color: #172554;
+            color: var(--c-navy-800);
         }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] span,
         section[data-testid="stSidebar"] div[data-baseweb="select"] input,
         section[data-testid="stSidebar"] div[data-baseweb="popover"] span {{
-            color: #0F172A !important;
+            color: var(--c-text) !important;
         }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
         section[data-testid="stSidebar"] details,
@@ -10158,8 +10185,8 @@ def inject_custom_css(config):
         }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
             min-height: 56px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
+            background: var(--c-surface);
+            border: 1px solid var(--c-border);
             box-shadow: 0 10px 22px rgba(15,23,42,0.07);
             padding-left: 12px;
         }}
@@ -10185,7 +10212,7 @@ def inject_custom_css(config):
             left: 126px;
             top: 22px;
             z-index: 12;
-            color: #172554;
+            color: var(--c-navy-800);
             font-size: 13px;
             line-height: 1;
             font-weight: 950;
@@ -10200,12 +10227,12 @@ def inject_custom_css(config):
             height: 46px;
             transform: translateY(-50%);
             border-radius: 13px;
-            background-color: #F8FAFC;
+            background-color: var(--c-surface-soft);
             background-image: var(--site-logo-url);
             background-repeat: no-repeat;
             background-position: center;
             background-size: contain;
-            border: 1px solid #E2E8F0;
+            border: 1px solid var(--c-border-soft);
             z-index: 12;
             pointer-events: none;
         }}
@@ -10215,7 +10242,7 @@ def inject_custom_css(config):
             align-items: center;
             justify-content: center;
             text-align: center;
-            border-color: #DDE6F2;
+            border-color: var(--c-border);
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
@@ -10239,7 +10266,7 @@ def inject_custom_css(config):
             right: 48px;
             top: 42px;
             z-index: 12;
-            color: #0F172A;
+            color: var(--c-text);
             font-size: 18px;
             line-height: 1.15;
             font-weight: 950;
@@ -10279,7 +10306,7 @@ def inject_custom_css(config):
             text-align: center;
         }}
         section[data-testid="stSidebar"] div[data-baseweb="select"] span {{
-            color: #0F172A !important;
+            color: var(--c-text) !important;
             font-size: 18px;
             font-weight: 900;
         }}
@@ -10296,8 +10323,8 @@ def inject_custom_css(config):
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] svg,
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] path {{
-            color: #0F172A !important;
-            fill: #0F172A !important;
+            color: var(--c-text) !important;
+            fill: var(--c-text) !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card {{
             min-height: 88px !important;
@@ -10319,8 +10346,8 @@ def inject_custom_css(config):
             gap: 14px;
             padding: 12px 18px;
             border-radius: 20px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
+            background: var(--c-surface);
+            border: 1px solid var(--c-border);
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
             pointer-events: none;
             margin-bottom: 10px;
@@ -10331,8 +10358,8 @@ def inject_custom_css(config):
             display: grid;
             place-items: center;
             border-radius: 13px;
-            background: #F8FAFC;
-            border: 1px solid #E2E8F0;
+            background: var(--c-surface-soft);
+            border: 1px solid var(--c-border-soft);
             overflow: hidden;
         }}
         section[data-testid="stSidebar"] .site-picker-logo img {{
@@ -10353,29 +10380,29 @@ def inject_custom_css(config):
         }}
         section[data-testid="stSidebar"] .site-picker-kicker {{
             margin: 0 0 6px;
-            color: #172554 !important;
+            color: var(--c-navy-800) !important;
             font-size: 13px;
             line-height: 1;
             font-weight: 950;
-            -webkit-text-fill-color: #172554 !important;
+            -webkit-text-fill-color: var(--c-navy-800) !important;
         }}
         section[data-testid="stSidebar"] .site-picker-name {{
             margin: 0;
-            color: #0F172A !important;
+            color: var(--c-text) !important;
             font-size: 18px;
             line-height: 1.15;
             font-weight: 950;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            -webkit-text-fill-color: #0F172A !important;
+            -webkit-text-fill-color: var(--c-text) !important;
         }}
         section[data-testid="stSidebar"] .site-picker-chevron {{
-            color: #0F172A !important;
+            color: var(--c-text) !important;
             font-size: 21px;
             line-height: 1;
             font-weight: 900;
-            -webkit-text-fill-color: #0F172A !important;
+            -webkit-text-fill-color: var(--c-text) !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] {{
             position: relative !important;
@@ -10393,8 +10420,8 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
             height: 48px !important;
             min-height: 48px !important;
-            background: #FFFFFF !important;
-            border-color: #DDE6F2 !important;
+            background: var(--c-surface) !important;
+            border-color: var(--c-border) !important;
             box-shadow: none !important;
             border-radius: 14px !important;
             padding-left: 14px !important;
@@ -10414,28 +10441,28 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="singleValue"],
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="ValueContainer"],
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="placeholder"] {{
-            color: #0F172A !important;
-            -webkit-text-fill-color: #0F172A !important;
+            color: var(--c-text) !important;
+            -webkit-text-fill-color: var(--c-text) !important;
             text-shadow: none !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] svg,
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] path {{
             opacity: 1 !important;
-            color: #0F172A !important;
-            fill: #0F172A !important;
+            color: var(--c-text) !important;
+            fill: var(--c-text) !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] span,
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] input,
         section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div *:not(svg):not(path) {{
-            color: #0F172A !important;
-            -webkit-text-fill-color: #0F172A !important;
+            color: var(--c-text) !important;
+            -webkit-text-fill-color: var(--c-text) !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card {{
             min-height: auto !important;
             padding: 12px 12px 14px !important;
             border-radius: 20px !important;
-            background: #FFFFFF !important;
-            border: 1px solid #DDE6F2 !important;
+            background: var(--c-surface) !important;
+            border: 1px solid var(--c-border) !important;
             box-shadow: 0 12px 24px rgba(15,23,42,0.06) !important;
         }}
         section[data-testid="stSidebar"] .site-picker-visual {{
@@ -10476,8 +10503,8 @@ def inject_custom_css(config):
             height: 46px !important;
             min-height: 46px !important;
             border-radius: 14px !important;
-            background: #F8FAFC !important;
-            border: 1px solid #DDE6F2 !important;
+            background: var(--c-surface-soft) !important;
+            border: 1px solid var(--c-border) !important;
         }}
         section[data-testid="stSidebar"] .st-key-site_picker_card {{
             padding: 12px 14px !important;
@@ -10509,7 +10536,7 @@ def inject_custom_css(config):
             display: block !important;
             margin: 0 0 5px !important;
             padding: 0 !important;
-            color: #172554 !important;
+            color: var(--c-navy-800) !important;
             font-size: 13px !important;
             line-height: 1 !important;
             font-weight: 950 !important;
@@ -10529,8 +10556,8 @@ def inject_custom_css(config):
             border-radius: 24px;
             padding: 22px 20px;
             margin: 2px 0 28px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
+            background: var(--c-surface);
+            border: 1px solid var(--c-border);
             box-shadow: 0 12px 24px rgba(15,23,42,0.08);
         }}
         .forus-logo {{
@@ -10538,11 +10565,11 @@ def inject_custom_css(config):
             line-height: 1;
             font-weight: 900;
             letter-spacing: -0.06em;
-            color: #17269A;
+            color: var(--c-forus);
         }}
         .forus-tagline {{
             margin-top: 5px;
-            color: #17269A;
+            color: var(--c-forus);
             font-size: 9px;
             letter-spacing: 0.28em;
             font-weight: 900;
@@ -10552,8 +10579,8 @@ def inject_custom_css(config):
             border-radius: 22px;
             padding: 14px;
             margin: 12px 0 16px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
+            background: var(--c-surface);
+            border: 1px solid var(--c-border);
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         .sidebar-brand-logo {{
@@ -10575,7 +10602,7 @@ def inject_custom_css(config):
             margin: 0;
         }}
         .sidebar-brand-caption {{
-            color: #64748B !important;
+            color: var(--c-text-muted) !important;
             font-size: 11px;
             text-align: center;
             margin: 8px 0 0;
@@ -10585,8 +10612,8 @@ def inject_custom_css(config):
             border-radius: 22px;
             padding: 22px 20px;
             margin: 18px 0 24px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
+            background: var(--c-surface);
+            border: 1px solid var(--c-border);
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         .sidebar-label {{
@@ -10601,7 +10628,7 @@ def inject_custom_css(config):
             margin: 0;
             font-size: 16px;
             line-height: 1.6;
-            color: #172554 !important;
+            color: var(--c-navy-800) !important;
             font-weight: 800;
         }}
         .active-site-card {{
@@ -10610,8 +10637,8 @@ def inject_custom_css(config):
             border-radius: 20px;
             padding: 12px 14px;
             margin: 12px 0 22px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
+            background: var(--c-surface);
+            border: 1px solid var(--c-border);
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         .active-site-logo {{
@@ -10621,8 +10648,8 @@ def inject_custom_css(config):
             display: grid;
             place-items: center;
             border-radius: 14px;
-            background: #F8FAFC;
-            border: 1px solid #E2E8F0;
+            background: var(--c-surface-soft);
+            border: 1px solid var(--c-border-soft);
             overflow: hidden;
         }}
         .active-site-logo img {{
@@ -10632,7 +10659,7 @@ def inject_custom_css(config):
         }}
         .active-site-name {{
             margin: 2px 0 0;
-            color: #0F172A !important;
+            color: var(--c-text) !important;
             font-size: 18px;
             line-height: 1.1;
             font-weight: 950;
@@ -10648,13 +10675,13 @@ def inject_custom_css(config):
             place-items: center;
             padding: 12px 8px;
             border-radius: 16px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
+            background: var(--c-surface);
+            border: 1px solid var(--c-border);
             box-shadow: 0 10px 20px rgba(15,23,42,0.05);
         }}
         .allowed-logo-chip.primary {{
             border-color: #93C5FD;
-            box-shadow: 0 0 0 1px #BFDBFE, 0 10px 20px rgba(23,38,154,0.08);
+            box-shadow: 0 0 0 1px var(--c-accent-soft), 0 10px 20px rgba(23,38,154,0.08);
         }}
         .allowed-logo-chip img {{
             max-width: 104px;
@@ -10663,7 +10690,7 @@ def inject_custom_css(config):
         }}
         .allowed-logo-chip span {{
             max-width: 100%;
-            color: #172554 !important;
+            color: var(--c-navy-800) !important;
             font-size: 10px;
             line-height: 1.15;
             text-align: center;
@@ -10677,32 +10704,32 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] div[role="radiogroup"] label {{
             min-height: 58px;
             border-radius: 18px;
-            border: 1px solid #DDE6F2;
-            background: #FFFFFF;
+            border: 1px solid var(--c-border);
+            background: var(--c-surface);
             box-shadow: 0 10px 22px rgba(15,23,42,0.06);
             padding: 8px 16px;
             margin: 0;
         }}
         section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {{
             border-color: #93C5FD;
-            box-shadow: 0 0 0 1px #BFDBFE, 0 10px 22px rgba(23,38,154,0.08);
+            box-shadow: 0 0 0 1px var(--c-accent-soft), 0 10px 22px rgba(23,38,154,0.08);
         }}
         section[data-testid="stSidebar"] div[role="radiogroup"] label p {{
-            color: #172554 !important;
+            color: var(--c-navy-800) !important;
             font-size: 16px;
             font-weight: 850;
         }}
         .st-key-shopify_sidebar_card {{
             border-radius: 24px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
+            background: var(--c-surface);
+            border: 1px solid var(--c-border);
             padding: 20px;
             margin-top: 18px;
             box-shadow: 0 12px 24px rgba(15,23,42,0.08);
         }}
         .st-key-shopify_sidebar_card h3 {{
             margin: 0;
-            color: #0F172A;
+            color: var(--c-text);
             font-size: 19px;
             font-weight: 950;
         }}
@@ -10725,13 +10752,13 @@ def inject_custom_css(config):
             margin-bottom: 14px;
         }}
         .shopify-meta {{
-            color: #64748B !important;
+            color: var(--c-text-muted) !important;
             font-size: 13px;
             margin: 0 0 14px;
         }}
         section[data-testid="stSidebar"] {{
-            background:#F3F6FB !important;
-            border-right:1px solid #DDE6F2 !important;
+            background:var(--c-bg-sidebar) !important;
+            border-right:1px solid var(--c-border) !important;
             min-width:340px !important;
             width:340px !important;
             max-width:340px !important;
@@ -10750,15 +10777,15 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] p,
         section[data-testid="stSidebar"] label,
         section[data-testid="stSidebar"] span {{
-            color:#172554 !important;
+            color:var(--c-navy-800) !important;
         }}
         .forus-sidebar {{
             display:block !important;
             margin:4px 0 24px !important;
             padding:20px 18px !important;
-            border:1px solid #DDE6F2 !important;
+            border:1px solid var(--c-border) !important;
             border-radius:22px !important;
-            background:#FFFFFF !important;
+            background:var(--c-surface) !important;
             box-shadow:0 12px 24px rgba(15,23,42,0.08) !important;
         }}
         .forus-logo {{
@@ -10768,20 +10795,20 @@ def inject_custom_css(config):
             border-radius:0;
             display:block;
             background:transparent;
-            color:#17269A !important;
+            color:var(--c-forus) !important;
             font-size:30px !important;
             letter-spacing:-0.06em;
         }}
         .forus-tagline {{
             display:block;
-            color:#17269A !important;
+            color:var(--c-forus) !important;
         }}
         .forus-sidebar::after {{
             content:none;
         }}
         section[data-testid="stSidebar"] hr,
         section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] + div {{
-            border-color:#DDE6F2 !important;
+            border-color:var(--c-border) !important;
         }}
         .st-key-logout_card {{
             position:fixed;
@@ -10789,8 +10816,8 @@ def inject_custom_css(config):
             bottom:0;
             width:340px;
             padding:18px 14px 22px;
-            background:#F3F6FB;
-            border-top:1px solid #DDE6F2;
+            background:var(--c-bg-sidebar);
+            border-top:1px solid var(--c-border);
             box-sizing:border-box;
             z-index:1000;
         }}
@@ -10802,9 +10829,9 @@ def inject_custom_css(config):
             width:100%;
             justify-content:flex-start;
             padding-left:18px;
-            border:1px solid #005AA8 !important;
-            background:#FFFFFF !important;
-            color:#005AA8 !important;
+            border:1px solid var(--c-forus-action) !important;
+            background:var(--c-surface) !important;
+            color:var(--c-forus-action) !important;
             box-shadow:none !important;
             font-size:16px;
             font-weight:900;
@@ -10813,7 +10840,7 @@ def inject_custom_css(config):
             content:"\\21AA";
             margin-right:12px;
             font-size:20px;
-            color:#005AA8;
+            color:var(--c-forus-action);
         }}
         .st-key-site_picker_card,
         .st-key-shopify_sidebar_card {{
@@ -10829,13 +10856,13 @@ def inject_custom_css(config):
             min-height:68px !important;
             padding:10px 8px !important;
             border-radius:14px !important;
-            background:#FFFFFF !important;
-            border:1px solid #DDE6F2 !important;
+            background:var(--c-surface) !important;
+            border:1px solid var(--c-border) !important;
             box-shadow:0 10px 20px rgba(15,23,42,0.05) !important;
         }}
         .allowed-logo-chip.primary {{
             border-color:#60A5FA !important;
-            box-shadow:0 0 0 1px #BFDBFE, 0 10px 20px rgba(23,38,154,0.08) !important;
+            box-shadow:0 0 0 1px var(--c-accent-soft), 0 10px 20px rgba(23,38,154,0.08) !important;
         }}
         .allowed-logo-chip img {{
             max-width:108px !important;
@@ -10848,7 +10875,7 @@ def inject_custom_css(config):
             clear:both !important;
             margin:18px 0 9px !important;
             padding-left:0 !important;
-            color:#0B1B46 !important;
+            color:var(--c-navy-900) !important;
             font-size:13px !important;
             line-height:1.2 !important;
             font-weight:950 !important;
@@ -10865,7 +10892,7 @@ def inject_custom_css(config):
             padding:0 0 12px !important;
             min-height:auto !important;
             border:0 !important;
-            border-bottom:1px solid #E2E8F0 !important;
+            border-bottom:1px solid var(--c-border-soft) !important;
             border-radius:0 !important;
             background:transparent !important;
             box-shadow:none !important;
@@ -10876,7 +10903,7 @@ def inject_custom_css(config):
         section[data-testid="stSidebar"] .nav-disabled-note {{
             display:block !important;
             margin:-2px 0 12px !important;
-            color:#64748B !important;
+            color:var(--c-text-muted) !important;
             font-size:11.5px !important;
             line-height:1.35 !important;
             font-weight:750 !important;
@@ -10934,9 +10961,9 @@ def inject_custom_css(config):
             text-align:left !important;
             padding:8px 12px !important;
             border-radius:14px !important;
-            border:1px solid #DDE6F2 !important;
-            background:#FFFFFF !important;
-            color:#0B1B46 !important;
+            border:1px solid var(--c-border) !important;
+            background:var(--c-surface) !important;
+            color:var(--c-navy-900) !important;
             font-size:14px !important;
             font-weight:900 !important;
             box-shadow:0 8px 16px rgba(15,23,42,0.035) !important;
@@ -10972,7 +10999,7 @@ def inject_custom_css(config):
             width:100% !important;
             margin:0 !important;
             text-align:left !important;
-            color:#0B1B46 !important;
+            color:var(--c-navy-900) !important;
             font-size:14px !important;
             line-height:1.15 !important;
             font-weight:900 !important;
@@ -11036,7 +11063,7 @@ def inject_custom_css(config):
         div.st-key-test_shopify_connection button:hover {{
             border-color:#93C5FD !important;
             background:#F8FBFF !important;
-            color:#0B1B46 !important;
+            color:var(--c-navy-900) !important;
             transform:translateY(-1px) !important;
             box-shadow:0 14px 26px rgba(37,99,235,0.10) !important;
         }}
@@ -11066,7 +11093,7 @@ def inject_custom_css(config):
             align-items: center;
             justify-content: space-between;
             gap: 18px;
-            border: 1px solid #DDE6F2;
+            border: 1px solid var(--c-border);
             border-radius: 0;
             background: white;
             padding: 22px 28px;
@@ -11082,11 +11109,11 @@ def inject_custom_css(config):
         .brand-logo-card {{
             width: 92px;
             height: 58px;
-            border: 1px solid #E2E8F0;
+            border: 1px solid var(--c-border-soft);
             border-radius: 18px;
             display: grid;
             place-items: center;
-            background: #FFFFFF;
+            background: var(--c-surface);
             overflow: hidden;
             flex: 0 0 auto;
         }}
@@ -11115,7 +11142,7 @@ def inject_custom_css(config):
             font-size: 28px;
             line-height: 1.15;
             font-weight: 900;
-            color: #0F172A;
+            color: var(--c-text);
             letter-spacing: 0;
         }}
         .header-subtitle {{
@@ -11156,8 +11183,8 @@ def inject_custom_css(config):
         }}
         .status-badge.blue {{
             background: #EFF6FF;
-            color: #17269A;
-            border-color: #BFDBFE;
+            color: var(--c-forus);
+            border-color: var(--c-accent-soft);
         }}
         .status-badge.warn {{
             background: #FFFBEB;
@@ -11169,16 +11196,16 @@ def inject_custom_css(config):
             grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 12px;
             margin: 0 0 24px;
-            border: 1px solid #DDE6F2;
+            border: 1px solid var(--c-border);
             border-radius: 28px;
             padding: 18px;
-            background: #FFFFFF;
+            background: var(--c-surface);
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         .step-card {{
             min-height: 74px;
             border-radius: 18px;
-            background: #F8FAFC;
+            background: var(--c-surface-soft);
             border: 1px solid #E8EEF7;
             padding: 14px;
             display: flex;
@@ -11186,7 +11213,7 @@ def inject_custom_css(config):
             gap: 12px;
         }}
         .step-card.current {{
-            border-color: #BFDBFE;
+            border-color: var(--c-accent-soft);
             background: #EFF6FF;
         }}
         .step-index {{
@@ -11195,16 +11222,16 @@ def inject_custom_css(config):
             width: 40px;
             height: 40px;
             border-radius: 999px;
-            background: #FFFFFF;
+            background: var(--c-surface);
             color: var(--brand-primary);
-            border: 1px solid #DDE6F2;
+            border: 1px solid var(--c-border);
             font-size: 15px;
             font-weight: 900;
             box-shadow: 0 7px 15px rgba(15,23,42,0.08);
         }}
         .step-title {{
             margin: 0 0 2px;
-            color: #0F172A;
+            color: var(--c-text);
             font-size: 16px;
             font-weight: 900;
         }}
@@ -11214,7 +11241,7 @@ def inject_custom_css(config):
             font-size: 12px;
         }}
         .section-card {{
-            border: 1px solid #DDE6F2;
+            border: 1px solid var(--c-border);
             border-radius: 26px;
             background: white;
             padding: 26px 28px;
@@ -11223,7 +11250,7 @@ def inject_custom_css(config):
             overflow: visible;
         }}
         .section-card h2 {{
-            color: #0F172A;
+            color: var(--c-text);
             margin: 0 0 8px;
             font-size: 24px;
             line-height: 1.2;
@@ -11231,7 +11258,7 @@ def inject_custom_css(config):
             letter-spacing: 0;
         }}
         .section-card.action-card h2 {{
-            color: #FFFFFF;
+            color: var(--c-surface);
         }}
         .section-card.action-card p {{
             color: #E0E7FF;
@@ -11248,9 +11275,9 @@ def inject_custom_css(config):
         .st-key-commercial_input_validate_panel {{
             margin:0 0 22px !important;
             padding:26px 28px !important;
-            border:1px solid #DDE6F2 !important;
+            border:1px solid var(--c-border) !important;
             border-radius:22px !important;
-            background:#FFFFFF !important;
+            background:var(--c-surface) !important;
             box-shadow:0 12px 24px rgba(15,23,42,0.055) !important;
         }}
         .commercial-input-heading {{
@@ -11258,7 +11285,7 @@ def inject_custom_css(config):
         }}
         .commercial-input-heading p {{
             margin:0 0 5px !important;
-            color:#2563EB !important;
+            color:var(--c-link) !important;
             font-size:11px !important;
             font-weight:900 !important;
             letter-spacing:.12em !important;
@@ -11266,7 +11293,7 @@ def inject_custom_css(config):
         }}
         .commercial-input-heading h2 {{
             margin:0 !important;
-            color:#0B1B46 !important;
+            color:var(--c-navy-900) !important;
             font-size:25px !important;
             line-height:1.15 !important;
             font-weight:900 !important;
@@ -11274,14 +11301,14 @@ def inject_custom_css(config):
         .commercial-input-heading span {{
             display:block !important;
             margin-top:7px !important;
-            color:#64748B !important;
+            color:var(--c-text-muted) !important;
             font-size:13px !important;
             font-weight:650 !important;
         }}
         .commercial-input-note {{
             margin-top:16px !important;
             padding:14px 16px !important;
-            border:1px solid #BFDBFE !important;
+            border:1px solid var(--c-accent-soft) !important;
             border-radius:14px !important;
             background:#F0F7FF !important;
             color:#1E3A5F !important;
@@ -11304,14 +11331,14 @@ def inject_custom_css(config):
             margin-top: 16px;
         }}
         .source-card, .metric-card, .check-item {{
-            border: 1px solid #E2E8F0;
+            border: 1px solid var(--c-border-soft);
             border-radius: 18px;
-            background: #F8FAFC;
+            background: var(--c-surface-soft);
             padding: 18px 20px;
         }}
         .source-card b, .metric-card b {{
             display: block;
-            color: #0F172A;
+            color: var(--c-text);
             font-size: 13px;
             margin-bottom: 4px;
         }}
@@ -11321,21 +11348,21 @@ def inject_custom_css(config):
         }}
         .source-card strong {{
             display: block;
-            color: #0F172A;
+            color: var(--c-text);
             font-size: 18px;
             margin-top: 8px;
             font-weight: 900;
         }}
         .st-key-sources_upload_panel {{
-            border: 1px solid #DDE6F2;
+            border: 1px solid var(--c-border);
             border-radius: 26px;
-            background: #FFFFFF;
+            background: var(--c-surface);
             padding: 26px 28px;
             margin: 0 0 24px;
             box-shadow: 0 12px 24px rgba(15,23,42,0.06);
         }}
         .st-key-sources_upload_panel h2 {{
-            color: #0F172A;
+            color: var(--c-text);
             margin: 0 0 8px;
             font-size: 24px;
             line-height: 1.2;
@@ -11364,7 +11391,7 @@ def inject_custom_css(config):
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] button {{
             border-radius: 18px !important;
             background: var(--forus-blue) !important;
-            color: #FFFFFF !important;
+            color: var(--c-surface) !important;
             border: 1px solid var(--forus-blue) !important;
             box-shadow: 0 10px 20px rgba(23,38,154,0.24);
             min-height: 52px;
@@ -11385,26 +11412,26 @@ def inject_custom_css(config):
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::before {{
             content: "\\21E7";
             font-size: 18px !important;
-            color: #FFFFFF !important;
+            color: var(--c-surface) !important;
             line-height: 1;
         }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::after {{
             content: "Cargar input";
             font-size: 15px !important;
-            color: #FFFFFF !important;
+            color: var(--c-surface) !important;
             line-height: 1;
             white-space: nowrap;
         }}
         .st-key-catalog_upload_slot div[data-testid="stFileUploader"] button::after {{
             content: "Subir Catálogo Matrixify";
             font-size: 15px !important;
-            color: #FFFFFF !important;
+            color: var(--c-surface) !important;
             line-height: 1;
             white-space: nowrap;
         }}
         .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"] {{
             display: block !important;
-            color: #0F172A !important;
+            color: var(--c-text) !important;
             font-weight: 800;
             margin-top: 8px;
         }}
@@ -11415,7 +11442,7 @@ def inject_custom_css(config):
         .metric-card strong {{
             display: block;
             margin-top: 4px;
-            color: #0F172A;
+            color: var(--c-text);
             font-size: 18px;
             line-height: 1;
             font-weight: 900;
@@ -11434,13 +11461,13 @@ def inject_custom_css(config):
         }}
         .kpi-title h2 {{
             margin:0;
-            color:#0F172A;
+            color:var(--c-text);
             font-size:30px;
             font-weight:950;
         }}
         .kpi-title p {{
             margin:6px 0 0;
-            color:#64748B;
+            color:var(--c-text-muted);
             font-size:13px;
             font-weight:750;
         }}
@@ -11452,14 +11479,14 @@ def inject_custom_css(config):
         }}
         .kpi-section-label {{
             margin:18px 0 -4px;
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-weight:950;
             font-size:1.02rem;
             letter-spacing:0;
         }}
         .kpi-section-label.secondary {{
             margin-top:8px;
-            color:#64748B;
+            color:var(--c-text-muted);
         }}
         .kpi-card {{
             display:flex;
@@ -11469,8 +11496,8 @@ def inject_custom_css(config):
             min-height:96px;
             padding:16px 20px;
             border-radius:14px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
+            background:var(--c-surface);
+            border:1px solid var(--c-border);
             box-shadow:0 12px 26px rgba(15,23,42,0.07);
         }}
         .kpi-icon {{
@@ -11494,12 +11521,12 @@ def inject_custom_css(config):
         }}
         .kpi-card strong {{
             display:block;
-            color:#0F172A;
+            color:var(--c-text);
             font-size:29px;
             line-height:1;
             font-weight:950;
         }}
-        .kpi-card.blue .kpi-icon {{ background:#EAF2FF; color:#2563EB; }}
+        .kpi-card.blue .kpi-icon {{ background:#EAF2FF; color:var(--c-link); }}
         .kpi-card.green .kpi-icon {{ background:#EAF8EF; color:#16A34A; }}
         .kpi-card.purple .kpi-icon {{ background:#F1EAFF; color:#6D28D9; }}
         .kpi-card.orange .kpi-icon {{ background:#FFF3E4; color:#EA580C; }}
@@ -11525,8 +11552,8 @@ def inject_custom_css(config):
             max-width:100%;
             box-sizing:border-box;
             margin:16px 0 24px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
+            background:var(--c-surface);
+            border:1px solid var(--c-border);
             border-radius:18px;
             box-shadow:0 12px 28px rgba(15,23,42,0.06);
             overflow:hidden;
@@ -11542,7 +11569,7 @@ def inject_custom_css(config):
             display:flex;
             align-items:center;
             gap:12px;
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:1.28rem;
             font-weight:950;
         }}
@@ -11553,23 +11580,23 @@ def inject_custom_css(config):
             height:36px;
             border-radius:10px;
             background:#EAF2FF;
-            color:#2563EB;
-            box-shadow:inset 0 0 0 1px #BFDBFE;
+            color:var(--c-link);
+            box-shadow:inset 0 0 0 1px var(--c-accent-soft);
         }}
         .combo-card-head p {{
             margin:6px 0 0 48px;
-            color:#64748B;
+            color:var(--c-text-muted);
             font-size:13px;
             font-weight:750;
         }}
         .combo-chip {{
             padding:8px 12px;
-            border:1px solid #DDE6F2;
+            border:1px solid var(--c-border);
             border-radius:10px;
-            color:#172554;
+            color:var(--c-navy-800);
             font-size:13px;
             font-weight:900;
-            background:#F8FAFC;
+            background:var(--c-surface-soft);
             white-space:nowrap;
         }}
         .combo-table-wrap {{
@@ -11585,7 +11612,7 @@ def inject_custom_css(config):
             table-layout:fixed;
             border-collapse:separate;
             border-spacing:0;
-            border:1px solid #DDE6F2;
+            border:1px solid var(--c-border);
             border-radius:12px;
             overflow:hidden;
         }}
@@ -11596,18 +11623,18 @@ def inject_custom_css(config):
         .combo-table th {{
             padding:12px 14px;
             text-align:left;
-            background:#F8FAFC;
-            color:#475569;
+            background:var(--c-surface-soft);
+            color:var(--c-text-soft);
             font-weight:950;
             font-size:12px;
-            border-bottom:1px solid #DDE6F2;
+            border-bottom:1px solid var(--c-border);
         }}
         .combo-table td {{
             padding:12px 14px;
             border-bottom:1px solid #E6EDF7;
             border-right:1px solid #E6EDF7;
             vertical-align:middle;
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-weight:750;
         }}
         .combo-table td:last-child, .combo-table th:last-child {{ border-right:none; }}
@@ -11625,7 +11652,7 @@ def inject_custom_css(config):
         }}
         .combo-blocker small {{
             grid-column:2;
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:.82rem;
             font-weight:850;
             line-height:1.25;
@@ -11654,14 +11681,14 @@ def inject_custom_css(config):
             line-height:1.45;
             font-size:.9rem;
             font-weight:800;
-            color:#0B1B46;
+            color:var(--c-navy-900);
             border:1px solid rgba(148,163,184,.2);
         }}
         .combo-state.blue {{ background:#EFF6FF; }}
         .combo-state.amber {{ background:#FFF7ED; }}
         .combo-state.rose {{ background:#FFF1F2; }}
         .combo-state.mint {{ background:#ECFDF5; }}
-        .combo-state.slate {{ background:#F8FAFC; }}
+        .combo-state.slate {{ background:var(--c-surface-soft); }}
         .combo-table.compact .combo-state {{
             font-size:1rem;
             line-height:1.55;
@@ -11676,7 +11703,7 @@ def inject_custom_css(config):
         .commercial-status-tile {{
             min-height:50px;
             border-radius:9px;
-            border:1px solid #DDE6F2;
+            border:1px solid var(--c-border);
             display:grid;
             grid-template-columns:1fr 28px;
             grid-template-rows:auto auto;
@@ -11686,7 +11713,7 @@ def inject_custom_css(config):
             box-sizing:border-box;
         }}
         .commercial-status-tile span {{
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:12px;
             font-weight:950;
         }}
@@ -11702,7 +11729,7 @@ def inject_custom_css(config):
             font-weight:950;
         }}
         .commercial-status-tile small {{
-            color:#475569;
+            color:var(--c-text-soft);
             font-size:11px;
             font-weight:850;
         }}
@@ -11712,7 +11739,7 @@ def inject_custom_css(config):
         }}
         .commercial-status-tile.ok b {{
             background:#16A34A;
-            color:#FFFFFF;
+            color:var(--c-surface);
         }}
         .commercial-status-tile.bad {{
             background:#FEF2F2;
@@ -11720,7 +11747,7 @@ def inject_custom_css(config):
         }}
         .commercial-status-tile.bad b {{
             background:#DC2626;
-            color:#FFFFFF;
+            color:var(--c-surface);
         }}
         .commercial-summary-grid {{
             display:grid;
@@ -11741,7 +11768,7 @@ def inject_custom_css(config):
         .commercial-summary-tile {{
             min-height:72px;
             border-radius:12px;
-            border:1px solid #DDE6F2;
+            border:1px solid var(--c-border);
             display:grid;
             grid-template-columns:1fr 38px;
             grid-template-rows:auto auto;
@@ -11764,7 +11791,7 @@ def inject_custom_css(config):
             font-weight:900;
         }}
         .commercial-summary-tile strong {{
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:22px;
             font-weight:950;
         }}
@@ -11776,7 +11803,7 @@ def inject_custom_css(config):
             border-radius:10px;
             display:grid;
             place-items:center;
-            color:#FFFFFF;
+            color:var(--c-surface);
             font-size:22px;
             font-weight:950;
         }}
@@ -11806,10 +11833,10 @@ def inject_custom_css(config):
             line-height:1.3;
         }}
         .commercial-summary-tile.total {{
-            background:#F8FAFC;
+            background:var(--c-surface-soft);
             border-color:#CBD5E1;
         }}
-        .commercial-summary-tile.total b {{ background:#475569; }}
+        .commercial-summary-tile.total b {{ background:var(--c-text-soft); }}
         .commercial-flow {{
             margin:0 24px 12px;
             display:grid;
@@ -11821,7 +11848,7 @@ def inject_custom_css(config):
             height:96px;
             min-height:96px;
             border-radius:14px;
-            background:linear-gradient(180deg,#FFFFFF 0%,#F8FAFC 100%);
+            background:linear-gradient(180deg,var(--c-surface) 0%,var(--c-surface-soft) 100%);
             border:1px solid #CBD5E1;
             display:flex;
             flex-direction:column;
@@ -11831,7 +11858,7 @@ def inject_custom_css(config):
             box-shadow:0 12px 26px rgba(15,23,42,0.055);
         }}
         .flow-total span {{
-            color:#475569;
+            color:var(--c-text-soft);
             font-size:11px;
             font-weight:950;
             letter-spacing:.08em;
@@ -11839,14 +11866,14 @@ def inject_custom_css(config):
         }}
         .flow-total strong {{
             margin-top:5px;
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:30px;
             line-height:.95;
             font-weight:950;
         }}
         .flow-total small {{
             margin-top:6px;
-            color:#64748B;
+            color:var(--c-text-muted);
             font-size:11px;
             font-weight:800;
         }}
@@ -11859,7 +11886,7 @@ def inject_custom_css(config):
             height:96px;
             min-height:96px;
             border-radius:14px;
-            border:1px solid #DDE6F2;
+            border:1px solid var(--c-border);
             padding:14px 15px;
             display:flex;
             flex-direction:column;
@@ -11882,14 +11909,14 @@ def inject_custom_css(config):
             font-weight:950;
         }}
         .flow-node strong {{
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:26px;
             line-height:1;
             font-weight:950;
         }}
         .flow-node.ready strong {{ color:#14532D; }}
         .flow-node small {{
-            color:#475569;
+            color:var(--c-text-soft);
             font-size:11px;
             line-height:1.35;
             font-weight:800;
@@ -11904,8 +11931,8 @@ def inject_custom_css(config):
         .flow-cause {{
             min-height:50px;
             border-radius:12px;
-            border:1px solid #E2E8F0;
-            background:#FFFFFF;
+            border:1px solid var(--c-border-soft);
+            background:var(--c-surface);
             padding:10px 14px;
             display:flex;
             align-items:center;
@@ -11914,12 +11941,12 @@ def inject_custom_css(config):
             box-sizing:border-box;
         }}
         .flow-cause span {{
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:12.5px;
             font-weight:950;
         }}
         .flow-cause strong {{
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:17px;
             font-weight:950;
         }}
@@ -11932,7 +11959,7 @@ def inject_custom_css(config):
         }}
         .flow-actions b {{
             display:block;
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:14px;
             font-weight:950;
             margin-bottom:8px;
@@ -11942,8 +11969,8 @@ def inject_custom_css(config):
             padding:12px 16px 12px 34px;
             display:block;
             border-radius:12px;
-            background:#F8FAFC;
-            border:1px solid #E2E8F0;
+            background:var(--c-surface-soft);
+            border:1px solid var(--c-border-soft);
             color:#334155;
             font-size:13px;
             line-height:1.5;
@@ -11975,7 +12002,7 @@ def inject_custom_css(config):
         .combo-model-metric span {{
             display:block;
             margin-top:5px;
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:.82rem;
             font-weight:850;
         }}
@@ -11992,7 +12019,7 @@ def inject_custom_css(config):
             display:block;
             height:100%;
             border-radius:999px;
-            background:linear-gradient(90deg,#7C3AED,#2563EB);
+            background:linear-gradient(90deg,#7C3AED,var(--c-link));
         }}
         .combo-metric {{
             min-width:0;
@@ -12007,7 +12034,7 @@ def inject_custom_css(config):
         .combo-metric span {{
             display:block;
             margin-top:7px;
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:.9rem;
             font-weight:850;
         }}
@@ -12026,40 +12053,40 @@ def inject_custom_css(config):
             border-radius:999px;
         }}
         .combo-metric.purple strong {{ color:#7C3AED; }}
-        .combo-metric.blue strong {{ color:#2563EB; }}
+        .combo-metric.blue strong {{ color:var(--c-link); }}
         .combo-metric.green strong {{ color:#16A34A; }}
         .combo-metric.purple b {{ background:#7C3AED; }}
-        .combo-metric.blue b {{ background:#2563EB; }}
+        .combo-metric.blue b {{ background:var(--c-link); }}
         .combo-metric.green b {{ background:#16A34A; }}
         .combo-table tfoot td {{
             background:#EFF6FF;
-            color:#0B1B46;
+            color:var(--c-navy-900);
             font-size:.95rem;
             font-weight:950;
         }}
         .combo-table tfoot td:first-child span {{
             margin-left:14px;
-            color:#475569;
+            color:var(--c-text-soft);
             font-size:.85rem;
             font-weight:800;
         }}
         .combo-table tfoot small {{
             display:block;
             margin-top:4px;
-            color:#2563EB;
+            color:var(--c-link);
             font-weight:900;
         }}
         .kpi-panel {{
             border-radius:16px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
+            background:var(--c-surface);
+            border:1px solid var(--c-border);
             box-shadow:0 12px 26px rgba(15,23,42,0.06);
             padding:18px;
             margin:14px 0;
         }}
         .kpi-panel h3 {{
             margin:0 0 14px;
-            color:#172554;
+            color:var(--c-navy-800);
             font-size:20px;
             font-weight:950;
         }}
@@ -12068,21 +12095,21 @@ def inject_custom_css(config):
             border-collapse:separate;
             border-spacing:0;
             overflow:hidden;
-            border:1px solid #E2E8F0;
+            border:1px solid var(--c-border-soft);
             border-radius:14px;
-            background:#FFFFFF;
+            background:var(--c-surface);
         }}
         .brand-kpi-table th,
         .brand-kpi-table td {{
             padding:14px 16px;
-            border-bottom:1px solid #E2E8F0;
-            color:#172554;
+            border-bottom:1px solid var(--c-border-soft);
+            color:var(--c-navy-800);
             font-size:13px;
             text-align:left;
         }}
         .brand-kpi-table th {{
-            background:#F8FAFC;
-            color:#475569;
+            background:var(--c-surface-soft);
+            color:var(--c-text-soft);
             font-weight:950;
         }}
         .brand-kpi-table tr:last-child td {{ border-bottom:0; }}
@@ -12125,8 +12152,8 @@ def inject_custom_css(config):
         .chart-card {{
             min-height:360px;
             border-radius:14px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
+            background:var(--c-surface);
+            border:1px solid var(--c-border);
             box-shadow:0 14px 30px rgba(15,23,42,0.07);
             padding:20px 20px 18px;
         }}
@@ -12141,13 +12168,13 @@ def inject_custom_css(config):
             display:flex;
             align-items:center;
             gap:10px;
-            color:#172554;
+            color:var(--c-navy-800);
             font-size:20px;
             font-weight:950;
         }}
         .chart-subtitle {{
             margin:6px 0 0;
-            color:#64748B;
+            color:var(--c-text-muted);
             font-size:12px;
             line-height:1.35;
             font-weight:750;
@@ -12169,13 +12196,13 @@ def inject_custom_css(config):
             min-height:34px;
             padding:6px 8px;
             border-radius:10px;
-            background:#F8FAFC;
+            background:var(--c-surface-soft);
             border:1px solid #EDF2F7;
         }}
         .bar-value {{
             min-width:54px;
             text-align:right;
-            color:#172554;
+            color:var(--c-navy-800);
             font-size:12px;
             font-weight:950;
         }}
@@ -12193,7 +12220,7 @@ def inject_custom_css(config):
             display:flex;
             align-items:center;
             gap:8px;
-            color:#172554;
+            color:var(--c-navy-800);
             font-size:12px;
             line-height:1.15;
             text-align:left;
@@ -12224,13 +12251,13 @@ def inject_custom_css(config):
             justify-content:center !important;
         }}
         .pager-note {{
-            color:#64748B;
+            color:var(--c-text-muted);
             font-size:12px;
             font-weight:750;
         }}
         .kpi-note {{
             margin:10px 0 14px;
-            color:#64748B;
+            color:var(--c-text-muted);
             font-size:12px;
             line-height:1.45;
             font-weight:750;
@@ -12265,8 +12292,8 @@ def inject_custom_css(config):
             min-width:138px;
             padding:10px 12px;
             border-radius:10px;
-            background:#0F172A;
-            color:#FFFFFF;
+            background:var(--c-text);
+            color:var(--c-surface);
             font-size:12px;
             line-height:1.25;
             font-weight:850;
@@ -12278,7 +12305,7 @@ def inject_custom_css(config):
         }}
         .bar-tooltip strong {{
             display:block;
-            color:#FFFFFF;
+            color:var(--c-surface);
             font-size:15px;
             margin-top:3px;
         }}
@@ -12289,7 +12316,7 @@ def inject_custom_css(config):
             top:100%;
             transform:translateX(-50%);
             border:7px solid transparent;
-            border-top-color:#0F172A;
+            border-top-color:var(--c-text);
         }}
         .bar-item:hover .bar-tooltip,
         .bar-item:focus .bar-tooltip {{
@@ -12297,14 +12324,14 @@ def inject_custom_css(config):
             transform:translateX(-50%) translateY(0);
         }}
         .bar-label-icon {{
-            color:#17269A;
+            color:var(--c-forus);
             font-size:16px;
             line-height:1;
         }}
         .kpi-table-card {{
             border-radius:14px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
+            background:var(--c-surface);
+            border:1px solid var(--c-border);
             box-shadow:0 12px 26px rgba(15,23,42,0.06);
             padding:18px;
             margin:16px 0;
@@ -12320,7 +12347,7 @@ def inject_custom_css(config):
             display:flex;
             align-items:center;
             gap:10px;
-            color:#172554;
+            color:var(--c-navy-800);
             font-size:20px;
             font-weight:950;
         }}
@@ -12339,9 +12366,9 @@ def inject_custom_css(config):
             justify-content:center;
             gap:8px;
             border-radius:8px;
-            border:1px solid #DDE6F2;
-            color:#172554;
-            background:#FFFFFF;
+            border:1px solid var(--c-border);
+            color:var(--c-navy-800);
+            background:var(--c-surface);
             font-size:13px;
             font-weight:900;
         }}
@@ -12349,22 +12376,22 @@ def inject_custom_css(config):
             width:100%;
             border-collapse:separate;
             border-spacing:0;
-            border:1px solid #E2E8F0;
+            border:1px solid var(--c-border-soft);
             border-radius:12px;
             overflow:hidden;
         }}
         .kpi-table th,
         .kpi-table td {{
             padding:13px 14px;
-            border-bottom:1px solid #E2E8F0;
-            border-right:1px solid #E2E8F0;
-            color:#172554;
+            border-bottom:1px solid var(--c-border-soft);
+            border-right:1px solid var(--c-border-soft);
+            color:var(--c-navy-800);
             font-size:13px;
             text-align:left;
         }}
         .kpi-table th {{
-            background:#F8FAFC;
-            color:#64748B;
+            background:var(--c-surface-soft);
+            color:var(--c-text-muted);
             font-weight:950;
         }}
         .kpi-table tr:last-child td {{ border-bottom:0; }}
@@ -12377,7 +12404,7 @@ def inject_custom_css(config):
             height:24px;
             border-radius:8px;
             background:#F1F5F9;
-            color:#172554;
+            color:var(--c-navy-800);
             font-size:12px;
             font-weight:900;
         }}
@@ -12401,7 +12428,7 @@ def inject_custom_css(config):
             height:22px;
             border-radius:50%;
             background:#EAF2FF;
-            border:1px solid #BFDBFE;
+            border:1px solid var(--c-accent-soft);
         }}
         .stock-badge {{
             display:inline-flex;
@@ -12424,14 +12451,14 @@ def inject_custom_css(config):
             min-width: 180px;
             min-height: 48px;
             background: var(--forus-blue) !important;
-            color: #FFFFFF !important;
+            color: var(--c-surface) !important;
             border-color: var(--forus-blue) !important;
             box-shadow: 0 10px 22px rgba(23,38,154,0.22);
         }}
         .base-status-card {{
-            border: 1px solid #DDE6F2;
+            border: 1px solid var(--c-border);
             border-radius: 22px;
-            background: #FFFFFF;
+            background: var(--c-surface);
             padding: 18px;
             margin: 0 0 22px;
             box-shadow: 0 10px 22px rgba(15,23,42,0.05);
@@ -12445,7 +12472,7 @@ def inject_custom_css(config):
         }}
         .base-status-head h3 {{
             margin: 0;
-            color: #0F172A;
+            color: var(--c-text);
             font-size: 18px;
             font-weight: 950;
         }}
@@ -12455,41 +12482,41 @@ def inject_custom_css(config):
             gap: 12px;
         }}
         .base-status-item {{
-            border: 1px solid #E2E8F0;
+            border: 1px solid var(--c-border-soft);
             border-radius: 18px;
-            background: #F8FAFC;
+            background: var(--c-surface-soft);
             padding: 14px 16px;
         }}
         .base-status-item b {{
             display: block;
-            color: #0F172A;
+            color: var(--c-text);
             font-size: 13px;
             margin-bottom: 6px;
         }}
         .base-status-item span {{
             display: block;
-            color: #64748B;
+            color: var(--c-text-muted);
             font-size: 12px;
             line-height: 1.35;
             min-height: 30px;
         }}
         .wide-checklist {{
-            border: 1px solid #DDE6F2;
+            border: 1px solid var(--c-border);
             border-radius: 26px;
-            background: #FFFFFF;
+            background: var(--c-surface);
             padding: 22px;
             margin: 0 0 24px;
             box-shadow: 0 10px 22px rgba(15,23,42,0.05);
         }}
         .wide-checklist h2 {{
             margin: 0 0 6px;
-            color: #0F172A;
+            color: var(--c-text);
             font-size: 22px;
             font-weight: 950;
         }}
         .wide-checklist p {{
             margin: 0 0 16px;
-            color: #64748B;
+            color: var(--c-text-muted);
             font-size: 13px;
         }}
         .wide-checklist-grid {{
@@ -12498,11 +12525,11 @@ def inject_custom_css(config):
             gap: 10px;
         }}
         .wide-checklist-item {{
-            border: 1px solid #E2E8F0;
+            border: 1px solid var(--c-border-soft);
             border-radius: 16px;
-            background: #F8FAFC;
+            background: var(--c-surface-soft);
             padding: 14px;
-            color: #475569;
+            color: var(--c-text-soft);
             font-size: 12px;
             line-height: 1.35;
         }}
@@ -12525,9 +12552,9 @@ def inject_custom_css(config):
             display: none;
         }}
         .upload-shell {{
-            border: 1px solid #DDE6F2;
+            border: 1px solid var(--c-border);
             border-radius: 26px;
-            background: linear-gradient(180deg, #FFFFFF 0%, #FBFDFF 100%);
+            background: linear-gradient(180deg, var(--c-surface) 0%, #FBFDFF 100%);
             padding: 26px 28px 22px;
             margin: 0 0 18px;
             box-shadow: 0 18px 38px rgba(15,23,42,0.07);
@@ -12535,9 +12562,9 @@ def inject_custom_css(config):
             overflow: hidden;
         }}
         .st-key-input_upload_panel {{
-            border: 1px solid #DDE6F2;
+            border: 1px solid var(--c-border);
             border-radius: 26px;
-            background: linear-gradient(180deg, #FFFFFF 0%, #FBFDFF 100%);
+            background: linear-gradient(180deg, var(--c-surface) 0%, #FBFDFF 100%);
             padding: 26px 28px 24px;
             margin: 0 0 24px;
             box-shadow: 0 18px 38px rgba(15,23,42,0.07);
@@ -12563,7 +12590,7 @@ def inject_custom_css(config):
         .st-key-input_upload_panel h2 {{
             margin: 0 0 8px;
             font-size: 25px;
-            color: #0F172A;
+            color: var(--c-text);
             font-weight: 900;
             letter-spacing: 0;
         }}
@@ -12575,9 +12602,9 @@ def inject_custom_css(config):
         .st-key-input_upload_panel div[data-testid="stRadio"] {{
             margin: 14px 0 10px;
             padding: 14px 16px;
-            border: 1px solid #E2E8F0;
+            border: 1px solid var(--c-border-soft);
             border-radius: 18px;
-            background: #F8FAFC;
+            background: var(--c-surface-soft);
         }}
         .st-key-input_upload_panel div[data-testid="stFileUploader"] {{
             margin-top: 12px;
@@ -12606,7 +12633,7 @@ def inject_custom_css(config):
             margin: 0 0 8px;
             font-size: 25px;
             line-height: 1.15;
-            color: #0F172A;
+            color: var(--c-text);
             font-weight: 900;
         }}
         .upload-title-row p {{
@@ -12633,7 +12660,7 @@ def inject_custom_css(config):
             border-radius: 20px;
             padding: 15px 18px;
             margin-bottom: 12px;
-            color: #475569;
+            color: var(--c-text-soft);
             font-size: 13px;
             font-weight: 700;
             position: relative;
@@ -12643,7 +12670,7 @@ def inject_custom_css(config):
             border: 1px dashed color-mix(in srgb, var(--brand-accent) 52%, white) !important;
             border-radius: 22px !important;
             padding: 14px !important;
-            background: #FFFFFF !important;
+            background: var(--c-surface) !important;
             box-shadow: inset 0 0 0 1px rgba(255,255,255,0.65);
         }}
         div[data-testid="stFileUploader"] section {{
@@ -12654,14 +12681,14 @@ def inject_custom_css(config):
         }}
         div[data-testid="stFileUploader"] button {{
             border-radius: 12px !important;
-            background: #FFFFFF !important;
+            background: var(--c-surface) !important;
             color: var(--brand-primary) !important;
             border: 1px solid #CBD5E1 !important;
             font-weight: 900 !important;
         }}
         div[data-testid="stFileUploader"] small,
         div[data-testid="stFileUploader"] span {{
-            color: #64748B !important;
+            color: var(--c-text-muted) !important;
             font-weight: 700;
         }}
         div[data-testid="stRadio"] {{
@@ -12669,13 +12696,13 @@ def inject_custom_css(config):
             margin-bottom: 10px;
         }}
         div[data-testid="stRadio"] label p {{
-            color: #172554 !important;
+            color: var(--c-navy-800) !important;
             font-weight: 800;
         }}
         div[data-testid="stDataFrame"] {{
             border-radius: 18px;
             overflow: hidden;
-            border: 1px solid #E2E8F0;
+            border: 1px solid var(--c-border-soft);
         }}
         .stButton button, .stDownloadButton button {{
             border-radius: 18px;
@@ -12746,28 +12773,186 @@ def inject_custom_css(config):
             .shopify-lockup {{ width: 100%; justify-content: space-between; }}
         }}
         .storage-head{{padding:10px 13px;border-radius:10px;margin:4px 0 10px;font-size:13px}}
-        .storage-head.storage-ok{{background:#EAF7EF;color:#1B6B45}}
-        .storage-head.storage-warn{{background:#FDF3E3;color:#8A5A0B}}
-        .storage-head.storage-bad{{background:#FDECEC;color:#9B2C2C}}
-        .storage-step{{display:flex;gap:9px;align-items:flex-start;padding:5px 2px;font-size:12.5px;color:#475569;line-height:1.45}}
-        .storage-step b{{color:#0F172A;font-weight:600;margin-right:5px}}
-        .storage-step em{{display:block;color:#8A5A0B;font-style:normal;margin-top:2px}}
+        .storage-head.storage-ok{{background:var(--c-ok-bg);color:var(--c-ok-text)}}
+        .storage-head.storage-warn{{background:var(--c-warn-bg);color:var(--c-warn-text)}}
+        .storage-head.storage-bad{{background:var(--c-bad-bg);color:var(--c-bad-text)}}
+        .storage-step{{display:flex;gap:9px;align-items:flex-start;padding:5px 2px;font-size:12.5px;color:var(--c-text-soft);line-height:1.45}}
+        .storage-step b{{color:var(--c-text);font-weight:600;margin-right:5px}}
+        .storage-step em{{display:block;color:var(--c-warn-text);font-style:normal;margin-top:2px}}
         .storage-dot-ok,.storage-dot-warn,.storage-dot-bad{{flex:none;width:7px;height:7px;border-radius:50%;margin-top:6px}}
-        .storage-dot-ok{{background:#10B981}}
-        .storage-dot-warn{{background:#F59E0B}}
-        .storage-dot-bad{{background:#EF4444}}
-        .audit-hero{{background:#0B1B46;color:#fff;border-radius:16px;padding:22px 26px;margin:4px 0 18px}}
+        .storage-dot-ok{{background:var(--c-ok)}}
+        .storage-dot-warn{{background:var(--c-warn)}}
+        .storage-dot-bad{{background:var(--c-bad)}}
+        .audit-hero{{background:var(--c-navy-900);color:#fff;border-radius:16px;padding:22px 26px;margin:4px 0 18px}}
         .audit-hero p{{margin:0;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#9Fc0FF}}
         .audit-hero h1{{margin:6px 0 4px;font-size:26px;color:#fff}}
         .audit-hero span{{font-size:13px;color:#C7D7F5}}
-        .audit-filter-title{{margin:0 0 10px;font-size:14px;font-weight:600;color:#0F172A}}
-        .audit-pag{{margin:9px 0 0;font-size:12.5px;color:#64748B;text-align:center}}
-        .audit-h{{margin:26px 0 4px;font-size:15px;font-weight:600;color:#0F172A}}
-        .audit-detail{{border:1px solid #E6EBF2;border-radius:12px;padding:6px 14px;background:#fff}}
+        .audit-filter-title{{margin:0 0 10px;font-size:14px;font-weight:600;color:var(--c-text)}}
+        .audit-pag{{margin:9px 0 0;font-size:12.5px;color:var(--c-text-muted);text-align:center}}
+        .audit-h{{margin:26px 0 4px;font-size:15px;font-weight:600;color:var(--c-text)}}
+        .audit-detail{{border:1px solid var(--c-border-hair);border-radius:12px;padding:6px 14px;background:#fff}}
         .audit-det-row{{display:flex;justify-content:space-between;gap:18px;padding:7px 0;border-bottom:1px solid #F1F5F9;font-size:13px}}
         .audit-det-row:last-child{{border-bottom:0}}
-        .audit-det-row span{{color:#64748B}}
-        .audit-det-row b{{color:#0F172A;font-weight:600;text-align:right;word-break:break-word}}
+        .audit-det-row span{{color:var(--c-text-muted)}}
+        .audit-det-row b{{color:var(--c-text);font-weight:600;text-align:right;word-break:break-word}}
+
+        /* ---------- Fase D: acabado visual ---------- */
+        :root {{
+            --r-card: 14px;
+            --r-control: 10px;
+            --r-pill: 999px;
+            --sh-card: 0 1px 2px rgba(15,23,42,.04), 0 8px 24px -12px rgba(15,23,42,.10);
+            --sh-raised: 0 2px 4px rgba(15,23,42,.05), 0 14px 32px -14px rgba(15,23,42,.16);
+            --t: 160ms cubic-bezier(.4,0,.2,1);
+            --c-brand-tint: color-mix(in srgb, var(--brand-primary) 8%, white);
+            --c-brand-line: color-mix(in srgb, var(--brand-primary) 22%, white);
+        }}
+
+        /* Tarjetas: menos borde duro, mas profundidad suave */
+        div[data-testid="stVerticalBlockBorderWrapper"] {{
+            border-radius: var(--r-card) !important;
+            border: 1px solid var(--c-border-hair) !important;
+            box-shadow: var(--sh-card);
+            transition: box-shadow var(--t), border-color var(--t);
+        }}
+        div[data-testid="stVerticalBlockBorderWrapper"]:hover {{
+            border-color: var(--c-brand-line) !important;
+        }}
+
+        /* Controles: radio uniforme y foco visible */
+        .stButton button,
+        .stDownloadButton button,
+        div[data-baseweb="select"] > div,
+        .stTextInput input,
+        .stTextArea textarea {{
+            border-radius: var(--r-control) !important;
+            transition: background var(--t), border-color var(--t), box-shadow var(--t), transform var(--t);
+        }}
+        .stButton button:hover,
+        .stDownloadButton button:hover {{
+            transform: translateY(-1px);
+            box-shadow: var(--sh-card);
+        }}
+        .stButton button:active,
+        .stDownloadButton button:active {{
+            transform: translateY(0);
+        }}
+        .stTextInput input:focus,
+        .stTextArea textarea:focus {{
+            outline: none !important;
+            border-color: var(--brand-primary) !important;
+            box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-primary) 16%, transparent) !important;
+        }}
+
+        /* Boton principal: azul Forus, no el gris de Streamlit */
+        .stButton button[kind="primary"],
+        .stFormSubmitButton button {{
+            background: var(--c-forus-action) !important;
+            border-color: var(--c-forus-action) !important;
+            color: #fff !important;
+            font-weight: 600 !important;
+        }}
+        .stButton button[kind="primary"]:hover,
+        .stFormSubmitButton button:hover {{
+            background: var(--c-forus) !important;
+            border-color: var(--c-forus) !important;
+        }}
+
+        /* Barra lateral: separacion mas limpia */
+        section[data-testid="stSidebar"] {{
+            border-right: 1px solid var(--c-border-hair) !important;
+        }}
+        section[data-testid="stSidebar"] .stButton button {{
+            border-radius: var(--r-control) !important;
+        }}
+
+        /* Tablas: encabezado sobrio y filas legibles */
+        div[data-testid="stDataFrame"] {{
+            border-radius: var(--r-card) !important;
+            overflow: hidden;
+            border: 1px solid var(--c-border-hair) !important;
+        }}
+
+        /* Pastillas de estado */
+        .estado-pill {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 11px;
+            border-radius: var(--r-pill);
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 1.5;
+            white-space: nowrap;
+        }}
+        .estado-pill::before {{
+            content: "";
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+            opacity: .85;
+        }}
+        .estado-amber {{ background: var(--c-warn-bg); color: var(--c-warn-text); }}
+        .estado-blue  {{ background: var(--c-accent-bg); color: var(--c-forus-action); }}
+        .estado-green {{ background: var(--c-ok-bg); color: var(--c-ok-text); }}
+        .estado-red   {{ background: var(--c-bad-bg); color: var(--c-bad-text); }}
+
+        /* Barra de pasos del flujo */
+        .flujo-barra {{
+            display: flex;
+            gap: 6px;
+            margin: 14px 0 18px;
+        }}
+        .flujo-paso {{
+            flex: 1;
+            padding: 9px 12px;
+            border-radius: var(--r-control);
+            background: var(--c-surface-soft);
+            border: 1px solid var(--c-border-hair);
+            font-size: 12px;
+            color: var(--c-text-muted);
+            transition: background var(--t), color var(--t), border-color var(--t);
+        }}
+        .flujo-paso b {{
+            display: block;
+            font-size: 12.5px;
+            font-weight: 600;
+            color: var(--c-text-soft);
+        }}
+        .flujo-paso.hecho {{
+            background: var(--c-ok-bg);
+            border-color: transparent;
+        }}
+        .flujo-paso.hecho b {{ color: var(--c-ok-text); }}
+        .flujo-paso.actual {{
+            background: var(--brand-primary);
+            border-color: var(--brand-primary);
+        }}
+        .flujo-paso.actual b, .flujo-paso.actual {{ color: #fff; }}
+
+        /* Accion recomendada */
+        .accion-hint {{
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            padding: 11px 14px;
+            border-radius: var(--r-control);
+            background: var(--c-brand-tint);
+            border: 1px solid var(--c-brand-line);
+            font-size: 13px;
+            color: var(--c-text);
+            margin: 2px 0 10px;
+        }}
+        .accion-hint b {{ font-weight: 600; }}
+
+        /* Menos ruido: separadores mas suaves */
+        hr, div[data-testid="stDivider"] {{ border-color: var(--c-border-hair) !important; }}
+
+        @media (max-width: 900px) {{
+            .flujo-barra {{ flex-wrap: wrap; }}
+            .flujo-paso {{ min-width: 44%; }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,

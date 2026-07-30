@@ -12974,6 +12974,28 @@ def inject_custom_css(config):
         .sb-storage.sb-warn span {{ background:var(--c-warn); }}
         .sb-storage.sb-bad  {{ background:var(--c-bad-bg);  color:var(--c-bad-text); }}
         .sb-storage.sb-bad span  {{ background:var(--c-bad); }}
+        .cola-head {{
+            display:flex; align-items:center; justify-content:space-between;
+            gap:16px; margin:0 0 12px;
+        }}
+        .cola-head p {{
+            margin:0; font-size:10.5px; letter-spacing:.13em; text-transform:uppercase;
+            font-weight:700; color:var(--c-link);
+        }}
+        .cola-head h3 {{ margin:3px 0 0; font-size:19px; color:var(--c-navy-900); }}
+        .cola-badge {{
+            flex:none; padding:6px 14px; border-radius:999px;
+            font-size:12.5px; font-weight:600; white-space:nowrap;
+        }}
+        .cola-badge-ok {{ background:var(--c-ok-bg); color:var(--c-ok-text); }}
+        .cola-badge-activo {{ background:var(--c-accent-bg); color:var(--c-forus-action); }}
+        .cola-vacia {{
+            display:flex; flex-direction:column; gap:3px;
+            padding:16px 18px; border-radius:12px;
+            background:var(--c-surface-soft); border:1px dashed var(--c-border);
+        }}
+        .cola-vacia b {{ font-size:13.5px; font-weight:600; color:var(--c-text); }}
+        .cola-vacia span {{ font-size:12.5px; color:var(--c-text-muted); }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -15538,12 +15560,16 @@ def render_full_load_ticket_queue(brand_config):
     tickets.sort(key=lambda item: clean_value(item.get("created_at")), reverse=True)
     other_site_tickets.sort(key=lambda item: clean_value(item.get("created_at")), reverse=True)
     with st.container(border=True):
-        header_cols = st.columns([4, 1])
-        header_cols[0].markdown("### Cargas pendientes")
-        header_cols[0].caption(
-            "Descarga el input aprobado, ejecuta la carga con el flujo inferior y registra el cierre sin salir de esta pantalla."
+        pendientes = len(tickets)
+        tono = "cola-badge-ok" if not pendientes else "cola-badge-activo"
+        st.markdown(
+            '<div class="cola-head">'
+            '<div><p>Carga completa</p><h3>Cargas pendientes</h3></div>'
+            f'<span class="cola-badge {tono}">{pendientes} pendiente'
+            f'{"" if pendientes == 1 else "s"}</span>'
+            "</div>",
+            unsafe_allow_html=True,
         )
-        header_cols[1].metric("Pendientes", len(tickets))
         if not tickets:
             if other_site_tickets:
                 site_rows = []
@@ -15564,7 +15590,11 @@ def render_full_load_ticket_queue(brand_config):
                 )
                 st.dataframe(pd.DataFrame(site_rows), use_container_width=True, hide_index=True)
             else:
-                st.info("No hay solicitudes pendientes para el sitio activo.")
+                st.markdown(
+                '<div class="cola-vacia"><b>Todo al día</b>'
+                '<span>No hay solicitudes aprobadas esperando carga en este sitio.</span></div>',
+                unsafe_allow_html=True,
+            )
             with st.expander("Como cerrar una solicitud de carga"):
                 st.markdown(
                     "1. Selecciona el sitio correcto y descarga el input validado.\n"

@@ -13003,6 +13003,33 @@ def inject_custom_css(config):
         .ejec-stat {{ background:var(--c-surface-soft); border-radius:10px; padding:11px 14px; }}
         .ejec-stat small {{ display:block; font-size:11.5px; color:var(--c-text-muted); margin-bottom:3px; }}
         .ejec-stat strong {{ font-size:20px; font-weight:600; color:var(--c-text); letter-spacing:-.02em; }}
+        .origen-ok {{
+            display:flex; flex-direction:column; gap:2px;
+            padding:11px 14px; margin:6px 0 4px;
+            border-radius:10px; background:var(--c-ok-bg); border:1px solid transparent;
+        }}
+        .origen-ok b {{ font-size:13px; font-weight:600; color:var(--c-ok-text); }}
+        .origen-ok span {{ font-size:12px; color:var(--c-ok-text); opacity:.85; }}
+        .cola-detalle {{
+            border:1px solid var(--c-border-hair); border-radius:12px;
+            padding:14px 16px; margin:8px 0 12px; background:var(--c-surface);
+        }}
+        .cola-detalle-head {{
+            display:flex; align-items:center; justify-content:space-between;
+            gap:12px; padding-bottom:11px; margin-bottom:11px;
+            border-bottom:1px solid var(--c-border-hair);
+        }}
+        .cola-detalle-head b {{ font-size:15px; font-weight:600; color:var(--c-text); }}
+        .cola-detalle-grid {{
+            display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px 18px;
+        }}
+        .cola-detalle-grid small {{
+            display:block; font-size:11.5px; color:var(--c-text-muted); margin-bottom:2px;
+        }}
+        .cola-detalle-grid span {{
+            font-size:13.5px; font-weight:500; color:var(--c-text);
+            display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -15541,6 +15568,63 @@ def _render_full_load_ticket_close(service, actor, ticket, latest_version):
             st.error(str(exc))
 
 
+class ArchivoDeSolicitud(io.BytesIO):
+    """Adjunto de una solicitud con la misma forma que un archivo subido.
+
+    read_uploaded_excel_cached() y uploaded_file_fingerprint() solo usan
+    .name, .size y .seek(), asi que el motor de carga no nota la diferencia.
+    """
+
+    def __init__(self, contenido, nombre, codigo=""):
+        super().__init__(contenido)
+        self.name = nombre or "input_solicitud.xlsx"
+        self.size = len(contenido)
+        self.ticket_code = codigo
+
+
+def solicitudes_ejecutables(service, actor, brand_config):
+    """Solicitudes aprobadas o en curso, del sitio activo, con archivo adjunto."""
+    try:
+        tickets = service.list_tickets(actor)
+    except Exception:
+        return []
+    elegibles = []
+    for ticket in tickets:
+        if clean_value(ticket.get("load_type")).casefold() != "complete":
+            continue
+        if ticket.get("status") not in FULL_LOAD_TICKET_STATES:
+            continue
+        if not _ticket_matches_active_site(ticket, brand_config):
+            continue
+        versiones = ticket.get("versions") or []
+        if versiones and clean_value(versiones[-1].get("input_path")):
+            elegibles.append(ticket)
+    elegibles.sort(key=lambda t: clean_value(t.get("created_at")), reverse=True)
+    return elegibles
+
+
+def archivo_de_solicitud(service, ticket):
+    """Descarga el adjunto de la solicitud. Devuelve None si no se puede."""
+    versiones = ticket.get("versions") or []
+    if not versiones:
+        return None
+    ultima = versiones[-1]
+    ruta = clean_value(ultima.get("input_path"))
+    if not ruta:
+        return None
+    try:
+        contenido = service.store.get_artifact(ruta)
+    except Exception:
+        return None
+    if not contenido:
+        return None
+    return ArchivoDeSolicitud(
+        contenido,
+        clean_value(ultima.get("filename")) or f"{ticket.get('code')}.xlsx",
+        clean_value(ticket.get("code")),
+    )
+
+
 def render_full_load_ticket_queue(brand_config):
     actor = current_ticket_actor()
     if actor.get("role") not in {ROLE_OPERATOR, ROLE_ADMIN}:
@@ -15633,7 +15717,8 @@ def render_full_load_ticket_queue(brand_config):
                     "Responsable": ticket.get("assignee") or "Sin asignar",
                 }
             )
-        st.dataframe(pd.DataFrame(queue_rows), use_container_width=True, hide_index=True)
+        with st.expander(f"Ver las {len(queue_rows)} solicitudes en cola", expanded=False):
+            st.dataframe(pd.DataFrame(queue_rows), use_container_width=True, hide_index=True)
 
         ticket_codes = [clean_value(ticket.get("code")) for ticket in tickets]
         selected_code = st.selectbox(
@@ -15657,11 +15742,24 @@ def render_full_load_ticket_queue(brand_config):
             return
 
         latest_version = (ticket.get("versions") or [{}])[-1]
-        detail_cols = st.columns(4)
-        detail_cols[0].metric("Ticket", ticket.get("code"))
-        detail_cols[1].metric("Productos", safe_int_value((ticket.get("summary") or {}).get("products"), 0))
-        detail_cols[2].metric("Estado", STATE_LABELS.get(ticket.get("status"), ticket.get("status")))
-        detail_cols[3].metric("Responsable", ticket.get("assignee") or "Sin asignar")
+        # st.metric no sirve aqui: corta el codigo, el estado y el correo a 48px.
+        productos = safe_int_value((ticket.get("summary") or {}).get("products"), 0)
+        estado_txt = STATE_LABELS.get(ticket.get("status"), ticket.get("status"))
+        responsable = clean_value(ticket.get("assignee")) or "Sin asignar"
+        responsable_txt = auth_display_name(responsable) if "@" in responsable else responsable
+        marca_txt = clean_value(ticket.get("brand")) or "Sin marca"
+        st.markdown(
+            '<div class="cola-detalle">'
+            f'<div class="cola-detalle-head"><b>{escape(clean_value(ticket.get("code")))}</b>'
+            f'<span class="estado-pill estado-blue">{escape(estado_txt)}</span></div>'
+            '<div class="cola-detalle-grid">'
+            f'<div><small>Marca</small><span>{escape(marca_txt)}</span></div>'
+            f'<div><small>Productos</small><span>{productos:,}</span></div>'
+            f'<div><small>Responsable</small><span>{escape(responsable_txt)}</span></div>'
+            f'<div><small>Solicitante</small><span>{escape(clean_value(ticket.get("requested_by")) or "-")}</span></div>'
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
 
         download_cols = st.columns(2)
         if latest_version.get("input_path"):
@@ -15705,7 +15803,7 @@ def render_full_load_ticket_queue(brand_config):
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-            st.info("Asígnate la solicitud para preparar, iniciar y cerrar la carga.")
+            st.caption("Asígnate la solicitud para preparar, iniciar y cerrar la carga.")
             return
         if not can_manage:
             st.info(f"Esta solicitud está asignada a {ticket.get('assignee')}. Puedes descargar los archivos para consulta.")
@@ -15725,7 +15823,7 @@ def render_full_load_ticket_queue(brand_config):
                 except TicketError as exc:
                     st.error(str(exc))
         elif status == STATE_DRY_RUN:
-            st.info("La solicitud está ejecutando su validación previa.")
+            st.caption("La solicitud está ejecutando su validación previa.")
         elif status == STATE_READY_EXECUTE:
             if st.button(
                 "Marcar carga iniciada",
@@ -17296,8 +17394,52 @@ api_version = "{DEFAULT_API_VERSION}"
         upload_nonce = int(st.session_state.get("load_reset_nonce") or 0)
         input_upload_key = f"input_{upload_nonce}"
         template_upload_key = f"template_{upload_nonce}"
+
+        # Origen del input: la solicitud ya trae el archivo validado, no hace
+        # falta descargarlo y volver a subirlo.
+        archivo_solicitud = None
+        origen_input = "Subir archivo manualmente"
+        if ticket_operator:
+            servicio_tickets, _ = get_ticket_service()
+            elegibles = solicitudes_ejecutables(servicio_tickets, ticket_actor, brand_config)
+            if elegibles:
+                origen_input = st.radio(
+                    "Origen del input",
+                    ["Usar archivo de una solicitud", "Subir archivo manualmente"],
+                    horizontal=True,
+                    key="origen_input_carga",
+                    help="La solicitud ya guarda el Excel validado por la marca.",
+                )
+                if origen_input == "Usar archivo de una solicitud":
+                    etiquetas = {
+                        (f"{t.get('code')} · {clean_value(t.get('brand'))} · "
+                         f"{safe_int_value((t.get('summary') or {}).get('products'), 0)} productos · "
+                         f"{clean_value(t.get('requested_by')) or 'sin solicitante'}"): t
+                        for t in elegibles
+                    }
+                    elegida = st.selectbox("Solicitud", list(etiquetas), key="solicitud_para_cargar")
+                    ticket_elegido = etiquetas[elegida]
+                    archivo_solicitud = archivo_de_solicitud(servicio_tickets, ticket_elegido)
+                    if archivo_solicitud is None:
+                        st.warning(
+                            "Esta solicitud no tiene un archivo recuperable. "
+                            "Usa la carga manual como respaldo."
+                        )
+                    else:
+                        st.markdown(
+                            '<div class="origen-ok"><b>Archivo listo</b>'
+                            f'<span>{escape(archivo_solicitud.name)} · '
+                            f'{archivo_solicitud.size:,} bytes · {escape(ticket_elegido.get("code"))}</span></div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.session_state["carga_desde_solicitud"] = ticket_elegido.get("code")
+            else:
+                st.caption("No hay solicitudes con archivo listo para este sitio. Sube el input manualmente.")
+        if archivo_solicitud is None:
+            st.session_state.pop("carga_desde_solicitud", None)
+
         upload_left, upload_right = st.columns([3.5, 1.5], gap="large")
-        input_file = st.session_state.get(input_upload_key)
+        input_file = archivo_solicitud or st.session_state.get(input_upload_key)
         with upload_left:
             if complete_source == "Respaldo Excel" and input_file:
                 st.caption("Input cargado. Ahora sube el Catálogo Matrixify para conservar IDs.")
@@ -17313,7 +17455,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         label_visibility="collapsed",
                         help="Este archivo conserva Product ID y Variant ID cuando no usas Shopify API.",
                     )
-            else:
+            elif archivo_solicitud is None:
                 with st.container(key="input_upload_slot"):
                     input_file = st.file_uploader("Cargar input", type=["xlsx", "xls"], key=input_upload_key, label_visibility="collapsed")
         st.session_state["input_loaded"] = bool(input_file)
@@ -17328,6 +17470,15 @@ api_version = "{DEFAULT_API_VERSION}"
         if st.session_state.get("complete_context") != complete_context:
             clear_complete_load_state()
             st.session_state["complete_context"] = complete_context
+            codigo_origen = clean_value(st.session_state.get("carga_desde_solicitud"))
+            if codigo_origen:
+                log_user_activity(
+                    "Seleccionar solicitud para carga",
+                    detail=f"Archivo tomado de la solicitud: {getattr(input_file, 'name', '')}",
+                    module="Carga de catalogo",
+                    site_key=clean_value(brand_config.get("site_key")),
+                    ticket=codigo_origen,
+                )
 
     setup_rows = [
         {

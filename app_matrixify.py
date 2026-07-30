@@ -12962,6 +12962,18 @@ def inject_custom_css(config):
             .flujo-barra {{ flex-wrap: wrap; }}
             .flujo-paso {{ min-width: 44%; }}
         }}
+        .sb-storage {{
+            display:flex; align-items:center; gap:8px;
+            padding:8px 12px; margin:0 0 12px;
+            border-radius:10px; font-size:12.5px; font-weight:600;
+        }}
+        .sb-storage span {{ width:7px; height:7px; border-radius:50%; flex:none; }}
+        .sb-storage.sb-ok   {{ background:var(--c-ok-bg);   color:var(--c-ok-text); }}
+        .sb-storage.sb-ok span   {{ background:var(--c-ok); }}
+        .sb-storage.sb-warn {{ background:var(--c-warn-bg); color:var(--c-warn-text); }}
+        .sb-storage.sb-warn span {{ background:var(--c-warn); }}
+        .sb-storage.sb-bad  {{ background:var(--c-bad-bg);  color:var(--c-bad-text); }}
+        .sb-storage.sb-bad span  {{ background:var(--c-bad); }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -14707,11 +14719,8 @@ def render_audit_center():
 
     render_ticket_styles()   # aporta .ticket-kpi-grid y .ticket-kpi-card
     servicio = get_audit_service()
-    if not servicio.persistente:
-        st.warning(
-            "El almacenamiento no es persistente: la auditoria se borrara en el proximo "
-            "redespliegue. Revisa el panel Almacenamiento en la barra lateral."
-        )
+    with st.expander("Estado del almacenamiento", expanded=not servicio.persistente):
+        render_storage_diagnostico()
     with st.spinner("Leyendo auditoria..."):
         eventos = servicio.all_events()
 
@@ -14853,73 +14862,61 @@ def render_audit_center():
 
 
 def render_sidebar_storage_status(username=None):
-    """Estado del almacenamiento en la barra lateral. Solo para operadores.
-
-    Comprueba de verdad si las solicitudes y la auditoria se estan guardando:
-    get_ticket_service() reporta "github" en cuanto [ticketing] lo dice, aunque
-    el token sea invalido o falte permiso de escritura.
-    """
+    """Una linea de estado. El detalle vive en la pantalla de Auditoria."""
     if not can_view_user_activity_log(username):
         return
     try:
         resultado = check_storage()
-    except Exception as exc:
-        st.sidebar.warning(f"No se pudo comprobar el almacenamiento: {exc}")
+    except Exception:
         return
     estado, titulo = storage_resumen(resultado)
-    icono = {"ok": "Almacenamiento OK", "error": "Almacenamiento con problemas",
+    clase = {"ok": "sb-ok", "error": "sb-bad", "aviso": "sb-warn"}.get(estado, "sb-warn")
+    texto = {"ok": "Almacenamiento persistente",
+             "error": "Almacenamiento sin persistir",
              "aviso": "Almacenamiento por confirmar"}.get(estado, titulo)
-    with st.sidebar.expander(icono, expanded=(estado == "error")):
-        clase = {"ok": "storage-ok", "error": "storage-bad", "aviso": "storage-warn"}.get(estado, "storage-warn")
+    st.sidebar.markdown(
+        f'<div class="sb-storage {clase}"><span></span>{escape(texto)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_storage_diagnostico():
+    """Diagnostico completo del almacenamiento, dentro de la pantalla de Auditoria."""
+    cfg = _ticketing_config()
+    try:
+        resultado = check_storage()
+    except Exception as exc:
+        st.warning(f"No se pudo comprobar el almacenamiento: {exc}")
+        return
+    estado, titulo = storage_resumen(resultado)
+    clase = {"ok": "storage-ok", "error": "storage-bad", "aviso": "storage-warn"}.get(estado, "storage-warn")
+    st.markdown(
+        f'<div class="storage-head {clase}"><strong>{escape(titulo)}</strong></div>',
+        unsafe_allow_html=True,
+    )
+    for paso in resultado.get("pasos", []):
+        punto = {"ok": "storage-dot-ok", "error": "storage-dot-bad",
+                 "aviso": "storage-dot-warn"}.get(paso["estado"], "storage-dot-warn")
+        arreglo = f'<em>{escape(paso["arreglo"])}</em>' if paso.get("arreglo") else ""
         st.markdown(
-            f'<div class="storage-head {clase}"><strong>{escape(titulo)}</strong></div>',
+            f'<div class="storage-step"><span class="{punto}"></span>'
+            f'<span><b>{escape(paso["paso"])}</b> {escape(paso["detalle"])}{arreglo}</span></div>',
             unsafe_allow_html=True,
         )
-        for paso in resultado.get("pasos", []):
-            punto = {"ok": "storage-dot-ok", "error": "storage-dot-bad",
-                     "aviso": "storage-dot-warn"}.get(paso["estado"], "storage-dot-warn")
-            arreglo = f'<em>{escape(paso["arreglo"])}</em>' if paso.get("arreglo") else ""
-            st.markdown(
-                f'<div class="storage-step"><span class="{punto}"></span>'
-                f'<span><b>{escape(paso["paso"])}</b> {escape(paso["detalle"])}{arreglo}</span></div>',
-                unsafe_allow_html=True,
+    if st.button("Probar escritura real", key="storage_write_test",
+                 help="Escribe un archivo de prueba en la rama para confirmar el permiso."):
+        if cfg["backend"] != "github":
+            st.warning('Configura [ticketing] con backend = "github" en Secrets.')
+        else:
+            prueba = check_github_store(
+                owner=cfg["owner"], repo=cfg["repo"], token=cfg["token"],
+                branch=cfg["branch"], prefix=cfg["prefix"], escribir_prueba=True,
             )
-        if st.button("Probar escritura real", key="storage_write_test",
-                     help="Escribe un archivo de prueba en la rama para confirmar el permiso."):
-            cfg = _ticketing_config()
-            if cfg["backend"] != "github":
-                st.warning("Configura [ticketing] con backend = \"github\" en Secrets.")
+            ultimo = prueba["pasos"][-1]
+            if ultimo["estado"] == "ok":
+                st.success(ultimo["detalle"])
             else:
-                prueba = check_github_store(
-                    owner=cfg["owner"], repo=cfg["repo"], token=cfg["token"],
-                    branch=cfg["branch"], prefix=cfg["prefix"], escribir_prueba=True,
-                )
-                ultimo = prueba["pasos"][-1]
-                if ultimo["estado"] == "ok":
-                    st.success(ultimo["detalle"])
-                else:
-                    st.error(f"{ultimo['detalle']} {ultimo.get('arreglo', '')}")
-
-
-def render_sidebar_user_activity_log(username=None):
-    if not can_view_user_activity_log(username):
-        return
-    with st.sidebar.expander("Auditoria de usuarios", expanded=False):
-        log_df = read_user_activity_log(limit=500)
-        if log_df.empty:
-            st.caption("Aun no hay actividad registrada.")
-            return
-        view_df = log_df.tail(80).iloc[::-1].reset_index(drop=True)
-        st.dataframe(view_df[["fecha", "nombre", "accion", "modulo"]], hide_index=True, use_container_width=True)
-        csv_data = log_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "Descargar log",
-            data=csv_data,
-            file_name="auditoria_usuarios_catalog_control_center.csv",
-            mime="text/csv",
-            use_container_width=True,
-            on_click=log_descarga, args=("Descargar log", "render_sidebar_user_activity_log"),
-        )
+                st.error(f"{ultimo['detalle']} {ultimo.get('arreglo', '')}")
 
 
 def current_ticket_actor():
@@ -16427,7 +16424,6 @@ def main():
         st.session_state["_activity_logged_user"] = auth_user
     render_sidebar_account_card(auth_user)
     render_sidebar_storage_status(auth_user)
-    render_sidebar_user_activity_log(auth_user)
     with st.sidebar.container(key="logout_card"):
         if st.button("Cerrar sesion"):
             log_user_activity("Cierre de sesion", "Sesion cerrada desde sidebar.", user=auth_user, module="Login")

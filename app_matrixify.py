@@ -7,6 +7,7 @@ import os
 import pickle
 import re
 import time
+import traceback
 import unicodedata
 import uuid
 from collections import defaultdict
@@ -12816,10 +12817,18 @@ def run_app():
     except Exception as exc:
         st.error("La app no pudo iniciar correctamente en este entorno.")
         st.warning(
-            "Esto suele deberse a Secrets, permisos, dependencias o una respuesta externa de BigQuery/Shopify. "
-            "Abre Manage app > Logs en Streamlit Cloud para ver el traceback completo."
+            "Esto suele deberse a Secrets, permisos, dependencias o una respuesta externa de BigQuery/Shopify."
         )
         st.code(f"{type(exc).__name__}: {exc}")
+        # El traceback es lo unico que permite ubicar el archivo y la linea.
+        # Sin esto solo se ve el tipo de error y no hay forma de diagnosticarlo.
+        detalle = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        with st.expander("Ver detalle tecnico del error (traceback)"):
+            st.caption(
+                "Copia este bloque completo si necesitas reportar el problema. "
+                "Tambien aparece en Manage app > Logs en Streamlit Cloud."
+            )
+            st.code(detalle, language="text")
 
 
 if __name__ == "__main__":

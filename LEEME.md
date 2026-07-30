@@ -1,4 +1,7 @@
-# Subir estos 7 archivos
+# Subir estos 8 archivos
+
+> **Version corregida.** Reemplaza al ZIP anterior de 7 archivos, que tenia
+> un error en `engines/excel_io.py` (imports faltantes). No uses aquel.
 
 El ZIP ya viene con la estructura de carpetas correcta. Cada archivo va en la
 misma ruta que tiene aquí dentro.
@@ -9,7 +12,7 @@ misma ruta que tiene aquí dentro.
 |---|---|
 | `app_matrixify.py` | raíz del repositorio |
 
-## Agregar (6)
+## Agregar (7)
 
 | Archivo del ZIP | Ruta en GitHub |
 |---|---|
@@ -18,6 +21,7 @@ misma ruta que tiene aquí dentro.
 | `engines/normalize.py` | `engines/normalize.py` |
 | `engines/excel_io.py` | `engines/excel_io.py` |
 | `scripts/test_engines_normalize.py` | `scripts/test_engines_normalize.py` |
+| `scripts/test_engines_excel_io.py` | `scripts/test_engines_excel_io.py` |
 | `INVENTARIO_ARCHIVOS.md` | raíz del repositorio |
 
 `engines/` es una carpeta **nueva**. Las demás ya existen.
@@ -26,7 +30,7 @@ misma ruta que tiene aquí dentro.
 
 ## Importante
 
-> **Sube los 7 en un solo commit.**
+> **Sube los 8 en un solo commit.**
 > Si subes `app_matrixify.py` sin la carpeta `engines/`, la app no arranca
 > (`ModuleNotFoundError: engines`).
 
@@ -55,7 +59,7 @@ que no se ve afectado por subir archivos a GitHub.
 ```bash
 git checkout -b fase1-motores
 # copiar los archivos del ZIP respetando las rutas
-git add app_matrixify.py assets/app.css engines/ scripts/test_engines_normalize.py INVENTARIO_ARCHIVOS.md
+git add app_matrixify.py assets/app.css engines/ scripts/test_engines_normalize.py scripts/test_engines_excel_io.py INVENTARIO_ARCHIVOS.md
 git commit -m "Fase 0 + Fase 1: CSS a assets, limpieza y motores normalize/excel_io"
 git push origin fase1-motores
 ```
@@ -83,3 +87,14 @@ O sube el `app_matrixify.py` de `Catalog_Control_Center_RESPALDO_COMPLETO.zip`
 |---|---|
 | `ModuleNotFoundError: engines` | Falta la carpeta `engines/`; sube sus 3 archivos |
 | App sin estilos + mensaje rojo con una ruta | Falta `assets/app.css`; súbelo |
+
+
+---
+
+## Qué se corrigió en esta versión
+
+| Problema | Estado |
+|---|---|
+| `IndexError: At least one sheet must be visible` al generar un Excel sin hojas | **Corregido.** Ahora escribe una hoja "Sin datos" en vez de tumbar la app. Era un fallo preexistente. |
+| `engines/excel_io.py` con imports faltantes (`NameError` en `columbia_to_excel_bytes`) | **Corregido.** Fallo introducido en el ZIP anterior de 7 archivos. |
+| El error genérico no mostraba el traceback | **Corregido.** Ahora hay un desplegable "Ver detalle técnico del error". |

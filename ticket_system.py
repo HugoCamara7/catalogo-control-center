@@ -1,4 +1,4 @@
-"""Persistent catalog ticket domain for Catalog Control Center.
+﻿"""Persistent catalog ticket domain for Catalog Control Center.
 
 The module has no Streamlit dependency. Production can persist metadata and
 validated files in a dedicated GitHub branch; tests and local development use
@@ -63,11 +63,11 @@ STATE_LABELS = {
     STATE_ASSIGNED: "Asignada",
     STATE_DIGITAL_REVIEW: "Revisión Digital",
     STATE_OBSERVED: "Observada",
-    STATE_WAITING_BRAND: "Esperando corrección Brand",
+    STATE_WAITING_BRAND: "Esperando corrección de la marca",
     STATE_CORRECTION_RECEIVED: "Corrección recibida",
     STATE_LOAD_APPROVED: "Aprobada para carga",
     STATE_PREPARING: "Preparando catálogo",
-    STATE_DRY_RUN: "Dry run en proceso",
+    STATE_DRY_RUN: "Validación previa en proceso",
     STATE_READY_EXECUTE: "Lista para ejecutar",
     STATE_LOADING: "Cargando Shopify",
     STATE_VALIDATING: "Validando resultados",

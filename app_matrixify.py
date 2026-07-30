@@ -21,6 +21,12 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from engines.ticket_flow import ETIQUETAS as FLUJO_ETIQUETAS
+from engines.ticket_flow import ORDEN as FLUJO_ORDEN
+from engines.ticket_flow import acciones_disponibles as flujo_acciones
+from engines.ticket_flow import etiqueta as flujo_etiqueta
+from engines.ticket_flow import paso_actual as flujo_paso_actual
+from engines.ticket_flow import tono as flujo_tono
 from engines.audit import formato_lima as audit_formato_lima
 from engines.audit import (
     ACCIONES_TICKET,
@@ -9554,7 +9560,7 @@ def _sync_job_summary_df(job):
     pending = max(total - processed, 0)
     return pd.DataFrame(
         [
-            {"Indicador": "Job ID", "Valor": job.get("id")},
+            {"Indicador": "ID del proceso", "Valor": job.get("id")},
             {"Indicador": "Estado", "Valor": job.get("status")},
             {"Indicador": "Total productos", "Valor": total},
             {"Indicador": "Procesados", "Valor": processed},
@@ -9630,7 +9636,7 @@ def process_sync_job_next_block(job_id, shopify_config, max_retries=2, progress_
         raise RuntimeError(f"No se encontro el job {job_id}")
     source_df = _load_sync_job_df(job_id)
     if source_df.empty:
-        raise RuntimeError("No se encontro el snapshot de datos del job. Crea nuevamente el job.")
+        raise RuntimeError("No se encontraron los datos del proceso. Vuelve a crearlo.")
     pending_keys = [key for key in job.get("pending_keys", []) if key not in set(job.get("completed_keys", []))]
     if not pending_keys:
         job["status"] = "completed" if not job.get("error_keys") else "completed_with_errors"
@@ -9809,7 +9815,7 @@ def render_persistent_sync_job_panel(
     job_id = st.session_state.get(session_key)
     job = _load_sync_job(job_id) if job_id else None
     if not job:
-        if st.button("Crear job y procesar primer bloque", type="primary", key=f"{session_key}_create"):
+        if st.button("Crear proceso y procesar primer bloque", type="primary", key=f"{session_key}_create"):
             job = _create_sync_job(
                 site_key,
                 mode,
@@ -9838,7 +9844,7 @@ def render_persistent_sync_job_panel(
     status_cols[3].metric("Con observacion", f"{int(job.get('partial_products') or 0):,}")
     status_cols[4].metric("Errores", f"{int(job.get('error_products') or 0):,}")
     st.info(
-        f"Job {job['id']} | estado: {status} | bloque {int(job.get('current_block') or 0)} de {int(job.get('total_blocks') or 0)} | actualizado: {job.get('updated_at')}"
+        f"Proceso {job['id']} | estado: {status} | bloque {int(job.get('current_block') or 0)} de {int(job.get('total_blocks') or 0)} | actualizado: {job.get('updated_at')}"
     )
     job_events = job.get("events") or []
     last_product_event = next((event for event in reversed(job_events) if clean_value(event.get("Producto"))), {})
@@ -9861,7 +9867,7 @@ def render_persistent_sync_job_panel(
     if job.get("error_keys") and action_cols[1].button("Reintentar errores", key=f"{session_key}_retry"):
         job = _reset_sync_job_errors(job["id"])
         st.warning("Errores devueltos a pendiente. Presiona Continuar siguiente bloque para reintentarlos.")
-    if action_cols[2].button("Crear nuevo job", key=f"{session_key}_new"):
+    if action_cols[2].button("Crear nuevo proceso", key=f"{session_key}_new"):
         st.session_state.pop(session_key, None)
         st.rerun()
 
@@ -9878,12 +9884,12 @@ def render_persistent_sync_job_panel(
         }
     )
     st.download_button(
-        "Descargar reporte del job",
+        "Descargar reporte del proceso",
         data=report_bytes,
         file_name=f"resultado_job_{mode}_{site_key}_{job['id']}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"{session_key}_download",
-        on_click=log_descarga, args=("Descargar reporte del job", "render_persistent_sync_job_panel"),
+        on_click=log_descarga, args=("Descargar reporte del proceso", "render_persistent_sync_job_panel"),
     )
 
 
@@ -15315,12 +15321,12 @@ def require_login():
         normalized_username = _normalize_auth_username(username)
         expected = users.get(normalized_username)
         if expected and hmac.compare_digest(clean_value(password), expected):
-            log_user_activity("Inicio de sesion", "Ingreso correcto.", user=normalized_username, module="Login")
+            log_user_activity("Inicio de sesion", "Ingreso correcto.", user=normalized_username, module="Inicio de sesión")
             st.session_state["authenticated"] = True
             st.session_state["auth_user"] = normalized_username
             st.session_state["auth_scope"] = auth_access_scope(normalized_username)
             st.rerun()
-        log_user_activity("Login fallido", "Credenciales invalidas.", user=normalized_username, module="Login")
+        log_user_activity("Intento de acceso fallido", "Credenciales invalidas.", user=normalized_username, module="Inicio de sesión")
         st.error("Usuario o contrasena incorrectos.")
     return False
 
@@ -15689,7 +15695,7 @@ def render_full_load_ticket_queue(brand_config):
             with st.expander("Como cerrar una solicitud de carga"):
                 st.markdown(
                     "1. Selecciona el sitio correcto y descarga el input validado.\n"
-                    "2. Usa **Preparar para carga** para validar el archivo. Esta prueba no cierra la solicitud.\n"
+                    "2. Usa **Ejecutar validación previa** para validar el archivo. Esta prueba no cierra la solicitud.\n"
                     "3. Usa **Marcar carga iniciada** antes de ejecutar la carga real en Shopify.\n"
                     "4. Cuando la carga real termine, vuelve a esta sección y registra **Finalizar carga**, "
                     "**Finalizar con observaciones** o **Registrar incidencia**."
@@ -15698,7 +15704,7 @@ def render_full_load_ticket_queue(brand_config):
 
         with st.expander("Como cerrar una solicitud de carga"):
             st.markdown(
-                "1. Descarga el input validado y usa **Preparar para carga**. Esta prueba valida, pero no cierra el ticket.\n"
+                "1. Descarga el input validado y usa **Ejecutar validación previa**. Esta prueba valida, pero no cierra el ticket.\n"
                 "2. Usa **Marcar carga iniciada** antes de ejecutar la carga real.\n"
                 "3. Ejecuta y verifica la carga en Shopify.\n"
                 "4. Registra **Finalizar carga**, **Finalizar con observaciones** o **Registrar incidencia**."
@@ -15812,7 +15818,7 @@ def render_full_load_ticket_queue(brand_config):
         status = ticket.get("status")
         if status in {STATE_APPROVED, STATE_PREPARING, STATE_FAILED}:
             if st.button(
-                "Preparar para carga",
+                "Ejecutar validación previa",
                 type="primary",
                 key=f"full_load_prepare_{selected_code}",
                 use_container_width=True,
@@ -16101,7 +16107,11 @@ def _render_ticket_public_status(ticket, status, status_label, summary, job, sav
         site_text = clean_value(sites)
     brand = clean_value(ticket.get("brand")) or "Marca"
     owner = clean_value(ticket.get("assigned_to")) or "Equipo de catálogo"
-    update_text = clean_value(job.get("updated_at")) or clean_value(ticket.get("updated_at")) or "En seguimiento"
+    update_raw = clean_value(job.get("updated_at")) or clean_value(ticket.get("updated_at"))
+    update_text = audit_formato_lima(update_raw) if update_raw else "En seguimiento"
+    prioridad_txt = PRIORITY_LABELS.get(
+        clean_value(ticket.get("priority")).casefold(), clean_value(ticket.get("priority")) or "Normal"
+    )
     result_total = max(successful + warnings + errors, processed, total)
     success_rate = round((successful / result_total) * 100) if result_total else (100 if is_closed else 0)
     state_class = _ticket_state_color(status)
@@ -16116,12 +16126,12 @@ def _render_ticket_public_status(ticket, status, status_label, summary, job, sav
             <div class="brand-request-kpis">
                 <div class="brand-request-kpi"><small>PRODUCTOS</small><strong>{total}</strong></div>
                 <div class="brand-request-kpi blue"><small>PROCESADOS</small><strong>{processed}/{total}</strong></div>
-                <div class="brand-request-kpi {'green' if is_closed else 'blue'}"><small>ESTADO</small><strong>{escape(status_label)}</strong></div>
-                <div class="brand-request-kpi"><small>PRIORIDAD</small><strong>{escape(clean_value(ticket.get('priority')) or 'Normal')}</strong></div>
+                <div class="brand-request-kpi"><small>PENDIENTES</small><strong>{max(total - processed, 0)}</strong></div>
+                <div class="brand-request-kpi"><small>PRIORIDAD</small><strong>{escape(prioridad_txt)}</strong></div>
             </div>
             <div class="brand-request-meta"><div><small>RESPONSABLE</small><strong>{escape(owner)}</strong></div>
-                <div><small>ULTIMA ACTUALIZACION</small><strong>{escape(update_text)}</strong></div>
-                <div><small>ESTADO</small><strong>{escape(status_label)}</strong></div></div>
+                <div><small>ÚLTIMA ACTUALIZACIÓN</small><strong>{escape(update_text)}</strong></div>
+                <div><small>MARCA Y SITIO</small><strong>{escape(brand)}</strong></div></div>
         </section>''',
         unsafe_allow_html=True,
     )
@@ -16218,6 +16228,76 @@ def _mostrar_error_ticket(exc, code=""):
             st.rerun()
         return
     st.error(str(exc))
+
+
+def render_barra_acciones(service, actor, ticket):
+    """Botones contextuales: solo lo que se puede hacer en este estado y rol.
+
+    Las opciones y los permisos salen de engines/ticket_flow, que ya tiene
+    pruebas. La accion recomendada va destacada; el resto queda secundario.
+    """
+    estado = clean_value(ticket.get("status"))
+    codigo = clean_value(ticket.get("code"))
+    rol = clean_value(actor.get("role")).casefold()
+    acciones = flujo_acciones(estado, rol, ticket.get("assignee"), actor.get("user"))
+    if not acciones:
+        st.caption("No hay acciones disponibles para esta solicitud en su estado actual.")
+        return
+
+    # Barra de 4 pasos
+    paso = flujo_paso_actual(estado)
+    pasos_html = []
+    for indice, clave in enumerate(FLUJO_ORDEN, start=1):
+        clase = "hecho" if indice < paso else ("actual" if indice == paso else "")
+        pasos_html.append(
+            f'<div class="flujo-paso {clase}"><b>{indice}. {escape(FLUJO_ETIQUETAS[clave])}</b></div>'
+        )
+    st.markdown(f'<div class="flujo-barra">{"".join(pasos_html)}</div>', unsafe_allow_html=True)
+
+    principal = next((a for a in acciones if a.get("principal")), None)
+    if principal:
+        st.markdown(
+            f'<div class="accion-hint"><b>Siguiente paso:</b> {escape(principal["ayuda"])}</div>',
+            unsafe_allow_html=True,
+        )
+
+    necesita_comentario = any(a.get("pide_comentario") for a in acciones)
+    comentario = ""
+    if necesita_comentario:
+        comentario = st.text_area(
+            "Comentario",
+            key=f"accion_comentario_{codigo}",
+            placeholder="Obligatorio para observar, reabrir o cancelar.",
+            height=70,
+        )
+
+    columnas = st.columns(len(acciones))
+    for columna, accion in zip(columnas, acciones):
+        etiqueta = accion["etiqueta"]
+        destacado = "primary" if accion.get("principal") else "secondary"
+        if not columna.button(etiqueta, key=f"accion_{accion['clave']}_{codigo}",
+                              type=destacado, use_container_width=True,
+                              help=accion["ayuda"]):
+            continue
+        if accion.get("pide_comentario") and not clean_value(comentario):
+            st.warning(f'"{etiqueta}" necesita un comentario.')
+            continue
+        if accion.get("requiere_archivo"):
+            st.info("Sube la versión corregida en la sección de archivos.")
+            continue
+        try:
+            metodo = getattr(service, accion["metodo"])
+            if accion["clave"] == "tomar":
+                metodo(actor, codigo, actor.get("user"))
+            elif accion["clave"] == "reabrir":
+                metodo(actor, codigo, accion["destino"], clean_value(comentario))
+            elif accion.get("pide_comentario"):
+                metodo(actor, codigo, clean_value(comentario))
+            else:
+                metodo(actor, codigo)
+            st.rerun()
+        except TicketError as exc:
+            _mostrar_error_ticket(exc, codigo)
 
 
 def render_ticket_detail(service, actor, code):
@@ -16349,6 +16429,7 @@ def render_ticket_detail(service, actor, code):
                 except TicketError as exc:
                     _mostrar_error_ticket(exc, code)
     if role in {ROLE_OPERATOR, ROLE_ADMIN}:
+        render_barra_acciones(service, actor, ticket)
         st.markdown(
             '<div class="ticket-section"><p class="ticket-section-label">Gestión interna</p>'
             '<h3>Gestionar solicitud</h3></div>',
@@ -16568,13 +16649,13 @@ def main():
     ticket_actor = current_ticket_actor()
     ticket_operator = ticket_actor.get("role") == ROLE_OPERATOR
     if auth_user and st.session_state.get("_activity_logged_user") != auth_user:
-        log_user_activity("Sesion activa", "Usuario entro a la app.", user=auth_user, module="App")
+        log_user_activity("Sesion activa", "Usuario entro a la app.", user=auth_user, module="Aplicación")
         st.session_state["_activity_logged_user"] = auth_user
     render_sidebar_account_card(auth_user)
     render_sidebar_storage_status(auth_user)
     with st.sidebar.container(key="logout_card"):
         if st.button("Cerrar sesion"):
-            log_user_activity("Cierre de sesion", "Sesion cerrada desde sidebar.", user=auth_user, module="Login")
+            log_user_activity("Cierre de sesion", "Sesion cerrada desde sidebar.", user=auth_user, module="Inicio de sesión")
             st.session_state.pop("authenticated", None)
             st.session_state.pop("auth_user", None)
             st.session_state.pop("auth_scope", None)
@@ -17484,12 +17565,12 @@ api_version = "{DEFAULT_API_VERSION}"
         {
             "Base": "Datos actuales Shopify",
             "Ruta": "Shopify API" if complete_source == "Shopify API" else f"Respaldo Excel de {brand_config['site_label']}",
-            "Estado": "OK API" if complete_source == "Shopify API" and is_shopify_configured(shopify_config) else ("Obligatorio" if complete_source == "Respaldo Excel" else "Falta API"),
+            "Estado": "Conectado" if complete_source == "Shopify API" and is_shopify_configured(shopify_config) else ("Obligatorio" if complete_source == "Respaldo Excel" else "Sin conexión"),
         },
         {
             "Base": "ARTI",
             "Ruta": "BigQuery" if bigquery_ready else f"{DEFAULT_ARTI_ZIP_PATH} / {DEFAULT_ARTI_CSV_PATH} / {DEFAULT_ARTI_PATH}",
-            "Estado": "OK BigQuery"
+            "Estado": "Conectado"
             if bigquery_ready
             else (
                 "OK ZIP"

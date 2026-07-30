@@ -14278,30 +14278,6 @@ def check_storage():
     )
 
 
-def render_storage_panel(escribir_prueba=False):
-    """Panel de diagnostico del almacenamiento. Solo para operadores."""
-    cfg = _ticketing_config()
-    if cfg["backend"] == "github":
-        resultado = check_github_store(
-            owner=cfg["owner"], repo=cfg["repo"], token=cfg["token"],
-            branch=cfg["branch"], prefix=cfg["prefix"], escribir_prueba=escribir_prueba,
-        )
-    else:
-        resultado = check_local_store(cfg["local_path"])
-    estado, titulo = storage_resumen(resultado)
-    clase = {"ok": "storage-ok", "error": "storage-bad", "aviso": "storage-warn"}.get(estado, "storage-warn")
-    st.markdown(f'<div class="storage-head {clase}"><strong>{escape(titulo)}</strong></div>', unsafe_allow_html=True)
-    for paso in resultado["pasos"]:
-        icono = {"ok": "storage-dot-ok", "error": "storage-dot-bad", "aviso": "storage-dot-warn"}[paso["estado"]]
-        arreglo = f'<em>{escape(paso["arreglo"])}</em>' if paso.get("arreglo") else ""
-        st.markdown(
-            f'<div class="storage-step"><span class="{icono}"></span>'
-            f'<span><b>{escape(paso["paso"])}</b> {escape(paso["detalle"])}{arreglo}</span></div>',
-            unsafe_allow_html=True,
-        )
-    return resultado
-
-
 def log_user_activity(action, detail="", user=None, site_key="", module="", extra=None,
                       ticket="", marca="", estado_anterior="", estado_nuevo="", resultado="ok"):
     """Registra una accion del usuario.
@@ -14424,6 +14400,55 @@ def render_sidebar_account_card(username=None):
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_sidebar_storage_status(username=None):
+    """Estado del almacenamiento en la barra lateral. Solo para operadores.
+
+    Comprueba de verdad si las solicitudes y la auditoria se estan guardando:
+    get_ticket_service() reporta "github" en cuanto [ticketing] lo dice, aunque
+    el token sea invalido o falte permiso de escritura.
+    """
+    if not can_view_user_activity_log(username):
+        return
+    try:
+        resultado = check_storage()
+    except Exception as exc:
+        st.sidebar.warning(f"No se pudo comprobar el almacenamiento: {exc}")
+        return
+    estado, titulo = storage_resumen(resultado)
+    icono = {"ok": "Almacenamiento OK", "error": "Almacenamiento con problemas",
+             "aviso": "Almacenamiento por confirmar"}.get(estado, titulo)
+    with st.sidebar.expander(icono, expanded=(estado == "error")):
+        clase = {"ok": "storage-ok", "error": "storage-bad", "aviso": "storage-warn"}.get(estado, "storage-warn")
+        st.markdown(
+            f'<div class="storage-head {clase}"><strong>{escape(titulo)}</strong></div>',
+            unsafe_allow_html=True,
+        )
+        for paso in resultado.get("pasos", []):
+            punto = {"ok": "storage-dot-ok", "error": "storage-dot-bad",
+                     "aviso": "storage-dot-warn"}.get(paso["estado"], "storage-dot-warn")
+            arreglo = f'<em>{escape(paso["arreglo"])}</em>' if paso.get("arreglo") else ""
+            st.markdown(
+                f'<div class="storage-step"><span class="{punto}"></span>'
+                f'<span><b>{escape(paso["paso"])}</b> {escape(paso["detalle"])}{arreglo}</span></div>',
+                unsafe_allow_html=True,
+            )
+        if st.button("Probar escritura real", key="storage_write_test",
+                     help="Escribe un archivo de prueba en la rama para confirmar el permiso."):
+            cfg = _ticketing_config()
+            if cfg["backend"] != "github":
+                st.warning("Configura [ticketing] con backend = \"github\" en Secrets.")
+            else:
+                prueba = check_github_store(
+                    owner=cfg["owner"], repo=cfg["repo"], token=cfg["token"],
+                    branch=cfg["branch"], prefix=cfg["prefix"], escribir_prueba=True,
+                )
+                ultimo = prueba["pasos"][-1]
+                if ultimo["estado"] == "ok":
+                    st.success(ultimo["detalle"])
+                else:
+                    st.error(f"{ultimo['detalle']} {ultimo.get('arreglo', '')}")
 
 
 def render_sidebar_user_activity_log(username=None):
@@ -15941,6 +15966,7 @@ def main():
         log_user_activity("Sesion activa", "Usuario entro a la app.", user=auth_user, module="App")
         st.session_state["_activity_logged_user"] = auth_user
     render_sidebar_account_card(auth_user)
+    render_sidebar_storage_status(auth_user)
     render_sidebar_user_activity_log(auth_user)
     with st.sidebar.container(key="logout_card"):
         if st.button("Cerrar sesion"):

@@ -1,77 +1,61 @@
 """Motor de auditoria de acciones de usuario.
 
-Sin dependencias de Streamlit: es logica pura y testeable.
+Sin dependencias de Streamlit.
+
+Compatibilidad
+--------------
+Sustituye el almacenamiento de log_user_activity() conservando su firma y sus
+8 campos originales (fecha, usuario, nombre, rol, accion, modulo, sitio,
+detalle). Los registros antiguos se leen sin problema: los campos nuevos
+quedan vacios.
+
+Campos nuevos: marca, solicitud, estado_anterior, estado_nuevo, resultado.
 
 Diseno
 ------
 - Append-only. Un evento nunca se edita ni se borra desde la app.
-- Un archivo por mes (audit/YYYY-MM.jsonl) para acotar el tamano y el numero
-  de escrituras contra GitHub.
-- Dos backends con la misma interfaz, igual que ticket_system:
+- Un archivo por mes para acotar tamano y numero de escrituras.
+- Dos backends con la misma interfaz:
     LocalAuditStore  -> disco (EFIMERO en Streamlit Cloud)
     GitHubAuditStore -> rama del repositorio (persistente)
-- Nunca se guardan contrasenas, tokens ni credenciales: sanitize_value() las
-  reemplaza antes de escribir.
-- Se registran acciones explicitas del usuario, nunca reruns ni renders.
+- Nunca guarda contrasenas, tokens ni credenciales.
 """
 
+import base64
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 LIMA = timezone(timedelta(hours=-5))
 
-# --- catalogo de acciones -----------------------------------------------
+# Campos originales de log_user_activity, en su orden. No cambiar.
+CAMPOS_LEGADO = ["fecha", "usuario", "nombre", "rol", "accion", "modulo", "sitio", "detalle"]
+# Campos que agrega este motor.
+CAMPOS_NUEVOS = ["marca", "solicitud", "estado_anterior", "estado_nuevo", "resultado"]
+CAMPOS = CAMPOS_LEGADO + CAMPOS_NUEVOS
+
+MODULO_SESION = "Sesion"
 MODULO_SOLICITUDES = "Solicitudes"
 MODULO_INPUT = "Input comercial"
 MODULO_CARGA = "Carga de catalogo"
-MODULO_SESION = "Sesion"
+MODULO_KPIS = "KPIs de catalogo"
 MODULO_CONFIG = "Configuracion"
 
-ACCIONES = {
-    "login": ("Inicio de sesion", MODULO_SESION),
-    "logout": ("Cierre de sesion", MODULO_SESION),
-    "ticket_create": ("Crear solicitud", MODULO_SOLICITUDES),
-    "ticket_submit": ("Enviar solicitud", MODULO_SOLICITUDES),
-    "ticket_take": ("Tomar solicitud", MODULO_SOLICITUDES),
-    "ticket_assign": ("Asignar o reasignar", MODULO_SOLICITUDES),
-    "ticket_state": ("Cambiar estado", MODULO_SOLICITUDES),
-    "ticket_observe": ("Observar solicitud", MODULO_SOLICITUDES),
-    "ticket_finish": ("Finalizar solicitud", MODULO_SOLICITUDES),
-    "ticket_reopen": ("Reabrir solicitud", MODULO_SOLICITUDES),
-    "ticket_delete": ("Eliminar solicitud", MODULO_SOLICITUDES),
-    "file_upload": ("Subir archivo", MODULO_INPUT),
-    "file_validate": ("Validar archivo", MODULO_INPUT),
-    "file_download": ("Descargar archivo", MODULO_INPUT),
-    "template_download": ("Descargar formato", MODULO_INPUT),
-    "load_select": ("Seleccionar solicitud para carga", MODULO_CARGA),
-    "load_start": ("Iniciar carga", MODULO_CARGA),
-    "load_complete": ("Completar carga", MODULO_CARGA),
-    "load_fail": ("Carga fallida", MODULO_CARGA),
-    "report_download": ("Descargar reporte", MODULO_CARGA),
-    "config_change": ("Cambiar configuracion", MODULO_CONFIG),
-    "user_change": ("Cambiar usuarios", MODULO_CONFIG),
-}
-
-RESULTADOS = ("ok", "error", "warning")
+RESULTADOS = ("ok", "error", "aviso")
 
 COLUMNAS_EXPORT = [
-    "Fecha y hora (Peru)", "Usuario", "Correo", "Rol", "Accion", "Modulo",
-    "Solicitud", "Valor anterior", "Valor nuevo", "Resultado", "Detalle",
+    "Fecha y hora (Peru)", "Usuario", "Correo", "Rol", "Marca", "Modulo",
+    "Solicitud", "Accion", "Estado anterior", "Estado nuevo", "Resultado", "Detalle",
 ]
 
-# Claves cuyo VALOR nunca debe quedar registrado.
 _CLAVES_SENSIBLES = re.compile(
-    r"(pass|clave|secret|token|credential|authorization|api[_-]?key|private[_-]?key)",
-    re.I,
-)
+    r"(pass|clave|secret|token|credential|authorization|api[_-]?key|private[_-]?key)", re.I)
 _VALORES_SENSIBLES = re.compile(
     r"(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|shpat_[A-Za-z0-9]{20,}"
-    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----)",
-)
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----)")
 OCULTO = "[oculto]"
 
 
@@ -87,6 +71,8 @@ def sanitize_value(valor, clave=""):
     """Evita que una contrasena o un token termine en el log."""
     if isinstance(valor, dict):
         return {k: sanitize_value(v, k) for k, v in valor.items()}
+    if isinstance(valor, (list, tuple)):
+        return [sanitize_value(v) for v in valor]
     texto = _texto(valor)
     if not texto:
         return ""
@@ -101,15 +87,21 @@ def ahora_lima():
     return datetime.now(LIMA)
 
 
-def formato_lima(momento):
-    if isinstance(momento, str):
+def formato_lima(valor):
+    if isinstance(valor, datetime):
+        return valor.astimezone(LIMA).strftime("%d/%m/%Y %H:%M:%S")
+    texto = _texto(valor)
+    if not texto:
+        return ""
+    for patron in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
-            momento = datetime.fromisoformat(momento)
+            return datetime.strptime(texto[:19], patron).strftime("%d/%m/%Y %H:%M:%S")
         except ValueError:
-            return momento
-    if momento.tzinfo is None:
-        momento = momento.replace(tzinfo=timezone.utc)
-    return momento.astimezone(LIMA).strftime("%d/%m/%Y %H:%M:%S")
+            continue
+    try:
+        return datetime.fromisoformat(texto).astimezone(LIMA).strftime("%d/%m/%Y %H:%M:%S")
+    except ValueError:
+        return texto
 
 
 def nombre_desde_correo(correo):
@@ -121,30 +113,47 @@ def nombre_desde_correo(correo):
     return " ".join(p.capitalize() for p in partes) or correo
 
 
-def build_event(accion, usuario, rol="", solicitud="", valor_anterior="",
-                valor_nuevo="", resultado="ok", detalle="", modulo="",
-                nombre="", momento=None):
-    """Construye un evento normalizado y ya saneado."""
-    etiqueta, modulo_por_defecto = ACCIONES.get(accion, (accion, "Otro"))
-    momento = momento or ahora_lima()
+def build_event(accion, usuario, nombre="", rol="", modulo="", sitio="", marca="",
+                solicitud="", estado_anterior="", estado_nuevo="", resultado="ok",
+                detalle="", momento=None, extra=None):
+    """Construye un evento normalizado y saneado.
+
+    'fecha' conserva el formato original de log_user_activity para que los
+    registros viejos y nuevos convivan en el mismo archivo.
+    """
+    momento = (momento or ahora_lima()).astimezone(LIMA)
     resultado = _texto(resultado).casefold() or "ok"
     if resultado not in RESULTADOS:
         resultado = "ok"
     correo = _texto(usuario).casefold()
-    return {
-        "ts": momento.astimezone(LIMA).isoformat(timespec="seconds"),
-        "accion": _texto(accion),
-        "accion_label": etiqueta,
-        "modulo": _texto(modulo) or modulo_por_defecto,
+    evento = {
+        "fecha": momento.strftime("%Y-%m-%d %H:%M:%S"),
         "usuario": correo,
         "nombre": _texto(nombre) or nombre_desde_correo(correo),
         "rol": _texto(rol),
-        "solicitud": _texto(solicitud),
-        "valor_anterior": sanitize_value(valor_anterior),
-        "valor_nuevo": sanitize_value(valor_nuevo),
-        "resultado": resultado,
+        "accion": _texto(accion),
+        "modulo": _texto(modulo),
+        "sitio": _texto(sitio),
         "detalle": sanitize_value(detalle),
+        "marca": _texto(marca),
+        "solicitud": _texto(solicitud),
+        "estado_anterior": _texto(estado_anterior),
+        "estado_nuevo": _texto(estado_nuevo),
+        "resultado": resultado,
     }
+    if extra:
+        evento["extra"] = sanitize_value(extra)
+    return evento
+
+
+def normalizar(evento):
+    """Completa los campos que falten. Permite leer registros antiguos."""
+    fila = {campo: _texto(evento.get(campo)) for campo in CAMPOS}
+    if not fila["nombre"]:
+        fila["nombre"] = nombre_desde_correo(fila["usuario"])
+    if not fila["resultado"]:
+        fila["resultado"] = "ok"
+    return fila
 
 
 # --- almacenamiento ------------------------------------------------------
@@ -153,7 +162,7 @@ class AuditError(RuntimeError):
 
 
 class LocalAuditStore:
-    """Disco local. EFIMERO en Streamlit Cloud: se borra en cada redespliegue."""
+    """Disco local. EFIMERO en Streamlit Cloud."""
 
     persistente = False
     nombre = "local"
@@ -168,9 +177,8 @@ class LocalAuditStore:
         return self.root / f"{periodo}.jsonl"
 
     def append(self, evento):
-        periodo = evento["ts"][:7]
-        with self._archivo(periodo).open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(evento, ensure_ascii=False) + "\n")
+        with self._archivo(evento["fecha"][:7]).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(evento, ensure_ascii=False, default=str) + "\n")
         return evento
 
     def read_period(self, periodo):
@@ -180,11 +188,12 @@ class LocalAuditStore:
         salida = []
         for linea in archivo.read_text(encoding="utf-8").splitlines():
             linea = linea.strip()
-            if linea:
-                try:
-                    salida.append(json.loads(linea))
-                except json.JSONDecodeError:
-                    continue
+            if not linea:
+                continue
+            try:
+                salida.append(json.loads(linea))
+            except json.JSONDecodeError:
+                continue
         return salida
 
     def periods(self):
@@ -207,12 +216,12 @@ class GitHubAuditStore:
         self.timeout = int(timeout)
         self.base = f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/contents"
 
-    def _request(self, method, path, payload=None, ref=True):
-        url = f"{self.base}/{quote(path, safe='/')}"
-        if method == "GET" and ref:
+    def _request(self, metodo, ruta, payload=None, ref=True):
+        url = f"{self.base}/{quote(ruta, safe='/')}"
+        if metodo == "GET" and ref:
             url += f"?ref={quote(self.branch)}"
-        body = json.dumps(payload).encode("utf-8") if payload is not None else None
-        peticion = Request(url, data=body, method=method, headers={
+        cuerpo = json.dumps(payload).encode("utf-8") if payload is not None else None
+        peticion = Request(url, data=cuerpo, method=metodo, headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.token}",
             "X-GitHub-Api-Version": "2022-11-28",
@@ -221,19 +230,20 @@ class GitHubAuditStore:
         })
         try:
             with urlopen(peticion, timeout=self.timeout) as respuesta:
-                return json.loads(respuesta.read().decode("utf-8"))
+                texto = respuesta.read().decode("utf-8")
+                return json.loads(texto) if texto else {}
         except HTTPError as exc:
             if exc.code == 404:
                 return None
             detalle = exc.read().decode("utf-8", errors="replace")
-            raise AuditError(f"GitHub respondio {exc.code}: {detalle[:300]}") from exc
+            raise AuditError(f"GitHub respondio {exc.code}: {detalle[:200]}") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise AuditError(f"Sin conexion con GitHub: {exc}") from exc
 
     def _ruta(self, periodo):
         return f"{self.prefix}/{periodo}.jsonl"
 
     def _leer(self, periodo):
-        import base64
-
         datos = self._request("GET", self._ruta(periodo))
         if not isinstance(datos, dict) or "content" not in datos:
             return "", None
@@ -241,15 +251,14 @@ class GitHubAuditStore:
         return crudo, datos.get("sha")
 
     def append(self, evento, reintentos=3):
-        import base64
-
-        periodo = evento["ts"][:7]
-        linea = json.dumps(evento, ensure_ascii=False)
+        periodo = evento["fecha"][:7]
+        linea = json.dumps(evento, ensure_ascii=False, default=str)
+        ultimo = None
         for intento in range(reintentos):
             actual, sha = self._leer(periodo)
-            nuevo = (actual + linea + "\n") if actual else (linea + "\n")
+            nuevo = (actual if actual.endswith("\n") or not actual else actual + "\n") + linea + "\n"
             carga = {
-                "message": f"audit: {evento['accion']} {evento.get('solicitud') or ''}".strip(),
+                "message": f"audit: {evento.get('accion', '')} {evento.get('solicitud', '')}".strip(),
                 "content": base64.b64encode(nuevo.encode("utf-8")).decode("ascii"),
                 "branch": self.branch,
             }
@@ -258,9 +267,12 @@ class GitHubAuditStore:
             try:
                 self._request("PUT", self._ruta(periodo), carga, ref=False)
                 return evento
-            except AuditError:
+            except AuditError as exc:
+                ultimo = exc
                 if intento == reintentos - 1:
                     raise
+        if ultimo:
+            raise ultimo
         return evento
 
     def read_period(self, periodo):
@@ -268,21 +280,20 @@ class GitHubAuditStore:
         salida = []
         for linea in crudo.splitlines():
             linea = linea.strip()
-            if linea:
-                try:
-                    salida.append(json.loads(linea))
-                except json.JSONDecodeError:
-                    continue
+            if not linea:
+                continue
+            try:
+                salida.append(json.loads(linea))
+            except json.JSONDecodeError:
+                continue
         return salida
 
     def periods(self):
         datos = self._request("GET", self.prefix)
         if not isinstance(datos, list):
             return []
-        return sorted(
-            item["name"][:-6] for item in datos
-            if isinstance(item, dict) and item.get("name", "").endswith(".jsonl")
-        )
+        return sorted(i["name"][:-6] for i in datos
+                      if isinstance(i, dict) and i.get("name", "").endswith(".jsonl"))
 
 
 # --- servicio ------------------------------------------------------------
@@ -302,39 +313,50 @@ class AuditService:
             return None
 
     def all_events(self, periodos=None):
-        periodos = periodos or self.store.periods()
+        try:
+            periodos = periodos or self.store.periods()
+        except Exception:
+            return []
         eventos = []
         for periodo in periodos:
-            eventos.extend(self.store.read_period(periodo))
-        eventos.sort(key=lambda e: e.get("ts", ""), reverse=True)
-        return eventos
+            try:
+                eventos.extend(self.store.read_period(periodo))
+            except Exception:
+                continue
+        filas = [normalizar(e) for e in eventos]
+        filas.sort(key=lambda e: e.get("fecha", ""), reverse=True)
+        return filas
 
-    def query(self, eventos=None, usuario="", rol="", accion="", modulo="",
-              resultado="", desde=None, hasta=None, buscar=""):
+    def query(self, eventos=None, usuario="", rol="", accion="", modulo="", marca="",
+              solicitud="", resultado="", desde=None, hasta=None, buscar=""):
         filas = list(eventos if eventos is not None else self.all_events())
 
-        def coincide(evento):
-            if usuario and _texto(evento.get("usuario")).casefold() != _texto(usuario).casefold():
+        def igual(valor, esperado):
+            return not esperado or _texto(valor).casefold() == _texto(esperado).casefold()
+
+        def coincide(e):
+            if not igual(e.get("usuario"), usuario):
                 return False
-            if rol and _texto(evento.get("rol")).casefold() != _texto(rol).casefold():
+            if not igual(e.get("rol"), rol):
                 return False
-            if accion and evento.get("accion") != accion:
+            if not igual(e.get("accion"), accion):
                 return False
-            if modulo and evento.get("modulo") != modulo:
+            if not igual(e.get("modulo"), modulo):
                 return False
-            if resultado and evento.get("resultado") != resultado:
+            if not igual(e.get("marca"), marca):
                 return False
-            ts = _texto(evento.get("ts"))[:10]
-            if desde and ts < _texto(desde)[:10]:
+            if not igual(e.get("solicitud"), solicitud):
                 return False
-            if hasta and ts > _texto(hasta)[:10]:
+            if not igual(e.get("resultado"), resultado):
+                return False
+            dia = _texto(e.get("fecha"))[:10]
+            if desde and dia < _texto(desde)[:10]:
+                return False
+            if hasta and dia > _texto(hasta)[:10]:
                 return False
             if buscar:
                 aguja = _texto(buscar).casefold()
-                campos = " ".join(_texto(evento.get(k)) for k in (
-                    "nombre", "usuario", "accion_label", "modulo", "solicitud",
-                    "valor_anterior", "valor_nuevo", "detalle",
-                )).casefold()
+                campos = " ".join(_texto(e.get(c)) for c in CAMPOS).casefold()
                 if aguja not in campos:
                     return False
             return True
@@ -349,9 +371,7 @@ class AuditService:
         inicio = (pagina - 1) * por_pagina
         return {
             "filas": eventos[inicio:inicio + por_pagina],
-            "pagina": pagina,
-            "paginas": paginas,
-            "total": total,
+            "pagina": pagina, "paginas": paginas, "total": total,
             "desde": inicio + 1 if total else 0,
             "hasta": min(inicio + por_pagina, total),
         }
@@ -366,18 +386,52 @@ class AuditService:
         }
 
     @staticmethod
+    def por_usuario(eventos):
+        """Resumen por usuario para la vista de auditoria por persona."""
+        agrupado = {}
+        for e in eventos:
+            correo = e.get("usuario") or "(sin usuario)"
+            fila = agrupado.setdefault(correo, {
+                "usuario": correo, "nombre": e.get("nombre") or nombre_desde_correo(correo),
+                "rol": e.get("rol", ""), "acciones": 0, "solicitudes": set(),
+                "modulos": set(), "errores": 0, "ultima": "",
+            })
+            fila["acciones"] += 1
+            if e.get("solicitud"):
+                fila["solicitudes"].add(e["solicitud"])
+            if e.get("modulo"):
+                fila["modulos"].add(e["modulo"])
+            if e.get("resultado") == "error":
+                fila["errores"] += 1
+            if e.get("fecha", "") > fila["ultima"]:
+                fila["ultima"] = e.get("fecha", "")
+                if e.get("rol"):
+                    fila["rol"] = e["rol"]
+        salida = []
+        for fila in agrupado.values():
+            salida.append({
+                "Usuario": fila["nombre"], "Correo": fila["usuario"], "Rol": fila["rol"],
+                "Acciones": fila["acciones"], "Solicitudes": len(fila["solicitudes"]),
+                "Modulos": len(fila["modulos"]), "Errores": fila["errores"],
+                "Ultima actividad": formato_lima(fila["ultima"]),
+            })
+        salida.sort(key=lambda f: f["Acciones"], reverse=True)
+        return salida
+
+    @staticmethod
     def to_export_rows(eventos):
-        """Filas listas para Excel, con encabezados en espanol."""
+        """Filas listas para Excel o CSV, con encabezados en espanol."""
         return [{
-            "Fecha y hora (Peru)": formato_lima(e.get("ts", "")),
+            "Fecha y hora (Peru)": formato_lima(e.get("fecha", "")),
             "Usuario": e.get("nombre", ""),
             "Correo": e.get("usuario", ""),
             "Rol": e.get("rol", ""),
-            "Accion": e.get("accion_label", e.get("accion", "")),
+            "Marca": e.get("marca", ""),
             "Modulo": e.get("modulo", ""),
             "Solicitud": e.get("solicitud", ""),
-            "Valor anterior": e.get("valor_anterior", ""),
-            "Valor nuevo": e.get("valor_nuevo", ""),
+            "Accion": e.get("accion", ""),
+            "Estado anterior": e.get("estado_anterior", ""),
+            "Estado nuevo": e.get("estado_nuevo", ""),
             "Resultado": e.get("resultado", ""),
             "Detalle": e.get("detalle", ""),
         } for e in eventos]

@@ -6,7 +6,11 @@ import io
 
 import pandas as pd
 
-from engines.normalize import clean_value
+from engines.normalize import (
+    clean_value,
+    coalesce_duplicate_columns,
+    repair_mojibake_dataframe,
+)
 
 
 def read_excel(uploaded_file):
@@ -14,11 +18,19 @@ def read_excel(uploaded_file):
 
 
 def dataframe_to_excel_bytes(sheets):
+    # openpyxl no permite guardar un libro sin hojas visibles: lanza
+    # "IndexError: At least one sheet must be visible" y tumba la app entera.
+    # Si no llega ninguna hoja, se escribe una hoja informativa en su lugar.
+    sheets = dict(sheets or {})
+    if not sheets:
+        sheets = {"Sin datos": pd.DataFrame({"Detalle": ["No se generaron datos para este reporte."]})}
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         for sheet_name, df in sheets.items():
-            safe_name = sheet_name[:31]
+            safe_name = clean_value(sheet_name)[:31] or "Hoja"
             df = repair_mojibake_dataframe(df)
+            if df is None:
+                df = pd.DataFrame()
             df.to_excel(writer, index=False, sheet_name=safe_name)
         for sheet in writer.book.worksheets:
             sheet.freeze_panes = "A2"

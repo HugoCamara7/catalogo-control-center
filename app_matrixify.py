@@ -12996,6 +12996,13 @@ def inject_custom_css(config):
         }}
         .cola-vacia b {{ font-size:13.5px; font-weight:600; color:var(--c-text); }}
         .cola-vacia span {{ font-size:12.5px; color:var(--c-text-muted); }}
+        .ejec-grid {{
+            display:grid; grid-template-columns:repeat(auto-fit, minmax(120px,1fr));
+            gap:10px; margin:12px 0 6px;
+        }}
+        .ejec-stat {{ background:var(--c-surface-soft); border-radius:10px; padding:11px 14px; }}
+        .ejec-stat small {{ display:block; font-size:11.5px; color:var(--c-text-muted); margin-bottom:3px; }}
+        .ejec-stat strong {{ font-size:20px; font-weight:600; color:var(--c-text); letter-spacing:-.02em; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -16011,11 +16018,9 @@ def _render_ticket_public_status(ticket, status, status_label, summary, job, sav
             <div class="brand-request-kpis">
                 <div class="brand-request-kpi"><small>PRODUCTOS</small><strong>{total}</strong></div>
                 <div class="brand-request-kpi blue"><small>PROCESADOS</small><strong>{processed}/{total}</strong></div>
-                <div class="brand-request-kpi {'green' if is_closed else 'blue'}"><small>AVANCE</small><strong>{progress}%</strong></div>
+                <div class="brand-request-kpi {'green' if is_closed else 'blue'}"><small>ESTADO</small><strong>{escape(status_label)}</strong></div>
                 <div class="brand-request-kpi"><small>PRIORIDAD</small><strong>{escape(clean_value(ticket.get('priority')) or 'Normal')}</strong></div>
             </div>
-            <div class="brand-request-progress"><div class="brand-request-progress-head"><span>Progreso de la solicitud</span><span>{progress}%</span></div>
-                <div class="brand-request-track"><span style="width:{progress}%"></span></div></div>
             <div class="brand-request-meta"><div><small>RESPONSABLE</small><strong>{escape(owner)}</strong></div>
                 <div><small>ULTIMA ACTUALIZACION</small><strong>{escape(update_text)}</strong></div>
                 <div><small>ESTADO</small><strong>{escape(status_label)}</strong></div></div>
@@ -16061,13 +16066,15 @@ def _render_ticket_execution_summary(ticket, summary, job, saved_result, code, l
         f'<div class="ticket-compact-alert"><strong>{escape(status_label)}</strong><br>{escape(status_detail)}</div>',
         unsafe_allow_html=True,
     )
-    metrics = st.columns(4)
-    metrics[0].metric("Productos", total)
-    metrics[1].metric("Procesados", processed)
-    metrics[2].metric("Pendientes", max(total - processed, 0))
-    metrics[3].metric("Avance", f"{progress}%")
-    if job:
-        st.progress(progress / 100.0)
+    pendientes = max(total - processed, 0)
+    st.markdown(
+        '<div class="ejec-grid">'
+        f'<div class="ejec-stat"><small>Productos</small><strong>{total:,}</strong></div>'
+        f'<div class="ejec-stat"><small>Procesados</small><strong>{processed:,}</strong></div>'
+        f'<div class="ejec-stat"><small>Pendientes</small><strong>{pendientes:,}</strong></div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     if not saved_result:
         return
@@ -16102,11 +16109,24 @@ def _render_ticket_execution_summary(ticket, summary, job, saved_result, code, l
     )
 
 
+def _mostrar_error_ticket(exc, code=""):
+    """Un conflicto de concurrencia no es un error del usuario: se recarga y ya."""
+    if isinstance(exc, TicketConflictError):
+        st.warning(
+            "Otra persona modificó esta solicitud mientras la tenías abierta. "
+            "Recarga para ver la versión más reciente y vuelve a intentarlo."
+        )
+        if st.button("Recargar solicitud", key=f"recargar_ticket_{code}", type="primary"):
+            st.rerun()
+        return
+    st.error(str(exc))
+
+
 def render_ticket_detail(service, actor, code):
     try:
         ticket = service.get_ticket(actor, code)
     except TicketError as exc:
-        st.error(str(exc))
+        _mostrar_error_ticket(exc, code)
         return
     status = ticket.get("status")
     status_label = STATE_LABELS.get(status, status)
@@ -16229,7 +16249,7 @@ def render_ticket_detail(service, actor, code):
                     st.success(f"Versión {len(saved.get('versions', []))} enviada.")
                     st.rerun()
                 except TicketError as exc:
-                    st.error(str(exc))
+                    _mostrar_error_ticket(exc, code)
     if role in {ROLE_OPERATOR, ROLE_ADMIN}:
         st.markdown(
             '<div class="ticket-section"><p class="ticket-section-label">Gestión interna</p>'
@@ -16251,7 +16271,7 @@ def render_ticket_detail(service, actor, code):
                 service.set_priority(actor, code, selected_priority)
                 st.rerun()
             except TicketError as exc:
-                st.error(str(exc))
+                _mostrar_error_ticket(exc, code)
         if status in {STATE_PENDING, STATE_ASSIGNED, STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED, STATE_APPROVED, STATE_FAILED}:
             assign_cols = st.columns([2, 1])
             operator_options = ticket_operator_users()
@@ -16269,14 +16289,14 @@ def render_ticket_detail(service, actor, code):
                     service.assign(actor, code, assignee)
                     st.rerun()
                 except TicketError as exc:
-                    st.error(str(exc))
+                    _mostrar_error_ticket(exc, code)
         if status in {STATE_PENDING, STATE_ASSIGNED, STATE_CORRECTED}:
             if st.button("Iniciar revisión", key=f"review_{code}"):
                 try:
                     service.start_review(actor, code)
                     st.rerun()
                 except TicketError as exc:
-                    st.error(str(exc))
+                    _mostrar_error_ticket(exc, code)
         if status in {STATE_REVIEW, STATE_CORRECTED}:
             review_comment = st.text_area("Observación o decisión", key=f"review_comment_{code}")
             with st.expander("Agregar observación por producto o campo"):
@@ -16301,19 +16321,19 @@ def render_ticket_detail(service, actor, code):
                     service.request_correction(actor, code, review_comment, structured_observations)
                     st.rerun()
                 except TicketError as exc:
-                    st.error(str(exc))
+                    _mostrar_error_ticket(exc, code)
             if action_cols[1].button("Aprobar", type="primary", key=f"approve_{code}"):
                 try:
                     service.approve(actor, code, review_comment)
                     st.rerun()
                 except TicketError as exc:
-                    st.error(str(exc))
+                    _mostrar_error_ticket(exc, code)
             if action_cols[2].button("Rechazar", key=f"reject_{code}"):
                 try:
                     service.reject(actor, code, review_comment)
                     st.rerun()
                 except TicketError as exc:
-                    st.error(str(exc))
+                    _mostrar_error_ticket(exc, code)
         if status == STATE_APPROVED:
             run_cols = st.columns(2)
             if run_cols[0].button("Validar solicitud", key=f"dry_run_{code}"):
@@ -16321,20 +16341,20 @@ def render_ticket_detail(service, actor, code):
                     service.run_dry_run(actor, code)
                     st.rerun()
                 except TicketError as exc:
-                    st.error(str(exc))
+                    _mostrar_error_ticket(exc, code)
             if ticket.get("dry_run", {}).get("status") == "completed" and run_cols[1].button("Registrar carga iniciada", type="primary", key=f"start_load_{code}"):
                 try:
                     service.start_load(actor, code)
                     st.rerun()
                 except TicketError as exc:
-                    st.error(str(exc))
+                    _mostrar_error_ticket(exc, code)
         if status == STATE_FAILED:
             if st.button("Reintentar carga", type="primary", key=f"retry_load_{code}"):
                 try:
                     service.start_load(actor, code)
                     st.rerun()
                 except TicketError as exc:
-                    st.error(str(exc))
+                    _mostrar_error_ticket(exc, code)
         if status in {STATE_LOADING, STATE_VALIDATING}:
             st.markdown(
                 '<div class="ticket-section"><p class="ticket-section-label">Cierre operativo</p>'
@@ -16393,7 +16413,7 @@ def render_ticket_detail(service, actor, code):
                     )
                     st.rerun()
                 except TicketError as exc:
-                    st.error(str(exc))
+                    _mostrar_error_ticket(exc, code)
         if is_ticket_operator_user(actor.get("user")):
             with st.expander("Eliminar solicitud", expanded=False):
                 delete_reason = st.text_area("Motivo de eliminación", key=f"delete_ticket_reason_{code}")
@@ -16407,7 +16427,7 @@ def render_ticket_detail(service, actor, code):
                         st.session_state["_catalog_ticket_deleted"] = code
                         st.rerun()
                     except TicketError as exc:
-                        st.error(str(exc))
+                        _mostrar_error_ticket(exc, code)
     with tab_activity:
         st.markdown(
             '<div class="ticket-section"><p class="ticket-section-label">Colaboración</p><h3>Actividad y comentarios</h3>'
@@ -16420,7 +16440,7 @@ def render_ticket_detail(service, actor, code):
                 service.add_comment(actor, code, comment)
                 st.rerun()
             except TicketError as exc:
-                st.error(str(exc))
+                _mostrar_error_ticket(exc, code)
         comments = list(reversed(ticket.get("comments", [])))
         if not comments:
             st.markdown('<div class="ticket-comments-empty">Aún no hay comentarios para esta solicitud.</div>', unsafe_allow_html=True)

@@ -38,6 +38,7 @@ from ticket_system import (
     STATE_COMPLETED,
     STATE_COMPLETED_OBS,
     STATE_CORRECTED,
+    STATE_DRAFT,
     STATE_DRY_RUN,
     STATE_FAILED,
     STATE_LABELS,
@@ -47,7 +48,9 @@ from ticket_system import (
     STATE_PREPARING,
     STATE_READY_EXECUTE,
     STATE_REJECTED,
+    STATE_REQUEST_RECEIVED,
     STATE_REVIEW,
+    STATE_WAITING_BRAND,
     STATE_VALIDATING,
     TicketConflictError,
     TicketError,
@@ -113,6 +116,12 @@ from engines.normalize import (
     size_sort_key,
     slugify,
     variant_mod_col_candidates,
+)
+from engines.audit import (
+    AuditError,
+    AuditService,
+    GitHubAuditStore,
+    LocalAuditStore,
 )
 from engines.excel_io import (
     columbia_to_excel_bytes,
@@ -10322,7 +10331,42 @@ TICKET_OPERATOR_USERS = (
     "hugo.camara@forus.pe",
     "luis.nunez@forus.pe",
 )
-COMMERCIAL_INPUT_ONLY_USERS = {"comercial@forus.pe"}
+# Usuarios comerciales: solo ven "Input comercial" y "Mis solicitudes".
+# Estar en esta lista fuerza ROLE_BRAND aunque no haya rol configurado en Secrets,
+# lo que evita que caigan en el ROLE_ADMIN por defecto de auth_access_scope().
+COMMERCIAL_INPUT_ONLY_USERS = {
+    "comercial@forus.pe",
+    "alejandro.mosqueira@forus.pe",
+    "clara.gallastegui@forus.pe",
+    "natalia.ludowieg@forus.pe",
+    "daniela.ballon@forus.pe",
+    "mario.biggio@forus.pe",
+    "nicolas.rodriguez@forus.pe",
+    "alejandro.espinoza@forus.pe",
+}
+
+AUTH_ROLE_LABELS = {
+    ROLE_ADMIN: "Administrador",
+    ROLE_OPERATOR: "Operaciones",
+    ROLE_BRAND: "Comercial",
+}
+
+
+def auth_display_name(username):
+    """Nombre legible a partir del correo: alejandro.mosqueira@forus.pe -> Alejandro Mosqueira."""
+    normalized = _normalize_auth_username(username)
+    if not normalized:
+        return "Usuario"
+    known = ticket_operator_display_name(normalized)
+    if known and known != normalized:
+        return known
+    local = normalized.split("@", 1)[0]
+    partes = [p for p in re.split(r"[._-]+", local) if p]
+    return " ".join(p.capitalize() for p in partes) or normalized
+
+
+def auth_role_label(scope):
+    return AUTH_ROLE_LABELS.get(clean_value(scope).casefold(), "Usuario")
 
 
 def is_ticket_operator_user(username):
@@ -10450,6 +10494,62 @@ def get_ticket_service():
         operator_users=ticket_operator_users(),
     )
     return service, persistent_backend
+
+
+def get_audit_service():
+    """Servicio de auditoria. Reutiliza la configuracion [ticketing] de Secrets."""
+    try:
+        config = dict(st.secrets.get("ticketing", {}))
+    except Exception:
+        config = {}
+    backend = clean_value(config.get("backend") or os.getenv("CATALOG_TICKETS_BACKEND") or "local").casefold()
+    if backend == "github":
+        repository = clean_value(config.get("repository") or os.getenv("CATALOG_TICKETS_REPOSITORY"))
+        owner = clean_value(config.get("owner"))
+        repo = clean_value(config.get("repo"))
+        if repository and "/" in repository:
+            owner, repo = repository.split("/", 1)
+        token = clean_value(config.get("token") or os.getenv("CATALOG_TICKETS_GITHUB_TOKEN"))
+        prefix = (clean_value(config.get("prefix")) or "catalog_tickets") + "/audit"
+        try:
+            store = GitHubAuditStore(
+                owner=owner, repo=repo, token=token,
+                branch=clean_value(config.get("branch")) or "catalog-tickets",
+                prefix=prefix,
+            )
+            return AuditService(store)
+        except AuditError:
+            pass
+    root = clean_value(config.get("local_path")) or "outputs/catalog_tickets"
+    return AuditService(LocalAuditStore(Path(root) / "audit"))
+
+
+def audit_record(accion, **kwargs):
+    """Registra una accion del usuario activo. Nunca interrumpe el flujo."""
+    usuario = clean_value(st.session_state.get("auth_user"))
+    if not usuario:
+        return None
+    kwargs.setdefault("rol", auth_role_label(st.session_state.get("auth_scope")))
+    kwargs.setdefault("nombre", auth_display_name(usuario))
+    return get_audit_service().record(accion, usuario, **kwargs)
+
+
+def render_storage_badge():
+    """Indica si las solicitudes y la auditoria se guardan de forma persistente."""
+    _, backend = get_ticket_service()
+    persistente = backend == "github"
+    texto = "Almacenamiento persistente" if persistente else "Almacenamiento temporal"
+    detalle = (
+        "Solicitudes y auditoria se guardan en GitHub."
+        if persistente
+        else "Se borra en cada redespliegue. Configura [ticketing] en Secrets."
+    )
+    clase = "storage-ok" if persistente else "storage-warn"
+    st.markdown(
+        f'<div class="storage-badge {clase}" title="{escape(detalle)}">'
+        f"<strong>{escape(texto)}</strong><small>{escape(detalle)}</small></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def get_auth_users():
@@ -11230,6 +11330,25 @@ def render_ticket_inbox(service, actor, brand_view=False):
         recent_notifications = sorted(recent_notifications, key=lambda item: item["Fecha"], reverse=True)[:20]
         with st.expander(f"Notificaciones recientes ({len(recent_notifications)})"):
             st.dataframe(pd.DataFrame(recent_notifications), use_container_width=True, hide_index=True)
+    if brand_view:
+        # KPIs de las solicitudes que envio este usuario comercial.
+        # Se agrupan por familia de estado para no exponer los 19 estados internos.
+        estados = [ticket.get("status") for ticket in all_tickets]
+        en_proceso = {
+            STATE_ASSIGNED, STATE_REVIEW, STATE_APPROVED, STATE_PREPARING,
+            STATE_DRY_RUN, STATE_READY_EXECUTE, STATE_LOADING, STATE_VALIDATING,
+            STATE_CORRECTED,
+        }
+        observadas = {STATE_OBSERVED, STATE_WAITING_BRAND}
+        finalizadas = {STATE_COMPLETED, STATE_COMPLETED_OBS}
+        pendientes = {STATE_PENDING, STATE_REQUEST_RECEIVED, STATE_DRAFT}
+        render_ticket_kpi_grid([
+            ("Total enviadas", len(all_tickets), "blue"),
+            ("Pendientes", sum(1 for e in estados if e in pendientes), "amber"),
+            ("En proceso", sum(1 for e in estados if e in en_proceso), "blue"),
+            ("Observadas", sum(1 for e in estados if e in observadas), "red"),
+            ("Finalizadas", sum(1 for e in estados if e in finalizadas), "green"),
+        ])
     if not brand_view:
         states = [ticket.get("status") for ticket in all_tickets]
         kpis = [
@@ -11707,9 +11826,20 @@ def main():
     ticket_actor = current_ticket_actor()
     ticket_operator = ticket_actor.get("role") == ROLE_OPERATOR
     with st.sidebar.container(key="logout_card"):
-        user_label = auth_user or "Usuario"
-        st.caption(f"Sesion: {user_label}")
+        nombre_sesion = auth_display_name(auth_user)
+        rol_sesion = auth_role_label(auth_scope)
+        iniciales = "".join(p[0] for p in nombre_sesion.split()[:2]).upper() or "U"
+        st.markdown(
+            '<div class="session-card">'
+            f'<span class="session-avatar">{escape(iniciales)}</span>'
+            '<span class="session-text">'
+            f'<strong>{escape(nombre_sesion)}</strong>'
+            f'<small>{escape(rol_sesion)}</small>'
+            "</span></div>",
+            unsafe_allow_html=True,
+        )
         if st.button("Cerrar sesion"):
+            audit_record("logout")
             st.session_state.pop("authenticated", None)
             st.session_state.pop("auth_user", None)
             st.session_state.pop("auth_scope", None)
@@ -11772,6 +11902,8 @@ def main():
             render_commercial_input_center(forced_brands=allowed_brands, actor=ticket_actor)
         return
     render_allowed_brands_card(brand_config)
+    with st.sidebar.container(key="storage_badge_card"):
+        render_storage_badge()
     nav_options = ["KPIs de catálogo", "Input comercial", "Solicitudes", "Carga de catálogo"]
     if st.session_state.get("operation_area_choice") not in nav_options:
         st.session_state["operation_area_choice"] = nav_options[0]

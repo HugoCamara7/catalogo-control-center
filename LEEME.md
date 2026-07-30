@@ -1,100 +1,69 @@
-# Subir estos 8 archivos
+# Subir estos archivos
 
-> **Version corregida.** Reemplaza al ZIP anterior de 7 archivos, que tenia
-> un error en `engines/excel_io.py` (imports faltantes). No uses aquel.
+Reemplaza a cualquier ZIP anterior.
 
-El ZIP ya viene con la estructura de carpetas correcta. Cada archivo va en la
-misma ruta que tiene aquí dentro.
+## Reemplazar (2)
+- `app_matrixify.py` → raíz
+- `.streamlit/secrets.example.toml` → `.streamlit/secrets.example.toml`
 
-## Reemplazar (1)
+## Agregar (9)
+- `assets/app.css`
+- `engines/__init__.py`, `engines/normalize.py`, `engines/excel_io.py`, `engines/audit.py`
+- `scripts/test_engines_normalize.py`, `scripts/test_engines_excel_io.py`,
+  `scripts/test_engines_audit.py`, `scripts/test_auth_accesos.py`
+- `INVENTARIO_ARCHIVOS.md` → raíz
 
-| Archivo del ZIP | Ruta en GitHub |
-|---|---|
-| `app_matrixify.py` | raíz del repositorio |
-
-## Agregar (7)
-
-| Archivo del ZIP | Ruta en GitHub |
-|---|---|
-| `assets/app.css` | `assets/app.css` |
-| `engines/__init__.py` | `engines/__init__.py` |
-| `engines/normalize.py` | `engines/normalize.py` |
-| `engines/excel_io.py` | `engines/excel_io.py` |
-| `scripts/test_engines_normalize.py` | `scripts/test_engines_normalize.py` |
-| `scripts/test_engines_excel_io.py` | `scripts/test_engines_excel_io.py` |
-| `INVENTARIO_ARCHIVOS.md` | raíz del repositorio |
-
-`engines/` es una carpeta **nueva**. Las demás ya existen.
+`engines/` es carpeta nueva. **Todo en un solo commit.**
 
 ---
 
-## Importante
+## Lo primero que debes mirar al entrar
 
-> **Sube los 8 en un solo commit.**
-> Si subes `app_matrixify.py` sin la carpeta `engines/`, la app no arranca
-> (`ModuleNotFoundError: engines`).
+En la barra lateral, bajo las marcas permitidas, aparece un recuadro:
 
-**Tus secretos no se tocan.** Este paquete no contiene ningún `secrets.toml`.
-Tus credenciales reales están en Streamlit Cloud → Manage app → Settings → Secrets,
-que no se ve afectado por subir archivos a GitHub.
+- **Verde "Almacenamiento persistente"** → `[ticketing]` está bien configurado.
+  Las solicitudes y la auditoría se guardan en GitHub y sobreviven a los
+  redespliegues. Puedo seguir con el panel de auditoría y la carga desde solicitud.
+
+- **Naranja "Almacenamiento temporal"** → el backend sigue en `local`.
+  Todo se borra en cada redespliegue. Revisa el bloque `[ticketing]` en
+  Manage app → Settings → Secrets.
+
+Dime de qué color sale.
 
 ---
 
-## Paso a paso (web de GitHub)
+## Paso obligatorio: contraseñas de los 8 comerciales
 
-1. **Add file → Create new file**. En el nombre escribe `engines/__init__.py`
-   (al poner la barra `/` se crea la carpeta). Pega el contenido del archivo
-   del ZIP y confirma.
-2. Entra a la carpeta `engines/` → **Add file → Upload files** → arrastra
-   `normalize.py` y `excel_io.py`.
-3. Entra a `assets/` → **Upload files** → arrastra `app.css`.
-4. Entra a `scripts/` → **Upload files** → arrastra `test_engines_normalize.py`.
-5. Vuelve a la **raíz** → **Upload files** → arrastra `app_matrixify.py` e
-   `INVENTARIO_ARCHIVOS.md`.
-6. Mensaje de commit sugerido:
-   `Fase 0 + Fase 1: CSS a assets, limpieza de codigo sin uso y motores normalize/excel_io`
+Sin esto no pueden entrar. En Manage app → Settings → Secrets:
 
-## Paso a paso (Git)
-
-```bash
-git checkout -b fase1-motores
-# copiar los archivos del ZIP respetando las rutas
-git add app_matrixify.py assets/app.css engines/ scripts/test_engines_normalize.py scripts/test_engines_excel_io.py INVENTARIO_ARCHIVOS.md
-git commit -m "Fase 0 + Fase 1: CSS a assets, limpieza y motores normalize/excel_io"
-git push origin fase1-motores
+```toml
+[app_auth.users]
+"hugo.camara@forus.pe"          = "TU_CLAVE"
+"luis.nunez@forus.pe"           = "TU_CLAVE"
+"comercial@forus.pe"            = "TU_CLAVE"
+"alejandro.mosqueira@forus.pe"  = "TU_CLAVE"
+"clara.gallastegui@forus.pe"    = "TU_CLAVE"
+"natalia.ludowieg@forus.pe"     = "TU_CLAVE"
+"daniela.ballon@forus.pe"       = "TU_CLAVE"
+"mario.biggio@forus.pe"         = "TU_CLAVE"
+"nicolas.rodriguez@forus.pe"    = "TU_CLAVE"
+"alejandro.espinoza@forus.pe"   = "TU_CLAVE"
 ```
 
----
-
-## Después del despliegue
-
-Streamlit Cloud redespliega solo en 1–3 minutos.
-
-- [ ] La pantalla de login se ve igual.
-- [ ] La barra lateral conserva color, ancho y logos.
-- [ ] Al cambiar de sitio (Columbia → Rockford → Hush Puppies → Vans) los
-      colores cambian con cada marca.
-- [ ] KPIs de catálogo cargan.
-- [ ] Solicitudes abre la bandeja y el detalle.
-- [ ] Carga completa genera el Matrixify.
-- [ ] Carga parcial muestra el preview.
-
-**Si algo falla:** GitHub → Commits → abre el commit → botón **Revert**.
-O sube el `app_matrixify.py` de `Catalog_Control_Center_RESPALDO_COMPLETO.zip`
-(sha256 `bfc74eb924350fcd6c2f07bbc401b28c9ffe2f6fb3a1239bbc78efd6731bf78e`).
-
-| Síntoma | Solución |
-|---|---|
-| `ModuleNotFoundError: engines` | Falta la carpeta `engines/`; sube sus 3 archivos |
-| App sin estilos + mensaje rojo con una ruta | Falta `assets/app.css`; súbelo |
-
+> Si defines `[app_auth.users]`, esa lista reemplaza por completo a la del
+> código. Incluye a Hugo y Luis o quedan fuera.
 
 ---
 
-## Qué se corrigió en esta versión
+## Qué revisar tras el despliegue
 
-| Problema | Estado |
-|---|---|
-| `IndexError: At least one sheet must be visible` al generar un Excel sin hojas | **Corregido.** Ahora escribe una hoja "Sin datos" en vez de tumbar la app. Era un fallo preexistente. |
-| `engines/excel_io.py` con imports faltantes (`NameError` en `columbia_to_excel_bytes`) | **Corregido.** Fallo introducido en el ZIP anterior de 7 archivos. |
-| El error genérico no mostraba el traceback | **Corregido.** Ahora hay un desplegable "Ver detalle técnico del error". |
+- [ ] Barra lateral: tu nombre y rol arriba (Hugo Camara / Administrador).
+- [ ] Barra lateral: el recuadro de almacenamiento.
+- [ ] Con un correo comercial: solo "Input comercial" y "Mis solicitudes".
+- [ ] En "Mis solicitudes" de un comercial: 5 KPIs.
+- [ ] Como Hugo: todo igual que antes.
+
+## Volver atrás
+
+GitHub → Commits → abre el commit → **Revert**.

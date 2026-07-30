@@ -741,6 +741,46 @@
         .st-key-logout_card div[data-testid="stCaptionContainer"] {
             display:none;
         }
+        .session-card {
+            display:flex;
+            align-items:center;
+            gap:10px;
+            padding:0 0 12px;
+            min-width:0;
+        }
+        .session-avatar {
+            flex:none;
+            width:34px;
+            height:34px;
+            border-radius:50%;
+            background:#E6EFFA;
+            color:#005AA8;
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            font-size:12px;
+            font-weight:700;
+            letter-spacing:.02em;
+        }
+        .session-text {
+            display:flex;
+            flex-direction:column;
+            min-width:0;
+            line-height:1.25;
+        }
+        .session-text strong {
+            font-size:14px;
+            font-weight:600;
+            color:#0F172A;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
+        .session-text small {
+            font-size:12px;
+            font-weight:500;
+            color:#64748B;
+        }
         .st-key-logout_card .stButton button {
             min-height:46px !important;
             width:100%;
@@ -2689,4 +2729,42 @@
             .matrix-stepper, .source-grid, .metric-grid { grid-template-columns: 1fr; }
             .shopify-lockup { width: 100%; justify-content: space-between; }
         }
-        
+                .storage-badge {
+            position:relative;
+            display:flex;
+            flex-direction:column;
+            gap:3px;
+            padding:11px 13px 11px 30px;
+            border-radius:12px;
+            margin:0 0 14px;
+            background:#FFFFFF;
+            border:1px solid #E6EBF2;
+        }
+        .storage-badge::before {
+            content:"";
+            position:absolute;
+            left:13px;
+            top:15px;
+            width:7px;
+            height:7px;
+            border-radius:50%;
+        }
+        .storage-badge strong {
+            font-size:12px;
+            font-weight:600;
+            letter-spacing:-0.01em;
+            color:#0F172A;
+        }
+        .storage-badge small {
+            font-size:11px;
+            line-height:1.4;
+            color:#64748B;
+        }
+        .storage-badge.storage-ok::before {
+            background:#10B981;
+            box-shadow:0 0 0 3px rgba(16,185,129,.14);
+        }
+        .storage-badge.storage-warn::before {
+            background:#F59E0B;
+            box-shadow:0 0 0 3px rgba(245,158,11,.14);
+        }

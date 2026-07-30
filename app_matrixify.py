@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -20,6 +20,10 @@ from urllib.request import Request, urlopen
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+
+from engines.audit import AuditError, AuditService, GitHubAuditStore, LocalAuditStore
+from engines.storage_check import check_github_store, check_local_store
+from engines.storage_check import resumen as storage_resumen
 
 from ticket_system import (
     GitHubTicketStore,
@@ -12730,6 +12734,17 @@ def inject_custom_css(config):
             .matrix-stepper, .source-grid, .metric-grid {{ grid-template-columns: 1fr; }}
             .shopify-lockup {{ width: 100%; justify-content: space-between; }}
         }}
+        .storage-head{padding:10px 13px;border-radius:10px;margin:4px 0 10px;font-size:13px}
+        .storage-head.storage-ok{background:#EAF7EF;color:#1B6B45}
+        .storage-head.storage-warn{background:#FDF3E3;color:#8A5A0B}
+        .storage-head.storage-bad{background:#FDECEC;color:#9B2C2C}
+        .storage-step{display:flex;gap:9px;align-items:flex-start;padding:5px 2px;font-size:12.5px;color:#475569;line-height:1.45}
+        .storage-step b{color:#0F172A;font-weight:600;margin-right:5px}
+        .storage-step em{display:block;color:#8A5A0B;font-style:normal;margin-top:2px}
+        .storage-dot-ok,.storage-dot-warn,.storage-dot-bad{flex:none;width:7px;height:7px;border-radius:50%;margin-top:6px}
+        .storage-dot-ok{background:#10B981}
+        .storage-dot-warn{background:#F59E0B}
+        .storage-dot-bad{background:#EF4444}
         </style>
         """,
         unsafe_allow_html=True,
@@ -14214,45 +14229,122 @@ def can_view_user_activity_log(username=None):
     return is_ticket_operator_user(username or st.session_state.get("auth_user", ""))
 
 
-def log_user_activity(action, detail="", user=None, site_key="", module="", extra=None):
+def _ticketing_config():
+    """Lee [ticketing] una sola vez. Devuelve (backend, owner, repo, token, branch, prefix, local_path)."""
+    try:
+        config = dict(st.secrets.get("ticketing", {}))
+    except Exception:
+        config = {}
+    backend = clean_value(config.get("backend") or os.getenv("CATALOG_TICKETS_BACKEND") or "local").casefold()
+    repository = clean_value(config.get("repository") or os.getenv("CATALOG_TICKETS_REPOSITORY"))
+    owner = clean_value(config.get("owner"))
+    repo = clean_value(config.get("repo"))
+    if repository and "/" in repository:
+        owner, repo = repository.split("/", 1)
+    return {
+        "backend": backend,
+        "owner": owner,
+        "repo": repo,
+        "token": clean_value(config.get("token") or os.getenv("CATALOG_TICKETS_GITHUB_TOKEN")),
+        "branch": clean_value(config.get("branch")) or "catalog-tickets",
+        "prefix": clean_value(config.get("prefix")) or "catalog_tickets",
+        "local_path": clean_value(config.get("local_path")) or "outputs/catalog_tickets",
+    }
+
+
+@st.cache_resource(show_spinner=False)
+def get_audit_service():
+    """Servicio de auditoria. Usa la misma configuracion [ticketing] que los tickets."""
+    cfg = _ticketing_config()
+    if cfg["backend"] == "github":
+        try:
+            return AuditService(GitHubAuditStore(
+                owner=cfg["owner"], repo=cfg["repo"], token=cfg["token"],
+                branch=cfg["branch"], prefix=f"{cfg['prefix']}/audit",
+            ))
+        except AuditError:
+            pass
+    return AuditService(LocalAuditStore(Path(cfg["local_path"]) / "audit"))
+
+
+def check_storage():
+    """Comprueba de verdad si las solicitudes y la auditoria se estan persistiendo."""
+    cfg = _ticketing_config()
+    if cfg["backend"] != "github":
+        return check_local_store(cfg["local_path"])
+    return check_github_store(
+        owner=cfg["owner"], repo=cfg["repo"], token=cfg["token"],
+        branch=cfg["branch"], prefix=cfg["prefix"],
+    )
+
+
+def render_storage_panel(escribir_prueba=False):
+    """Panel de diagnostico del almacenamiento. Solo para operadores."""
+    cfg = _ticketing_config()
+    if cfg["backend"] == "github":
+        resultado = check_github_store(
+            owner=cfg["owner"], repo=cfg["repo"], token=cfg["token"],
+            branch=cfg["branch"], prefix=cfg["prefix"], escribir_prueba=escribir_prueba,
+        )
+    else:
+        resultado = check_local_store(cfg["local_path"])
+    estado, titulo = storage_resumen(resultado)
+    clase = {"ok": "storage-ok", "error": "storage-bad", "aviso": "storage-warn"}.get(estado, "storage-warn")
+    st.markdown(f'<div class="storage-head {clase}"><strong>{escape(titulo)}</strong></div>', unsafe_allow_html=True)
+    for paso in resultado["pasos"]:
+        icono = {"ok": "storage-dot-ok", "error": "storage-dot-bad", "aviso": "storage-dot-warn"}[paso["estado"]]
+        arreglo = f'<em>{escape(paso["arreglo"])}</em>' if paso.get("arreglo") else ""
+        st.markdown(
+            f'<div class="storage-step"><span class="{icono}"></span>'
+            f'<span><b>{escape(paso["paso"])}</b> {escape(paso["detalle"])}{arreglo}</span></div>',
+            unsafe_allow_html=True,
+        )
+    return resultado
+
+
+def log_user_activity(action, detail="", user=None, site_key="", module="", extra=None,
+                      ticket="", marca="", estado_anterior="", estado_nuevo="", resultado="ok"):
+    """Registra una accion del usuario.
+
+    La firma original se conserva; los parametros nuevos son opcionales.
+    Nunca lanza: la auditoria no debe bloquear login, carga ni sincronizacion.
+    """
     username = _normalize_auth_username(user or st.session_state.get("auth_user", ""))
     if not username:
         return
     try:
-        record = {
-            "fecha": datetime.now(timezone(timedelta(hours=-5))).strftime("%Y-%m-%d %H:%M:%S"),
-            "usuario": username,
-            "nombre": auth_display_name(username),
-            "rol": auth_scope_label(auth_access_scope(username)),
-            "accion": clean_value(action),
-            "modulo": clean_value(module),
-            "sitio": clean_value(site_key),
-            "detalle": clean_value(detail),
-        }
-        if extra:
-            record["extra"] = extra
-        USER_ACTIVITY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with USER_ACTIVITY_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        get_audit_service().record(
+            clean_value(action),
+            username,
+            nombre=auth_display_name(username),
+            rol=auth_scope_label(auth_access_scope(username)),
+            modulo=clean_value(module),
+            sitio=clean_value(site_key),
+            marca=clean_value(marca),
+            solicitud=clean_value(ticket),
+            estado_anterior=clean_value(estado_anterior),
+            estado_nuevo=clean_value(estado_nuevo),
+            resultado=clean_value(resultado) or "ok",
+            detalle=clean_value(detail),
+            extra=extra,
+        )
     except Exception:
         # La auditoria nunca debe bloquear login, carga o sincronizacion.
         return
 
 
 def read_user_activity_log(limit=300):
-    if not USER_ACTIVITY_LOG_PATH.exists():
-        return pd.DataFrame(columns=USER_ACTIVITY_LOG_COLUMNS)
-    records = []
     try:
-        lines = USER_ACTIVITY_LOG_PATH.read_text(encoding="utf-8").splitlines()
+        eventos = get_audit_service().all_events()
     except Exception:
+        eventos = []
+    if not eventos:
         return pd.DataFrame(columns=USER_ACTIVITY_LOG_COLUMNS)
-    for line in lines[-max(int(limit), 1):]:
-        try:
-            payload = json.loads(line)
-        except Exception:
-            continue
-        records.append({column: payload.get(column, "") for column in USER_ACTIVITY_LOG_COLUMNS})
+    # all_events devuelve del mas reciente al mas antiguo; se conserva el orden
+    # cronologico ascendente que esperaban los consumidores actuales.
+    eventos = list(reversed(eventos))[-max(int(limit), 1):]
+    records = [{column: evento.get(column, "") for column in USER_ACTIVITY_LOG_COLUMNS}
+               for evento in eventos]
     return pd.DataFrame(records, columns=USER_ACTIVITY_LOG_COLUMNS)
 
 

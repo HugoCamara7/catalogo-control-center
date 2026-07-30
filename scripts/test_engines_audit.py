@@ -1,7 +1,8 @@
-"""Pruebas del motor engines/audit.py
+"""Pruebas del motor engines/audit.py y engines/storage_check.py
 
 Ejecutar:  python scripts/test_engines_audit.py
 """
+import json
 import shutil
 import sys
 import tempfile
@@ -14,7 +15,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engines.audit import (
-    ACCIONES,
+    CAMPOS,
+    CAMPOS_LEGADO,
     LIMA,
     OCULTO,
     AuditService,
@@ -22,154 +24,171 @@ from engines.audit import (
     build_event,
     formato_lima,
     nombre_desde_correo,
+    normalizar,
     sanitize_value,
 )
+from engines.storage_check import check_github_store, check_local_store, resumen
 
 
 class TestArquitectura(unittest.TestCase):
-    def test_no_importa_streamlit(self):
-        fuente = (ROOT / "engines" / "audit.py").read_text(encoding="utf-8")
-        self.assertNotIn("import streamlit", fuente)
+    def test_los_motores_no_importan_streamlit(self):
+        for modulo in ["audit.py", "storage_check.py"]:
+            fuente = (ROOT / "engines" / modulo).read_text(encoding="utf-8")
+            self.assertNotIn("import streamlit", fuente, modulo)
 
-    def test_cubre_las_acciones_pedidas(self):
-        for clave in [
-            "ticket_create", "file_upload", "file_validate", "ticket_submit",
-            "ticket_take", "ticket_assign", "ticket_state", "ticket_observe",
-            "ticket_finish", "ticket_reopen", "load_select", "load_start",
-            "load_complete", "load_fail", "file_download", "config_change",
-            "user_change", "logout",
-        ]:
-            self.assertIn(clave, ACCIONES, f"falta la accion {clave}")
+
+class TestCompatibilidadConElLogViejo(unittest.TestCase):
+    """Los registros escritos por log_user_activity deben seguir leyendose."""
+
+    def test_conserva_los_8_campos_originales(self):
+        for campo in ["fecha", "usuario", "nombre", "rol", "accion", "modulo", "sitio", "detalle"]:
+            self.assertIn(campo, CAMPOS_LEGADO)
+            self.assertIn(campo, CAMPOS)
+
+    def test_formato_de_fecha_identico_al_viejo(self):
+        evento = build_event("Inicio de sesion", "a@forus.pe",
+                             momento=datetime(2026, 7, 30, 14, 32, 5, tzinfo=LIMA))
+        self.assertEqual(evento["fecha"], "2026-07-30 14:32:05")
+
+    def test_lee_un_registro_antiguo_sin_los_campos_nuevos(self):
+        antiguo = {
+            "fecha": "2026-07-27 10:00:00", "usuario": "hugo.camara@forus.pe",
+            "nombre": "Hugo Camara", "rol": "Administrador",
+            "accion": "Inicio de sesion", "modulo": "", "sitio": "columbia", "detalle": "",
+        }
+        fila = normalizar(antiguo)
+        self.assertEqual(fila["usuario"], "hugo.camara@forus.pe")
+        self.assertEqual(fila["marca"], "")
+        self.assertEqual(fila["solicitud"], "")
+        self.assertEqual(fila["resultado"], "ok")
+
+    def test_registros_viejos_y_nuevos_conviven(self):
+        carpeta = Path(tempfile.mkdtemp())
+        try:
+            (carpeta / "2026-07.jsonl").write_text(
+                json.dumps({"fecha": "2026-07-27 10:00:00", "usuario": "a@forus.pe",
+                            "accion": "Inicio de sesion"}) + "\n", encoding="utf-8")
+            svc = AuditService(LocalAuditStore(carpeta))
+            svc.record("Tomar solicitud", "b@forus.pe", solicitud="CAT-1",
+                       momento=datetime(2026, 7, 28, 9, 0, tzinfo=LIMA))
+            eventos = svc.all_events()
+            self.assertEqual(len(eventos), 2)
+            self.assertEqual(eventos[0]["accion"], "Tomar solicitud")
+        finally:
+            shutil.rmtree(carpeta, ignore_errors=True)
 
 
 class TestNoGuardaSecretos(unittest.TestCase):
     def test_oculta_por_nombre_de_clave(self):
         for clave in ["password", "clave", "token", "api_key", "private_key", "Authorization"]:
-            self.assertEqual(sanitize_value("valor-real", clave), OCULTO, f"fallo con {clave}")
+            self.assertEqual(sanitize_value("valor-real", clave), OCULTO, clave)
 
     def test_oculta_tokens_por_su_forma(self):
-        for valor in [
-            "ghp_" + "a" * 30,
-            "github_pat_" + "b" * 30,
-            "shpat_" + "c" * 30,
-            "-----BEGIN PRIVATE KEY-----",
-        ]:
-            self.assertEqual(sanitize_value(valor), OCULTO, f"fallo con {valor[:20]}")
+        for valor in ["ghp_" + "a" * 30, "github_pat_" + "b" * 30,
+                      "shpat_" + "c" * 30, "-----BEGIN PRIVATE KEY-----"]:
+            self.assertEqual(sanitize_value(valor), OCULTO, valor[:16])
 
     def test_no_toca_valores_normales(self):
         self.assertEqual(sanitize_value("Columbia"), "Columbia")
-        self.assertEqual(sanitize_value("CAT-000241"), "CAT-000241")
+        self.assertEqual(sanitize_value("CAT-2026-000008"), "CAT-2026-000008")
 
-    def test_el_evento_sanea_el_detalle(self):
-        evento = build_event("login", "a@forus.pe", detalle="ghp_" + "x" * 30)
+    def test_el_evento_sanea_detalle_y_extra(self):
+        evento = build_event("x", "a@forus.pe", detalle="ghp_" + "x" * 30,
+                             extra={"token": "abc", "marca": "Columbia"})
         self.assertEqual(evento["detalle"], OCULTO)
+        self.assertEqual(evento["extra"]["token"], OCULTO)
+        self.assertEqual(evento["extra"]["marca"], "Columbia")
 
 
-class TestBuildEvent(unittest.TestCase):
-    def test_campos_obligatorios(self):
-        evento = build_event("ticket_take", "mario.biggio@forus.pe", rol="brand", solicitud="CAT-1")
-        for campo in ["ts", "accion", "accion_label", "modulo", "usuario", "nombre",
-                      "rol", "solicitud", "valor_anterior", "valor_nuevo",
-                      "resultado", "detalle"]:
-            self.assertIn(campo, evento)
+class TestCamposPedidos(unittest.TestCase):
+    """Los 11 campos del requerimiento."""
 
-    def test_deriva_nombre_y_modulo(self):
-        evento = build_event("ticket_take", "mario.biggio@forus.pe")
-        self.assertEqual(evento["nombre"], "Mario Biggio")
-        self.assertEqual(evento["modulo"], "Solicitudes")
-        self.assertEqual(evento["accion_label"], "Tomar solicitud")
+    def test_estan_todos(self):
+        e = build_event("Cambiar estado", "hugo.camara@forus.pe", rol="Administrador",
+                        marca="Columbia", modulo="Solicitudes", solicitud="CAT-2026-000008",
+                        estado_anterior="pendiente", estado_nuevo="en_proceso",
+                        resultado="ok", detalle="Tomada por el operador")
+        self.assertEqual(e["usuario"], "hugo.camara@forus.pe")
+        self.assertEqual(e["nombre"], "Hugo Camara")
+        self.assertEqual(e["rol"], "Administrador")
+        self.assertEqual(e["marca"], "Columbia")
+        self.assertEqual(e["modulo"], "Solicitudes")
+        self.assertEqual(e["solicitud"], "CAT-2026-000008")
+        self.assertEqual(e["estado_anterior"], "pendiente")
+        self.assertEqual(e["estado_nuevo"], "en_proceso")
+        self.assertEqual(e["resultado"], "ok")
+        self.assertTrue(e["fecha"])
 
     def test_hora_de_peru(self):
-        evento = build_event("login", "a@forus.pe")
-        self.assertIn("-05:00", evento["ts"])
+        e = build_event("x", "a@forus.pe", momento=datetime(2026, 7, 30, 23, 0, tzinfo=LIMA))
+        self.assertEqual(e["fecha"], "2026-07-30 23:00:00")
 
     def test_resultado_invalido_cae_en_ok(self):
-        self.assertEqual(build_event("login", "a@forus.pe", resultado="raro")["resultado"], "ok")
-        self.assertEqual(build_event("login", "a@forus.pe", resultado="error")["resultado"], "error")
-
-    def test_correo_se_normaliza(self):
-        self.assertEqual(build_event("login", "  MARIO@Forus.PE ")["usuario"], "mario@forus.pe")
+        self.assertEqual(build_event("x", "a@forus.pe", resultado="raro")["resultado"], "ok")
+        self.assertEqual(build_event("x", "a@forus.pe", resultado="error")["resultado"], "error")
 
 
 class TestServicio(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
         self.svc = AuditService(LocalAuditStore(self.dir))
+        base = datetime(2026, 7, 15, 9, 0, tzinfo=LIMA)
+        datos = [
+            ("Inicio de sesion", "hugo.camara@forus.pe", "Administrador", "", "", "ok"),
+            ("Crear solicitud", "mario.biggio@forus.pe", "Comercial", "CAT-001", "Columbia", "ok"),
+            ("Subir archivo", "mario.biggio@forus.pe", "Comercial", "CAT-001", "Columbia", "ok"),
+            ("Tomar solicitud", "hugo.camara@forus.pe", "Administrador", "CAT-001", "Columbia", "ok"),
+            ("Iniciar carga", "hugo.camara@forus.pe", "Administrador", "CAT-001", "Columbia", "ok"),
+            ("Carga fallida", "hugo.camara@forus.pe", "Administrador", "CAT-001", "Columbia", "error"),
+            ("Finalizar solicitud", "hugo.camara@forus.pe", "Administrador", "CAT-001", "Columbia", "ok"),
+        ]
+        for i, (accion, usuario, rol, sol, marca, res) in enumerate(datos):
+            self.svc.record(accion, usuario, rol=rol, solicitud=sol, marca=marca,
+                            resultado=res, momento=base + timedelta(minutes=i))
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _sembrar(self):
-        base = datetime(2026, 7, 15, 9, 0, tzinfo=LIMA)
-        datos = [
-            ("login", "hugo.camara@forus.pe", "admin", "", "ok"),
-            ("ticket_create", "mario.biggio@forus.pe", "brand", "CAT-001", "ok"),
-            ("file_upload", "mario.biggio@forus.pe", "brand", "CAT-001", "ok"),
-            ("ticket_take", "hugo.camara@forus.pe", "admin", "CAT-001", "ok"),
-            ("load_start", "hugo.camara@forus.pe", "admin", "CAT-001", "ok"),
-            ("load_fail", "hugo.camara@forus.pe", "admin", "CAT-001", "error"),
-            ("ticket_observe", "hugo.camara@forus.pe", "admin", "CAT-001", "ok"),
-        ]
-        for i, (accion, usuario, rol, sol, res) in enumerate(datos):
-            self.svc.record(accion, usuario, rol=rol, solicitud=sol, resultado=res,
-                            momento=base + timedelta(minutes=i))
-
-    def test_append_y_lectura(self):
-        self._sembrar()
+    def test_todo_quedo_registrado(self):
         self.assertEqual(len(self.svc.all_events()), 7)
 
     def test_orden_mas_reciente_primero(self):
-        self._sembrar()
-        eventos = self.svc.all_events()
-        self.assertEqual(eventos[0]["accion"], "ticket_observe")
-        self.assertEqual(eventos[-1]["accion"], "login")
+        self.assertEqual(self.svc.all_events()[0]["accion"], "Finalizar solicitud")
 
-    def test_append_only_no_pisa_lo_anterior(self):
-        self._sembrar()
-        self.svc.record("logout", "hugo.camara@forus.pe", rol="admin")
+    def test_append_only(self):
+        self.svc.record("Cierre de sesion", "hugo.camara@forus.pe")
         self.assertEqual(len(self.svc.all_events()), 8)
 
-    def test_filtro_por_usuario(self):
-        self._sembrar()
+    def test_filtros(self):
         self.assertEqual(len(self.svc.query(usuario="mario.biggio@forus.pe")), 2)
-
-    def test_filtro_por_modulo_y_resultado(self):
-        self._sembrar()
-        # ticket_create + ticket_take + ticket_observe. file_upload cae en
-        # "Input comercial" y load_* en "Carga de catalogo".
-        self.assertEqual(len(self.svc.query(modulo="Solicitudes")), 3)
-        self.assertEqual(len(self.svc.query(modulo="Input comercial")), 1)
-        self.assertEqual(len(self.svc.query(modulo="Carga de catalogo")), 2)
-        self.assertEqual(len(self.svc.query(modulo="Sesion")), 1)
         self.assertEqual(len(self.svc.query(resultado="error")), 1)
+        self.assertEqual(len(self.svc.query(marca="Columbia")), 6)
+        self.assertEqual(len(self.svc.query(solicitud="CAT-001")), 6)
 
-    def test_filtro_por_solicitud_via_busqueda(self):
-        self._sembrar()
-        self.assertEqual(len(self.svc.query(buscar="CAT-001")), 6)
-
-    def test_busqueda_no_distingue_mayusculas(self):
-        self._sembrar()
-        self.assertEqual(len(self.svc.query(buscar="cat-001")), 6)
-
-    def test_filtro_por_rango_de_fechas(self):
-        self._sembrar()
+    def test_filtro_por_fechas(self):
         self.assertEqual(len(self.svc.query(desde="2026-07-15", hasta="2026-07-15")), 7)
         self.assertEqual(len(self.svc.query(desde="2026-07-16")), 0)
 
+    def test_buscador(self):
+        self.assertEqual(len(self.svc.query(buscar="cat-001")), 6)
+        self.assertEqual(len(self.svc.query(buscar="COLUMBIA")), 6)
+
     def test_filtros_combinados(self):
-        self._sembrar()
         self.assertEqual(len(self.svc.query(usuario="hugo.camara@forus.pe", resultado="error")), 1)
 
     def test_kpis(self):
-        self._sembrar()
         k = self.svc.kpis(self.svc.all_events())
-        self.assertEqual(k["total"], 7)
-        self.assertEqual(k["usuarios"], 2)
-        self.assertEqual(k["solicitudes"], 1)
-        self.assertEqual(k["errores"], 1)
+        self.assertEqual((k["total"], k["usuarios"], k["solicitudes"], k["errores"]), (7, 2, 1, 1))
+
+    def test_resumen_por_usuario(self):
+        filas = self.svc.por_usuario(self.svc.all_events())
+        self.assertEqual(len(filas), 2)
+        self.assertEqual(filas[0]["Correo"], "hugo.camara@forus.pe")
+        self.assertEqual(filas[0]["Acciones"], 5)
+        self.assertEqual(filas[0]["Errores"], 1)
 
     def test_el_registro_nunca_lanza(self):
-        class StoreRoto:
+        class Roto:
             persistente = False
 
             def append(self, evento):
@@ -178,29 +197,32 @@ class TestServicio(unittest.TestCase):
             def periods(self):
                 return []
 
-        self.assertIsNone(AuditService(StoreRoto()).record("login", "a@forus.pe"))
+        self.assertIsNone(AuditService(Roto()).record("x", "a@forus.pe"))
 
-    def test_marca_si_es_persistente(self):
-        self.assertFalse(self.svc.persistente)
+    def test_all_events_tolera_store_roto(self):
+        class Roto:
+            persistente = False
+
+            def periods(self):
+                raise RuntimeError("sin red")
+
+        self.assertEqual(AuditService(Roto()).all_events(), [])
 
 
 class TestPaginacion(unittest.TestCase):
     def setUp(self):
-        self.eventos = [build_event("login", f"u{i}@forus.pe") for i in range(95)]
+        self.eventos = [build_event("x", f"u{i}@forus.pe") for i in range(95)]
 
     def test_treinta_por_pagina(self):
         p = AuditService.paginate(self.eventos, 1)
-        self.assertEqual(len(p["filas"]), 30)
-        self.assertEqual(p["paginas"], 4)
-        self.assertEqual(p["total"], 95)
+        self.assertEqual((len(p["filas"]), p["paginas"], p["total"]), (30, 4, 95))
         self.assertEqual((p["desde"], p["hasta"]), (1, 30))
 
     def test_ultima_pagina_parcial(self):
         p = AuditService.paginate(self.eventos, 4)
-        self.assertEqual(len(p["filas"]), 5)
-        self.assertEqual((p["desde"], p["hasta"]), (91, 95))
+        self.assertEqual((len(p["filas"]), p["desde"], p["hasta"]), (5, 91, 95))
 
-    def test_pagina_fuera_de_rango_se_ajusta(self):
+    def test_pagina_fuera_de_rango(self):
         self.assertEqual(AuditService.paginate(self.eventos, 99)["pagina"], 4)
         self.assertEqual(AuditService.paginate(self.eventos, 0)["pagina"], 1)
 
@@ -208,7 +230,7 @@ class TestPaginacion(unittest.TestCase):
         p = AuditService.paginate([], 1)
         self.assertEqual((p["total"], p["paginas"], p["desde"]), (0, 1, 0))
 
-    def test_las_paginas_no_se_solapan_ni_pierden_filas(self):
+    def test_ninguna_fila_se_pierde_ni_se_repite(self):
         vistas = []
         for n in range(1, 5):
             vistas.extend(AuditService.paginate(self.eventos, n)["filas"])
@@ -216,17 +238,41 @@ class TestPaginacion(unittest.TestCase):
 
 
 class TestExportacion(unittest.TestCase):
-    def test_encabezados_en_espanol(self):
-        filas = AuditService.to_export_rows([build_event("ticket_take", "a@forus.pe", rol="admin", solicitud="CAT-9")])
-        self.assertEqual(list(filas[0].keys())[:4], ["Fecha y hora (Peru)", "Usuario", "Correo", "Rol"])
+    def test_encabezados(self):
+        filas = AuditService.to_export_rows([build_event("x", "a@forus.pe")])
+        self.assertEqual(list(filas[0].keys())[:5],
+                         ["Fecha y hora (Peru)", "Usuario", "Correo", "Rol", "Marca"])
 
-    def test_exporta_todo_lo_filtrado_no_solo_la_pagina(self):
-        eventos = [build_event("login", f"u{i}@forus.pe") for i in range(95)]
+    def test_exporta_todo_lo_filtrado(self):
+        eventos = [build_event("x", f"u{i}@forus.pe") for i in range(95)]
         self.assertEqual(len(AuditService.to_export_rows(eventos)), 95)
 
     def test_fecha_legible(self):
-        evento = build_event("login", "a@forus.pe", momento=datetime(2026, 7, 30, 14, 32, 5, tzinfo=LIMA))
-        self.assertEqual(AuditService.to_export_rows([evento])[0]["Fecha y hora (Peru)"], "30/07/2026 14:32:05")
+        e = build_event("x", "a@forus.pe", momento=datetime(2026, 7, 30, 14, 32, 5, tzinfo=LIMA))
+        self.assertEqual(AuditService.to_export_rows([e])[0]["Fecha y hora (Peru)"],
+                         "30/07/2026 14:32:05")
+
+
+class TestDiagnosticoAlmacenamiento(unittest.TestCase):
+    def test_sin_configuracion_avisa_que_falta(self):
+        r = check_github_store("", "", "", "")
+        self.assertFalse(r["persistente"])
+        self.assertEqual(r["pasos"][0]["estado"], "error")
+        self.assertIn("owner", r["pasos"][0]["detalle"])
+
+    def test_local_nunca_es_persistente(self):
+        carpeta = Path(tempfile.mkdtemp())
+        try:
+            r = check_local_store(carpeta)
+            self.assertFalse(r["persistente"])
+            self.assertEqual(resumen(r)[0], "error")
+        finally:
+            shutil.rmtree(carpeta, ignore_errors=True)
+
+    def test_el_diagnostico_no_devuelve_el_token(self):
+        secreto = "ghp_" + "z" * 30
+        r = check_github_store("o", "r", secreto, "b")
+        self.assertNotIn(secreto, json.dumps(r))
 
 
 class TestUtilidades(unittest.TestCase):
@@ -234,8 +280,8 @@ class TestUtilidades(unittest.TestCase):
         self.assertEqual(nombre_desde_correo("clara.gallastegui@forus.pe"), "Clara Gallastegui")
         self.assertEqual(nombre_desde_correo(""), "Usuario")
 
-    def test_formato_lima_convierte_utc(self):
-        self.assertIn("/", formato_lima("2026-07-30T19:32:05+00:00"))
+    def test_formato_lima_acepta_el_formato_viejo(self):
+        self.assertEqual(formato_lima("2026-07-30 14:32:05"), "30/07/2026 14:32:05")
 
 
 if __name__ == "__main__":

@@ -11327,8 +11327,8 @@ def render_ticket_inbox(service, actor, brand_view=False):
                     "Canal": "Interna" if notification.get("channel") == "internal" else notification.get("channel"),
                 })
     if recent_notifications:
-        recent_notifications = sorted(recent_notifications, key=lambda item: item["Fecha"], reverse=True)[:20]
-        with st.expander(f"Notificaciones recientes ({len(recent_notifications)})"):
+        recent_notifications = sorted(recent_notifications, key=lambda item: item["Fecha"], reverse=True)[:8]
+        with st.expander(f"Notificaciones recientes ({len(recent_notifications)})", expanded=False):
             st.dataframe(pd.DataFrame(recent_notifications), use_container_width=True, hide_index=True)
     if brand_view:
         # KPIs de las solicitudes que envio este usuario comercial.
@@ -11350,19 +11350,28 @@ def render_ticket_inbox(service, actor, brand_view=False):
             ("Finalizadas", sum(1 for e in estados if e in finalizadas), "green"),
         ])
     if not brand_view:
-        states = [ticket.get("status") for ticket in all_tickets]
+        estados = [ticket.get("status") for ticket in all_tickets]
+        en_proceso = {
+            STATE_ASSIGNED, STATE_REVIEW, STATE_APPROVED, STATE_PREPARING,
+            STATE_DRY_RUN, STATE_READY_EXECUTE, STATE_LOADING, STATE_VALIDATING,
+            STATE_CORRECTED,
+        }
+        observadas = {STATE_OBSERVED, STATE_WAITING_BRAND}
+        finalizadas = {STATE_COMPLETED, STATE_COMPLETED_OBS}
+        vencidos = sum(ticket_is_overdue(item) for item in all_tickets)
+        fallidos = estados.count(STATE_FAILED)
         kpis = [
-            ("Pendientes", states.count(STATE_PENDING), "blue"),
-            ("Sin asignar", sum(1 for item in all_tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_REJECTED}), "amber"),
-            ("Asignados a mí", sum(1 for item in all_tickets if item.get("assignee") == actor.get("user")), "blue"),
-            ("En revisión", states.count(STATE_REVIEW), "amber"),
-            ("Observados", states.count(STATE_OBSERVED), "red"),
-            ("Aprobados", states.count(STATE_APPROVED), "green"),
-            ("En carga", states.count(STATE_LOADING), "blue"),
-            ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets), "red"),
-            ("Completados", states.count(STATE_COMPLETED) + states.count(STATE_COMPLETED_OBS), "green"),
-            ("Fallidos", states.count(STATE_FAILED), "red"),
+            ("Sin asignar", sum(1 for i in all_tickets if not i.get("assignee") and i.get("status") not in finalizadas), "amber"),
+            ("Asignados a mí", sum(1 for i in all_tickets if i.get("assignee") == actor.get("user")), "blue"),
+            ("En proceso", sum(1 for e in estados if e in en_proceso), "blue"),
+            ("Observadas", sum(1 for e in estados if e in observadas), "red"),
+            ("Finalizadas", sum(1 for e in estados if e in finalizadas), "green"),
         ]
+        # Vencidos y fallidos solo aparecen si hay algo que atender.
+        if vencidos:
+            kpis.append(("Vencidos", vencidos, "red"))
+        if fallidos:
+            kpis.append(("Fallidos", fallidos, "red"))
         render_ticket_kpi_grid(kpis)
     with st.container(border=True):
         st.markdown("<h3 class=\"ticket-filter-title\">Buscar y filtrar solicitudes</h3>", unsafe_allow_html=True)
@@ -11487,7 +11496,7 @@ def render_ticket_detail(service, actor, code):
         else:
             st.caption("El detalle completo está disponible en el archivo de validación descargable.")
     with st.container(border=True):
-        st.markdown('<p class="ticket-section-label">Documentación</p><h3>Archivos y validación</h3><p>Descarga la versión validada o su reporte antes de continuar la gestión.</p>', unsafe_allow_html=True)
+        st.markdown('<p class="ticket-h">Archivos</p>', unsafe_allow_html=True)
         download_cols = st.columns(3)
         try:
             if latest_version.get("input_path"):
@@ -11515,21 +11524,21 @@ def render_ticket_detail(service, actor, code):
             observations_df = pd.DataFrame(ticket["observations"])
             if not observations_df.empty:
                 st.dataframe(observations_df, use_container_width=True, hide_index=True)
-    if ticket.get("job"):
+    if ticket.get("job") and status not in {STATE_COMPLETED, STATE_COMPLETED_OBS}:
+        # Solo se muestra mientras el proceso sigue vivo. Al cerrar, el bloque
+        # de resultado ya cuenta lo que paso y esto solo agregaba ruido.
         job = ticket.get("job", {})
         progress = max(0, min(100, safe_int_value(job.get("progress"), 0)))
-        st.markdown("#### Estado del proceso")
+        st.markdown('<p class="ticket-h">Estado del proceso</p>', unsafe_allow_html=True)
         st.progress(progress / 100.0)
-        st.caption(
-            f"Job {clean_value(job.get('id')) or 'pendiente'} · {clean_value(job.get('status')) or status_label} · {progress}%"
-        )
+        st.caption(clean_value(status_label))
     if ticket.get("result"):
         result = ticket.get("result", {})
         public_result = ticket.get("public_result", {})
         result_df = pd.DataFrame([result])
         result_status = clean_value(public_result.get("status")) or status_label
         result_message = clean_value(public_result.get("message")) or clean_value(result.get("message"))
-        st.markdown("#### Cierre de la solicitud")
+        st.markdown('<p class="ticket-h">Resultado de la carga</p>', unsafe_allow_html=True)
         if status == STATE_COMPLETED:
             st.success(
                 f"{result_status}. El archivo quedó registrado como cargado"
@@ -11540,15 +11549,32 @@ def render_ticket_detail(service, actor, code):
                 f"{result_status}. La carga terminó y conserva observaciones"
                 + (f": {result_message}" if result_message else ".")
             )
-        result_cols = st.columns(4)
-        result_cols[0].metric("Productos procesados", safe_int_value(public_result.get("processed"), safe_int_value(result.get("processed"), 0)))
-        result_cols[1].metric("Errores registrados", safe_int_value(public_result.get("errors"), safe_int_value(result.get("errors"), 0)))
-        result_cols[2].metric("Versión cargada", clean_value(result.get("file_version")) or latest_version.get("number", 1))
-        result_cols[3].metric("Finalizado por", clean_value(result.get("closed_by")) or "Operaciones")
-        st.caption(
-            f"Archivo: {clean_value(result.get('filename')) or latest_version.get('filename') or ticket.get('filename') or 'Sin nombre'}"
+        procesados = safe_int_value(public_result.get("processed"), safe_int_value(result.get("processed"), 0))
+        errores = safe_int_value(public_result.get("errors"), safe_int_value(result.get("errors"), 0))
+        version_cargada = clean_value(result.get("file_version")) or latest_version.get("number", 1)
+        cerrado_por = clean_value(result.get("closed_by")) or "Operaciones"
+        archivo = (
+            clean_value(result.get("filename"))
+            or latest_version.get("filename")
+            or ticket.get("filename")
+            or "Sin nombre"
         )
-        st.dataframe(result_df, use_container_width=True, hide_index=True)
+        # Cifras compactas: un digito no necesita 48px. El correo del responsable
+        # no es una metrica, va como texto con su nombre legible.
+        st.markdown(
+            '<div class="close-grid">'
+            f'<div class="close-stat"><small>Procesados</small><strong>{procesados:,}</strong></div>'
+            f'<div class="close-stat"><small>Errores</small><strong>{errores:,}</strong></div>'
+            f'<div class="close-stat"><small>Versión</small><strong>v{escape(str(version_cargada))}</strong></div>'
+            "</div>"
+            '<div class="close-meta">'
+            f'<span><b>Archivo</b> {escape(archivo)}</span>'
+            f'<span><b>Cerrada por</b> {escape(auth_display_name(cerrado_por))}</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        with st.expander("Detalle técnico del cierre"):
+            st.dataframe(result_df, use_container_width=True, hide_index=True)
         download_cols[2].download_button(
             "Descargar reporte final",
             dataframe_to_excel_bytes({"Resultado": result_df}),
@@ -11557,7 +11583,9 @@ def render_ticket_detail(service, actor, code):
         )
     role = actor.get("role")
     if role == ROLE_BRAND and status == STATE_OBSERVED:
-        st.markdown('<div class="ticket-section"><p class="ticket-section-label">Corrección requerida</p><h3>Enviar una nueva versión</h3><p>La versión anterior se conservará para mantener la trazabilidad.</p></div>', unsafe_allow_html=True)
+        st.markdown('<p class="ticket-h">Enviar una nueva versión</p>'
+                    '<p class="ticket-hint">La versión anterior se conserva para mantener la trazabilidad.</p>',
+                    unsafe_allow_html=True)
         st.warning("Operaciones solicitó una corrección.")
         correction = st.file_uploader("Archivo corregido", type=["xlsx", "xls"], key=f"ticket_correction_{code}")
         correction_comment = st.text_area("Respuesta a la observación", key=f"ticket_correction_comment_{code}")
@@ -11586,12 +11614,7 @@ def render_ticket_detail(service, actor, code):
                 except TicketError as exc:
                     st.error(str(exc))
     if role in {ROLE_OPERATOR, ROLE_ADMIN}:
-        st.markdown(
-            '<div class="ticket-section"><p class="ticket-section-label">Gestión operativa</p><h3>Acciones internas</h3>'
-            '<p>Asigna responsables, define prioridad y lleva la solicitud por cada etapa sin perder trazabilidad.</p>'
-            '<div class="ticket-action-note">Las acciones disponibles se adaptan automáticamente al estado actual de la solicitud.</div></div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<p class="ticket-h">Acciones internas</p>', unsafe_allow_html=True)
         current_priority = ticket.get("priority", "normal")
         priority_options = list(PRIORITIES)
         priority_col, priority_action = st.columns([2, 1])
@@ -11692,13 +11715,9 @@ def render_ticket_detail(service, actor, code):
                 except TicketError as exc:
                     st.error(str(exc))
         if status in {STATE_LOADING, STATE_VALIDATING}:
-            st.markdown(
-                '<div class="ticket-section"><p class="ticket-section-label">Cierre operativo</p>'
-                '<h3>Cerrar carga de catálogo</h3>'
-                '<p>Cuando termines la carga y la revisión en Shopify, registra aquí el resultado. '
-                'La solicitud se actualizará para Operaciones y para el equipo comercial.</p></div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown('<p class="ticket-h">Cerrar carga</p>'
+                        '<p class="ticket-hint">Registra el resultado cuando termines la revisión en Shopify.</p>',
+                        unsafe_allow_html=True)
             close_metrics = st.columns(2)
             processed_count = close_metrics[0].number_input(
                 "Productos procesados",
@@ -11785,11 +11804,7 @@ def render_ticket_detail(service, actor, code):
                         st.rerun()
                     except TicketError as exc:
                         st.error(str(exc))
-    st.markdown(
-        '<div class="ticket-section"><p class="ticket-section-label">Colaboración</p><h3>Comentarios</h3>'
-        '<p>Deja contexto para la marca y el equipo operativo. Cada mensaje queda registrado en el historial.</p></div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<p class="ticket-h">Comentarios</p>', unsafe_allow_html=True)
     comment = st.text_area("Agregar comentario", key=f"ticket_comment_{code}", label_visibility="collapsed", placeholder="Escribe un comentario para el equipo...")
     if st.button("Publicar comentario", key=f"add_ticket_comment_{code}"):
         try:

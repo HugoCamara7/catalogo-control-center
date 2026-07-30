@@ -1,5 +1,8 @@
 # Subir estos archivos
 
+> Incluye la limpieza visual del modulo de solicitudes.
+> Reemplaza a todos los ZIP anteriores.
+
 Reemplaza a cualquier ZIP anterior.
 
 ## Reemplazar (2)
@@ -67,3 +70,19 @@ Sin esto no pueden entrar. En Manage app → Settings → Secrets:
 ## Volver atrás
 
 GitHub → Commits → abre el commit → **Revert**.
+
+
+---
+
+## Limpieza visual de solicitudes (incluida)
+
+| Antes | Ahora |
+|---|---|
+| 5 tarjetas blancas con solo un titulo y una frase, y los controles sueltos debajo | cabecera de una linea, pegada a su contenido |
+| 10 tarjetas de KPI, 8 en cero | 5 agrupadas. Vencidos y fallidos solo aparecen si hay |
+| Notificaciones abiertas con 20 filas de cambios internos | colapsadas, 8 mas recientes |
+| `Job MOCK-6AAD... - in_progress - 0%` visible al cerrar | la barra desaparece al completarse |
+| 4 metricas gigantes, una de ellas un correo truncado | 3 cifras compactas + archivo y responsable como texto |
+| Tabla cruda con `processed, errors, closed_by, file_hash` | dentro de "Detalle tecnico del cierre" |
+
+Ningun cambio toca reglas de negocio, permisos ni estados.

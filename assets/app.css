@@ -2768,3 +2768,52 @@
             background:#F59E0B;
             box-shadow:0 0 0 3px rgba(245,158,11,.14);
         }
+        .ticket-h {
+            margin:22px 0 8px;
+            font-size:15px;
+            font-weight:600;
+            letter-spacing:-0.01em;
+            color:#0F172A;
+        }
+        .ticket-hint {
+            margin:-4px 0 10px;
+            font-size:12.5px;
+            color:#64748B;
+        }
+        .close-grid {
+            display:grid;
+            grid-template-columns:repeat(auto-fit, minmax(110px, 1fr));
+            gap:10px;
+            margin:12px 0 10px;
+        }
+        .close-stat {
+            background:#F6F8FC;
+            border-radius:10px;
+            padding:10px 13px;
+        }
+        .close-stat small {
+            display:block;
+            font-size:11.5px;
+            color:#64748B;
+            margin-bottom:3px;
+        }
+        .close-stat strong {
+            font-size:19px;
+            font-weight:600;
+            color:#0F172A;
+            letter-spacing:-0.02em;
+        }
+        .close-meta {
+            display:flex;
+            flex-wrap:wrap;
+            gap:6px 22px;
+            padding:10px 0 4px;
+            border-top:1px solid #E6EBF2;
+            font-size:12.5px;
+            color:#475569;
+        }
+        .close-meta b {
+            font-weight:600;
+            color:#64748B;
+            margin-right:5px;
+        }

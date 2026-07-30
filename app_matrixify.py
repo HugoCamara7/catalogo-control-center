@@ -21,7 +21,15 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from engines.audit import AuditError, AuditService, GitHubAuditStore, LocalAuditStore
+from engines.audit import formato_lima as audit_formato_lima
+from engines.audit import (
+    ACCIONES_TICKET,
+    AuditedTicketService,
+    AuditError,
+    AuditService,
+    GitHubAuditStore,
+    LocalAuditStore,
+)
 from engines.storage_check import check_github_store, check_local_store
 from engines.storage_check import resumen as storage_resumen
 
@@ -2702,6 +2710,7 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
             file_name=f"Input_Catalogo_{file_brand}_{file_date}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_brand_commercial_input",
+            on_click=log_descarga, args=("", "render_commercial_input_center"),
         )
         st.markdown(
             """
@@ -2770,6 +2779,7 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
                 file_name=f"reporte_validacion_input_{file_brand}_{file_date}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="download_brand_input_validation_report",
+                on_click=log_descarga, args=("Descargar reporte de validacion", "render_commercial_input_center"),
             )
             summary_map = {
                 clean_value(row.get("Indicador")): int(row.get("Valor", 0) or 0)
@@ -9873,6 +9883,7 @@ def render_persistent_sync_job_panel(
         file_name=f"resultado_job_{mode}_{site_key}_{job['id']}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"{session_key}_download",
+        on_click=log_descarga, args=("Descargar reporte del job", "render_persistent_sync_job_panel"),
     )
 
 
@@ -12745,6 +12756,18 @@ def inject_custom_css(config):
         .storage-dot-ok{{background:#10B981}}
         .storage-dot-warn{{background:#F59E0B}}
         .storage-dot-bad{{background:#EF4444}}
+        .audit-hero{{background:#0B1B46;color:#fff;border-radius:16px;padding:22px 26px;margin:4px 0 18px}}
+        .audit-hero p{{margin:0;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#9Fc0FF}}
+        .audit-hero h1{{margin:6px 0 4px;font-size:26px;color:#fff}}
+        .audit-hero span{{font-size:13px;color:#C7D7F5}}
+        .audit-filter-title{{margin:0 0 10px;font-size:14px;font-weight:600;color:#0F172A}}
+        .audit-pag{{margin:9px 0 0;font-size:12.5px;color:#64748B;text-align:center}}
+        .audit-h{{margin:26px 0 4px;font-size:15px;font-weight:600;color:#0F172A}}
+        .audit-detail{{border:1px solid #E6EBF2;border-radius:12px;padding:6px 14px;background:#fff}}
+        .audit-det-row{{display:flex;justify-content:space-between;gap:18px;padding:7px 0;border-bottom:1px solid #F1F5F9;font-size:13px}}
+        .audit-det-row:last-child{{border-bottom:0}}
+        .audit-det-row span{{color:#64748B}}
+        .audit-det-row b{{color:#0F172A;font-weight:600;text-align:right;word-break:break-word}}
         </style>
         """,
         unsafe_allow_html=True,
@@ -13990,6 +14013,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 data=dataframe_to_excel_bytes({"Auditoria sucursales stock": stock_activation_audit_df}),
                 file_name=f"auditoria_sucursales_stock_{brand_config['site_key']}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                on_click=log_descarga, args=("Descargar SKUs para revisar sucursales / stock Shopify", "render_catalog_kpi_dashboard"),
             )
         if missing_models_input_df is not None and not missing_models_input_df.empty:
             st.download_button(
@@ -14004,6 +14028,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 file_name=f"input_modelos_no_creados_{brand_config['site_key']}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 help="Archivo prellenado desde ARTI/BigQuery para que la marca complete solo lo manual antes de crear productos.",
+                on_click=log_descarga, args=("Descargar input sugerido: modelos no creados en Shopify", "render_catalog_kpi_dashboard"),
             )
             render_missing_models_audit_table(missing_models_input_df, f"{brand_config['site_key']}_audit")
         else:
@@ -14015,6 +14040,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
             data=dataframe_to_excel_bytes({"Pendientes filtrados": filtered_actions_df}),
             file_name=f"pendientes_filtrados_{brand_config['site_key']}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            on_click=log_descarga, args=("Descargar pendientes filtrados", "render_catalog_kpi_dashboard"),
         )
 
     missing_variants_df = result["missing_stock_variants"]
@@ -14027,6 +14053,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 data=dataframe_to_excel_bytes({"Variantes filtradas": filtered_variants_df}),
                 file_name=f"variantes_filtradas_{brand_config['site_key']}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                on_click=log_descarga, args=("Descargar variantes filtradas", "render_catalog_kpi_dashboard"),
             )
 
     kpi_excel_key = f"kpi_excel_bytes_{brand_config['site_key']}"
@@ -14076,6 +14103,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         data=excel_bytes,
         file_name=f"kpis_catalogo_{brand_config['site_key']}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        on_click=log_descarga, args=("Descargar diagnostico KPIs", "render_catalog_kpi_dashboard"),
     )
 
 
@@ -14278,6 +14306,48 @@ def check_storage():
     )
 
 
+def _registrar_accion_ticket(accion, usuario="", rol="", **kwargs):
+    """Puente entre AuditedTicketService y log_user_activity."""
+    log_user_activity(
+        accion,
+        detail=kwargs.get("detalle", ""),
+        user=usuario or st.session_state.get("auth_user", ""),
+        module=kwargs.get("modulo", "Solicitudes"),
+        site_key=clean_value(st.session_state.get("site_picker")),
+        ticket=kwargs.get("solicitud", ""),
+        marca=kwargs.get("marca", ""),
+        estado_anterior=kwargs.get("estado_anterior", ""),
+        estado_nuevo=kwargs.get("estado_nuevo", ""),
+        resultado=kwargs.get("resultado", "ok"),
+    )
+
+
+def log_descarga(nombre_archivo, modulo="", ticket="", marca=""):
+    """Registra una descarga. Se llama desde on_click de los download_button."""
+    log_user_activity(
+        "Descargar archivo",
+        detail=clean_value(nombre_archivo),
+        module=modulo or "Descargas",
+        site_key=clean_value(st.session_state.get("site_picker")),
+        ticket=ticket,
+        marca=marca,
+    )
+
+
+def log_acceso_modulo(nombre):
+    """Registra el acceso a un modulo, una sola vez por modulo y sesion."""
+    clave = f"_modulo_visto_{nombre}"
+    if st.session_state.get(clave):
+        return
+    st.session_state[clave] = True
+    log_user_activity(
+        "Acceso a modulo",
+        detail=clean_value(nombre),
+        module=clean_value(nombre),
+        site_key=clean_value(st.session_state.get("site_picker")),
+    )
+
+
 def log_user_activity(action, detail="", user=None, site_key="", module="", extra=None,
                       ticket="", marca="", estado_anterior="", estado_nuevo="", resultado="ok"):
     """Registra una accion del usuario.
@@ -14402,6 +14472,175 @@ def render_sidebar_account_card(username=None):
     )
 
 
+def _audit_opciones(eventos, campo):
+    return sorted({clean_value(e.get(campo)) for e in eventos if clean_value(e.get(campo))})
+
+
+def _audit_detalle(evento):
+    filas = [
+        ("Fecha y hora (Peru)", audit_formato_lima(evento.get("fecha"))),
+        ("Usuario", evento.get("nombre")),
+        ("Correo", evento.get("usuario")),
+        ("Rol", evento.get("rol")),
+        ("Marca", evento.get("marca")),
+        ("Sitio", evento.get("sitio")),
+        ("Modulo", evento.get("modulo")),
+        ("Solicitud", evento.get("solicitud")),
+        ("Accion", evento.get("accion")),
+        ("Estado anterior", evento.get("estado_anterior")),
+        ("Estado nuevo", evento.get("estado_nuevo")),
+        ("Resultado", evento.get("resultado")),
+        ("Detalle", evento.get("detalle")),
+    ]
+    cuerpo = "".join(
+        f'<div class="audit-det-row"><span>{escape(k)}</span><b>{escape(clean_value(v) or "-")}</b></div>'
+        for k, v in filas
+    )
+    st.markdown(f'<div class="audit-detail">{cuerpo}</div>', unsafe_allow_html=True)
+
+
+def render_audit_center():
+    """Centro de auditoria: KPIs, filtros, buscador, paginacion y descarga."""
+    if not can_view_user_activity_log():
+        st.warning("Esta seccion solo esta disponible para el equipo de operaciones.")
+        return
+
+    st.markdown(
+        '<div class="audit-hero"><p>Trazabilidad</p><h1>Centro de auditoria</h1>'
+        '<span>Cada accion registrada, con su usuario, solicitud y resultado.</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    servicio = get_audit_service()
+    if not servicio.persistente:
+        st.warning(
+            "El almacenamiento no es persistente: la auditoria se borrara en el proximo "
+            "redespliegue. Revisa el panel Almacenamiento en la barra lateral."
+        )
+    with st.spinner("Leyendo auditoria..."):
+        eventos = servicio.all_events()
+
+    if not eventos:
+        st.info("Aun no hay actividad registrada.")
+        return
+
+    with st.container(border=True):
+        st.markdown('<p class="audit-filter-title">Buscar y filtrar</p>', unsafe_allow_html=True)
+        f1 = st.columns([1.6, 1, 1, 1])
+        buscar = f1[0].text_input("Buscar", placeholder="Usuario, solicitud, accion o detalle",
+                                  key="audit_buscar")
+        usuario = f1[1].selectbox("Usuario", ["Todos"] + _audit_opciones(eventos, "usuario"),
+                                  key="audit_usuario")
+        rol = f1[2].selectbox("Rol", ["Todos"] + _audit_opciones(eventos, "rol"), key="audit_rol")
+        modulo = f1[3].selectbox("Modulo", ["Todos"] + _audit_opciones(eventos, "modulo"),
+                                 key="audit_modulo")
+        f2 = st.columns([1, 1, 1, 1])
+        accion = f2[0].selectbox("Accion", ["Todas"] + _audit_opciones(eventos, "accion"),
+                                 key="audit_accion")
+        marca = f2[1].selectbox("Marca", ["Todas"] + _audit_opciones(eventos, "marca"),
+                                key="audit_marca")
+        resultado = f2[2].selectbox("Resultado", ["Todos", "ok", "error", "aviso"],
+                                    key="audit_resultado")
+        f2[3].markdown("&nbsp;", unsafe_allow_html=True)
+        if f2[3].button("Limpiar filtros", key="audit_limpiar", use_container_width=True):
+            for clave in ["audit_buscar", "audit_usuario", "audit_rol", "audit_modulo",
+                          "audit_accion", "audit_marca", "audit_resultado",
+                          "audit_desde", "audit_hasta", "audit_pagina"]:
+                st.session_state.pop(clave, None)
+            st.rerun()
+        f3 = st.columns([1, 1, 2])
+        desde = f3[0].text_input("Desde (AAAA-MM-DD)", key="audit_desde", placeholder="2026-07-01")
+        hasta = f3[1].text_input("Hasta (AAAA-MM-DD)", key="audit_hasta", placeholder="2026-07-31")
+
+    filtrados = servicio.query(
+        eventos,
+        usuario="" if usuario == "Todos" else usuario,
+        rol="" if rol == "Todos" else rol,
+        accion="" if accion == "Todas" else accion,
+        modulo="" if modulo == "Todos" else modulo,
+        marca="" if marca == "Todas" else marca,
+        resultado="" if resultado == "Todos" else resultado,
+        desde=clean_value(desde), hasta=clean_value(hasta), buscar=clean_value(buscar),
+    )
+
+    k = servicio.kpis(filtrados)
+    render_ticket_kpi_grid([
+        ("Acciones registradas", k["total"], "blue"),
+        ("Usuarios", k["usuarios"], "blue"),
+        ("Solicitudes", k["solicitudes"], "green"),
+        ("Errores", k["errores"], "red" if k["errores"] else "green"),
+    ])
+
+    if not filtrados:
+        st.info("Ningun registro coincide con los filtros.")
+        return
+
+    pagina = int(st.session_state.get("audit_pagina", 1))
+    datos = servicio.paginate(filtrados, pagina, 30)
+    if datos["pagina"] != pagina:
+        st.session_state["audit_pagina"] = datos["pagina"]
+
+    tabla = pd.DataFrame([{
+        "Fecha": audit_formato_lima(e.get("fecha")),
+        "Usuario": e.get("nombre"),
+        "Rol": e.get("rol"),
+        "Modulo": e.get("modulo"),
+        "Solicitud": e.get("solicitud"),
+        "Accion": e.get("accion"),
+        "Cambio": (f'{e.get("estado_anterior")} -> {e.get("estado_nuevo")}'
+                   if e.get("estado_nuevo") else ""),
+        "Resultado": e.get("resultado"),
+    } for e in datos["filas"]])
+    st.dataframe(tabla, use_container_width=True, hide_index=True)
+
+    nav = st.columns([1, 1, 3, 1.4, 1.4])
+    if nav[0].button("Anterior", key="audit_prev", disabled=datos["pagina"] <= 1,
+                     use_container_width=True):
+        st.session_state["audit_pagina"] = datos["pagina"] - 1
+        st.rerun()
+    if nav[1].button("Siguiente", key="audit_next", disabled=datos["pagina"] >= datos["paginas"],
+                     use_container_width=True):
+        st.session_state["audit_pagina"] = datos["pagina"] + 1
+        st.rerun()
+    nav[2].markdown(
+        f'<p class="audit-pag">Mostrando {datos["desde"]}-{datos["hasta"]} de '
+        f'{datos["total"]:,} · pagina {datos["pagina"]} de {datos["paginas"]}</p>',
+        unsafe_allow_html=True,
+    )
+
+    filas_export = AuditService.to_export_rows(filtrados)
+    export_df = pd.DataFrame(filas_export)
+    nav[3].download_button(
+        "Excel", data=dataframe_to_excel_bytes({"Auditoria": export_df}),
+        file_name="auditoria_catalog_control_center.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="audit_xlsx", use_container_width=True,
+        help=f"Descarga los {len(filas_export):,} registros filtrados, no solo esta pagina.",
+        on_click=log_descarga, args=("Excel", "render_audit_center"),
+    )
+    nav[4].download_button(
+        "CSV", data=export_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="auditoria_catalog_control_center.csv", mime="text/csv",
+        key="audit_csv", use_container_width=True,
+        help=f"Descarga los {len(filas_export):,} registros filtrados, no solo esta pagina.",
+        on_click=log_descarga, args=("CSV", "render_audit_center"),
+    )
+
+    with st.expander("Ver el detalle de una accion"):
+        etiquetas = [
+            f'{audit_formato_lima(e.get("fecha"))} · {e.get("nombre")} · {e.get("accion")}'
+            for e in datos["filas"]
+        ]
+        if etiquetas:
+            elegido = st.selectbox("Accion", etiquetas, key="audit_detalle_sel")
+            _audit_detalle(datos["filas"][etiquetas.index(elegido)])
+
+    st.markdown('<p class="audit-h">Auditoria por usuario</p>', unsafe_allow_html=True)
+    st.caption("Resumen de lo que hizo cada persona dentro de los filtros aplicados.")
+    st.dataframe(pd.DataFrame(servicio.por_usuario(filtrados)),
+                 use_container_width=True, hide_index=True)
+
+
 def render_sidebar_storage_status(username=None):
     """Estado del almacenamiento en la barra lateral. Solo para operadores.
 
@@ -14468,6 +14707,7 @@ def render_sidebar_user_activity_log(username=None):
             file_name="auditoria_usuarios_catalog_control_center.csv",
             mime="text/csv",
             use_container_width=True,
+            on_click=log_descarga, args=("Descargar log", "render_sidebar_user_activity_log"),
         )
 
 
@@ -14514,6 +14754,10 @@ def get_ticket_service():
         sla_hours=sla,
         operator_users=ticket_operator_users(),
     )
+    # Envolver el servicio registra en auditoria las 14 acciones que cambian
+    # una solicitud, con su estado anterior y nuevo, sin tener que recordar
+    # una llamada manual en cada uno de los 18 puntos donde ocurren.
+    service = AuditedTicketService(service, _registrar_accion_ticket)
     return service, persistent_backend
 
 
@@ -15184,6 +15428,7 @@ def render_full_load_ticket_queue(brand_config):
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"full_load_download_input_{selected_code}",
                     use_container_width=True,
+                    on_click=log_descarga, args=("Descargar input validado", "render_full_load_ticket_queue"),
                 )
             except (TicketError, OSError) as exc:
                 download_cols[0].warning(f"No se pudo descargar el input: {exc}")
@@ -15196,6 +15441,7 @@ def render_full_load_ticket_queue(brand_config):
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"full_load_download_report_{selected_code}",
                     use_container_width=True,
+                    on_click=log_descarga, args=("Descargar validación", "render_full_load_ticket_queue"),
                 )
             except (TicketError, OSError) as exc:
                 download_cols[1].warning(f"No se pudo descargar el reporte: {exc}")
@@ -15614,6 +15860,7 @@ def _render_ticket_execution_summary(ticket, summary, job, saved_result, code, l
         dataframe_to_excel_bytes({"Resultado": pd.DataFrame([result])}),
         file_name=f"{code}_resultado_final.xlsx",
         key=f"ticket_final_report_{code}",
+        on_click=log_descarga, args=("Descargar reporte final", "_render_ticket_execution_summary"),
     )
 
 
@@ -15688,6 +15935,7 @@ def render_ticket_detail(service, actor, code):
                     service.store.get_artifact(latest_version["input_path"]),
                     file_name=latest_version.get("filename") or ticket.get("filename") or "input.xlsx",
                     key=f"ticket_input_{code}_{latest_version.get('number', 1)}",
+                    on_click=log_descarga, args=("Descargar input validado", "render_ticket_detail"),
                 )
             if latest_version.get("report_path"):
                 download_cols[1].download_button(
@@ -15695,6 +15943,7 @@ def render_ticket_detail(service, actor, code):
                     service.store.get_artifact(latest_version["report_path"]),
                     file_name=f"{code}_validacion_v{latest_version.get('number',1)}.xlsx",
                     key=f"ticket_report_{code}_{latest_version.get('number', 1)}",
+                    on_click=log_descarga, args=("Descargar validación", "render_ticket_detail"),
                 )
         except TicketError as exc:
             st.warning(f"No se pudo descargar un adjunto: {exc}")
@@ -16035,6 +16284,8 @@ def main():
         return
     render_allowed_brands_card(brand_config)
     nav_options = ["KPIs de catálogo", "Input comercial", "Solicitudes", "Carga de catálogo"]
+    if can_view_user_activity_log(auth_user):
+        nav_options.append("Auditoria")
     if st.session_state.get("operation_area_choice") not in nav_options:
         st.session_state["operation_area_choice"] = nav_options[0]
     st.sidebar.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
@@ -16042,6 +16293,8 @@ def main():
         sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
         sidebar_nav_button("Input comercial", "operation_area_choice", "Input comercial", "operation_nav_input")
         sidebar_nav_button("Solicitudes", "operation_area_choice", "Solicitudes", "operation_nav_tickets")
+        if can_view_user_activity_log(auth_user):
+            sidebar_nav_button("Auditoria", "operation_area_choice", "Auditoria", "operation_nav_audit")
         operation_area = st.session_state.get("operation_area_choice", nav_options[0])
     operation_mode = "Carga completa"
     load_options = ["Carga completa", "Carga parcial"]
@@ -16106,7 +16359,12 @@ api_version = "{DEFAULT_API_VERSION}"
     if operation_area == "Input comercial":
         render_commercial_input_center(actor=ticket_actor)
         return
+    if operation_area == "Auditoria":
+        log_acceso_modulo("Auditoria")
+        render_audit_center()
+        return
     if operation_area == "Solicitudes":
+        log_acceso_modulo("Solicitudes")
         service, backend = get_ticket_service()
         if backend == "local":
             st.warning("Modo local de prueba: configura el backend GitHub antes de habilitarlo para varios usuarios.")
@@ -16428,6 +16686,7 @@ api_version = "{DEFAULT_API_VERSION}"
                                 file_name=f"centry_{brand_config['site_key']}.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 key=f"download_centry_partial_{brand_config['site_key']}",
+                                on_click=log_descarga, args=("Descargar Centry", "main"),
                             )
                             if missing_ean_count:
                                 st.warning(
@@ -16509,6 +16768,7 @@ api_version = "{DEFAULT_API_VERSION}"
                             ),
                             file_name=f"activacion_inventario_{brand_config['site_key']}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            on_click=log_descarga, args=("Descargar vista previa activación", "main"),
                         )
                         can_apply_activation = bool(activation_rows) and bool(locations)
                         if can_apply_activation:
@@ -16549,6 +16809,7 @@ api_version = "{DEFAULT_API_VERSION}"
                                     ),
                                     file_name=f"resultado_activacion_inventario_{brand_config['site_key']}.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    on_click=log_descarga, args=("Descargar reporte de activación", "main"),
                                 )
                         saved_result_df = st.session_state.get("inventory_activation_result_df")
                         if saved_result_df is not None and not saved_result_df.empty:
@@ -16632,6 +16893,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         data=excel_bytes,
                         file_name=f"vista_previa_{update_operation}_{brand_config['site_key']}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        on_click=log_descarga, args=("Descargar estructura Matrixify", "main"),
                     )
 
                     writable_preview_df = preview_df
@@ -16748,6 +17010,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         data=excel_bytes,
                         file_name=f"carga_parcial_{update_operation}_{brand_config['site_key']}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        on_click=log_descarga, args=("Descargar estructura Matrixify", "main"),
                     )
             except Exception as exc:
                 st.error("No pude generar la carga parcial.")
@@ -17034,6 +17297,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     data=excel_bytes,
                     file_name=brand_config["output_filename"],
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    on_click=log_descarga, args=("Descargar estructura Matrixify", "main"),
                 )
 
                 if complete_source == "Shopify API" and is_shopify_configured(shopify_config) and not matrixify_df.empty:

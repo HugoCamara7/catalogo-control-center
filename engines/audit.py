@@ -450,7 +450,7 @@ ACCIONES_TICKET = {
     "reject": "Rechazar solicitud",
     "add_comment": "Comentar solicitud",
     "set_priority": "Cambiar prioridad",
-    "run_dry_run": "Ejecutar dry run",
+    "run_dry_run": "Ejecutar validación previa",
     "start_load": "Iniciar carga",
     "record_job_result": "Registrar resultado de carga",
     "cancel_ticket": "Cancelar solicitud",

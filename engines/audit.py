@@ -435,3 +435,96 @@ class AuditService:
             "Resultado": e.get("resultado", ""),
             "Detalle": e.get("detalle", ""),
         } for e in eventos]
+
+
+# --- instrumentacion automatica de TicketService -------------------------
+# Envolver el servicio evita tener que recordar un log_user_activity() en
+# cada uno de los 18 puntos donde cambia el estado de una solicitud.
+ACCIONES_TICKET = {
+    "create_ticket": "Crear solicitud",
+    "add_correction_version": "Subir nueva version",
+    "assign": "Asignar solicitud",
+    "start_review": "Iniciar revision",
+    "request_correction": "Observar solicitud",
+    "approve": "Aprobar solicitud",
+    "reject": "Rechazar solicitud",
+    "add_comment": "Comentar solicitud",
+    "set_priority": "Cambiar prioridad",
+    "run_dry_run": "Ejecutar dry run",
+    "start_load": "Iniciar carga",
+    "record_job_result": "Registrar resultado de carga",
+    "cancel_ticket": "Cancelar solicitud",
+    "change_state": "Cambiar estado",
+    "mark_notification_read": None,        # ruido: no se registra
+    "mark_all_notifications_read": None,   # ruido: no se registra
+}
+
+
+def _codigo_de(args, kwargs):
+    """El codigo de solicitud es el segundo posicional o el kwarg 'code'."""
+    if "code" in kwargs:
+        return _texto(kwargs["code"])
+    return _texto(args[1]) if len(args) > 1 and isinstance(args[1], str) else ""
+
+
+def _campo(ticket, campo):
+    return _texto(ticket.get(campo)) if isinstance(ticket, dict) else ""
+
+
+class AuditedTicketService:
+    """Envuelve TicketService y registra cada accion que cambia una solicitud.
+
+    No altera el comportamiento: delega todo y devuelve lo mismo. Si el
+    registro falla, la accion original ya se completo igual.
+    """
+
+    def __init__(self, service, registrar):
+        object.__setattr__(self, "_service", service)
+        object.__setattr__(self, "_registrar", registrar)
+
+    def __getattr__(self, nombre):
+        atributo = getattr(self._service, nombre)
+        if nombre not in ACCIONES_TICKET or ACCIONES_TICKET[nombre] is None:
+            return atributo
+        etiqueta = ACCIONES_TICKET[nombre]
+
+        def envuelto(*args, **kwargs):
+            codigo = _codigo_de(args, kwargs)
+            anterior = ""
+            if codigo:
+                try:
+                    anterior = _campo(self._service.get_ticket(args[0], codigo), "status")
+                except Exception:
+                    anterior = ""
+            try:
+                resultado = atributo(*args, **kwargs)
+            except Exception as exc:
+                self._anotar(etiqueta, codigo, anterior, "", "error",
+                             f"{type(exc).__name__}: {exc}", args)
+                raise
+            nuevo = _campo(resultado, "status")
+            if nombre == "cancel_ticket":
+                nuevo = "eliminada"
+            self._anotar(etiqueta, codigo or _campo(resultado, "code"),
+                         anterior, nuevo, "ok", "", args, resultado)
+            return resultado
+
+        return envuelto
+
+    def _anotar(self, accion, codigo, anterior, nuevo, resultado, detalle, args, ticket=None):
+        try:
+            actor = args[0] if args and isinstance(args[0], dict) else {}
+            self._registrar(
+                accion,
+                usuario=_texto(actor.get("user")),
+                rol=_texto(actor.get("role")),
+                solicitud=codigo,
+                marca=_campo(ticket, "brand"),
+                estado_anterior=anterior,
+                estado_nuevo=nuevo,
+                resultado=resultado,
+                detalle=detalle,
+                modulo=MODULO_SOLICITUDES,
+            )
+        except Exception:
+            return

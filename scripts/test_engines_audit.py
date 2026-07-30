@@ -283,6 +283,103 @@ class TestUtilidades(unittest.TestCase):
     def test_formato_lima_acepta_el_formato_viejo(self):
         self.assertEqual(formato_lima("2026-07-30 14:32:05"), "30/07/2026 14:32:05")
 
+class TestEnvoltorioDeSolicitudes(unittest.TestCase):
+    """AuditedTicketService debe registrar sin cambiar el comportamiento."""
+
+    def setUp(self):
+        from engines.audit import ACCIONES_TICKET, AuditedTicketService
+        self.ACCIONES = ACCIONES_TICKET
+        self.registros = []
+
+        class ServicioFalso:
+            def __init__(self):
+                self.estado = "pending_assignment"
+                self.store = "STORE"
+                self.llamadas = []
+
+            def get_ticket(self, actor, code):
+                return {"code": code, "status": self.estado, "brand": "Columbia"}
+
+            def approve(self, actor, code, comment=""):
+                self.llamadas.append(("approve", code, comment))
+                self.estado = "load_approved"
+                return {"code": code, "status": self.estado, "brand": "Columbia"}
+
+            def start_load(self, actor, code):
+                self.estado = "loading"
+                return {"code": code, "status": self.estado, "brand": "Columbia"}
+
+            def reject(self, actor, code, comment=""):
+                raise RuntimeError("sin permiso")
+
+            def mark_notification_read(self, actor, code, notification_id):
+                return {"code": code}
+
+            def list_tickets(self, actor, filters=None, search=""):
+                return [{"code": "CAT-1"}]
+
+        self.falso = ServicioFalso()
+        self.svc = AuditedTicketService(self.falso, lambda accion, **kw: self.registros.append((accion, kw)))
+        self.actor = {"user": "hugo.camara@forus.pe", "role": "operator"}
+
+    def test_devuelve_lo_mismo_que_el_servicio_real(self):
+        r = self.svc.approve(self.actor, "CAT-1", "ok")
+        self.assertEqual(r["code"], "CAT-1")
+        self.assertEqual(r["status"], "load_approved")
+
+    def test_no_altera_la_llamada_original(self):
+        self.svc.approve(self.actor, "CAT-1", "revisado")
+        self.assertEqual(self.falso.llamadas, [("approve", "CAT-1", "revisado")])
+
+    def test_registra_estado_anterior_y_nuevo(self):
+        self.svc.approve(self.actor, "CAT-1", "ok")
+        accion, kw = self.registros[-1]
+        self.assertEqual(accion, "Aprobar solicitud")
+        self.assertEqual(kw["estado_anterior"], "pending_assignment")
+        self.assertEqual(kw["estado_nuevo"], "load_approved")
+        self.assertEqual(kw["solicitud"], "CAT-1")
+        self.assertEqual(kw["marca"], "Columbia")
+        self.assertEqual(kw["usuario"], "hugo.camara@forus.pe")
+        self.assertEqual(kw["resultado"], "ok")
+
+    def test_encadena_estados(self):
+        self.svc.approve(self.actor, "CAT-1")
+        self.svc.start_load(self.actor, "CAT-1")
+        _, kw = self.registros[-1]
+        self.assertEqual((kw["estado_anterior"], kw["estado_nuevo"]), ("load_approved", "loading"))
+
+    def test_registra_el_error_y_lo_vuelve_a_lanzar(self):
+        with self.assertRaises(RuntimeError):
+            self.svc.reject(self.actor, "CAT-1", "no")
+        accion, kw = self.registros[-1]
+        self.assertEqual(accion, "Rechazar solicitud")
+        self.assertEqual(kw["resultado"], "error")
+        self.assertIn("sin permiso", kw["detalle"])
+
+    def test_no_registra_ruido(self):
+        self.svc.mark_notification_read(self.actor, "CAT-1", "n1")
+        self.svc.list_tickets(self.actor)
+        self.assertEqual(self.registros, [])
+
+    def test_deja_pasar_atributos_normales(self):
+        self.assertEqual(self.svc.store, "STORE")
+        self.assertEqual(self.svc.list_tickets(self.actor), [{"code": "CAT-1"}])
+
+    def test_un_fallo_del_registro_no_rompe_la_accion(self):
+        from engines.audit import AuditedTicketService
+
+        def registrar_roto(accion, **kw):
+            raise RuntimeError("auditoria caida")
+
+        svc = AuditedTicketService(self.falso, registrar_roto)
+        self.assertEqual(svc.approve(self.actor, "CAT-1")["status"], "load_approved")
+
+    def test_cubre_las_acciones_del_requerimiento(self):
+        for metodo in ["create_ticket", "assign", "approve", "reject", "request_correction",
+                       "start_load", "record_job_result", "cancel_ticket", "change_state",
+                       "set_priority", "add_comment", "add_correction_version"]:
+            self.assertIn(metodo, self.ACCIONES, metodo)
+            self.assertTrue(self.ACCIONES[metodo], f"{metodo} no tiene etiqueta")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

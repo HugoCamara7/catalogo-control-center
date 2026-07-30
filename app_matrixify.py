@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -81,6 +81,45 @@ from generate_columbia_matrixify import (
     is_zero_size,
     read_arti_source,
 )
+
+from engines.normalize import (
+    ARTI_COLUMN_ALIASES_APP,
+    SIZE_ORDER,
+    SIZE_ORDER_GROUPS,
+    _CATALOG_ALIAS_TO_ARTI_TARGET,
+    _row_by_size_keys,
+    _set_row_by_size_keys,
+    _size_lookup_keys,
+    clean_value,
+    coalesce_duplicate_columns,
+    expected_catalog_vendors,
+    first_existing_column,
+    first_row_value,
+    format_datetime_lima,
+    looks_like_mod_col,
+    normalize_arti_columns_for_app,
+    normalize_header,
+    normalize_size,
+    parse_iso_datetime,
+    parse_publication_date,
+    product_lookup_candidates,
+    product_lookup_key,
+    publication_date_from_row,
+    repair_mojibake_dataframe,
+    repair_mojibake_text,
+    safe_float_value,
+    safe_int_value,
+    size_sort_key,
+    slugify,
+    variant_mod_col_candidates,
+)
+from engines.excel_io import (
+    columbia_to_excel_bytes,
+    dataframe_to_excel_bytes,
+    read_excel,
+    update_to_excel_bytes,
+)
+
 try:
     from catalog_rules import (
         CATALOG_FIELD_ALIASES,
@@ -256,308 +295,6 @@ MATRIXIFY_COLUMNS = [
     "Metafield: custom.color [single_line_text_field]",
 ]
 
-SIZE_ORDER_GROUPS = [
-    ["XXXS", "3XS"],
-    ["XXS", "2XS"],
-    ["XS"],
-    ["S"],
-    ["M"],
-    ["L"],
-    ["XL"],
-    ["XXL", "2XL"],
-    ["XXXL", "3XL"],
-    ["XXXXL", "4XL"],
-]
-
-SIZE_ORDER = {}
-for idx, group in enumerate(SIZE_ORDER_GROUPS, start=1):
-    for value in group:
-        SIZE_ORDER[value] = idx
-
-for idx, value in enumerate(["28", "29", "30", "31", "32", "33", "34", "36", "38", "40", "42", "44"], start=100):
-    SIZE_ORDER[value] = idx
-
-for idx, value in enumerate(
-    ["35", "36", "37", "38", "39", "40", "41", "42", "43", "44", "45", "46", "47"],
-    start=200,
-):
-    SIZE_ORDER[value] = idx
-
-for idx, value in enumerate(
-    ["5", "5.5", "6", "6.5", "7", "7.5", "8", "8.5", "9", "9.5", "10", "10.5", "11", "11.5", "12", "13"],
-    start=300,
-):
-    SIZE_ORDER[value] = idx
-
-
-def normalize_header(value):
-    text = str(value or "").strip().lower()
-    text = re.sub(r"[\s_\-./]+", "", text)
-    text = (
-        text.replace("Ã¡", "a")
-        .replace("Ã©", "e")
-        .replace("Ã­", "i")
-        .replace("Ã³", "o")
-        .replace("Ãº", "u")
-        .replace("Ã±", "n")
-    )
-    return text
-
-
-def first_existing_column(df, candidates):
-    normalized = {normalize_header(col): col for col in df.columns}
-    for candidate in candidates:
-        found = normalized.get(normalize_header(candidate))
-        if found is not None:
-            return found
-    return None
-
-
-def clean_value(value):
-    if value is None:
-        return ""
-    if isinstance(value, (list, tuple, set)):
-        parts = [clean_value(item) for item in value]
-        return " | ".join(part for part in parts if part)
-    if isinstance(value, dict):
-        parts = [clean_value(item) for item in value.values()]
-        return " | ".join(part for part in parts if part)
-    try:
-        if pd.isna(value):
-            return ""
-    except (TypeError, ValueError):
-        pass
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return str(value).strip()
-
-
-def repair_mojibake_text(value):
-    text = clean_value(value)
-    if not text:
-        return text
-    markers = ("Ã", "Â", "â")
-    if not any(marker in text for marker in markers):
-        return text
-
-    def score(candidate):
-        return sum(candidate.count(marker) for marker in markers)
-
-    repaired = text
-    for _ in range(3):
-        candidates = [repaired]
-        for source_encoding in ("latin1", "cp1252"):
-            try:
-                candidate = repaired.encode(source_encoding).decode("utf-8")
-            except (UnicodeEncodeError, UnicodeDecodeError):
-                continue
-            candidates.append(candidate)
-        best = min(candidates, key=score)
-        if best == repaired:
-            break
-        repaired = best
-
-    replacements = {
-        "â€“": "-",
-        "â€”": "-",
-        "â€˜": "'",
-        "â€™": "'",
-        "â€œ": '"',
-        "â€�": '"',
-        "â€¢": "-",
-        "Â·": "-",
-    }
-    for bad, good in replacements.items():
-        repaired = repaired.replace(bad, good)
-    accent_lower = {"Á": "á", "É": "é", "Í": "í", "Ó": "ó", "Ú": "ú", "Ñ": "ñ"}
-    for upper, lower in accent_lower.items():
-        repaired = re.sub(rf"(?<=[a-z]){upper}", lower, repaired)
-    repaired = re.sub(
-        r"(?<=[a-záéíóúñ])([A-Z])(?=\b)",
-        lambda match: match.group(1).lower(),
-        repaired,
-    )
-    return repaired
-
-
-def repair_mojibake_dataframe(df):
-    if df is None:
-        return df
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        return df
-    repaired = df.copy()
-    repaired.columns = [repair_mojibake_text(column) for column in repaired.columns]
-    for column in repaired.columns:
-        repaired[column] = repaired[column].map(
-            lambda value: repair_mojibake_text(value)
-            if isinstance(value, str) and any(marker in value for marker in ("Ã", "Â", "â"))
-            else value
-        )
-    return repaired
-
-
-def safe_float_value(value, default=0.0):
-    try:
-        text = clean_value(value)
-        if not text:
-            return default
-        return float(text.replace(",", "."))
-    except (TypeError, ValueError):
-        return default
-
-
-def safe_int_value(value, default=0):
-    return int(safe_float_value(value, default))
-
-
-def looks_like_mod_col(value):
-    text = clean_value(value).upper()
-    if not text or text.startswith("UNNAMED:"):
-        return False
-    if normalize_header(text) in {"modcol", "codmodcol", "codigomodelocolor", "codigomodelo"}:
-        return False
-    return bool(re.fullmatch(r"[A-Z0-9]+(?:[-_ ][A-Z0-9]+)+", text))
-
-
-def product_lookup_key(value):
-    return re.sub(r"[^A-Z0-9]+", "", clean_value(value).upper())
-
-
-def product_lookup_candidates(value):
-    raw = clean_value(value).upper()
-    compact = product_lookup_key(raw)
-    candidates = [raw, compact]
-    stripped_raw = re.sub(r"^[A-Z]{1,4}(?=\d)", "", raw)
-    stripped_compact = re.sub(r"^[A-Z]{1,4}(?=\d)", "", compact)
-    if stripped_raw != raw:
-        candidates.append(stripped_raw)
-        candidates.append(product_lookup_key(stripped_raw))
-    if stripped_compact != compact:
-        candidates.append(stripped_compact)
-    return list(dict.fromkeys(candidate for candidate in candidates if clean_value(candidate)))
-
-
-def variant_mod_col_candidates(variant):
-    sku = clean_value((variant or {}).get("Variant SKU")).upper()
-    if not sku:
-        return []
-    candidates = [sku]
-    parts = [part for part in re.split(r"[-_ ]+", sku) if part]
-    if len(parts) >= 2:
-        candidates.append(f"{parts[0]}-{parts[1]}")
-    return list(dict.fromkeys(candidate for candidate in candidates if looks_like_mod_col(candidate)))
-
-
-def coalesce_duplicate_columns(df):
-    if df is None or not isinstance(df, pd.DataFrame) or not df.columns.duplicated().any():
-        return df
-    result = pd.DataFrame(index=df.index)
-    for column in dict.fromkeys(df.columns):
-        same_name = df.loc[:, df.columns == column]
-        if same_name.shape[1] == 1:
-            result[column] = same_name.iloc[:, 0]
-            continue
-        merged = same_name.iloc[:, 0].copy()
-        for index in range(1, same_name.shape[1]):
-            candidate = same_name.iloc[:, index]
-            empty_mask = merged.map(clean_value) == ""
-            merged.loc[empty_mask] = candidate.loc[empty_mask]
-        result[column] = merged
-    return result
-
-
-ARTI_COLUMN_ALIASES_APP = {
-    "CODINT_MA": ["CODINT_MA", "codint_ma", "codint", "sku", "sku_producto", "id_producto", "idproducto"],
-    "COD MOD COL": ["COD MOD COL", "COD_MOD_COL", "cod_mod_col", "codmod_codcol", "mod_col", "modelo_color", "codigo_modelo_color"],
-    "Mod-Col": ["Mod-Col", "MOD_COL", "mod_col", "codmod_codcol", "modelo_color", "codigo_modelo_color"],
-    "TALNUM_MA": ["TALNUM_MA", "talnum_ma", "talla_numero", "talla", "size"],
-    "MARCA_MA": ["MARCA_MA", "marca_ma", "marca", "brand", "vendor"],
-    "ColorNombre": [
-        "Color Web", "color_web", "nombre_color", "Nombre Color", "Color Nombre",
-        "color_nombre", "desc_color", "descripcion_color", "des_color", "color_descripcion",
-        "color_desc", "COLOR_WEB", "NOMBRE_COLOR", "DESC_COLOR", "descol_ma", "nomcol_ma",
-        "color_forus", "Color Forus",
-    ],
-    "Precio": ["Precio", "precio_ma", "precio", "price", "precio_venta", "pvp"],
-    "CodBarras": [
-        "CodBarras", "codbarras", "CODBARRAS", "cod_barras", "codigo_barras", "codigo_barra",
-        "codigo de barras", "codigo de barra", "ean", "EAN", "upc", "UPC", "barcode", "bar_code",
-        "cod_ean", "codigo_ean", "gtin", "ean13", "ean_13", "barra", "barras", "codbarra",
-        "cod_barra", "codbar", "cod_bar", "codbar_ma", "cod_bar_ma", "CODBAR_MA",
-        "COD_BAR_MA", "cod_barr", "codbarr", "cod_barras_ma", "codbarra_ma",
-        "codbarras_ma", "barra_ma", "ean_ma", "ean_producto", "ean_prod", "ean_sku",
-        "ean13_ma", "gtin_ma", "upc_ma", "upc_producto", "codigo_barras_ma",
-        "codigo_barra_producto", "codigo_barras_producto", "codigo_de_barras",
-        "codigo_de_barra", "codigo_ean13", "cod_ean13",
-    ],
-    "NombreModelo": [
-        "NombreModelo", "Nombre Modelo", "Nombre del modelo", "Modelo Nombre", "NOMBRE_MODELO",
-        "DESC_MODELO", "DESCRIPCION_MODELO", "Descripcion Modelo", "Descripción Modelo",
-        "Nombre del Producto", "Nombre Producto", "NOMBRE_PRODUCTO", "Title", "Titulo", "Título",
-        "Descripcion Producto", "DESCRIPCION_MA", "MODELO", "nommod_ma", "nom_modelo",
-        "desc_modelo", "desmod_ma", "product_name", "modelo_nombre",
-    ],
-    "DescripcionWeb": [
-        "DescripcionWeb", "Descripcion Web", "Descripción Web", "DESCRIPCION_WEB",
-        "Product Description", "Descripcion Comercial", "Descripción Comercial",
-        "Descripcion", "Descripción", "Body HTML", "BodyHtml",
-    ],
-    "Caracteristicas": [
-        "Caracteristicas", "Características", "CARACTERISTICAS", "Features", "Beneficios",
-        "BENEFICIOS", "Bullet", "Bullets", "Descripcion larga", "Descripción larga",
-    ],
-    "Material": [
-        "Material", "MATERIAL", "Materiales", "Materialidad", "Composicion", "Composición",
-        "COMPOSICION", "Tipo de Material", "Tipo Material", "Composition",
-    ],
-    "Cuidado": [
-        "Cuidado", "Cuidados", "CUIDADO", "CUIDADOS", "Care", "Instrucciones de cuidado",
-        "Lavado", "Washing",
-    ],
-    "TipoProducto": [
-        "TipoProducto", "Tipo Producto", "Tipo De Producto", "Tipo de Producto", "TIPO",
-        "TIPO_MA", "Tipo", "Type", "Product Type", "Categoria Producto", "tipo_prenda",
-        "Tipo de Prenda", "tipprenda_ma", "prenda",
-    ],
-    "Categoria": ["Categoria", "Categoría", "CATEGORIA", "Familia", "FAMILIA", "Category"],
-    "SubCategoria": [
-        "SubCategoria", "Sub Categoria", "Sub Categoría", "SUBCATEGORIA", "SUB CATEGORIA",
-        "Subcategory", "Sub Category",
-    ],
-    "Genero": ["Genero", "Género", "GENERO", "Sexo", "SEXO", "Gender", "genero_ma", "sexo_ma"],
-    "Temporada": ["Temporada", "TEMPORADA", "Season", "Coleccion Temporada"],
-    "Tecnologia": ["Tecnologia", "Tecnología", "TECNOLOGIA", "TECNOLOGÍA", "Technology", "Tecnologias", "Tecnologías"],
-    "Coleccion": ["Coleccion", "Colección", "COLECCION", "Collection"],
-    "Ocasion": ["Ocasion", "Ocasión", "OCASION", "Ocasiones", "Occasion"],
-    "Deporte": ["Deporte", "DEPORTE", "Sport", "Activity"],
-    "Imagen": ["Image Src", "Imagen", "IMAGEN", "Foto", "FOTO", "Url Imagen", "URL Imagen"],
-}
-
-_CATALOG_ALIAS_TO_ARTI_TARGET = {
-    "mod_col": ["COD MOD COL", "Mod-Col"],
-    "sku": ["CODINT_MA"],
-    "barcode": ["CodBarras"],
-    "size": ["TALNUM_MA"],
-    "brand": ["MARCA_MA"],
-    "title": ["NombreModelo"],
-    "description": ["DescripcionWeb"],
-    "features": ["Caracteristicas"],
-    "material": ["Material"],
-    "care": ["Cuidado"],
-    "product_type": ["TipoProducto"],
-    "category": ["Categoria"],
-    "subcategory": ["SubCategoria"],
-    "gender": ["Genero"],
-    "color_web": ["ColorNombre"],
-    "season": ["Temporada"],
-    "collection": ["Coleccion"],
-    "occasion": ["Ocasion"],
-    "sport": ["Deporte"],
-    "technology": ["Tecnologia"],
-    "image": ["Imagen"],
-    "price": ["Precio"],
-}
-
 for catalog_field, arti_targets in _CATALOG_ALIAS_TO_ARTI_TARGET.items():
     for target in arti_targets:
         if target not in ARTI_COLUMN_ALIASES_APP:
@@ -565,220 +302,6 @@ for catalog_field, arti_targets in _CATALOG_ALIAS_TO_ARTI_TARGET.items():
         for alias in CATALOG_FIELD_ALIASES.get(catalog_field, []):
             if alias not in ARTI_COLUMN_ALIASES_APP[target]:
                 ARTI_COLUMN_ALIASES_APP[target].append(alias)
-
-
-def normalize_arti_columns_for_app(df):
-    if df is None or df.empty:
-        return df
-    result = coalesce_duplicate_columns(df).copy()
-    for target, aliases in ARTI_COLUMN_ALIASES_APP.items():
-        if target not in result.columns:
-            result[target] = ""
-        for alias in aliases:
-            candidate = first_existing_column(result, [alias])
-            if candidate is None or candidate == target:
-                continue
-            fill_mask = result[target].map(clean_value).eq("") & result[candidate].map(clean_value).ne("")
-            if fill_mask.any():
-                result.loc[fill_mask, target] = result.loc[fill_mask, candidate]
-    if "Mod-Col" not in result.columns or result["Mod-Col"].map(clean_value).eq("").all():
-        source = first_existing_column(result, ["COD MOD COL"])
-        if source is not None:
-            result["Mod-Col"] = result[source]
-    for target in ARTI_COLUMN_ALIASES_APP:
-        if target not in result.columns:
-            result[target] = ""
-    return result
-
-
-def expected_catalog_vendors(brand_config):
-    values = {
-        clean_value(brand_config.get("vendor")).lower(),
-        *[clean_value(value).lower() for value in brand_config.get("legacy_vendors", [])],
-        *[clean_value(value).lower() for value in brand_config.get("allowed_arti_brands", [])],
-    }
-    return {value for value in values if value}
-
-
-def first_row_value(row, columns):
-    for column in columns:
-        value = clean_value(row.get(column))
-        if value:
-            return value
-    return ""
-
-
-def parse_publication_date(value):
-    text = clean_value(value)
-    if not text:
-        return ""
-    if re.fullmatch(r"\d+(\.0)?", text):
-        # Excel serial date fallback.
-        try:
-            base = datetime(1899, 12, 30, tzinfo=timezone(timedelta(hours=-5)))
-            return (base + timedelta(days=float(text))).isoformat()
-        except Exception:
-            return text
-    normalized = text.replace("Z", "+00:00")
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?", normalized):
-        normalized = normalized.replace(" ", "T")
-    formats = [
-        "%d/%m/%Y %H:%M",
-        "%d/%m/%Y %H:%M:%S",
-        "%d-%m-%Y %H:%M",
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%d",
-        "%d/%m/%Y",
-    ]
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        parsed = None
-        for fmt in formats:
-            try:
-                parsed = datetime.strptime(text, fmt)
-                break
-            except ValueError:
-                continue
-    if parsed is None:
-        return text
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=-5)))
-    return parsed.isoformat()
-
-
-def parse_iso_datetime(value):
-    text = clean_value(value)
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
-def format_datetime_lima(value):
-    parsed = parse_iso_datetime(value)
-    if parsed is None:
-        return ""
-    lima_time = parsed.astimezone(timezone(timedelta(hours=-5)))
-    return lima_time.strftime("%d/%m/%Y %H:%M")
-
-
-def publication_date_from_row(row):
-    if "Publication Publish Date" in row.index:
-        return parse_publication_date(row.get("Publication Publish Date"))
-    return parse_publication_date(
-        first_row_value(
-            row,
-            [
-                "Fecha publicacion web",
-                "Fecha de publicacion web",
-                "Fecha publicación web",
-                "Fecha de publicación web",
-                "Fecha publicaciÃ³n",
-                "Fecha publicacion",
-                "Fecha de publicaciÃ³n",
-                "Fecha de publicacion",
-                "Publish Date",
-                "Publication Date",
-                "Published At",
-            ],
-        )
-    )
-
-
-def normalize_size(value):
-    text = clean_value(value).upper()
-    if text in {"NAN", "NONE", "NULL", "NA", "N/A", "#N/A", "#N/D", "#ND", "SIN TALLA"}:
-        return ""
-    text = text.replace("TALLA", "").replace("SIZE", "").strip()
-    text = re.sub(r"\s+", " ", text)
-    text = text.replace(",", ".")
-    aliases = {
-        "OS": "O/S",
-        "UNICA": "O/S",
-        "ÃšNICA": "O/S",
-        "ÃƒÅ¡NICA": "O/S",
-        "EXTRA SMALL": "XS",
-        "SX": "XS",
-        "SMALL": "S",
-        "MEDIUM": "M",
-        "LARGE": "L",
-        "EXTRA LARGE": "XL",
-        "X SMALL": "XS",
-        "X LARGE": "XL",
-        "2 EXTRA LARGE": "XXL",
-        "3 EXTRA LARGE": "XXXL",
-    }
-    return aliases.get(text, text)
-
-
-def _size_lookup_keys(value):
-    keys = []
-    raw = clean_value(value).upper()
-    normalized = clean_value(normalize_size(value)).upper()
-    aliases = {
-        "SX": "XS",
-        "XS": "SX",
-        "OS": "O/S",
-        "O/S": "OS",
-        "UNICA": "O/S",
-        "ÃšNICA": "O/S",
-        "ÃƒÅ¡NICA": "O/S",
-        "TALLA UNICA": "O/S",
-        "TALLA ÃšNICA": "O/S",
-        "TALLA ÃƒÅ¡NICA": "O/S",
-        "0": "O/S",
-        "000": "O/S",
-    }
-    for key in (raw, normalized, aliases.get(raw, ""), aliases.get(normalized, "")):
-        if key and key not in keys:
-            keys.append(key)
-    return keys
-
-
-def _set_row_by_size_keys(mapping, size, row):
-    for key in _size_lookup_keys(size):
-        mapping.setdefault(key, row)
-
-
-def _row_by_size_keys(mapping, size):
-    for key in _size_lookup_keys(size):
-        row = mapping.get(key)
-        if row is not None:
-            return row
-    return None
-
-
-def size_sort_key(size):
-    normalized = normalize_size(size)
-    if normalized in SIZE_ORDER:
-        return (0, SIZE_ORDER[normalized], normalized)
-    if re.fullmatch(r"\d+(\.\d+)?", normalized):
-        return (1, float(normalized), normalized)
-    return (9, 9999, normalized)
-
-
-def slugify(value):
-    text = clean_value(value).lower()
-    text = (
-        text.replace("Ã¡", "a")
-        .replace("Ã©", "e")
-        .replace("Ã­", "i")
-        .replace("Ã³", "o")
-        .replace("Ãº", "u")
-        .replace("Ã±", "n")
-    )
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    return text.strip("-") or "producto"
-
-
-def read_excel(uploaded_file):
-    return pd.read_excel(uploaded_file, dtype=object).dropna(how="all")
 
 
 def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=0):
@@ -823,10 +346,6 @@ def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=0):
     st.session_state[f"{state_prefix}_fingerprint"] = fingerprint
     st.session_state[f"{state_prefix}_df"] = df
     return df
-
-
-def read_excel_path(path):
-    return pd.read_excel(path, dtype=object).dropna(how="all")
 
 
 def get_bigquery_config():
@@ -1252,191 +771,6 @@ def row_value(row, column_name):
     if not column_name:
         return ""
     return clean_value(row.get(column_name))
-
-
-def build_matrixify(input_df, arti_df, default_sizes_text):
-    input_cols = detect_input_columns(input_df)
-    arti_cols = detect_arti_columns(arti_df)
-    arti_lookup = build_arti_lookup(arti_df, arti_cols)
-    default_sizes = manual_sizes_from_text(default_sizes_text)
-
-    output_rows = []
-    issues = []
-
-    if not input_cols["style"]:
-        raise ValueError("No pude detectar la columna de estilo/modelo/codigo en el input.")
-
-    for row_number, (_, row) in enumerate(input_df.iterrows(), start=2):
-        style = row_value(row, input_cols["style"])
-        if not style:
-            issues.append({"Fila input": row_number, "Problema": "Sin estilo/modelo/codigo", "Valor": ""})
-            continue
-
-        title = row_value(row, input_cols["title"]) or style
-        vendor = row_value(row, input_cols["vendor"])
-        product_type = row_value(row, input_cols["type"])
-        color = row_value(row, input_cols["color"])
-        price = row_value(row, input_cols["price"])
-        image = row_value(row, input_cols["image"])
-        tags = row_value(row, input_cols["tags"])
-        body = row_value(row, input_cols["body"])
-        base_sku = row_value(row, input_cols["sku"]) or style
-        base_barcode = row_value(row, input_cols["barcode"])
-
-        matched_variants = arti_lookup.get(style.upper(), [])
-        if matched_variants:
-            variants = matched_variants
-        else:
-            variants = [
-                {"size": size, "sku": f"{base_sku}-{size}", "barcode": base_barcode, "color": color}
-                for size in default_sizes
-            ]
-            issues.append(
-                {
-                    "Fila input": row_number,
-                    "Problema": "No hubo match en arti; se usaron tallas manuales",
-                    "Valor": style,
-                }
-            )
-
-        if not variants:
-            issues.append({"Fila input": row_number, "Problema": "Sin tallas para expandir", "Valor": style})
-            continue
-
-        handle_parts = [vendor, title, style, color]
-        handle = slugify("-".join(part for part in handle_parts if part))
-
-        for variant_index, variant in enumerate(sorted(variants, key=lambda value: size_sort_key(value["size"])), start=1):
-            variant_color = variant.get("color") or color
-            output_rows.append(
-                {
-                    "Command": "MERGE",
-                    "Handle": handle,
-                    "Title": title if variant_index == 1 else "",
-                    "Body HTML": body if variant_index == 1 else "",
-                    "Vendor": vendor if variant_index == 1 else "",
-                    "Type": product_type if variant_index == 1 else "",
-                    "Tags": tags if variant_index == 1 else "",
-                    "Status": "Active" if variant_index == 1 else "",
-                    "Published": "TRUE" if variant_index == 1 else "",
-                    "Option1 Name": "Talla",
-                    "Option1 Value": variant["size"],
-                    "Option2 Name": "Color" if variant_color else "",
-                    "Option2 Value": variant_color,
-                    "Variant SKU": variant.get("sku") or f"{base_sku}-{variant['size']}",
-                    "Variant Barcode": variant.get("barcode") or base_barcode,
-                    "Variant Price": price,
-                    "Variant Compare At Price": "",
-                    "Variant Inventory Qty": 0,
-                    "Variant Inventory Tracker": "shopify",
-                    "Variant Inventory Policy": "deny",
-                    "Variant Fulfillment Service": "manual",
-                    "Variant Requires Shipping": "TRUE",
-                    "Variant Taxable": "TRUE",
-                    "Variant Weight": "",
-                    "Variant Weight Unit": "kg",
-                    "Image Src": image if variant_index == 1 else "",
-                    "Image Position": 1 if image and variant_index == 1 else "",
-                    "Metafield: custom.estilo [single_line_text_field]": style if variant_index == 1 else "",
-                    "Metafield: custom.color [single_line_text_field]": color if variant_index == 1 else "",
-                }
-            )
-
-    output_df = pd.DataFrame(output_rows).reindex(columns=MATRIXIFY_COLUMNS)
-    issues_df = pd.DataFrame(issues, columns=["Fila input", "Problema", "Valor"])
-    return output_df, issues_df, input_cols, arti_cols
-
-
-def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
-    matrixify_df = repair_mojibake_dataframe(matrixify_df)
-    issues_df = repair_mojibake_dataframe(issues_df)
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        matrixify_df.to_excel(writer, index=False, sheet_name="Matrixify")
-        issues_df.to_excel(writer, index=False, sheet_name="Revision")
-        repair_mojibake_dataframe(pd.DataFrame(
-            [
-                {"Archivo": "Input", "Campo": key, "Columna detectada": value or ""}
-                for key, value in input_cols.items()
-            ]
-            + [
-                {"Archivo": "Arti", "Campo": key, "Columna detectada": value or ""}
-                for key, value in arti_cols.items()
-            ]
-        )).to_excel(writer, index=False, sheet_name="Mapeo detectado")
-
-        for sheet_name, width in {"Matrixify": 24, "Revision": 38, "Mapeo detectado": 28}.items():
-            ws = writer.book[sheet_name]
-            ws.freeze_panes = "A2"
-            for column_cells in ws.columns:
-                ws.column_dimensions[column_cells[0].column_letter].width = width
-
-    buffer.seek(0)
-    return buffer
-
-
-def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_df=None, skipped_df=None, sial_df=None, centry_df=None, centry_issues_df=None):
-    matrixify_df = repair_mojibake_dataframe(coalesce_duplicate_columns(matrixify_df))
-    summary_df = repair_mojibake_dataframe(coalesce_duplicate_columns(summary_df))
-    issues_df = repair_mojibake_dataframe(coalesce_duplicate_columns(issues_df))
-    type_warnings_df = repair_mojibake_dataframe(coalesce_duplicate_columns(type_warnings_df))
-    skipped_df = repair_mojibake_dataframe(coalesce_duplicate_columns(skipped_df))
-    sial_df = repair_mojibake_dataframe(coalesce_duplicate_columns(sial_df))
-    centry_df = repair_mojibake_dataframe(coalesce_duplicate_columns(centry_df))
-    centry_issues_df = repair_mojibake_dataframe(coalesce_duplicate_columns(centry_issues_df))
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        matrixify_df.to_excel(writer, index=False, sheet_name="Products")
-        summary_df.to_excel(writer, index=False, sheet_name="Resumen")
-        issues_df.to_excel(writer, index=False, sheet_name="Revision")
-        if sial_df is not None:
-            sial_df.to_excel(writer, index=False, sheet_name="Carga Sial")
-        if centry_df is not None:
-            centry_df.to_excel(writer, index=False, sheet_name="Centry")
-            centry_review_df = centry_issues_df if centry_issues_df is not None else pd.DataFrame(columns=["Mod-Col", "Problema"])
-            centry_review_df.to_excel(writer, index=False, sheet_name="Revision Centry")
-        if type_warnings_df is not None:
-            type_warnings_df.to_excel(writer, index=False, sheet_name="Tipos nuevos")
-        if skipped_df is not None:
-            skipped_df.to_excel(writer, index=False, sheet_name="Omitidos sin cambios")
-
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for column_cells in sheet.columns:
-                sheet.column_dimensions[column_cells[0].column_letter].width = 18
-
-    buffer.seek(0)
-    return buffer
-
-
-def update_to_excel_bytes(matrixify_df, issues_df):
-    matrixify_df = repair_mojibake_dataframe(matrixify_df)
-    issues_df = repair_mojibake_dataframe(issues_df)
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        matrixify_df.to_excel(writer, index=False, sheet_name="Products")
-        issues_df.to_excel(writer, index=False, sheet_name="Revision")
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for column_cells in sheet.columns:
-                sheet.column_dimensions[column_cells[0].column_letter].width = 22
-    buffer.seek(0)
-    return buffer
-
-
-def dataframe_to_excel_bytes(sheets):
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for sheet_name, df in sheets.items():
-            safe_name = sheet_name[:31]
-            df = repair_mojibake_dataframe(df)
-            df.to_excel(writer, index=False, sheet_name=safe_name)
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for column_cells in sheet.columns:
-                sheet.column_dimensions[column_cells[0].column_letter].width = 22
-    buffer.seek(0)
-    return buffer
 
 
 COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V7_2026-07-22"
@@ -2008,245 +1342,6 @@ def _commercial_input_blank_df(brand_name, rows=100):
         if column.startswith("PUBLICAR_"):
             df[column] = "NO"
     return df
-
-
-def _build_brand_commercial_input_workbook_legacy(brand_name):
-    from openpyxl.comments import Comment
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    from openpyxl.worksheet.datavalidation import DataValidation
-    from openpyxl.utils import get_column_letter
-
-    brand_label = commercial_brand_display_name(brand_name)
-    profile = commercial_input_profile_for_brand(brand_label)
-    sites = sites_for_commercial_brand(brand_label)
-    columns = commercial_input_columns_for_brand(brand_label)
-    site_columns = [column for column in columns if column.startswith("PUBLICAR_")]
-    allowed_classes = commercial_allowed_classes_for_brand(brand_label)
-    dictionary_df = _commercial_dictionary_rows(brand_label)
-    values_df = _commercial_values_rows(brand_label)
-    examples_df = _commercial_examples_df(brand_label)
-    separated_fields = [
-        field
-        for field in ["Caracteristicas", "Materiales", "Cuidados", "Tecnologia", "Tags adicionales"]
-        if field in columns
-    ]
-    separated_fields_text = ", ".join(separated_fields)
-    automatic_tag_fields = "marca, Mod-Col, tipo de prenda, color y clase"
-    if "Tecnologia" in columns:
-        automatic_tag_fields += ", ademas de las tecnologias informadas"
-    guide_rows = [
-        {"Seccion": "Resumen", "Campo": "Marca", "Detalle": brand_label},
-        {"Seccion": "Resumen", "Campo": "Version formato", "Detalle": COMMERCIAL_INPUT_TEMPLATE_VERSION},
-        {"Seccion": "Resumen", "Campo": "Sitio Shopify", "Detalle": profile.get("site_profile", "")},
-        {
-            "Seccion": "Resumen",
-            "Campo": "Campos adaptados",
-            "Detalle": (
-                f"Columnas comerciales adicionales para {brand_label}: "
-                f"{', '.join(profile.get('extra_columns', [])) or 'ninguna'}."
-            ),
-        },
-        {"Seccion": "Regla clave", "Campo": "Maximo de hojas", "Detalle": "El archivo operativo usa solo INPUT_COMERCIAL, GUIA y DICCIONARIO."},
-        {"Seccion": "Regla clave", "Campo": "Tallas", "Detalle": "Brand no llena tallas. La app crea variantes desde BigQuery/ARTI y excluye tallas invalidas."},
-        {"Seccion": "Regla clave", "Campo": "Clases permitidas", "Detalle": f"Para {brand_label} solo se permiten: {', '.join(allowed_classes)}."},
-        {"Seccion": "Regla clave", "Campo": "Body HTML", "Detalle": "Brand no llena Body HTML. La app lo genera desde Descripcion, Caracteristicas, Materiales y Cuidados."},
-        {"Seccion": "Regla clave", "Campo": "Metafields automaticos", "Detalle": "Brand no llena siblings, logos/GID, guia de tallas, categoria, subcategoria, grupo color ni relaciones. La app los calcula o conserva."},
-        {"Seccion": "Regla clave", "Campo": "Tecnologia", "Detalle": "El Brand informa nombres comerciales. Para Columbia la app resuelve custom.tecnologia y los GID de custom.logo; para los demas sitios usa la definicion propia del metafield."},
-        {"Seccion": "Regla clave", "Campo": "Tags tradicionales", "Detalle": f"Brand no llena tags tradicionales. La app agrega automaticamente {automatic_tag_fields}."},
-        {"Seccion": "Regla clave", "Campo": "Tags adicionales", "Detalle": "Brand solo completa tags comerciales extra en Tags adicionales, separados por |."},
-        {"Seccion": "Publicacion", "Campo": "Columnas PUBLICAR_*", "Detalle": "Usar SI para publicar/considerar ese sitio y NO para mantener apagado/no publicar en ese sitio."},
-        {"Seccion": "Publicacion", "Campo": "Carga completa", "Detalle": "La app debe respetar las columnas SI/NO por sitio aunque el input incluya todos los modelos."},
-        {"Seccion": "Separadores", "Campo": "Listas", "Detalle": f"Usar solamente | en: {separated_fields_text}. No usar comas, punto y coma ni saltos de linea como separador."},
-        {"Seccion": "Separadores", "Campo": "Que hace la app", "Detalle": "El brand escribe valores simples separados por |. Catalog Control Center los convierte internamente en bullets para Body HTML y en listas compatibles con Shopify."},
-        {"Seccion": "Automatico", "Campo": "Informacion fuente", "Detalle": "La app completa o valida Cod Mod Col, tipo de prenda, color, clase y reglas web desde sus fuentes. La guia de tallas tambien es automatica."},
-    ]
-    sites_df = pd.DataFrame(
-        [
-            {
-                "Tipo": "Sitio",
-                "Nombre exacto": publication_column_for_site(site.get("site_label", "")),
-                "Nombre visible": site.get("site_label", ""),
-                "Descripcion": f"Dominio: {site.get('store_domain', '')}",
-                "Valores permitidos": "SI|NO",
-                "Responsable": "Usuario eCommerce",
-            }
-            for site in sites
-        ]
-    )
-    values_compact_df = values_df.rename(
-        columns={
-            "Lista": "Tipo",
-            "Valor": "Nombre exacto",
-            "Marca": "Nombre visible",
-            "Observacion": "Descripcion",
-        }
-    )
-    values_compact_df["Valores permitidos"] = ""
-    values_compact_df["Responsable"] = "Catalog Control Center"
-    metafields_compact_df = commercial_input_metafields_for_brand(brand_label).rename(
-        columns={
-            "Nombre visible": "Nombre exacto",
-            "Namespace": "Nombre visible",
-            "Regla": "Descripcion",
-            "Responsable": "Responsable",
-        }
-    )
-    if not metafields_compact_df.empty:
-        metafields_compact_df["Tipo"] = "Metafield"
-        metafields_compact_df["Valores permitidos"] = metafields_compact_df.get("Tipo de dato", "")
-    dictionary_compact = pd.concat(
-        [
-            dictionary_df.assign(Tipo="Columna input").rename(
-                columns={
-                    "Nombre exacto": "Nombre exacto",
-                    "Nombre visible": "Nombre visible",
-                    "Descripcion": "Descripcion",
-                    "Valores permitidos": "Valores permitidos",
-                    "Responsable de llenado": "Responsable",
-                }
-            )[["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]],
-            sites_df[["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]],
-            values_compact_df[["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]],
-            metafields_compact_df.reindex(columns=["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]),
-        ],
-        ignore_index=True,
-    )
-    sheets = {
-        "INPUT_COMERCIAL": _commercial_input_blank_df(brand_label),
-        # La guia replica el input real: un ejemplo por clase y cada dato en su propia celda.
-        "GUIA": examples_df,
-        "DICCIONARIO": dictionary_compact,
-    }
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for sheet_name, df in sheets.items():
-            repair_mojibake_dataframe(df).to_excel(writer, index=False, sheet_name=sheet_name[:31])
-        wb = writer.book
-        guide_ws = wb["GUIA"]
-        guide_last_column = max(1, len(columns))
-        guide_ws.insert_rows(1, amount=4)
-        guide_ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=guide_last_column)
-        guide_ws.cell(1, 1).value = f"EJEMPLO COMPLETADO - {brand_label}"
-        guide_ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=guide_last_column)
-        guide_ws.cell(2, 1).value = (
-            "Cada fila es un ejemplo listo para copiar: una celda por campo. "
-            f"Usa solamente | para separar: {separated_fields_text}."
-        )
-        guide_header_row = 5
-        guide_first_example_row = guide_header_row + 1
-        guide_last_example_row = guide_header_row + max(1, len(examples_df))
-        rules_title_row = guide_last_example_row + 2
-        guide_ws.merge_cells(
-            start_row=rules_title_row,
-            start_column=1,
-            end_row=rules_title_row,
-            end_column=guide_last_column,
-        )
-        guide_ws.cell(rules_title_row, 1).value = "REGLAS DE LLENADO"
-        rules_header_row = rules_title_row + 1
-        for column_index, title in enumerate(["Seccion", "Campo", "Detalle"], start=1):
-            guide_ws.cell(rules_header_row, column_index).value = title
-        for row_offset, guide_row in enumerate(guide_rows, start=1):
-            target_row = rules_header_row + row_offset
-            guide_ws.cell(target_row, 1).value = clean_value(guide_row.get("Seccion"))
-            guide_ws.cell(target_row, 2).value = clean_value(guide_row.get("Campo"))
-            guide_ws.cell(target_row, 3).value = clean_value(guide_row.get("Detalle"))
-        thin = Side(style="thin", color="D9E2EF")
-        header_fill = PatternFill("solid", fgColor="DCEBFF")
-        required_fill = PatternFill("solid", fgColor="FFE8E8")
-        optional_fill = PatternFill("solid", fgColor="EAF7EF")
-        auto_fill = PatternFill("solid", fgColor="F4F6FA")
-        for ws in wb.worksheets:
-            ws.freeze_panes = "A2"
-            ws.sheet_view.showGridLines = False
-            for row in ws.iter_rows():
-                for cell in row:
-                    cell.alignment = Alignment(vertical="top", wrap_text=True)
-                    cell.border = Border(top=thin, left=thin, right=thin, bottom=thin)
-            for cell in ws[1]:
-                cell.font = Font(bold=True, color="001B44")
-                cell.fill = header_fill
-                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            for column_index in range(1, ws.max_column + 1):
-                letter = get_column_letter(column_index)
-                header_value = ws.cell(row=1, column=column_index).value
-                width = min(max(len(clean_value(header_value)) + 4, 16), 42)
-                ws.column_dimensions[letter].width = width
-        guide_ws.freeze_panes = f"A{guide_first_example_row}"
-        guide_ws.auto_filter.ref = (
-            f"A{guide_header_row}:{get_column_letter(guide_last_column)}{guide_last_example_row}"
-        )
-        guide_ws.row_dimensions[1].height = 30
-        guide_ws.row_dimensions[2].height = 42
-        guide_ws.cell(1, 1).font = Font(bold=True, color="FFFFFF", size=15)
-        guide_ws.cell(1, 1).fill = PatternFill("solid", fgColor="005AA8")
-        guide_ws.cell(1, 1).alignment = Alignment(horizontal="left", vertical="center")
-        guide_ws.cell(2, 1).font = Font(color="334155", size=11)
-        guide_ws.cell(2, 1).fill = PatternFill("solid", fgColor="EAF3FF")
-        guide_ws.cell(2, 1).alignment = Alignment(vertical="center", wrap_text=True)
-        for cell in guide_ws[guide_header_row]:
-            cell.font = Font(bold=True, color="001B44")
-            cell.fill = header_fill
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        guide_ws.row_dimensions[guide_header_row].height = 36
-        for row_index in range(guide_first_example_row, guide_last_example_row + 1):
-            guide_ws.row_dimensions[row_index].height = 58
-            for cell in guide_ws[row_index]:
-                cell.alignment = Alignment(vertical="top", wrap_text=True)
-        guide_ws.cell(rules_title_row, 1).font = Font(bold=True, color="FFFFFF", size=12)
-        guide_ws.cell(rules_title_row, 1).fill = PatternFill("solid", fgColor="172554")
-        guide_ws.cell(rules_title_row, 1).alignment = Alignment(vertical="center")
-        guide_ws.row_dimensions[rules_title_row].height = 26
-        for cell in guide_ws[rules_header_row][:3]:
-            cell.font = Font(bold=True, color="001B44")
-            cell.fill = header_fill
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        guide_ws.column_dimensions["A"].width = 24
-        guide_ws.column_dimensions["B"].width = 22
-        guide_ws.column_dimensions["C"].width = 28
-        for column_index in range(4, guide_last_column + 1):
-            guide_ws.column_dimensions[get_column_letter(column_index)].width = 24
-        ws = wb["INPUT_COMERCIAL"]
-        ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{COMMERCIAL_INPUT_MAX_ROWS + 1}"
-        ws.row_dimensions[1].height = 34
-        column_positions = {cell.value: cell.column for cell in ws[1]}
-        for column in columns:
-            col_idx = column_positions.get(column)
-            if not col_idx:
-                continue
-            header = ws.cell(row=1, column=col_idx)
-            if column in COMMERCIAL_INPUT_REQUIRED_COLUMNS or column.startswith("PUBLICAR_"):
-                header.fill = required_fill
-            elif column in {"Marca"}:
-                header.fill = auto_fill
-            else:
-                header.fill = optional_fill
-            header.comment = Comment(clean_value(dictionary_df.loc[dictionary_df["Nombre exacto"].eq(column), "Descripcion"].head(1).squeeze()), "Catalog Control Center")
-        si_no_validation = DataValidation(type="list", formula1='"SI,NO"', allow_blank=False)
-        ws.add_data_validation(si_no_validation)
-        for column in site_columns:
-            col_letter = get_column_letter(column_positions[column])
-            si_no_validation.add(f"{col_letter}2:{col_letter}{COMMERCIAL_INPUT_MAX_ROWS + 1}")
-        for list_name, target_column in [
-            ("Genero", "Genero"),
-            ("Grupo de edad", "Grupo de edad"),
-            ("Clase", "Clase"),
-            ("Categoria", "Categoria"),
-            ("Tipo de prenda", "Tipo de prenda"),
-            ("Guia de talla", "Guia de talla"),
-        ]:
-            if target_column not in column_positions:
-                continue
-            values = values_df.loc[values_df["Lista"].eq(list_name), "Valor"].dropna().astype(str).drop_duplicates().tolist()
-            if not values:
-                continue
-            options = ",".join(values[:80])
-            validation = DataValidation(type="list", formula1=f'"{options}"', allow_blank=True)
-            ws.add_data_validation(validation)
-            col_letter = get_column_letter(column_positions[target_column])
-            validation.add(f"{col_letter}2:{col_letter}{COMMERCIAL_INPUT_MAX_ROWS + 1}")
-    buffer.seek(0)
-    return buffer
 
 
 def _commercial_brand_fill_guide_df(brand_name):
@@ -6038,22 +5133,6 @@ def stock_units_from_concat_tienda(value, store_code):
     return max(candidates)
 
 
-def ecomm_row_stock_units(row, store_column):
-    store_code = normalize_warehouse_code(row.get(store_column))
-    stock_tiendas = safe_float_value(row.get("stock_tiendas"))
-    stock_bodega = safe_float_value(row.get("stock_bodega"))
-    stock_total = safe_float_value(row.get("stock_total"))
-    if store_code == "320":
-        value = stock_tiendas + stock_bodega
-    else:
-        value = stock_tiendas
-    if value <= 0 and stock_total > 0:
-        value = stock_total
-    if value <= 0 and "CONCAT_TIENDA" in getattr(row, "index", []):
-        value = stock_units_from_concat_tienda(row.get("CONCAT_TIENDA"), store_code)
-    return max(0, value)
-
-
 def ecomm_stock_units_series(stock, store_column):
     if stock.empty:
         return pd.Series(dtype=float)
@@ -7697,14 +6776,6 @@ def _url_is_reachable_image(url, timeout=8):
     return False
 
 
-def _first_reachable_image_url(value):
-    candidates = _image_url_candidates(value)
-    for url in candidates:
-        if _url_is_reachable_image(url):
-            return url, ""
-    return "", candidates[0] if candidates else clean_value(value)
-
-
 def _download_image_bytes(value):
     last_error = ""
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -7866,33 +6937,6 @@ def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existin
     if image_errors:
         message += f" No se cargaron {len(image_errors)} de {len(image_urls)} URLs: {' | '.join(image_errors[:3])}"
     return message
-
-
-def _media_status_summary(media_statuses):
-    ready = []
-    failed = []
-    pending = []
-    for media in media_statuses or []:
-        status = clean_value(media.get("status")).upper()
-        if status == "READY":
-            ready.append(media)
-        elif status == "FAILED":
-            failed.append(media)
-        else:
-            pending.append(media)
-    return ready, failed, pending
-
-
-def _media_error_text(media):
-    errors = media.get("mediaErrors") or []
-    if not errors:
-        return clean_value(media.get("status")) or "sin detalle"
-    messages = []
-    for error in errors[:2]:
-        detail = clean_value(error.get("message")) or clean_value(error.get("details")) or clean_value(error.get("code"))
-        if detail:
-            messages.append(detail)
-    return "; ".join(messages) if messages else "sin detalle"
 
 
 def _metafield_value_for_api(column, value, shopify_config=None):
@@ -8089,91 +7133,6 @@ def _dedupe_product_variant_rows(product_variant_rows):
     return product_variant_rows.loc[kept_indexes].copy(), messages
 
 
-def _missing_variant_inputs(
-    product_variant_rows,
-    option_id=None,
-    option_name=None,
-    fallback_price=None,
-    fallback_compare_at_price=None,
-    force_option_name=False,
-):
-    if product_variant_rows.empty:
-        return []
-
-    existing_skus = set()
-    existing_sizes = set()
-    for _, row in product_variant_rows.iterrows():
-        if not clean_value(row.get("Variant ID")):
-            continue
-        sku = clean_value(row.get("Variant SKU")).upper()
-        size = clean_value(row.get("Option1 Value")).upper()
-        if sku:
-            existing_skus.add(sku)
-        if size:
-            existing_sizes.add(size)
-
-    variants = []
-    seen_keys = set()
-    for _, variant_row in product_variant_rows.iterrows():
-        if clean_value(variant_row.get("Variant ID")):
-            continue
-        sku = clean_value(variant_row.get("Variant SKU"))
-        size = clean_value(variant_row.get("Option1 Value"))
-        if not size:
-            continue
-        if sku and sku.upper() in existing_skus:
-            continue
-        if size.upper() in existing_sizes:
-            continue
-        dedupe_key = (sku.upper(), size.upper())
-        if dedupe_key in seen_keys:
-            continue
-        payload = _variant_bulk_input_from_row(
-            variant_row,
-            option_id=option_id,
-            option_name=option_name,
-            fallback_price=fallback_price,
-            fallback_compare_at_price=fallback_compare_at_price,
-            force_option_name=force_option_name,
-        )
-        if payload:
-            variants.append(payload)
-            seen_keys.add(dedupe_key)
-    return variants
-
-
-def _all_variant_inputs(
-    product_variant_rows,
-    option_id=None,
-    option_name=None,
-    fallback_price=None,
-    fallback_compare_at_price=None,
-    force_option_name=False,
-):
-    variants = []
-    seen_keys = set()
-    for _, variant_row in product_variant_rows.iterrows():
-        sku = clean_value(variant_row.get("Variant SKU"))
-        size = clean_value(variant_row.get("Option1 Value"))
-        if not size:
-            continue
-        dedupe_key = (sku.upper(), size.upper())
-        if dedupe_key in seen_keys:
-            continue
-        payload = _variant_bulk_input_from_row(
-            variant_row,
-            option_id=option_id,
-            option_name=option_name,
-            fallback_price=fallback_price,
-            fallback_compare_at_price=fallback_compare_at_price,
-            force_option_name=force_option_name,
-        )
-        if payload:
-            variants.append(payload)
-            seen_keys.add(dedupe_key)
-    return variants
-
-
 def _size_option_from_product_data(product_data, fallback_name="Talla"):
     options = product_data.get("options") or []
     fallback = clean_value(fallback_name).lower()
@@ -8184,15 +7143,6 @@ def _size_option_from_product_data(product_data, fallback_name="Talla"):
         if clean_value(option.get("name")).lower() in ("talla", "size", "title"):
             return option
     return options[0] if options else {}
-
-
-def _existing_sizes_from_product_data(product_data, option_name):
-    sizes = set()
-    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
-        size = _selected_option_value(variant, option_name)
-        if size:
-            sizes.update(_size_lookup_keys(size))
-    return sizes
 
 
 def _price_fallback_from_product_data(product_data):
@@ -10032,2706 +8982,43 @@ def get_site_config(brand_config, shopify_config=None):
     return ui_config
 
 
+APP_DIR = Path(__file__).resolve().parent
+APP_CSS_PATH = APP_DIR / "assets" / "app.css"
+APP_CSS_PREFIX = '\n        <style>\n'
+APP_CSS_SUFFIX = '</style>\n        '
+APP_CSS_PLACEHOLDER_RE = re.compile(
+    r"__(?:BRAND_PRIMARY_COLOR|BRAND_ACCENT_COLOR|SITE_LOGO_CSS|SITE_LABEL_CSS)__"
+)
+_APP_CSS_CACHE = None
+
+
+def load_app_css():
+    global _APP_CSS_CACHE
+    if _APP_CSS_CACHE is None:
+        try:
+            _APP_CSS_CACHE = APP_CSS_PATH.read_text(encoding="utf-8")
+        except OSError as exc:
+            st.error(
+                f"No se pudo leer la hoja de estilos en {APP_CSS_PATH}. "
+                f"La app sigue operativa pero sin estilos. Detalle: {exc}"
+            )
+            _APP_CSS_CACHE = ""
+    return _APP_CSS_CACHE
+
+
 def inject_custom_css(config):
     site_logo_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
     site_logo_css = f'url("{site_logo_src}")' if site_logo_src else "none"
     site_label_css = clean_value(config.get("site_label")).replace("\\", "\\\\").replace('"', '\\"')
+    reemplazos = {
+        "__BRAND_PRIMARY_COLOR__": str(config["primary_color"]),
+        "__BRAND_ACCENT_COLOR__": str(config["accent_color"]),
+        "__SITE_LOGO_CSS__": site_logo_css,
+        "__SITE_LABEL_CSS__": site_label_css,
+    }
+    cuerpo_css = APP_CSS_PLACEHOLDER_RE.sub(lambda match: reemplazos[match.group(0)], load_app_css())
     st.markdown(
-        f"""
-        <style>
-        :root {{
-            --brand-primary: {config["primary_color"]};
-            --brand-accent: {config["accent_color"]};
-            --site-logo-url: {site_logo_css};
-            --site-label: "{site_label_css}";
-            --brand-soft: color-mix(in srgb, var(--brand-accent) 12%, white);
-            --forus-blue: #17269A;
-            --shopify-green: #95BF47;
-            --bg-main: #F6F8FC;
-            --card-bg: #FFFFFF;
-            --text-main: #0F172A;
-            --text-muted: #64748B;
-        }}
-        .stApp {{ background: var(--bg-main); color: var(--text-main); }}
-        header[data-testid="stHeader"] {{
-            display: none;
-        }}
-        div[data-testid="stToolbar"],
-        div[data-testid="stDecoration"],
-        #MainMenu,
-        footer {{
-            visibility: hidden;
-            height: 0;
-        }}
-        .block-container {{
-            max-width: 1180px;
-            padding-top: 26px;
-            padding-bottom: 34px;
-        }}
-        button[kind="header"],
-        button[kind="headerNoPadding"],
-        button[data-testid="stBaseButton-header"],
-        button[data-testid="stBaseButton-headerNoPadding"],
-        button[data-testid="stExpandSidebarButton"],
-        button[data-testid="stSidebarCollapseButton"],
-        button[data-testid="collapsedControl"],
-        div[data-testid="collapsedControl"] {{
-            display: none !important;
-            pointer-events: none !important;
-        }}
-        section[data-testid="stSidebar"] {{
-            background: #F3F6FB;
-            border-right: 1px solid #DDE6F2;
-            display: block !important;
-            visibility: visible !important;
-            min-width: 360px !important;
-            width: 360px !important;
-            max-width: 360px !important;
-            transform: translateX(0) !important;
-            position: fixed !important;
-            left: 0 !important;
-            top: 0 !important;
-            bottom: 0 !important;
-            z-index: 999 !important;
-        }}
-        section[data-testid="stSidebar"] > div {{
-            padding: 28px 18px;
-            width: 360px !important;
-            overflow-y: auto !important;
-        }}
-        div[data-testid="stSidebarContent"] {{
-            width: 360px !important;
-        }}
-        [data-testid="stSidebar"][aria-expanded="false"],
-        [data-testid="stSidebar"][aria-hidden="true"] {{
-            display: block !important;
-            visibility: visible !important;
-            transform: translateX(0) !important;
-            margin-left: 0 !important;
-        }}
-        section[data-testid="stSidebar"] + div,
-        div[data-testid="stAppViewContainer"] > .main {{
-            margin-left: 360px !important;
-        }}
-        @media (max-width: 900px) {{
-            section[data-testid="stSidebar"],
-            section[data-testid="stSidebar"] > div,
-            div[data-testid="stSidebarContent"] {{
-                min-width: 330px !important;
-                width: 330px !important;
-                max-width: 330px !important;
-            }}
-            section[data-testid="stSidebar"] + div,
-            div[data-testid="stAppViewContainer"] > .main {{
-                margin-left: 330px !important;
-            }}
-        }}
-        section[data-testid="stSidebar"] p,
-        section[data-testid="stSidebar"] label,
-        section[data-testid="stSidebar"] span {{
-            color: #172554;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] span,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] input,
-        section[data-testid="stSidebar"] div[data-baseweb="popover"] span {{
-            color: #0F172A !important;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] details,
-        section[data-testid="stSidebar"] .stButton button {{
-            border-radius: 18px;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
-            min-height: 56px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 10px 22px rgba(15,23,42,0.07);
-            padding-left: 12px;
-        }}
-        section[data-testid="stSidebar"] .stSelectbox label,
-        section[data-testid="stSidebar"] .stRadio label {{
-            color: #5B6B86 !important;
-            font-weight: 800;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card {{
-            position: relative;
-            margin: 6px 0 24px;
-            isolation: isolate;
-            min-height: 84px;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card > div,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] {{
-            min-height: 84px !important;
-            position: relative;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card::after {{
-            content: "Sitio activo";
-            position: absolute;
-            left: 126px;
-            top: 22px;
-            z-index: 12;
-            color: #172554;
-            font-size: 13px;
-            line-height: 1;
-            font-weight: 950;
-            pointer-events: none;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card::before {{
-            content: "";
-            position: absolute;
-            left: 22px;
-            top: 42px;
-            width: 76px;
-            height: 46px;
-            transform: translateY(-50%);
-            border-radius: 13px;
-            background-color: #F8FAFC;
-            background-image: var(--site-logo-url);
-            background-repeat: no-repeat;
-            background-position: center;
-            background-size: contain;
-            border: 1px solid #E2E8F0;
-            z-index: 12;
-            pointer-events: none;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
-            min-height: 78px;
-            border-radius: 20px;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            border-color: #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
-            height: 78px !important;
-            min-height: 78px !important;
-            padding-left: 126px !important;
-            padding-right: 42px !important;
-            justify-content: flex-start !important;
-            text-align: left !important;
-            overflow: hidden !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] {{
-            position: relative;
-            min-height: 78px !important;
-            z-index: 1;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"]::before {{
-            content: var(--site-label);
-            position: absolute;
-            left: 126px;
-            right: 48px;
-            top: 42px;
-            z-index: 12;
-            color: #0F172A;
-            font-size: 18px;
-            line-height: 1.15;
-            font-weight: 950;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: clip;
-            pointer-events: none;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div > div:first-child {{
-            opacity: 0 !important;
-            width: auto !important;
-            min-width: 0 !important;
-            max-width: none !important;
-            flex: 1 1 auto !important;
-            overflow: hidden !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div > div:last-child {{
-            opacity: 1 !important;
-            position: relative;
-            z-index: 13;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] [role="combobox"],
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] [role="combobox"] *,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="singleValue"],
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="ValueContainer"],
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="placeholder"] {{
-            color: transparent !important;
-            -webkit-text-fill-color: transparent !important;
-            text-shadow: none !important;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div > div:first-child {{
-            flex: 1 1 auto;
-            justify-content: center;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div > div:first-child > div {{
-            width: 100%;
-            text-align: center;
-        }}
-        section[data-testid="stSidebar"] div[data-baseweb="select"] span {{
-            color: #0F172A !important;
-            font-size: 18px;
-            font-weight: 900;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] span,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] input {{
-            color: transparent !important;
-            -webkit-text-fill-color: transparent !important;
-            caret-color: transparent !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div *:not(svg):not(path) {{
-            color: transparent !important;
-            -webkit-text-fill-color: transparent !important;
-            text-shadow: none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] svg,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] path {{
-            color: #0F172A !important;
-            fill: #0F172A !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card {{
-            min-height: 88px !important;
-            margin: 6px 0 24px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card::before,
-        section[data-testid="stSidebar"] .st-key-site_picker_card::after,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"]::before {{
-            content: none !important;
-            display: none !important;
-        }}
-        section[data-testid="stSidebar"] .site-picker-visual {{
-            position: relative;
-            z-index: 4;
-            min-height: 78px;
-            display: grid;
-            grid-template-columns: 88px minmax(0, 1fr) 22px;
-            align-items: center;
-            gap: 14px;
-            padding: 12px 18px;
-            border-radius: 20px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-            pointer-events: none;
-            margin-bottom: 10px;
-        }}
-        section[data-testid="stSidebar"] .site-picker-logo {{
-            width: 76px;
-            height: 46px;
-            display: grid;
-            place-items: center;
-            border-radius: 13px;
-            background: #F8FAFC;
-            border: 1px solid #E2E8F0;
-            overflow: hidden;
-        }}
-        section[data-testid="stSidebar"] .site-picker-logo img {{
-            max-width: 68px;
-            max-height: 36px;
-            object-fit: contain;
-            display: block;
-        }}
-        section[data-testid="stSidebar"] .site-picker-logo span {{
-            color: var(--brand-primary) !important;
-            font-size: 14px;
-            line-height: 1;
-            font-weight: 950;
-            -webkit-text-fill-color: var(--brand-primary) !important;
-        }}
-        section[data-testid="stSidebar"] .site-picker-copy {{
-            min-width: 0;
-        }}
-        section[data-testid="stSidebar"] .site-picker-kicker {{
-            margin: 0 0 6px;
-            color: #172554 !important;
-            font-size: 13px;
-            line-height: 1;
-            font-weight: 950;
-            -webkit-text-fill-color: #172554 !important;
-        }}
-        section[data-testid="stSidebar"] .site-picker-name {{
-            margin: 0;
-            color: #0F172A !important;
-            font-size: 18px;
-            line-height: 1.15;
-            font-weight: 950;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            -webkit-text-fill-color: #0F172A !important;
-        }}
-        section[data-testid="stSidebar"] .site-picker-chevron {{
-            color: #0F172A !important;
-            font-size: 21px;
-            line-height: 1;
-            font-weight: 900;
-            -webkit-text-fill-color: #0F172A !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] {{
-            position: relative !important;
-            z-index: 5 !important;
-            min-height: 48px !important;
-            opacity: 1 !important;
-            cursor: pointer !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] * {{
-            cursor: pointer !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] {{
-            min-height: 48px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
-            height: 48px !important;
-            min-height: 48px !important;
-            background: #FFFFFF !important;
-            border-color: #DDE6F2 !important;
-            box-shadow: none !important;
-            border-radius: 14px !important;
-            padding-left: 14px !important;
-            padding-right: 14px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div > div:first-child {{
-            opacity: 1 !important;
-            width: auto !important;
-            min-width: 0 !important;
-            max-width: none !important;
-            flex: 1 1 auto !important;
-            overflow: hidden !important;
-            justify-content: flex-start !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] [role="combobox"],
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] [role="combobox"] *,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="singleValue"],
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="ValueContainer"],
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] div[class*="placeholder"] {{
-            color: #0F172A !important;
-            -webkit-text-fill-color: #0F172A !important;
-            text-shadow: none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] svg,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] path {{
-            opacity: 1 !important;
-            color: #0F172A !important;
-            fill: #0F172A !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] span,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] input,
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div *:not(svg):not(path) {{
-            color: #0F172A !important;
-            -webkit-text-fill-color: #0F172A !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card {{
-            min-height: auto !important;
-            padding: 12px 12px 14px !important;
-            border-radius: 20px !important;
-            background: #FFFFFF !important;
-            border: 1px solid #DDE6F2 !important;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06) !important;
-        }}
-        section[data-testid="stSidebar"] .site-picker-visual {{
-            position: relative !important;
-            min-height: 48px !important;
-            grid-template-columns: 92px minmax(0, 1fr) !important;
-            gap: 12px !important;
-            padding: 0 !important;
-            margin: 0 0 10px !important;
-            border: 0 !important;
-            border-radius: 0 !important;
-            background: transparent !important;
-            box-shadow: none !important;
-        }}
-        section[data-testid="stSidebar"] .site-picker-logo {{
-            width: 82px !important;
-            height: 48px !important;
-        }}
-        section[data-testid="stSidebar"] .site-picker-logo img {{
-            max-width: 74px !important;
-            max-height: 36px !important;
-        }}
-        section[data-testid="stSidebar"] .site-picker-copy {{
-            align-self: center !important;
-        }}
-        section[data-testid="stSidebar"] .site-picker-kicker {{
-            margin: 0 !important;
-            font-size: 14px !important;
-        }}
-        section[data-testid="stSidebar"] .site-picker-name,
-        section[data-testid="stSidebar"] .site-picker-chevron {{
-            display: none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"] {{
-            min-height: 46px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
-            height: 46px !important;
-            min-height: 46px !important;
-            border-radius: 14px !important;
-            background: #F8FAFC !important;
-            border: 1px solid #DDE6F2 !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card {{
-            padding: 12px 14px !important;
-            margin: 6px 0 20px !important;
-            min-height: 0 !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card > div,
-        section[data-testid="stSidebar"] .st-key-site_picker_card [data-testid="stVerticalBlock"] {{
-            min-height: 0 !important;
-            gap: 0 !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card [data-testid="stHorizontalBlock"] {{
-            align-items: center !important;
-            gap: 10px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card [data-testid="column"] {{
-            min-width: 0 !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card .site-picker-logo {{
-            width: 78px !important;
-            height: 50px !important;
-            margin: 0 !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card .site-picker-logo img {{
-            max-width: 70px !important;
-            max-height: 36px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card .stSelectbox label {{
-            display: block !important;
-            margin: 0 0 5px !important;
-            padding: 0 !important;
-            color: #172554 !important;
-            font-size: 13px !important;
-            line-height: 1 !important;
-            font-weight: 950 !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-testid="stSelectbox"],
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] {{
-            min-height: 42px !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-site_picker_card div[data-baseweb="select"] > div {{
-            height: 42px !important;
-            min-height: 42px !important;
-            border-radius: 12px !important;
-            padding-left: 12px !important;
-            padding-right: 10px !important;
-        }}
-        .forus-sidebar {{
-            border-radius: 24px;
-            padding: 22px 20px;
-            margin: 2px 0 28px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.08);
-        }}
-        .forus-logo {{
-            font-size: 30px;
-            line-height: 1;
-            font-weight: 900;
-            letter-spacing: -0.06em;
-            color: #17269A;
-        }}
-        .forus-tagline {{
-            margin-top: 5px;
-            color: #17269A;
-            font-size: 9px;
-            letter-spacing: 0.28em;
-            font-weight: 900;
-        }}
-        .sidebar-brand-card {{
-            display: none;
-            border-radius: 22px;
-            padding: 14px;
-            margin: 12px 0 16px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        .sidebar-brand-logo {{
-            min-height: 66px;
-            display: grid;
-            place-items: center;
-        }}
-        .sidebar-brand-logo img {{
-            max-width: 150px;
-            max-height: 54px;
-            object-fit: contain;
-        }}
-        .sidebar-brand-name {{
-            color: var(--brand-primary) !important;
-            font-size: 18px;
-            line-height: 1.15;
-            text-align: center;
-            font-weight: 900;
-            margin: 0;
-        }}
-        .sidebar-brand-caption {{
-            color: #64748B !important;
-            font-size: 11px;
-            text-align: center;
-            margin: 8px 0 0;
-            font-weight: 800;
-        }}
-        .sidebar-card {{
-            border-radius: 22px;
-            padding: 22px 20px;
-            margin: 18px 0 24px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        .sidebar-label {{
-            margin: 18px 0 10px;
-            font-size: 14px;
-            text-transform: none;
-            letter-spacing: 0;
-            color: #5B6B86;
-            font-weight: 900;
-        }}
-        .sidebar-value {{
-            margin: 0;
-            font-size: 16px;
-            line-height: 1.6;
-            color: #172554 !important;
-            font-weight: 800;
-        }}
-        .active-site-card {{
-            display: grid;
-            place-items: center;
-            border-radius: 20px;
-            padding: 12px 14px;
-            margin: 12px 0 22px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        .active-site-logo {{
-            width: 100%;
-            min-width: 0;
-            height: 54px;
-            display: grid;
-            place-items: center;
-            border-radius: 14px;
-            background: #F8FAFC;
-            border: 1px solid #E2E8F0;
-            overflow: hidden;
-        }}
-        .active-site-logo img {{
-            max-width: 150px;
-            max-height: 42px;
-            object-fit: contain;
-        }}
-        .active-site-name {{
-            margin: 2px 0 0;
-            color: #0F172A !important;
-            font-size: 18px;
-            line-height: 1.1;
-            font-weight: 950;
-        }}
-        .allowed-logo-grid {{
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 10px;
-        }}
-        .allowed-logo-chip {{
-            min-height: 66px;
-            display: grid;
-            place-items: center;
-            padding: 12px 8px;
-            border-radius: 16px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            box-shadow: 0 10px 20px rgba(15,23,42,0.05);
-        }}
-        .allowed-logo-chip.primary {{
-            border-color: #93C5FD;
-            box-shadow: 0 0 0 1px #BFDBFE, 0 10px 20px rgba(23,38,154,0.08);
-        }}
-        .allowed-logo-chip img {{
-            max-width: 104px;
-            max-height: 40px;
-            object-fit: contain;
-        }}
-        .allowed-logo-chip span {{
-            max-width: 100%;
-            color: #172554 !important;
-            font-size: 10px;
-            line-height: 1.15;
-            text-align: center;
-            font-weight: 950;
-            text-transform: uppercase;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] {{
-            display: grid;
-            gap: 10px;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label {{
-            min-height: 58px;
-            border-radius: 18px;
-            border: 1px solid #DDE6F2;
-            background: #FFFFFF;
-            box-shadow: 0 10px 22px rgba(15,23,42,0.06);
-            padding: 8px 16px;
-            margin: 0;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {{
-            border-color: #93C5FD;
-            box-shadow: 0 0 0 1px #BFDBFE, 0 10px 22px rgba(23,38,154,0.08);
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label p {{
-            color: #172554 !important;
-            font-size: 16px;
-            font-weight: 850;
-        }}
-        .st-key-shopify_sidebar_card {{
-            border-radius: 24px;
-            background: #FFFFFF;
-            border: 1px solid #DDE6F2;
-            padding: 20px;
-            margin-top: 18px;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.08);
-        }}
-        .st-key-shopify_sidebar_card h3 {{
-            margin: 0;
-            color: #0F172A;
-            font-size: 19px;
-            font-weight: 950;
-        }}
-        .shopify-card-head {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 16px;
-        }}
-        .shopify-config-box {{
-            border-radius: 18px;
-            background: #ECFDF5;
-            border: 1px solid #BBF7D0;
-            padding: 16px;
-            color: #047857;
-            font-size: 14px;
-            line-height: 1.55;
-            font-weight: 800;
-            margin-bottom: 14px;
-        }}
-        .shopify-meta {{
-            color: #64748B !important;
-            font-size: 13px;
-            margin: 0 0 14px;
-        }}
-        section[data-testid="stSidebar"] {{
-            background:#F3F6FB !important;
-            border-right:1px solid #DDE6F2 !important;
-            min-width:340px !important;
-            width:340px !important;
-            max-width:340px !important;
-        }}
-        section[data-testid="stSidebar"] > div,
-        div[data-testid="stSidebarContent"] {{
-            width:340px !important;
-        }}
-        section[data-testid="stSidebar"] + div,
-        div[data-testid="stAppViewContainer"] > .main {{
-            margin-left:340px !important;
-        }}
-        section[data-testid="stSidebar"] > div {{
-            padding:28px 14px 18px !important;
-        }}
-        section[data-testid="stSidebar"] p,
-        section[data-testid="stSidebar"] label,
-        section[data-testid="stSidebar"] span {{
-            color:#172554 !important;
-        }}
-        .forus-sidebar {{
-            display:block !important;
-            margin:4px 0 24px !important;
-            padding:20px 18px !important;
-            border:1px solid #DDE6F2 !important;
-            border-radius:22px !important;
-            background:#FFFFFF !important;
-            box-shadow:0 12px 24px rgba(15,23,42,0.08) !important;
-        }}
-        .forus-logo {{
-            width:auto;
-            min-width:0;
-            height:auto;
-            border-radius:0;
-            display:block;
-            background:transparent;
-            color:#17269A !important;
-            font-size:30px !important;
-            letter-spacing:-0.06em;
-        }}
-        .forus-tagline {{
-            display:block;
-            color:#17269A !important;
-        }}
-        .forus-sidebar::after {{
-            content:none;
-        }}
-        section[data-testid="stSidebar"] hr,
-        section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] + div {{
-            border-color:#DDE6F2 !important;
-        }}
-        .st-key-logout_card {{
-            position:fixed;
-            left:0;
-            bottom:0;
-            width:340px;
-            padding:18px 14px 22px;
-            background:#F3F6FB;
-            border-top:1px solid #DDE6F2;
-            box-sizing:border-box;
-            z-index:1000;
-        }}
-        .st-key-logout_card div[data-testid="stCaptionContainer"] {{
-            display:none;
-        }}
-        .st-key-logout_card .stButton button {{
-            min-height:46px !important;
-            width:100%;
-            justify-content:flex-start;
-            padding-left:18px;
-            border:1px solid #005AA8 !important;
-            background:#FFFFFF !important;
-            color:#005AA8 !important;
-            box-shadow:none !important;
-            font-size:16px;
-            font-weight:900;
-        }}
-        .st-key-logout_card .stButton button::before {{
-            content:"\\21AA";
-            margin-right:12px;
-            font-size:20px;
-            color:#005AA8;
-        }}
-        .st-key-site_picker_card,
-        .st-key-shopify_sidebar_card {{
-            display:block !important;
-        }}
-        .allowed-logo-grid {{
-            display:grid !important;
-            grid-template-columns:repeat(2, minmax(0, 1fr)) !important;
-            gap:10px !important;
-            margin:10px 0 18px !important;
-        }}
-        .allowed-logo-chip {{
-            min-height:68px !important;
-            padding:10px 8px !important;
-            border-radius:14px !important;
-            background:#FFFFFF !important;
-            border:1px solid #DDE6F2 !important;
-            box-shadow:0 10px 20px rgba(15,23,42,0.05) !important;
-        }}
-        .allowed-logo-chip.primary {{
-            border-color:#60A5FA !important;
-            box-shadow:0 0 0 1px #BFDBFE, 0 10px 20px rgba(23,38,154,0.08) !important;
-        }}
-        .allowed-logo-chip img {{
-            max-width:108px !important;
-            max-height:42px !important;
-            object-fit:contain !important;
-        }}
-        section[data-testid="stSidebar"] .sidebar-label {{
-            position:relative !important;
-            display:block !important;
-            clear:both !important;
-            margin:18px 0 9px !important;
-            padding-left:0 !important;
-            color:#0B1B46 !important;
-            font-size:13px !important;
-            line-height:1.2 !important;
-            font-weight:950 !important;
-            z-index:4 !important;
-        }}
-        section[data-testid="stSidebar"] .sidebar-label::before {{
-            display:none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-operation_nav,
-        section[data-testid="stSidebar"] .st-key-load_mode_nav,
-        section[data-testid="stSidebar"] .st-key-sidebar_actions {{
-            display:block !important;
-            margin:0 0 14px !important;
-            padding:0 0 12px !important;
-            min-height:auto !important;
-            border:0 !important;
-            border-bottom:1px solid #E2E8F0 !important;
-            border-radius:0 !important;
-            background:transparent !important;
-            box-shadow:none !important;
-        }}
-        section[data-testid="stSidebar"] .st-key-load_mode_nav {{
-            margin-top:0 !important;
-        }}
-        section[data-testid="stSidebar"] .nav-disabled-note {{
-            display:block !important;
-            margin:-2px 0 12px !important;
-            color:#64748B !important;
-            font-size:11.5px !important;
-            line-height:1.35 !important;
-            font-weight:750 !important;
-        }}
-        section[data-testid="stSidebar"] {{
-            background:#F4F7FB !important;
-            border-right:1px solid #DCE6F2 !important;
-        }}
-        section[data-testid="stSidebar"] > div {{
-            padding:18px 14px 24px !important;
-            overflow-x:hidden !important;
-        }}
-        .forus-sidebar {{
-            margin:0 0 18px !important;
-            padding:18px 16px !important;
-            border-radius:18px !important;
-            box-shadow:0 10px 22px rgba(15,23,42,0.06) !important;
-        }}
-        .st-key-logout_card {{
-            position:static !important;
-            width:auto !important;
-            padding:0 !important;
-            margin:12px 0 18px !important;
-            background:transparent !important;
-            border:0 !important;
-        }}
-        .st-key-logout_card .stButton button {{
-            min-height:40px !important;
-            width:auto !important;
-            padding:0 14px !important;
-            border-radius:14px !important;
-            font-size:13px !important;
-            font-weight:850 !important;
-        }}
-        .st-key-logout_card .stButton button::before {{
-            font-size:16px !important;
-            margin-right:8px !important;
-        }}
-        div.st-key-operation_nav_kpis button,
-        div.st-key-operation_nav_input button,
-        div.st-key-operation_nav_tickets button,
-        div.st-key-brand_portal_input button,
-        div.st-key-brand_portal_tickets button,
-        div.st-key-load_mode_complete button,
-        div.st-key-load_mode_partial button,
-        div.st-key-reset_load_workspace button,
-        div.st-key-test_shopify_connection button {{
-            display:grid !important;
-            grid-template-columns:30px minmax(0, 1fr) !important;
-            align-items:center !important;
-            column-gap:10px !important;
-            min-height:44px !important;
-            width:100% !important;
-            justify-content:stretch !important;
-            text-align:left !important;
-            padding:8px 12px !important;
-            border-radius:14px !important;
-            border:1px solid #DDE6F2 !important;
-            background:#FFFFFF !important;
-            color:#0B1B46 !important;
-            font-size:14px !important;
-            font-weight:900 !important;
-            box-shadow:0 8px 16px rgba(15,23,42,0.035) !important;
-            opacity:1 !important;
-            visibility:visible !important;
-            white-space:normal !important;
-            line-height:1.15 !important;
-            margin:0 0 9px !important;
-            transition:background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease !important;
-        }}
-        div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
-        div.st-key-operation_nav_input button [data-testid="stMarkdownContainer"],
-        div.st-key-operation_nav_tickets button [data-testid="stMarkdownContainer"],
-        div.st-key-brand_portal_input button [data-testid="stMarkdownContainer"],
-        div.st-key-brand_portal_tickets button [data-testid="stMarkdownContainer"],
-        div.st-key-load_mode_complete button [data-testid="stMarkdownContainer"],
-        div.st-key-load_mode_partial button [data-testid="stMarkdownContainer"],
-        div.st-key-reset_load_workspace button [data-testid="stMarkdownContainer"],
-        div.st-key-test_shopify_connection button [data-testid="stMarkdownContainer"] {{
-            width:100% !important;
-            min-width:0 !important;
-            text-align:left !important;
-        }}
-        div.st-key-operation_nav_kpis button p,
-        div.st-key-operation_nav_input button p,
-        div.st-key-operation_nav_tickets button p,
-        div.st-key-brand_portal_input button p,
-        div.st-key-brand_portal_tickets button p,
-        div.st-key-load_mode_complete button p,
-        div.st-key-load_mode_partial button p,
-        div.st-key-reset_load_workspace button p,
-        div.st-key-test_shopify_connection button p {{
-            width:100% !important;
-            margin:0 !important;
-            text-align:left !important;
-            color:#0B1B46 !important;
-            font-size:14px !important;
-            line-height:1.15 !important;
-            font-weight:900 !important;
-            white-space:normal !important;
-        }}
-        div.st-key-operation_nav_kpis button::before,
-        div.st-key-operation_nav_input button::before,
-        div.st-key-operation_nav_tickets button::before,
-        div.st-key-brand_portal_input button::before,
-        div.st-key-brand_portal_tickets button::before,
-        div.st-key-load_mode_complete button::before,
-        div.st-key-load_mode_partial button::before,
-        div.st-key-reset_load_workspace button::before,
-        div.st-key-test_shopify_connection button::before {{
-            content:"" !important;
-            width:30px !important;
-            height:30px !important;
-            min-width:30px !important;
-            margin:0 !important;
-            border-radius:11px !important;
-            display:inline-grid !important;
-            place-items:center !important;
-            background:#EEF2FF !important;
-            background-repeat:no-repeat !important;
-            background-position:center !important;
-            background-size:18px 18px !important;
-        }}
-        div.st-key-operation_nav_kpis button::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V5'/%3E%3Cpath d='M4 19h16'/%3E%3Cpath d='M8 16v-5'/%3E%3Cpath d='M12 16V8'/%3E%3Cpath d='M16 16v-9'/%3E%3C/svg%3E") !important;
-        }}
-        div.st-key-operation_nav_input button::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
-        }}
-        div.st-key-operation_nav_tickets button::before,
-        div.st-key-brand_portal_tickets button::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='4' width='16' height='16' rx='2'/%3E%3Cpath d='M8 9h8M8 13h8M8 17h5'/%3E%3C/svg%3E") !important;
-        }}
-        div.st-key-brand_portal_input button::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
-        }}
-        div.st-key-load_mode_complete button::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 16V7'/%3E%3Cpath d='m8 11 4-4 4 4'/%3E%3Cpath d='M20 16.5A4.5 4.5 0 0 0 15.5 12h-.6A6 6 0 1 0 4 15.5'/%3E%3Cpath d='M4 18h16'/%3E%3C/svg%3E") !important;
-        }}
-        div.st-key-load_mode_partial button::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17 1l4 4-4 4'/%3E%3Cpath d='M3 11V9a4 4 0 0 1 4-4h14'/%3E%3Cpath d='M7 23l-4-4 4-4'/%3E%3Cpath d='M21 13v2a4 4 0 0 1-4 4H3'/%3E%3C/svg%3E") !important;
-        }}
-        div.st-key-reset_load_workspace button::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-3-6.7'/%3E%3Cpath d='M21 3v6h-6'/%3E%3C/svg%3E") !important;
-        }}
-        div.st-key-test_shopify_connection button::before {{
-            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22v-5'/%3E%3Cpath d='M9 7V2'/%3E%3Cpath d='M15 7V2'/%3E%3Cpath d='M6 7h12v5a6 6 0 0 1-12 0V7Z'/%3E%3C/svg%3E") !important;
-        }}
-        div.st-key-operation_nav_kpis button:hover,
-        div.st-key-operation_nav_input button:hover,
-        div.st-key-operation_nav_tickets button:hover,
-        div.st-key-brand_portal_input button:hover,
-        div.st-key-brand_portal_tickets button:hover,
-        div.st-key-load_mode_complete button:hover,
-        div.st-key-load_mode_partial button:hover,
-        div.st-key-reset_load_workspace button:hover,
-        div.st-key-test_shopify_connection button:hover {{
-            border-color:#93C5FD !important;
-            background:#F8FBFF !important;
-            color:#0B1B46 !important;
-            transform:translateY(-1px) !important;
-            box-shadow:0 14px 26px rgba(37,99,235,0.10) !important;
-        }}
-        .st-key-shopify_sidebar_card {{
-            margin:18px 0 0 !important;
-            padding:16px !important;
-            border-radius:18px !important;
-        }}
-        .st-key-shopify_sidebar_card .stButton button {{
-            min-height:40px !important;
-            width:100% !important;
-            border-radius:14px !important;
-            font-size:13px !important;
-            font-weight:850 !important;
-        }}
-        section[data-testid="stSidebar"] .stButton button:disabled {{
-            display:none !important;
-        }}
-        section[data-testid="stSidebar"] div:has(> .stButton button:disabled),
-        section[data-testid="stSidebar"] div:has(> div > .stButton button:disabled) {{
-            min-height:0 !important;
-            margin:0 !important;
-            padding:0 !important;
-        }}
-        .top-header {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 18px;
-            border: 1px solid #DDE6F2;
-            border-radius: 0;
-            background: white;
-            padding: 22px 28px;
-            margin: 0 0 16px;
-            box-shadow: none;
-        }}
-        .brand-lockup {{
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            min-width: 0;
-        }}
-        .brand-logo-card {{
-            width: 92px;
-            height: 58px;
-            border: 1px solid #E2E8F0;
-            border-radius: 18px;
-            display: grid;
-            place-items: center;
-            background: #FFFFFF;
-            overflow: hidden;
-            flex: 0 0 auto;
-        }}
-        .brand-logo-card img {{
-            max-width: 82px;
-            max-height: 42px;
-            object-fit: contain;
-        }}
-        .brand-fallback {{
-            color: var(--brand-primary);
-            font-weight: 900;
-            font-size: 14px;
-            text-align: center;
-            padding: 0 6px;
-        }}
-        .header-eyebrow {{
-            color: var(--brand-accent);
-            font-size: 11px;
-            font-weight: 900;
-            letter-spacing: 0.18em;
-            text-transform: uppercase;
-            margin: 0;
-        }}
-        .header-title {{
-            margin: 3px 0 2px;
-            font-size: 28px;
-            line-height: 1.15;
-            font-weight: 900;
-            color: #0F172A;
-            letter-spacing: 0;
-        }}
-        .header-subtitle {{
-            margin: 0;
-            color: var(--text-muted);
-            font-size: 13px;
-            line-height: 1.45;
-        }}
-        .shopify-lockup {{
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            flex: 0 0 auto;
-        }}
-        .shopify-bag {{
-            width: 44px;
-            height: 44px;
-            border-radius: 16px;
-            display: grid;
-            place-items: center;
-            background: var(--shopify-green);
-            color: white;
-            font-size: 23px;
-            font-weight: 900;
-            font-style: italic;
-        }}
-        .status-badge {{
-            display: inline-flex;
-            align-items: center;
-            border-radius: 999px;
-            padding: 5px 10px;
-            font-size: 11px;
-            font-weight: 900;
-            background: #ECFDF5;
-            color: #047857;
-            border: 1px solid #A7F3D0;
-            white-space: nowrap;
-        }}
-        .status-badge.blue {{
-            background: #EFF6FF;
-            color: #17269A;
-            border-color: #BFDBFE;
-        }}
-        .status-badge.warn {{
-            background: #FFFBEB;
-            color: #B45309;
-            border-color: #FDE68A;
-        }}
-        .matrix-stepper {{
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 12px;
-            margin: 0 0 24px;
-            border: 1px solid #DDE6F2;
-            border-radius: 28px;
-            padding: 18px;
-            background: #FFFFFF;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        .step-card {{
-            min-height: 74px;
-            border-radius: 18px;
-            background: #F8FAFC;
-            border: 1px solid #E8EEF7;
-            padding: 14px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }}
-        .step-card.current {{
-            border-color: #BFDBFE;
-            background: #EFF6FF;
-        }}
-        .step-index {{
-            display: inline-grid;
-            place-items: center;
-            width: 40px;
-            height: 40px;
-            border-radius: 999px;
-            background: #FFFFFF;
-            color: var(--brand-primary);
-            border: 1px solid #DDE6F2;
-            font-size: 15px;
-            font-weight: 900;
-            box-shadow: 0 7px 15px rgba(15,23,42,0.08);
-        }}
-        .step-title {{
-            margin: 0 0 2px;
-            color: #0F172A;
-            font-size: 16px;
-            font-weight: 900;
-        }}
-        .step-caption {{
-            margin: 0;
-            color: var(--text-muted);
-            font-size: 12px;
-        }}
-        .section-card {{
-            border: 1px solid #DDE6F2;
-            border-radius: 26px;
-            background: white;
-            padding: 26px 28px;
-            margin: 0 0 24px;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-            overflow: visible;
-        }}
-        .section-card h2 {{
-            color: #0F172A;
-            margin: 0 0 8px;
-            font-size: 24px;
-            line-height: 1.2;
-            font-weight: 900;
-            letter-spacing: 0;
-        }}
-        .section-card.action-card h2 {{
-            color: #FFFFFF;
-        }}
-        .section-card.action-card p {{
-            color: #E0E7FF;
-        }}
-        .section-card.action-card {{
-            padding: 20px 22px;
-            margin-bottom: 12px;
-        }}
-        .section-card p, .section-card .caption {{
-            color: var(--text-muted);
-            font-size: 13px;
-        }}
-        .st-key-commercial_input_download_panel,
-        .st-key-commercial_input_validate_panel {{
-            margin:0 0 22px !important;
-            padding:26px 28px !important;
-            border:1px solid #DDE6F2 !important;
-            border-radius:22px !important;
-            background:#FFFFFF !important;
-            box-shadow:0 12px 24px rgba(15,23,42,0.055) !important;
-        }}
-        .commercial-input-heading {{
-            margin:0 0 18px !important;
-        }}
-        .commercial-input-heading p {{
-            margin:0 0 5px !important;
-            color:#2563EB !important;
-            font-size:11px !important;
-            font-weight:900 !important;
-            letter-spacing:.12em !important;
-            text-transform:uppercase !important;
-        }}
-        .commercial-input-heading h2 {{
-            margin:0 !important;
-            color:#0B1B46 !important;
-            font-size:25px !important;
-            line-height:1.15 !important;
-            font-weight:900 !important;
-        }}
-        .commercial-input-heading span {{
-            display:block !important;
-            margin-top:7px !important;
-            color:#64748B !important;
-            font-size:13px !important;
-            font-weight:650 !important;
-        }}
-        .commercial-input-note {{
-            margin-top:16px !important;
-            padding:14px 16px !important;
-            border:1px solid #BFDBFE !important;
-            border-radius:14px !important;
-            background:#F0F7FF !important;
-            color:#1E3A5F !important;
-            font-size:13px !important;
-            line-height:1.55 !important;
-        }}
-        .commercial-input-note strong {{
-            color:#0B3D91 !important;
-        }}
-        .source-grid {{
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 14px;
-            margin-top: 22px;
-        }}
-        .metric-grid {{
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 12px;
-            margin-top: 16px;
-        }}
-        .source-card, .metric-card, .check-item {{
-            border: 1px solid #E2E8F0;
-            border-radius: 18px;
-            background: #F8FAFC;
-            padding: 18px 20px;
-        }}
-        .source-card b, .metric-card b {{
-            display: block;
-            color: #0F172A;
-            font-size: 13px;
-            margin-bottom: 4px;
-        }}
-        .source-card span, .metric-card span, .check-item {{
-            color: var(--text-muted);
-            font-size: 12px;
-        }}
-        .source-card strong {{
-            display: block;
-            color: #0F172A;
-            font-size: 18px;
-            margin-top: 8px;
-            font-weight: 900;
-        }}
-        .st-key-sources_upload_panel {{
-            border: 1px solid #DDE6F2;
-            border-radius: 26px;
-            background: #FFFFFF;
-            padding: 26px 28px;
-            margin: 0 0 24px;
-            box-shadow: 0 12px 24px rgba(15,23,42,0.06);
-        }}
-        .st-key-sources_upload_panel h2 {{
-            color: #0F172A;
-            margin: 0 0 8px;
-            font-size: 24px;
-            line-height: 1.2;
-            font-weight: 900;
-            letter-spacing: 0;
-        }}
-        .st-key-sources_upload_panel p {{
-            color: var(--text-muted);
-            font-size: 13px;
-            margin: 0;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] {{
-            border: 0 !important;
-            border-radius: 0 !important;
-            padding: 0 !important;
-            background: transparent !important;
-            box-shadow: none !important;
-            margin-top: 0;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] section {{
-            border: 0 !important;
-            background: transparent !important;
-            padding: 0 !important;
-            min-height: 0 !important;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button {{
-            border-radius: 18px !important;
-            background: var(--forus-blue) !important;
-            color: #FFFFFF !important;
-            border: 1px solid var(--forus-blue) !important;
-            box-shadow: 0 10px 20px rgba(23,38,154,0.24);
-            min-height: 52px;
-            min-width: 190px;
-            padding: 0 24px !important;
-            font-size: 0 !important;
-            font-weight: 900 !important;
-            width: 100%;
-            display: inline-flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            gap: 10px !important;
-            overflow: hidden !important;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button * {{
-            display: none !important;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::before {{
-            content: "\\21E7";
-            font-size: 18px !important;
-            color: #FFFFFF !important;
-            line-height: 1;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] button::after {{
-            content: "Cargar input";
-            font-size: 15px !important;
-            color: #FFFFFF !important;
-            line-height: 1;
-            white-space: nowrap;
-        }}
-        .st-key-catalog_upload_slot div[data-testid="stFileUploader"] button::after {{
-            content: "Subir Catálogo Matrixify";
-            font-size: 15px !important;
-            color: #FFFFFF !important;
-            line-height: 1;
-            white-space: nowrap;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderFileName"] {{
-            display: block !important;
-            color: #0F172A !important;
-            font-weight: 800;
-            margin-top: 8px;
-        }}
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] small,
-        .st-key-sources_upload_panel div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzoneInstructions"] {{
-            display: none !important;
-        }}
-        .metric-card strong {{
-            display: block;
-            margin-top: 4px;
-            color: #0F172A;
-            font-size: 18px;
-            line-height: 1;
-            font-weight: 900;
-        }}
-        .metric-card span {{
-            display: block;
-            min-height: 30px;
-            line-height: 1.35;
-        }}
-        .kpi-hero {{
-            display:flex;
-            align-items:flex-start;
-            justify-content:space-between;
-            gap:18px;
-            margin-bottom:8px;
-        }}
-        .kpi-title h2 {{
-            margin:0;
-            color:#0F172A;
-            font-size:30px;
-            font-weight:950;
-        }}
-        .kpi-title p {{
-            margin:6px 0 0;
-            color:#64748B;
-            font-size:13px;
-            font-weight:750;
-        }}
-        .kpi-card-grid {{
-            display:grid;
-            grid-template-columns:repeat(4,minmax(0,1fr));
-            gap:14px;
-            margin:14px 0 22px;
-        }}
-        .kpi-section-label {{
-            margin:18px 0 -4px;
-            color:#0B1B46;
-            font-weight:950;
-            font-size:1.02rem;
-            letter-spacing:0;
-        }}
-        .kpi-section-label.secondary {{
-            margin-top:8px;
-            color:#64748B;
-        }}
-        .kpi-card {{
-            display:flex;
-            align-items:center;
-            gap:16px;
-            height:96px;
-            min-height:96px;
-            padding:16px 20px;
-            border-radius:14px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
-            box-shadow:0 12px 26px rgba(15,23,42,0.07);
-        }}
-        .kpi-icon {{
-            width:54px;
-            height:54px;
-            min-width:54px;
-            display:grid;
-            place-items:center;
-            border-radius:50%;
-            font-size:23px;
-            font-weight:950;
-        }}
-        .kpi-card span {{
-            display:block;
-            color:#334155;
-            font-size:13px;
-            line-height:1.25;
-            font-weight:900;
-            margin-bottom:5px;
-            min-height:32px;
-        }}
-        .kpi-card strong {{
-            display:block;
-            color:#0F172A;
-            font-size:29px;
-            line-height:1;
-            font-weight:950;
-        }}
-        .kpi-card.blue .kpi-icon {{ background:#EAF2FF; color:#2563EB; }}
-        .kpi-card.green .kpi-icon {{ background:#EAF8EF; color:#16A34A; }}
-        .kpi-card.purple .kpi-icon {{ background:#F1EAFF; color:#6D28D9; }}
-        .kpi-card.orange .kpi-icon {{ background:#FFF3E4; color:#EA580C; }}
-        .kpi-card.cyan .kpi-icon {{ background:#E8F7FB; color:#0891B2; }}
-        .kpi-card.lime .kpi-icon {{ background:#ECFDF3; color:#15803D; }}
-        .kpi-card.red .kpi-icon {{ background:#FEECEF; color:#DC2626; }}
-        .kpi-card.slate .kpi-icon {{ background:#EEF2F7; color:#334155; }}
-        div[class*="refresh_kpis"] .stButton button {{
-            width:auto !important;
-            min-width:118px !important;
-            height:auto !important;
-            min-height:42px !important;
-            padding:0 18px !important;
-            border-radius:999px !important;
-            font-size:13px !important;
-            line-height:1.1 !important;
-            white-space:nowrap !important;
-            word-break:keep-all !important;
-            overflow-wrap:normal !important;
-        }}
-        .combo-card {{
-            width:100%;
-            max-width:100%;
-            box-sizing:border-box;
-            margin:16px 0 24px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
-            border-radius:18px;
-            box-shadow:0 12px 28px rgba(15,23,42,0.06);
-            overflow:hidden;
-        }}
-        .combo-card-head {{
-            display:flex;
-            justify-content:space-between;
-            align-items:flex-start;
-            gap:16px;
-            padding:20px 24px 14px;
-        }}
-        .combo-title {{
-            display:flex;
-            align-items:center;
-            gap:12px;
-            color:#0B1B46;
-            font-size:1.28rem;
-            font-weight:950;
-        }}
-        .combo-title-icon {{
-            display:inline-grid;
-            place-items:center;
-            width:36px;
-            height:36px;
-            border-radius:10px;
-            background:#EAF2FF;
-            color:#2563EB;
-            box-shadow:inset 0 0 0 1px #BFDBFE;
-        }}
-        .combo-card-head p {{
-            margin:6px 0 0 48px;
-            color:#64748B;
-            font-size:13px;
-            font-weight:750;
-        }}
-        .combo-chip {{
-            padding:8px 12px;
-            border:1px solid #DDE6F2;
-            border-radius:10px;
-            color:#172554;
-            font-size:13px;
-            font-weight:900;
-            background:#F8FAFC;
-            white-space:nowrap;
-        }}
-        .combo-table-wrap {{
-            width:100%;
-            max-width:100%;
-            padding:0 24px 14px;
-            box-sizing:border-box;
-            overflow-x:auto;
-        }}
-        .combo-table {{
-            width:100%;
-            min-width:900px;
-            table-layout:fixed;
-            border-collapse:separate;
-            border-spacing:0;
-            border:1px solid #DDE6F2;
-            border-radius:12px;
-            overflow:hidden;
-        }}
-        .combo-table-wrap.compact {{ overflow-x:visible; }}
-        .combo-table.compact {{
-            min-width:0;
-        }}
-        .combo-table th {{
-            padding:12px 14px;
-            text-align:left;
-            background:#F8FAFC;
-            color:#475569;
-            font-weight:950;
-            font-size:12px;
-            border-bottom:1px solid #DDE6F2;
-        }}
-        .combo-table td {{
-            padding:12px 14px;
-            border-bottom:1px solid #E6EDF7;
-            border-right:1px solid #E6EDF7;
-            vertical-align:middle;
-            color:#0B1B46;
-            font-weight:750;
-        }}
-        .combo-table td:last-child, .combo-table th:last-child {{ border-right:none; }}
-        .combo-table tbody tr:last-child td {{ border-bottom:none; }}
-        .combo-blocker {{
-            display:grid;
-            grid-template-columns:72px 1fr;
-            align-items:center;
-            gap:12px;
-            min-width:0;
-        }}
-        .combo-blocker b {{
-            font-size:.94rem;
-            line-height:1.25;
-        }}
-        .combo-blocker small {{
-            grid-column:2;
-            color:#0B1B46;
-            font-size:.82rem;
-            font-weight:850;
-            line-height:1.25;
-        }}
-        .combo-bubble {{
-            display:inline-block;
-            width:42px;
-            height:42px;
-            border-radius:50%;
-            opacity:.72;
-            margin-right:-16px;
-            box-shadow:0 10px 22px rgba(15,23,42,0.08);
-        }}
-        .bubble-blue {{ background:#93C5FD; }}
-        .bubble-amber {{ background:#FDBA74; }}
-        .bubble-rose {{ background:#FDA4AF; }}
-        .bubble-purple {{ background:#C4B5FD; }}
-        .bubble-slate {{ background:#CBD5E1; }}
-        .combo-state {{
-            display:inline-block;
-            width:100%;
-            max-width:100%;
-            box-sizing:border-box;
-            padding:10px 12px;
-            border-radius:10px;
-            line-height:1.45;
-            font-size:.9rem;
-            font-weight:800;
-            color:#0B1B46;
-            border:1px solid rgba(148,163,184,.2);
-        }}
-        .combo-state.blue {{ background:#EFF6FF; }}
-        .combo-state.amber {{ background:#FFF7ED; }}
-        .combo-state.rose {{ background:#FFF1F2; }}
-        .combo-state.mint {{ background:#ECFDF5; }}
-        .combo-state.slate {{ background:#F8FAFC; }}
-        .combo-table.compact .combo-state {{
-            font-size:1rem;
-            line-height:1.55;
-            padding:14px 16px;
-        }}
-        .commercial-status-grid {{
-            display:grid;
-            grid-template-columns:repeat(3, minmax(96px, 1fr));
-            gap:8px;
-            width:100%;
-        }}
-        .commercial-status-tile {{
-            min-height:50px;
-            border-radius:9px;
-            border:1px solid #DDE6F2;
-            display:grid;
-            grid-template-columns:1fr 28px;
-            grid-template-rows:auto auto;
-            align-items:center;
-            gap:2px 8px;
-            padding:9px 10px;
-            box-sizing:border-box;
-        }}
-        .commercial-status-tile span {{
-            color:#0B1B46;
-            font-size:12px;
-            font-weight:950;
-        }}
-        .commercial-status-tile b {{
-            grid-row:1 / span 2;
-            grid-column:2;
-            width:28px;
-            height:28px;
-            border-radius:7px;
-            display:grid;
-            place-items:center;
-            font-size:16px;
-            font-weight:950;
-        }}
-        .commercial-status-tile small {{
-            color:#475569;
-            font-size:11px;
-            font-weight:850;
-        }}
-        .commercial-status-tile.ok {{
-            background:#ECFDF3;
-            border-color:#BBF7D0;
-        }}
-        .commercial-status-tile.ok b {{
-            background:#16A34A;
-            color:#FFFFFF;
-        }}
-        .commercial-status-tile.bad {{
-            background:#FEF2F2;
-            border-color:#FECACA;
-        }}
-        .commercial-status-tile.bad b {{
-            background:#DC2626;
-            color:#FFFFFF;
-        }}
-        .commercial-summary-grid {{
-            display:grid;
-            grid-template-columns:1fr 1fr 1.25fr;
-            gap:14px;
-            padding:0 24px 14px;
-        }}
-        .commercial-summary-grid.detail {{
-            grid-template-columns:repeat(3, minmax(0, 1fr));
-            padding-top:0;
-        }}
-        .commercial-subtitle {{
-            margin:2px 24px 12px;
-            color:#334155;
-            font-size:13px;
-            font-weight:950;
-        }}
-        .commercial-summary-tile {{
-            min-height:72px;
-            border-radius:12px;
-            border:1px solid #DDE6F2;
-            display:grid;
-            grid-template-columns:1fr 38px;
-            grid-template-rows:auto auto;
-            align-items:center;
-            gap:5px 12px;
-            padding:14px 16px;
-            box-sizing:border-box;
-        }}
-        .commercial-summary-tile:hover {{
-            transform:translateY(-1px);
-            transition:transform .16s ease, box-shadow .16s ease;
-            box-shadow:0 12px 24px rgba(15,23,42,0.07);
-        }}
-        .commercial-summary-grid:not(.detail) .commercial-summary-tile {{
-            min-height:84px;
-        }}
-        .commercial-summary-tile span {{
-            color:#334155;
-            font-size:13px;
-            font-weight:900;
-        }}
-        .commercial-summary-tile strong {{
-            color:#0B1B46;
-            font-size:22px;
-            font-weight:950;
-        }}
-        .commercial-summary-tile b {{
-            grid-row:1 / span 2;
-            grid-column:2;
-            width:38px;
-            height:38px;
-            border-radius:10px;
-            display:grid;
-            place-items:center;
-            color:#FFFFFF;
-            font-size:22px;
-            font-weight:950;
-        }}
-        .commercial-summary-tile.ok {{
-            background:#ECFDF3;
-            border-color:#BBF7D0;
-        }}
-        .commercial-summary-tile.ok b {{ background:#16A34A; }}
-        .commercial-summary-tile.bad {{
-            background:#FEF2F2;
-            border-color:#FECACA;
-        }}
-        .commercial-summary-tile.bad b {{ background:#DC2626; }}
-        .commercial-summary-tile.ready {{
-            background:linear-gradient(135deg,#ECFDF5 0%,#EFF6FF 100%);
-            border-color:#86EFAC;
-            box-shadow:0 16px 30px rgba(22,163,74,0.10);
-        }}
-        .commercial-summary-tile.ready span {{ color:#166534; }}
-        .commercial-summary-tile.ready strong {{ color:#14532D; font-size:26px; }}
-        .commercial-summary-tile.ready b {{ background:#16A34A; }}
-        .commercial-summary-tile.ready small {{
-            grid-column:1 / -1;
-            color:#166534;
-            font-size:12px;
-            font-weight:850;
-            line-height:1.3;
-        }}
-        .commercial-summary-tile.total {{
-            background:#F8FAFC;
-            border-color:#CBD5E1;
-        }}
-        .commercial-summary-tile.total b {{ background:#475569; }}
-        .commercial-flow {{
-            margin:0 24px 12px;
-            display:grid;
-            grid-template-columns:1fr 2fr;
-            gap:12px;
-            align-items:stretch;
-        }}
-        .flow-total {{
-            height:96px;
-            min-height:96px;
-            border-radius:14px;
-            background:linear-gradient(180deg,#FFFFFF 0%,#F8FAFC 100%);
-            border:1px solid #CBD5E1;
-            display:flex;
-            flex-direction:column;
-            justify-content:center;
-            align-items:center;
-            text-align:center;
-            box-shadow:0 12px 26px rgba(15,23,42,0.055);
-        }}
-        .flow-total span {{
-            color:#475569;
-            font-size:11px;
-            font-weight:950;
-            letter-spacing:.08em;
-            text-transform:uppercase;
-        }}
-        .flow-total strong {{
-            margin-top:5px;
-            color:#0B1B46;
-            font-size:30px;
-            line-height:.95;
-            font-weight:950;
-        }}
-        .flow-total small {{
-            margin-top:6px;
-            color:#64748B;
-            font-size:11px;
-            font-weight:800;
-        }}
-        .flow-split {{
-            display:grid;
-            grid-template-columns:1fr 1fr;
-            gap:14px;
-        }}
-        .flow-node {{
-            height:96px;
-            min-height:96px;
-            border-radius:14px;
-            border:1px solid #DDE6F2;
-            padding:14px 15px;
-            display:flex;
-            flex-direction:column;
-            justify-content:space-between;
-            box-sizing:border-box;
-        }}
-        .flow-node.danger {{
-            background:#FFF7F7;
-            border-color:#FECACA;
-        }}
-        .flow-node.ready {{
-            background:#F0FDF4;
-            border-color:#BBF7D0;
-            box-shadow:0 12px 26px rgba(22,163,74,0.08);
-        }}
-        .flow-node span {{
-            color:#334155;
-            font-size:12px;
-            line-height:1.25;
-            font-weight:950;
-        }}
-        .flow-node strong {{
-            color:#0B1B46;
-            font-size:26px;
-            line-height:1;
-            font-weight:950;
-        }}
-        .flow-node.ready strong {{ color:#14532D; }}
-        .flow-node small {{
-            color:#475569;
-            font-size:11px;
-            line-height:1.35;
-            font-weight:800;
-        }}
-        .flow-node.ready small {{ color:#166534; }}
-        .flow-cause-grid {{
-            margin:0 24px 12px;
-            display:grid;
-            grid-template-columns:repeat(3, minmax(0,1fr));
-            gap:10px;
-        }}
-        .flow-cause {{
-            min-height:50px;
-            border-radius:12px;
-            border:1px solid #E2E8F0;
-            background:#FFFFFF;
-            padding:10px 14px;
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:12px;
-            box-sizing:border-box;
-        }}
-        .flow-cause span {{
-            color:#0B1B46;
-            font-size:12.5px;
-            font-weight:950;
-        }}
-        .flow-cause strong {{
-            color:#0B1B46;
-            font-size:17px;
-            font-weight:950;
-        }}
-        .flow-actions {{
-            margin:0 24px 18px;
-            padding:0;
-            border-radius:0;
-            background:transparent;
-            border:0;
-        }}
-        .flow-actions b {{
-            display:block;
-            color:#0B1B46;
-            font-size:14px;
-            font-weight:950;
-            margin-bottom:8px;
-        }}
-        .flow-actions ul {{
-            margin:0;
-            padding:12px 16px 12px 34px;
-            display:block;
-            border-radius:12px;
-            background:#F8FAFC;
-            border:1px solid #E2E8F0;
-            color:#334155;
-            font-size:13px;
-            line-height:1.5;
-            font-weight:800;
-        }}
-        @media (max-width: 1100px) {{
-            .commercial-flow {{
-                grid-template-columns:1fr;
-            }}
-            .flow-total {{
-                min-height:150px;
-            }}
-            .flow-cause-grid,
-            .flow-actions ul {{
-                grid-template-columns:1fr;
-            }}
-        }}
-        .combo-model-metric {{
-            text-align:left;
-            min-width:140px;
-        }}
-        .combo-model-metric strong {{
-            display:block;
-            color:#7C3AED;
-            font-size:1.45rem;
-            line-height:1;
-            font-weight:950;
-        }}
-        .combo-model-metric span {{
-            display:block;
-            margin-top:5px;
-            color:#0B1B46;
-            font-size:.82rem;
-            font-weight:850;
-        }}
-        .combo-model-metric i {{
-            display:block;
-            height:6px;
-            margin-top:9px;
-            width:min(140px, 100%);
-            border-radius:999px;
-            background:#E8EEF7;
-            overflow:hidden;
-        }}
-        .combo-model-metric b {{
-            display:block;
-            height:100%;
-            border-radius:999px;
-            background:linear-gradient(90deg,#7C3AED,#2563EB);
-        }}
-        .combo-metric {{
-            min-width:0;
-            text-align:center;
-        }}
-        .combo-metric strong {{
-            display:block;
-            font-size:1.55rem;
-            line-height:1;
-            font-weight:950;
-        }}
-        .combo-metric span {{
-            display:block;
-            margin-top:7px;
-            color:#0B1B46;
-            font-size:.9rem;
-            font-weight:850;
-        }}
-        .combo-metric i {{
-            display:block;
-            height:7px;
-            margin:12px auto 0;
-            width:min(112px, 84%);
-            border-radius:999px;
-            background:#E8EEF7;
-            overflow:hidden;
-        }}
-        .combo-metric b {{
-            display:block;
-            height:100%;
-            border-radius:999px;
-        }}
-        .combo-metric.purple strong {{ color:#7C3AED; }}
-        .combo-metric.blue strong {{ color:#2563EB; }}
-        .combo-metric.green strong {{ color:#16A34A; }}
-        .combo-metric.purple b {{ background:#7C3AED; }}
-        .combo-metric.blue b {{ background:#2563EB; }}
-        .combo-metric.green b {{ background:#16A34A; }}
-        .combo-table tfoot td {{
-            background:#EFF6FF;
-            color:#0B1B46;
-            font-size:.95rem;
-            font-weight:950;
-        }}
-        .combo-table tfoot td:first-child span {{
-            margin-left:14px;
-            color:#475569;
-            font-size:.85rem;
-            font-weight:800;
-        }}
-        .combo-table tfoot small {{
-            display:block;
-            margin-top:4px;
-            color:#2563EB;
-            font-weight:900;
-        }}
-        .kpi-panel {{
-            border-radius:16px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
-            box-shadow:0 12px 26px rgba(15,23,42,0.06);
-            padding:18px;
-            margin:14px 0;
-        }}
-        .kpi-panel h3 {{
-            margin:0 0 14px;
-            color:#172554;
-            font-size:20px;
-            font-weight:950;
-        }}
-        .brand-kpi-table {{
-            width:100%;
-            border-collapse:separate;
-            border-spacing:0;
-            overflow:hidden;
-            border:1px solid #E2E8F0;
-            border-radius:14px;
-            background:#FFFFFF;
-        }}
-        .brand-kpi-table th,
-        .brand-kpi-table td {{
-            padding:14px 16px;
-            border-bottom:1px solid #E2E8F0;
-            color:#172554;
-            font-size:13px;
-            text-align:left;
-        }}
-        .brand-kpi-table th {{
-            background:#F8FAFC;
-            color:#475569;
-            font-weight:950;
-        }}
-        .brand-kpi-table tr:last-child td {{ border-bottom:0; }}
-        .brand-cell {{
-            display:flex;
-            align-items:center;
-            gap:12px;
-            font-weight:900;
-        }}
-        .brand-cell img {{
-            width:44px;
-            height:28px;
-            object-fit:contain;
-        }}
-        .coverage-track {{
-            height:8px;
-            border-radius:999px;
-            background:#E8EDF4;
-            overflow:hidden;
-            min-width:96px;
-        }}
-        .coverage-bar {{
-            height:100%;
-            border-radius:999px;
-            background:#16C55D;
-        }}
-        .coverage-cell {{
-            display:flex;
-            align-items:center;
-            gap:10px;
-            color:#16A34A !important;
-            font-weight:950;
-        }}
-        .kpi-chart-grid {{
-            display:grid;
-            grid-template-columns:repeat(2,minmax(0,1fr));
-            gap:18px;
-            margin:20px 0 22px;
-        }}
-        .chart-card {{
-            min-height:360px;
-            border-radius:14px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
-            box-shadow:0 14px 30px rgba(15,23,42,0.07);
-            padding:20px 20px 18px;
-        }}
-        .chart-head {{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:10px;
-            margin-bottom:18px;
-        }}
-        .chart-title {{
-            display:flex;
-            align-items:center;
-            gap:10px;
-            color:#172554;
-            font-size:20px;
-            font-weight:950;
-        }}
-        .chart-subtitle {{
-            margin:6px 0 0;
-            color:#64748B;
-            font-size:12px;
-            line-height:1.35;
-            font-weight:750;
-        }}
-        .chart-action {{
-            display:none;
-        }}
-        .bar-stage {{
-            display:grid;
-            gap:11px;
-            padding:4px 0 0;
-        }}
-        .bar-item {{
-            position:relative;
-            display:grid;
-            grid-template-columns:minmax(120px, 0.7fr) minmax(160px, 1.3fr) auto;
-            align-items:center;
-            gap:12px;
-            min-height:34px;
-            padding:6px 8px;
-            border-radius:10px;
-            background:#F8FAFC;
-            border:1px solid #EDF2F7;
-        }}
-        .bar-value {{
-            min-width:54px;
-            text-align:right;
-            color:#172554;
-            font-size:12px;
-            font-weight:950;
-        }}
-        .bar-fill {{
-            height:12px;
-            min-width:4px;
-            border-radius:999px;
-            background:linear-gradient(90deg,#2563FF 0%,#0958D9 100%);
-            box-shadow:0 6px 14px rgba(37,99,255,0.18);
-        }}
-        .bar-fill.purple {{
-            background:linear-gradient(90deg,#7C3AED 0%,#4338CA 100%);
-        }}
-        .bar-label {{
-            display:flex;
-            align-items:center;
-            gap:8px;
-            color:#172554;
-            font-size:12px;
-            line-height:1.15;
-            text-align:left;
-            font-weight:900;
-            min-width:0;
-        }}
-        .bar-track {{
-            width:100%;
-            height:12px;
-            border-radius:999px;
-            background:#EAF0F8;
-            overflow:hidden;
-        }}
-        .table-pager {{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:12px;
-            margin-top:14px;
-        }}
-        div[class*="_actions_prev"] button,
-        div[class*="_actions_next"] button,
-        div[class*="_variants_prev"] button,
-        div[class*="_variants_next"] button {{
-            min-width:112px !important;
-            width:112px !important;
-            padding:0 16px !important;
-            justify-content:center !important;
-        }}
-        .pager-note {{
-            color:#64748B;
-            font-size:12px;
-            font-weight:750;
-        }}
-        .kpi-note {{
-            margin:10px 0 14px;
-            color:#64748B;
-            font-size:12px;
-            line-height:1.45;
-            font-weight:750;
-        }}
-        .bar-item {{
-            cursor:pointer;
-            outline:none;
-        }}
-        .bar-item:hover .bar-fill,
-        .bar-item:focus .bar-fill {{
-            transform:scaleX(1.01);
-            filter:saturate(1.2);
-            box-shadow:0 12px 28px rgba(37,99,255,0.32);
-        }}
-        .bar-item:hover .bar-value,
-        .bar-item:focus .bar-value {{
-            color:#003BDB;
-            transform:translateY(-2px);
-        }}
-        .bar-fill {{
-            transition:transform .18s ease, filter .18s ease, box-shadow .18s ease;
-            transform-origin:left;
-        }}
-        .bar-value {{
-            transition:transform .18s ease, color .18s ease;
-        }}
-        .bar-tooltip {{
-            position:absolute;
-            left:50%;
-            bottom:calc(100% + 8px);
-            transform:translateX(-50%) translateY(6px);
-            min-width:138px;
-            padding:10px 12px;
-            border-radius:10px;
-            background:#0F172A;
-            color:#FFFFFF;
-            font-size:12px;
-            line-height:1.25;
-            font-weight:850;
-            opacity:0;
-            pointer-events:none;
-            z-index:8;
-            box-shadow:0 12px 24px rgba(15,23,42,0.2);
-            transition:opacity .16s ease, transform .16s ease;
-        }}
-        .bar-tooltip strong {{
-            display:block;
-            color:#FFFFFF;
-            font-size:15px;
-            margin-top:3px;
-        }}
-        .bar-tooltip::after {{
-            content:"";
-            position:absolute;
-            left:50%;
-            top:100%;
-            transform:translateX(-50%);
-            border:7px solid transparent;
-            border-top-color:#0F172A;
-        }}
-        .bar-item:hover .bar-tooltip,
-        .bar-item:focus .bar-tooltip {{
-            opacity:1;
-            transform:translateX(-50%) translateY(0);
-        }}
-        .bar-label-icon {{
-            color:#17269A;
-            font-size:16px;
-            line-height:1;
-        }}
-        .kpi-table-card {{
-            border-radius:14px;
-            background:#FFFFFF;
-            border:1px solid #DDE6F2;
-            box-shadow:0 12px 26px rgba(15,23,42,0.06);
-            padding:18px;
-            margin:16px 0;
-        }}
-        .kpi-table-head {{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:16px;
-            margin-bottom:14px;
-        }}
-        .kpi-table-title {{
-            display:flex;
-            align-items:center;
-            gap:10px;
-            color:#172554;
-            font-size:20px;
-            font-weight:950;
-        }}
-        .kpi-table-controls {{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:12px;
-            margin:12px 0 16px;
-        }}
-        .kpi-filter-button {{
-            min-width:120px;
-            height:38px;
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            gap:8px;
-            border-radius:8px;
-            border:1px solid #DDE6F2;
-            color:#172554;
-            background:#FFFFFF;
-            font-size:13px;
-            font-weight:900;
-        }}
-        .kpi-table {{
-            width:100%;
-            border-collapse:separate;
-            border-spacing:0;
-            border:1px solid #E2E8F0;
-            border-radius:12px;
-            overflow:hidden;
-        }}
-        .kpi-table th,
-        .kpi-table td {{
-            padding:13px 14px;
-            border-bottom:1px solid #E2E8F0;
-            border-right:1px solid #E2E8F0;
-            color:#172554;
-            font-size:13px;
-            text-align:left;
-        }}
-        .kpi-table th {{
-            background:#F8FAFC;
-            color:#64748B;
-            font-weight:950;
-        }}
-        .kpi-table tr:last-child td {{ border-bottom:0; }}
-        .kpi-table th:last-child,
-        .kpi-table td:last-child {{ border-right:0; }}
-        .row-index {{
-            display:inline-grid;
-            place-items:center;
-            width:24px;
-            height:24px;
-            border-radius:8px;
-            background:#F1F5F9;
-            color:#172554;
-            font-size:12px;
-            font-weight:900;
-        }}
-        .problem-dot {{
-            display:inline-block;
-            width:8px;
-            height:8px;
-            border-radius:50%;
-            background:#F43F5E;
-            margin-right:8px;
-            box-shadow:0 0 0 3px #FFE4E6;
-        }}
-        .action-chip {{
-            display:inline-flex;
-            align-items:center;
-            gap:8px;
-        }}
-        .action-chip::before {{
-            content:"";
-            width:22px;
-            height:22px;
-            border-radius:50%;
-            background:#EAF2FF;
-            border:1px solid #BFDBFE;
-        }}
-        .stock-badge {{
-            display:inline-flex;
-            min-width:34px;
-            justify-content:center;
-            padding:4px 10px;
-            border-radius:999px;
-            color:#E11D48;
-            background:#FFE8EE;
-            font-weight:950;
-        }}
-        @media (max-width: 1100px) {{
-            .kpi-chart-grid {{ grid-template-columns:1fr; }}
-        }}
-        @media (max-width: 1100px) {{
-            .kpi-card-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
-        }}
-        .st-key-action_panel .stButton button {{
-            width: auto;
-            min-width: 180px;
-            min-height: 48px;
-            background: var(--forus-blue) !important;
-            color: #FFFFFF !important;
-            border-color: var(--forus-blue) !important;
-            box-shadow: 0 10px 22px rgba(23,38,154,0.22);
-        }}
-        .base-status-card {{
-            border: 1px solid #DDE6F2;
-            border-radius: 22px;
-            background: #FFFFFF;
-            padding: 18px;
-            margin: 0 0 22px;
-            box-shadow: 0 10px 22px rgba(15,23,42,0.05);
-        }}
-        .base-status-head {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 14px;
-        }}
-        .base-status-head h3 {{
-            margin: 0;
-            color: #0F172A;
-            font-size: 18px;
-            font-weight: 950;
-        }}
-        .base-status-grid {{
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 12px;
-        }}
-        .base-status-item {{
-            border: 1px solid #E2E8F0;
-            border-radius: 18px;
-            background: #F8FAFC;
-            padding: 14px 16px;
-        }}
-        .base-status-item b {{
-            display: block;
-            color: #0F172A;
-            font-size: 13px;
-            margin-bottom: 6px;
-        }}
-        .base-status-item span {{
-            display: block;
-            color: #64748B;
-            font-size: 12px;
-            line-height: 1.35;
-            min-height: 30px;
-        }}
-        .wide-checklist {{
-            border: 1px solid #DDE6F2;
-            border-radius: 26px;
-            background: #FFFFFF;
-            padding: 22px;
-            margin: 0 0 24px;
-            box-shadow: 0 10px 22px rgba(15,23,42,0.05);
-        }}
-        .wide-checklist h2 {{
-            margin: 0 0 6px;
-            color: #0F172A;
-            font-size: 22px;
-            font-weight: 950;
-        }}
-        .wide-checklist p {{
-            margin: 0 0 16px;
-            color: #64748B;
-            font-size: 13px;
-        }}
-        .wide-checklist-grid {{
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 10px;
-        }}
-        .wide-checklist-item {{
-            border: 1px solid #E2E8F0;
-            border-radius: 16px;
-            background: #F8FAFC;
-            padding: 14px;
-            color: #475569;
-            font-size: 12px;
-            line-height: 1.35;
-        }}
-        .chip-row {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 12px;
-        }}
-        .chip {{
-            border-radius: 999px;
-            padding: 6px 10px;
-            background: var(--brand-soft);
-            border: 1px solid color-mix(in srgb, var(--brand-accent) 34%, white);
-            color: var(--brand-primary);
-            font-size: 11px;
-            font-weight: 900;
-        }}
-        .benefits-wrap {{
-            display: none;
-        }}
-        .upload-shell {{
-            border: 1px solid #DDE6F2;
-            border-radius: 26px;
-            background: linear-gradient(180deg, #FFFFFF 0%, #FBFDFF 100%);
-            padding: 26px 28px 22px;
-            margin: 0 0 18px;
-            box-shadow: 0 18px 38px rgba(15,23,42,0.07);
-            position: relative;
-            overflow: hidden;
-        }}
-        .st-key-input_upload_panel {{
-            border: 1px solid #DDE6F2;
-            border-radius: 26px;
-            background: linear-gradient(180deg, #FFFFFF 0%, #FBFDFF 100%);
-            padding: 26px 28px 24px;
-            margin: 0 0 24px;
-            box-shadow: 0 18px 38px rgba(15,23,42,0.07);
-            position: relative;
-            overflow: hidden;
-        }}
-        .st-key-input_upload_panel::after {{
-            content: "XLS";
-            position: absolute;
-            right: 24px;
-            top: 24px;
-            width: 56px;
-            height: 56px;
-            border-radius: 18px;
-            display: grid;
-            place-items: center;
-            color: var(--brand-primary);
-            background: var(--brand-soft);
-            border: 1px solid color-mix(in srgb, var(--brand-accent) 30%, white);
-            font-weight: 900;
-            font-size: 17px;
-        }}
-        .st-key-input_upload_panel h2 {{
-            margin: 0 0 8px;
-            font-size: 25px;
-            color: #0F172A;
-            font-weight: 900;
-            letter-spacing: 0;
-        }}
-        .st-key-input_upload_panel p {{
-            color: var(--text-muted);
-            font-size: 13px;
-            margin-bottom: 14px;
-        }}
-        .st-key-input_upload_panel div[data-testid="stRadio"] {{
-            margin: 14px 0 10px;
-            padding: 14px 16px;
-            border: 1px solid #E2E8F0;
-            border-radius: 18px;
-            background: #F8FAFC;
-        }}
-        .st-key-input_upload_panel div[data-testid="stFileUploader"] {{
-            margin-top: 12px;
-        }}
-        .upload-shell::after {{
-            content: "";
-            position: absolute;
-            width: 180px;
-            height: 180px;
-            right: -70px;
-            top: -90px;
-            border-radius: 999px;
-            background: color-mix(in srgb, var(--brand-accent) 14%, transparent);
-            pointer-events: none;
-        }}
-        .upload-title-row {{
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 18px;
-            margin-bottom: 18px;
-            position: relative;
-            z-index: 1;
-        }}
-        .upload-title-row h2 {{
-            margin: 0 0 8px;
-            font-size: 25px;
-            line-height: 1.15;
-            color: #0F172A;
-            font-weight: 900;
-        }}
-        .upload-title-row p {{
-            margin: 0;
-            color: var(--text-muted);
-            font-size: 13px;
-            line-height: 1.5;
-        }}
-        .upload-icon {{
-            width: 52px;
-            height: 52px;
-            border-radius: 18px;
-            display: grid;
-            place-items: center;
-            color: var(--brand-primary);
-            background: var(--brand-soft);
-            border: 1px solid color-mix(in srgb, var(--brand-accent) 30%, white);
-            font-weight: 900;
-            font-size: 22px;
-        }}
-        .upload-note {{
-            border: 1px dashed color-mix(in srgb, var(--brand-accent) 45%, white);
-            background: #F8FBFF;
-            border-radius: 20px;
-            padding: 15px 18px;
-            margin-bottom: 12px;
-            color: #475569;
-            font-size: 13px;
-            font-weight: 700;
-            position: relative;
-            z-index: 1;
-        }}
-        div[data-testid="stFileUploader"] {{
-            border: 1px dashed color-mix(in srgb, var(--brand-accent) 52%, white) !important;
-            border-radius: 22px !important;
-            padding: 14px !important;
-            background: #FFFFFF !important;
-            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.65);
-        }}
-        div[data-testid="stFileUploader"] section {{
-            border: 0 !important;
-            background: #F1F5F9 !important;
-            border-radius: 16px !important;
-            padding: 18px !important;
-        }}
-        div[data-testid="stFileUploader"] button {{
-            border-radius: 12px !important;
-            background: #FFFFFF !important;
-            color: var(--brand-primary) !important;
-            border: 1px solid #CBD5E1 !important;
-            font-weight: 900 !important;
-        }}
-        div[data-testid="stFileUploader"] small,
-        div[data-testid="stFileUploader"] span {{
-            color: #64748B !important;
-            font-weight: 700;
-        }}
-        div[data-testid="stRadio"] {{
-            background: transparent;
-            margin-bottom: 10px;
-        }}
-        div[data-testid="stRadio"] label p {{
-            color: #172554 !important;
-            font-weight: 800;
-        }}
-        div[data-testid="stDataFrame"] {{
-            border-radius: 18px;
-            overflow: hidden;
-            border: 1px solid #E2E8F0;
-        }}
-        .stButton button, .stDownloadButton button {{
-            border-radius: 18px;
-            font-weight: 800;
-            border-color: var(--brand-primary);
-            min-height:42px !important;
-            padding:0 18px !important;
-            white-space:nowrap !important;
-            word-break:keep-all !important;
-            overflow-wrap:normal !important;
-            line-height:1.12 !important;
-            display:inline-flex !important;
-            align-items:center !important;
-            justify-content:center !important;
-        }}
-        .stButton button *,
-        .stDownloadButton button * {{
-            white-space:nowrap !important;
-            word-break:keep-all !important;
-            overflow-wrap:normal !important;
-            line-height:1.12 !important;
-        }}
-        button[data-testid^="stBaseButton"] {{
-            white-space:nowrap !important;
-            word-break:keep-all !important;
-            overflow-wrap:normal !important;
-            line-height:1.12 !important;
-        }}
-        button[data-testid^="stBaseButton"] * {{
-            white-space:nowrap !important;
-            word-break:keep-all !important;
-            overflow-wrap:normal !important;
-            line-height:1.12 !important;
-        }}
-        div[data-testid="stMain"] .stButton button,
-        div[data-testid="stMain"] .stDownloadButton button {{
-            min-width:max-content !important;
-        }}
-        .stButton button[kind="primary"], .stDownloadButton button[kind="primary"] {{
-            background: var(--brand-primary);
-            border-color: var(--brand-primary);
-        }}
-        section[data-testid="stSidebar"] .stButton button:disabled,
-        section[data-testid="stSidebar"] .stButton button[disabled],
-        section[data-testid="stSidebar"] button:disabled,
-        section[data-testid="stSidebar"] button[disabled] {{
-            display:none !important;
-            visibility:hidden !important;
-            min-height:0 !important;
-            height:0 !important;
-            padding:0 !important;
-            margin:0 !important;
-            border:0 !important;
-        }}
-        section[data-testid="stSidebar"] div:has(button:disabled),
-        section[data-testid="stSidebar"] div:has(button[disabled]) {{
-            min-height:0 !important;
-            height:auto !important;
-            padding:0 !important;
-            margin:0 !important;
-            border:0 !important;
-            box-shadow:none !important;
-            background:transparent !important;
-        }}
-        @media (max-width: 900px) {{
-            .top-header {{ align-items: flex-start; flex-direction: column; }}
-            .matrix-stepper, .source-grid, .metric-grid {{ grid-template-columns: 1fr; }}
-            .shopify-lockup {{ width: 100%; justify-content: space-between; }}
-        }}
-        </style>
-        """,
+        APP_CSS_PREFIX + cuerpo_css + APP_CSS_SUFFIX,
         unsafe_allow_html=True,
     )
 
@@ -12762,24 +9049,6 @@ def render_sidebar_brand_card(config):
         <div class="sidebar-brand-card">
             <div class="sidebar-brand-logo">{brand_html}</div>
             <p class="sidebar-brand-caption">{config["site_label"]}</p>
-        </div>
-        """,
-        sidebar=True,
-    )
-
-
-def render_active_site_card(config):
-    brand_name = escape(clean_value(config.get("brand_name")) or "Sitio")
-    brand_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
-    logo_html = (
-        f'<img src="{brand_src}" alt="{brand_name}">'
-        if brand_src
-        else f'<span>{brand_name[:2].upper()}</span>'
-    )
-    render_html(
-        f"""
-        <div class="active-site-card">
-            <div class="active-site-logo">{logo_html}</div>
         </div>
         """,
         sidebar=True,
@@ -12818,12 +9087,6 @@ def render_allowed_brands_card(brand_config):
         """,
         sidebar=True,
     )
-
-
-def render_sidebar(config, shopify_config=None, bigquery_ready=False, input_loaded=False):
-    render_sidebar_brand_card(config)
-    if shopify_config is not None:
-        render_sidebar_status(config, shopify_config, bigquery_ready, input_loaded=input_loaded)
 
 
 def render_sidebar_status(config, shopify_config, bigquery_ready, input_loaded=False):
@@ -12890,10 +9153,6 @@ def render_top_header(config):
         </div>
         """,
     )
-
-
-def render_header(brand_config=None):
-    render_top_header(get_site_config(brand_config or get_brand_config()))
 
 
 def render_stepper(config, current_step=1):
@@ -13126,16 +9385,6 @@ def render_base_status_card(setup_rows):
             <div class="base-status-grid">{"".join(cards)}</div>
         </div>
         """
-    )
-
-
-def render_input_upload_card():
-    st.markdown(
-        """
-        <h2>Input comercial</h2>
-        <p>Sube el archivo comercial para analizar productos, variantes, precios y estructura Sial. Arrastra tu archivo o seleccionalo; formatos permitidos: .xlsx, .xls.</p>
-        """,
-        unsafe_allow_html=True,
     )
 
 
@@ -14072,29 +10321,7 @@ TICKET_OPERATOR_USERS = (
     "hugo.camara@forus.pe",
     "luis.nunez@forus.pe",
 )
-BRAND_PORTAL_USERS = (
-    "comercial@forus.pe",
-    "alejandro.mosqueira@forus.pe",
-    "clara.gallastegui@forus.pe",
-    "natalia.ludowieg@forus.pe",
-    "daniela.ballon@forus.pe",
-    "mario.biggio@forus.pe",
-    "nicolas.rodriguez@forus.pe",
-    "alejandro.espinoza@forus.pe",
-)
-COMMERCIAL_INPUT_ONLY_USERS = set(BRAND_PORTAL_USERS)
-AUTH_USER_DISPLAY_NAMES = {
-    "hugo.camara@forus.pe": "Hugo Camara",
-    "luis.nunez@forus.pe": "Luis Nunez",
-    "comercial@forus.pe": "Equipo Comercial",
-    "alejandro.mosqueira@forus.pe": "Alejandro Mosqueira",
-    "clara.gallastegui@forus.pe": "Clara Gallastegui",
-    "natalia.ludowieg@forus.pe": "Natalia Ludowieg",
-    "daniela.ballon@forus.pe": "Daniela Ballon",
-    "mario.biggio@forus.pe": "Mario Biggio",
-    "nicolas.rodriguez@forus.pe": "Nicolas Rodriguez",
-    "alejandro.espinoza@forus.pe": "Alejandro Espinoza",
-}
+COMMERCIAL_INPUT_ONLY_USERS = {"comercial@forus.pe"}
 
 
 def is_ticket_operator_user(username):
@@ -14105,29 +10332,23 @@ def ticket_operator_users():
     return list(TICKET_OPERATOR_USERS)
 
 
-def auth_display_name(username):
-    normalized = _normalize_auth_username(username)
-    label = AUTH_USER_DISPLAY_NAMES.get(normalized)
-    if label:
-        return label
-    if "@" in normalized:
-        local_part = normalized.split("@", 1)[0]
-        return " ".join(part.capitalize() for part in re.split(r"[._-]+", local_part) if part)
-    return normalized or "Usuario"
-
-
 def ticket_operator_display_name(username):
-    return auth_display_name(username)
+    labels = {
+        "hugo.camara@forus.pe": "Hugo Camara",
+        "luis.nunez@forus.pe": "Luis Nunez",
+    }
+    normalized = _normalize_auth_username(username)
+    return labels.get(normalized, normalized)
 
 
 def auth_access_scope(username):
     normalized_username = _normalize_auth_username(username)
+    if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
+        return ROLE_BRAND
     if normalized_username in set(TICKET_OPERATOR_USERS):
         # Hugo y Luis administran toda la aplicacion. Su permiso especial de
         # bandeja de solicitudes se determina por identidad en current_ticket_actor.
         return ROLE_ADMIN
-    if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
-        return ROLE_BRAND
     try:
         auth_config = dict(st.secrets.get("app_auth", {}))
     except Exception:
@@ -14182,176 +10403,6 @@ def auth_allowed_brands(username, role=None):
     if role == ROLE_OPERATOR and not allowed:
         return configured_labels
     return allowed
-
-
-USER_ACTIVITY_LOG_PATH = Path("outputs") / "user_activity_log.jsonl"
-USER_ACTIVITY_LOG_COLUMNS = [
-    "fecha",
-    "usuario",
-    "nombre",
-    "rol",
-    "accion",
-    "modulo",
-    "sitio",
-    "detalle",
-]
-
-
-def auth_scope_label(scope):
-    scope_value = clean_value(scope).casefold()
-    if scope_value == ROLE_ADMIN:
-        return "Administrador"
-    if scope_value == ROLE_OPERATOR:
-        return "Operaciones"
-    if scope_value == ROLE_BRAND:
-        return "Portal Brand"
-    if scope_value in {"commercial_input", "input_comercial", "comercial"}:
-        return "Portal Comercial"
-    return "Usuario"
-
-
-def can_view_user_activity_log(username=None):
-    return is_ticket_operator_user(username or st.session_state.get("auth_user", ""))
-
-
-def log_user_activity(action, detail="", user=None, site_key="", module="", extra=None):
-    username = _normalize_auth_username(user or st.session_state.get("auth_user", ""))
-    if not username:
-        return
-    try:
-        record = {
-            "fecha": datetime.now(timezone(timedelta(hours=-5))).strftime("%Y-%m-%d %H:%M:%S"),
-            "usuario": username,
-            "nombre": auth_display_name(username),
-            "rol": auth_scope_label(auth_access_scope(username)),
-            "accion": clean_value(action),
-            "modulo": clean_value(module),
-            "sitio": clean_value(site_key),
-            "detalle": clean_value(detail),
-        }
-        if extra:
-            record["extra"] = extra
-        USER_ACTIVITY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with USER_ACTIVITY_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-    except Exception:
-        # La auditoria nunca debe bloquear login, carga o sincronizacion.
-        return
-
-
-def read_user_activity_log(limit=300):
-    if not USER_ACTIVITY_LOG_PATH.exists():
-        return pd.DataFrame(columns=USER_ACTIVITY_LOG_COLUMNS)
-    records = []
-    try:
-        lines = USER_ACTIVITY_LOG_PATH.read_text(encoding="utf-8").splitlines()
-    except Exception:
-        return pd.DataFrame(columns=USER_ACTIVITY_LOG_COLUMNS)
-    for line in lines[-max(int(limit), 1):]:
-        try:
-            payload = json.loads(line)
-        except Exception:
-            continue
-        records.append({column: payload.get(column, "") for column in USER_ACTIVITY_LOG_COLUMNS})
-    return pd.DataFrame(records, columns=USER_ACTIVITY_LOG_COLUMNS)
-
-
-def render_sidebar_account_card(username=None):
-    username = _normalize_auth_username(username or st.session_state.get("auth_user", ""))
-    if not username:
-        return
-    display_name = auth_display_name(username)
-    role_label = auth_scope_label(auth_access_scope(username))
-    initials = "".join(part[:1] for part in display_name.split()[:2]).upper() or "U"
-    st.sidebar.markdown(
-        f"""
-        <style>
-        section[data-testid="stSidebar"] .ccc-account-card {{
-            background: #ffffff;
-            border: 1px solid #d7e4f4;
-            border-radius: 18px;
-            padding: 14px 16px;
-            margin: 8px 0 18px;
-            box-shadow: 0 14px 32px rgba(15, 43, 83, 0.08);
-            display: flex;
-            gap: 12px;
-            align-items: center;
-        }}
-        section[data-testid="stSidebar"] .ccc-account-avatar {{
-            width: 44px;
-            height: 44px;
-            border-radius: 14px;
-            background: linear-gradient(135deg, #0b5cab, #2f73ff);
-            color: #ffffff;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 900;
-            letter-spacing: 0.03em;
-            flex: 0 0 auto;
-        }}
-        section[data-testid="stSidebar"] .ccc-account-meta {{
-            min-width: 0;
-            line-height: 1.2;
-        }}
-        section[data-testid="stSidebar"] .ccc-account-role {{
-            color: #2f73ff;
-            font-size: 11px;
-            font-weight: 900;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            margin-bottom: 3px;
-        }}
-        section[data-testid="stSidebar"] .ccc-account-name {{
-            color: #061735;
-            font-size: 14px;
-            font-weight: 900;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: 220px;
-        }}
-        section[data-testid="stSidebar"] .ccc-account-email {{
-            color: #64748b;
-            font-size: 11px;
-            margin-top: 4px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: 220px;
-        }}
-        </style>
-        <div class="ccc-account-card">
-            <div class="ccc-account-avatar">{escape(initials)}</div>
-            <div class="ccc-account-meta">
-                <div class="ccc-account-role">{escape(role_label)}</div>
-                <div class="ccc-account-name">{escape(display_name)}</div>
-                <div class="ccc-account-email">{escape(username)}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_sidebar_user_activity_log(username=None):
-    if not can_view_user_activity_log(username):
-        return
-    with st.sidebar.expander("Auditoria de usuarios", expanded=False):
-        log_df = read_user_activity_log(limit=500)
-        if log_df.empty:
-            st.caption("Aun no hay actividad registrada.")
-            return
-        view_df = log_df.tail(80).iloc[::-1].reset_index(drop=True)
-        st.dataframe(view_df[["fecha", "nombre", "accion", "modulo"]], hide_index=True, use_container_width=True)
-        csv_data = log_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "Descargar log",
-            data=csv_data,
-            file_name="auditoria_usuarios_catalog_control_center.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
 
 
 def current_ticket_actor():
@@ -14690,37 +10741,12 @@ def require_login():
         normalized_username = _normalize_auth_username(username)
         expected = users.get(normalized_username)
         if expected and hmac.compare_digest(clean_value(password), expected):
-            log_user_activity("Inicio de sesion", "Ingreso correcto.", user=normalized_username, module="Login")
             st.session_state["authenticated"] = True
             st.session_state["auth_user"] = normalized_username
             st.session_state["auth_scope"] = auth_access_scope(normalized_username)
             st.rerun()
-        log_user_activity("Login fallido", "Credenciales invalidas.", user=normalized_username, module="Login")
         st.error("Usuario o contrasena incorrectos.")
     return False
-
-
-def sidebar_card_choice(key, options, default, icons=None):
-    icons = icons or {}
-    if key not in st.session_state or st.session_state[key] not in options:
-        st.session_state[key] = default
-    selected = st.session_state[key]
-    for option in options:
-        active_class = " active" if option == selected else ""
-        icon = icons.get(option, "")
-        st.sidebar.markdown(
-            f"""
-            <div class="sidebar-choice-preview{active_class}">
-                <span>{escape(icon)}</span>
-                <strong>{escape(option)}</strong>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.sidebar.button(option, key=f"{key}_{slugify(option)}", help=option):
-            st.session_state[key] = option
-            st.rerun()
-    return st.session_state[key]
 
 
 def sidebar_nav_button(label, state_key, value, button_key, extra_state=None):
@@ -14754,46 +10780,38 @@ def render_ticket_styles():
     st.markdown(
         """
         <style>
-        .ticket-hero{padding:18px 20px;border:1px solid #D9E2EF;border-left:4px solid #2563EB;background:#fff;border-radius:12px;margin:0 0 12px;box-shadow:0 10px 24px rgba(15,23,42,.035)}
-        .ticket-hero p{margin:0 0 6px;color:#2563EB;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}
-        .ticket-hero h1{margin:0;color:#0B1B46;font-size:25px;line-height:1.15}.ticket-hero span{display:block;margin-top:6px;color:#64748B;font-size:13px}
-        .ticket-kpi-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:0 0 12px}
-        .ticket-kpi-card{min-height:64px;padding:10px 11px;border:1px solid #D9E2EF;border-radius:10px;background:#fff;box-shadow:0 8px 18px rgba(15,23,42,.04)}
-        .ticket-kpi-card small{display:block;min-height:24px;color:#40516E;font-size:10px;font-weight:850;line-height:1.2}.ticket-kpi-card strong{display:block;margin-top:3px;color:#0B1B46;font-size:20px;line-height:1;font-weight:900}
-        .ticket-kpi-card.blue{border-color:#BFDBFE;background:#F8FBFF}.ticket-kpi-card.blue strong{color:#2563EB}.ticket-kpi-card.amber{border-color:#FDE6BD;background:#FFFDF8}.ticket-kpi-card.amber strong{color:#C56A00}.ticket-kpi-card.red{border-color:#FECACA;background:#FFF9F9}.ticket-kpi-card.red strong{color:#DC2626}.ticket-kpi-card.green{border-color:#BBF7D0;background:#F7FFF9}.ticket-kpi-card.green strong{color:#15803D}.ticket-kpi-card.slate{background:#fff}
-        .ticket-filter-panel{padding:12px 14px 4px;border:1px solid #D9E2EF;border-radius:12px;background:#fff;margin:0 0 12px}.ticket-filter-title{margin:0 0 8px;color:#0B1B46;font-size:15px;line-height:1.2}.ticket-filter-panel h3{margin:0 0 8px;color:#0B1B46;font-size:15px}
+        .ticket-hero{padding:20px 24px;border:1px solid #D9E2EF;background:#fff;border-radius:14px;margin:0 0 16px}
+        .ticket-hero p{margin:0 0 5px;color:#2563EB;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:0}
+        .ticket-hero h1{margin:0;color:#0B1B46;font-size:26px;line-height:1.15}
+        .ticket-hero span{display:block;margin-top:7px;color:#64748B;font-size:15px}
+        .ticket-kpi-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:0 0 16px}
+        .ticket-kpi-card{min-height:88px;padding:13px 15px;border:1px solid #D9E2EF;border-radius:12px;background:#fff;box-shadow:0 12px 25px rgba(15,23,42,.05)}
+        .ticket-kpi-card small{display:block;min-height:30px;color:#40516E;font-size:12px;font-weight:800;line-height:1.2}
+        .ticket-kpi-card strong{display:block;margin-top:7px;color:#0B1B46;font-size:27px;line-height:1;font-weight:900}
+        .ticket-kpi-card.blue{border-color:#BFDBFE;background:#F8FBFF}.ticket-kpi-card.blue strong{color:#2563EB}
+        .ticket-kpi-card.amber{border-color:#FDE6BD;background:#FFFDF8}.ticket-kpi-card.amber strong{color:#C56A00}
+        .ticket-kpi-card.red{border-color:#FECACA;background:#FFF9F9}.ticket-kpi-card.red strong{color:#DC2626}
+        .ticket-kpi-card.green{border-color:#BBF7D0;background:#F7FFF9}.ticket-kpi-card.green strong{color:#15803D}
+        .ticket-kpi-card.slate{background:#fff}.ticket-filter-panel{padding:14px 16px 4px;border:1px solid #D9E2EF;border-radius:12px;background:#fff;margin:0 0 16px}
+        .ticket-filter-title{margin:0 0 8px;color:#0B1B46;font-size:15px;line-height:1.2}
+        .ticket-filter-panel h3{margin:0 0 8px;color:#0B1B46;font-size:15px}
         .ticket-state{display:inline-flex;align-items:center;min-height:28px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:850;border:1px solid #CBD5E1;background:#F8FAFC;color:#334155}
         .ticket-state.blue{background:#EFF6FF;border-color:#BFDBFE;color:#1D4ED8}
         .ticket-state.yellow{background:#FFFBEB;border-color:#FDE68A;color:#A16207}
         .ticket-state.green{background:#ECFDF5;border-color:#A7F3D0;color:#047857}
         .ticket-state.red{background:#FEF2F2;border-color:#FECACA;color:#B91C1C}
         .ticket-state.gray{background:#F1F5F9;border-color:#CBD5E1;color:#475569}
-        .ticket-workspace{display:grid;grid-template-columns:minmax(280px,34%) minmax(0,1fr);gap:12px;align-items:start}.ticket-list-panel,.ticket-detail-panel{border:1px solid #D9E2EF;border-radius:12px;background:#fff}.ticket-list-panel{padding:10px;max-height:calc(100vh - 250px);overflow:auto}.ticket-list-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:2px 3px 9px}.ticket-list-title strong{color:#0B1B46;font-size:14px}.ticket-list-title span{color:#64748B;font-size:12px}.ticket-list-card{width:100%;padding:11px!important;margin:0 0 7px!important;border:1px solid #E2E8F0!important;border-radius:10px!important;background:#fff!important;text-align:left!important;box-shadow:none!important;color:#0B1B46!important}.ticket-list-card:hover{border-color:#93C5FD!important;background:#F8FBFF!important}.ticket-list-card.active{border-color:#2563EB!important;background:#EFF6FF!important;box-shadow:0 0 0 1px #2563EB!important}.ticket-list-card .ticket-code{display:block;font-size:12px;font-weight:900}.ticket-list-card .ticket-list-main{display:flex;justify-content:space-between;gap:8px;margin-top:5px;font-size:13px;font-weight:800}.ticket-list-card .ticket-list-meta{display:block;margin-top:5px;color:#64748B;font-size:11px;line-height:1.35}.ticket-list-card .ticket-list-meta b{color:#334155;font-weight:800}
-        .ticket-inbox-heading{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:14px 0 9px}.ticket-inbox-heading h2{margin:0;color:#0B1B46;font-size:18px}.ticket-inbox-heading p{margin:4px 0 0;color:#64748B;font-size:12px}.ticket-inbox-count{display:inline-flex;align-items:center;justify-content:center;min-width:92px;padding:7px 10px;border:1px solid #BFDBFE;border-radius:999px;background:#F8FBFF;color:#1D4ED8;font-size:12px;font-weight:850}.ticket-request-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0 0 12px}.ticket-request-card{position:relative;min-height:128px;padding:13px 14px;border:1px solid #D9E2EF;border-radius:11px;background:#fff;box-shadow:0 8px 20px rgba(15,23,42,.035);overflow:hidden}.ticket-request-card:before{content:'';position:absolute;top:0;left:0;width:4px;height:100%;background:#94A3B8}.ticket-request-card.blue:before{background:#2563EB}.ticket-request-card.yellow:before{background:#D97706}.ticket-request-card.green:before{background:#16A34A}.ticket-request-card.red:before{background:#DC2626}.ticket-request-card.selected{border-color:#60A5FA;background:#F8FBFF;box-shadow:0 0 0 1px #60A5FA,0 10px 22px rgba(37,99,235,.08)}.ticket-request-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.ticket-request-code{display:block;color:#0B1B46;font-size:14px;font-weight:900;letter-spacing:.01em}.ticket-request-brand{margin:8px 0 5px;color:#1E3A5F;font-size:14px;font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ticket-request-meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}.ticket-request-meta span{display:inline-flex;align-items:center;min-height:22px;padding:2px 7px;border-radius:999px;background:#F1F5F9;color:#475569;font-size:10px;font-weight:800}.ticket-request-requester{display:block;margin-top:9px;color:#64748B;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ticket-quick-view{margin:0 0 8px}.ticket-quick-view .stSelectbox{max-width:310px}@media(max-width:1100px){.ticket-request-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:680px){.ticket-request-grid{grid-template-columns:1fr}.ticket-inbox-heading{align-items:flex-start;flex-direction:column}}
-        .ticket-detail-header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px 12px;border:1px solid #D9E2EF;border-radius:12px 12px 0 0;background:#fff}
-        .ticket-detail-header h2{margin:0;color:#0B1B46;font-size:19px;line-height:1.15}
+        .ticket-detail-header{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px 20px 16px;border:1px solid #D9E2EF;border-radius:14px 14px 0 0;background:#fff}
+        .ticket-detail-header h2{margin:0;color:#0B1B46;font-size:22px;line-height:1.15}
         .ticket-detail-header p{margin:5px 0 0;color:#64748B;font-size:13px}
-        .brand-request-summary{margin:12px 0;padding:16px;border:1px solid #D9E2EF;border-radius:8px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.035)}
-        .brand-request-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-        .brand-request-eyebrow{margin:0 0 5px;color:#2563EB;font-size:10px;font-weight:900;letter-spacing:.08em}
-        .brand-request-heading h2{margin:0;color:#0B1B46;font-size:20px;line-height:1.2}
-        .brand-request-heading p:not(.brand-request-eyebrow){margin:5px 0 0;color:#64748B;font-size:12px}
-        .brand-request-kpis,.brand-request-results{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:14px 0 10px}
-        .brand-request-kpi,.brand-request-result{min-height:76px;padding:10px 12px;border:1px solid #E2E8F0;border-radius:8px;background:#F8FAFC}
-        .brand-request-kpi.blue{border-color:#BFDBFE;background:#F8FBFF}.brand-request-kpi.green,.brand-request-result.green{border-color:#BBF7D0;background:#F0FDF4}.brand-request-kpi.yellow,.brand-request-result.yellow{border-color:#FDE68A;background:#FFFBEB}.brand-request-result.red{border-color:#FECACA;background:#FEF2F2}
-        .brand-request-kpi small,.brand-request-result small{display:block;color:#64748B;font-size:11px;font-weight:800}.brand-request-kpi strong,.brand-request-result strong{display:block;margin-top:6px;color:#0B1B46;font-size:22px;line-height:1}.brand-request-kpi.green strong,.brand-request-result.green strong{color:#047857}.brand-request-kpi.yellow strong,.brand-request-result.yellow strong{color:#A16207}.brand-request-result.red strong{color:#B91C1C}
-        .brand-request-progress{margin:12px 0 10px}.brand-request-progress-head{display:flex;align-items:center;justify-content:space-between;gap:12px;color:#475569;font-size:12px;font-weight:800}.brand-request-track{height:7px;margin-top:7px;overflow:hidden;border-radius:999px;background:#E2E8F0}.brand-request-track span{display:block;height:100%;border-radius:inherit;background:#2563EB}
-        .brand-request-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 0}.brand-request-meta div{padding:9px 10px;border-radius:8px;background:#F8FAFC}.brand-request-meta small{display:block;color:#64748B;font-size:10px;font-weight:800}.brand-request-meta strong{display:block;margin-top:4px;color:#1E3A5F;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .brand-request-note{margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;font-weight:750}.brand-request-note.complete{background:#ECFDF5;color:#047857}.brand-request-note.review{background:#FFFBEB;color:#A16207}.brand-request-note.active{background:#EFF6FF;color:#1D4ED8}
-        @media(max-width:900px){.brand-request-kpis,.brand-request-results{grid-template-columns:repeat(2,minmax(0,1fr))}.brand-request-meta{grid-template-columns:1fr}.brand-request-heading{flex-direction:column;align-items:flex-start}}@media(max-width:520px){.brand-request-kpis,.brand-request-results{grid-template-columns:1fr}}
-        .ticket-detail-shell{padding:0 16px 16px;border:1px solid #D9E2EF;border-top:0;border-radius:0 0 12px 12px;background:#fff;margin:0 0 12px}
-        .ticket-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0;padding:12px 0}
-        .ticket-summary>div{padding:10px 11px;border:1px solid #E2E8F0;border-radius:9px;background:#F8FAFC;min-height:66px}
+        .ticket-detail-shell{padding:0 20px 20px;border:1px solid #D9E2EF;border-top:0;border-radius:0 0 14px 14px;background:#fff;margin:0 0 16px}
+        .ticket-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0;padding:16px 0}
+        .ticket-summary>div{padding:13px 14px;border:1px solid #E2E8F0;border-radius:10px;background:#F8FAFC;min-height:80px}
         .ticket-summary small{display:block;color:#64748B;font-size:11px;font-weight:850;text-transform:uppercase;margin-bottom:7px}
-        .ticket-summary strong{display:block;color:#0B1B46;font-size:16px;line-height:1.15}
+        .ticket-summary strong{display:block;color:#0B1B46;font-size:18px;line-height:1.15}
         .ticket-summary span{display:block;margin-top:5px;color:#475569;font-size:12px;line-height:1.35;overflow-wrap:anywhere}
-        .ticket-section{padding:14px 16px;border:1px solid #D9E2EF;border-radius:12px;background:#fff;margin:12px 0}
-        .ticket-section h3{margin:0 0 4px;color:#0B1B46;font-size:16px}
+        .ticket-section{padding:18px 20px;border:1px solid #D9E2EF;border-radius:14px;background:#fff;margin:16px 0}
+        .ticket-section h3{margin:0 0 4px;color:#0B1B46;font-size:18px}
         .ticket-section > p{margin:0 0 14px;color:#64748B;font-size:13px}
         .ticket-section-label{margin:0 0 10px;color:#2563EB;font-size:11px;font-weight:900;text-transform:uppercase}
         .ticket-info-line{margin:0;padding:10px 12px;border-radius:9px;background:#F8FAFC;color:#64748B;font-size:12px;line-height:1.4}
@@ -14801,16 +10819,8 @@ def render_ticket_styles():
         .ticket-comments-empty{padding:14px;border:1px dashed #CBD5E1;border-radius:10px;background:#F8FAFC;color:#64748B;font-size:13px}
         .ticket-event{padding:10px 12px;border-left:3px solid #93C5FD;background:#F8FAFC;margin:7px 0;border-radius:0 8px 8px 0}
         .ticket-event strong{color:#0B1B46}.ticket-event small{color:#64748B}
-        .ticket-process{padding:12px 14px;border:1px solid #DBEAFE;border-radius:10px;background:#F8FBFF;margin:10px 0}
-        .ticket-process strong{display:block;color:#0B1B46;font-size:14px;margin-bottom:4px}
-        .ticket-process span{color:#64748B;font-size:12px}
-        .ticket-result-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:10px 0}
-        .ticket-result-grid div{padding:10px;border:1px solid #E2E8F0;border-radius:9px;background:#F8FAFC}
-        .ticket-result-grid small{display:block;color:#64748B;font-size:10px;font-weight:800;text-transform:uppercase}
-        .ticket-result-grid strong{display:block;margin-top:4px;color:#0B1B46;font-size:19px}
-        .ticket-chip-row{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}.ticket-chip{display:inline-flex;align-items:center;min-height:24px;padding:3px 8px;border:1px solid #E2E8F0;border-radius:999px;background:#F8FAFC;color:#475569;font-size:11px;font-weight:750}.ticket-stepper{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin:0 0 12px;padding:10px;border:1px solid #E2E8F0;border-radius:10px;background:#F8FAFC}.ticket-step{position:relative;min-height:38px;padding:4px 5px;color:#94A3B8;font-size:10px;font-weight:850;text-align:center;line-height:1.2}.ticket-step:before{content:'';display:block;width:17px;height:17px;margin:0 auto 4px;border-radius:50%;background:#CBD5E1;border:3px solid #fff;box-shadow:0 0 0 1px #CBD5E1}.ticket-step.done,.ticket-step.active{color:#0B1B46}.ticket-step.done:before{background:#16A34A;box-shadow:0 0 0 1px #16A34A}.ticket-step.active:before{background:#2563EB;box-shadow:0 0 0 1px #2563EB}.ticket-compact-alert{padding:10px 12px;border:1px solid #DBEAFE;border-radius:9px;background:#F8FBFF;color:#1E3A5F;font-size:12px;line-height:1.4;margin:8px 0}.ticket-tab-note{margin:0 0 9px;color:#64748B;font-size:12px}
-        @media(max-width:1100px){.ticket-kpi-grid,.ticket-result-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.ticket-workspace{grid-template-columns:1fr}.ticket-list-panel{max-height:360px}}
-        @media(max-width:900px){.ticket-summary,.ticket-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ticket-detail-header{align-items:flex-start;flex-direction:column}.ticket-stepper{grid-template-columns:repeat(3,minmax(0,1fr))}}
+        @media(max-width:1100px){.ticket-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+        @media(max-width:900px){.ticket-summary,.ticket-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ticket-detail-header{align-items:flex-start;flex-direction:column}}
         </style>
         """,
         unsafe_allow_html=True,
@@ -14903,40 +10913,84 @@ def _ticket_matches_active_site(ticket, brand_config):
 
 def _render_full_load_ticket_close(service, actor, ticket, latest_version):
     code = clean_value(ticket.get("code"))
-    st.markdown("#### Resultado y cierre")
-    processed = safe_int_value(ticket.get("summary", {}).get("products"), 0)
-    outcome = st.selectbox(
-        "Resultado de la carga",
-        ["Completada", "Completada con incidencias"],
-        key=f"full_load_close_outcome_{code}",
+    summary = ticket.get("summary") or {}
+    st.markdown("#### Registrar resultado de la carga")
+    st.caption(
+        "Cuando termines la carga y la revisión en Shopify, cierra la solicitud aquí. "
+        "El equipo comercial verá inmediatamente el resultado."
     )
-    note = st.text_area("Comentario de cierre", key=f"full_load_close_note_{code}", placeholder="Resume la carga o las incidencias encontradas.")
-    confirmed = st.checkbox(
-        "Confirmo que la carga fue revisada y puede cerrarse.",
+    close_metrics = st.columns(2)
+    processed_count = close_metrics[0].number_input(
+        "Productos procesados",
+        min_value=0,
+        value=max(0, safe_int_value(summary.get("products"), 0)),
+        step=1,
+        key=f"full_load_close_processed_{code}",
+    )
+    error_count = close_metrics[1].number_input(
+        "Productos con error",
+        min_value=0,
+        value=0,
+        step=1,
+        key=f"full_load_close_errors_{code}",
+    )
+    close_note = st.text_area(
+        "Resultado u observaciones",
+        key=f"full_load_close_note_{code}",
+        placeholder="Ejemplo: carga completada y revisada en Shopify.",
+    )
+    close_confirmed = st.checkbox(
+        "Confirmo que la carga terminó y revisé el resultado en Shopify.",
         key=f"full_load_close_confirmed_{code}",
     )
-    has_incidents = outcome == "Completada con incidencias"
-    label = "Finalizar solicitud con incidencias" if has_incidents else "Finalizar solicitud de carga"
-    if st.button(label, type="primary", key=f"full_load_complete_{code}", disabled=not confirmed):
-        result = {
-            "processed": processed,
-            "errors": 0,
-            "warnings": 1 if has_incidents else 0,
-            "successful": processed,
-            "message": clean_value(note) or "Carga finalizada y registrada.",
-            "detail": clean_value(note),
-            "closed_by": actor.get("user"),
-            "filename": latest_version.get("filename") or ticket.get("filename"),
-            "file_version": latest_version.get("number", 1),
-            "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
-        }
+    close_result = {
+        "processed": int(processed_count),
+        "errors": int(error_count),
+        "message": clean_value(close_note) or "Carga completada y validada en Shopify.",
+        "detail": clean_value(close_note),
+        "closed_by": actor.get("user"),
+        "filename": latest_version.get("filename") or ticket.get("filename"),
+        "file_version": latest_version.get("number", 1),
+        "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
+    }
+    close_cols = st.columns(3)
+    if close_cols[0].button(
+        "Finalizar carga",
+        type="primary",
+        key=f"full_load_complete_{code}",
+        disabled=not close_confirmed,
+        use_container_width=True,
+    ):
+        try:
+            service.record_job_result(actor, code, success=True, result=close_result)
+            st.success(f"La solicitud {code} quedó finalizada.")
+            st.rerun()
+        except TicketError as exc:
+            st.error(str(exc))
+    if close_cols[1].button(
+        "Finalizar con observaciones",
+        key=f"full_load_complete_obs_{code}",
+        disabled=not close_confirmed,
+        use_container_width=True,
+    ):
+        try:
+            service.record_job_result(actor, code, success=True, observations=True, result=close_result)
+            st.rerun()
+        except TicketError as exc:
+            st.error(str(exc))
+    if close_cols[2].button(
+        "Registrar incidencia",
+        key=f"full_load_fail_{code}",
+        disabled=not close_confirmed,
+        use_container_width=True,
+    ):
         try:
             service.record_job_result(
                 actor,
                 code,
-                success=True,
-                observations=has_incidents,
-                result=result,
+                success=False,
+                result=close_result,
+                error=clean_value(close_note) or "Incidencia registrada por Operaciones.",
             )
             st.rerun()
         except TicketError as exc:
@@ -15134,70 +11188,22 @@ def render_full_load_ticket_queue(brand_config):
             _render_full_load_ticket_close(service, actor, ticket, latest_version)
 
 
-def _ticket_workflow_step(status):
-    if status in {STATE_PENDING, STATE_ASSIGNED}:
-        return 1
-    if status in {STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED}:
-        return 2
-    if status in {STATE_APPROVED, STATE_DRY_RUN, STATE_READY_EXECUTE}:
-        return 3
-    if status == STATE_LOADING:
-        return 4
-    if status == STATE_VALIDATING:
-        return 5
-    if status in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_REJECTED, STATE_CANCELED, STATE_FAILED}:
-        return 6
-    return 1
-
-
-def _render_ticket_stepper(status):
-    steps = ["Solicitud", "Revisión", "Aprobación", "Carga", "Validación", "Finalizada"]
-    current = _ticket_workflow_step(status)
-    rendered = []
-    for index, label in enumerate(steps):
-        position = index + 1
-        tone = "done" if position < current else ("active" if position == current else "")
-        rendered.append(f'<div class="ticket-step {tone}"><b>{index + 1}</b><span>{escape(label)}</span></div>')
-    st.markdown(f'<div class="ticket-stepper">{"".join(rendered)}</div>', unsafe_allow_html=True)
-
-
-def _ticket_card_html(ticket, selected=False):
-    status = clean_value(ticket.get("status"))
-    summary = ticket.get("summary") if isinstance(ticket.get("summary"), dict) else {}
-    code = clean_value(ticket.get("code"))
-    age = f"{ticket_age_hours(ticket):.0f} h"
-    status_label = STATE_LABELS.get(status, status)
-    priority = PRIORITY_LABELS.get(ticket.get("priority"), ticket.get("priority", "Normal"))
-    tone = _ticket_state_color(status)
-    products = safe_int_value(summary.get("products"), 0)
-    product_label = f"{products} modelo-color" if products == 1 else f"{products} modelo-colores"
-    active_class = " selected" if selected else ""
-    return (
-        f'<div class="ticket-request-card {tone}{active_class}">'
-        f'<div class="ticket-request-top"><strong class="ticket-request-code">{escape(code)}</strong>'
-        f'<span class="ticket-state {tone}">{escape(status_label)}</span></div>'
-        f'<div class="ticket-request-brand">{escape(clean_value(ticket.get("brand")) or "Sin marca")}</div>'
-        f'<div class="ticket-request-meta"><span>{escape(priority)}</span><span>{escape(product_label)}</span><span>{escape(age)}</span></div>'
-        f'<small class="ticket-request-requester">{escape(clean_value(ticket.get("requester")) or "Sin solicitante")}</small></div>'
-    )
-
-
 def render_ticket_inbox(service, actor, brand_view=False):
-    """Bandeja master-detail: conserva el servicio de tickets y simplifica su operación."""
     render_ticket_styles()
-    role_key = clean_value(actor.get("role")) or "user"
+    widget_key = f"ticket_open_{actor.get('role')}"
     deleted_code = clean_value(st.session_state.pop("_catalog_ticket_deleted", ""))
     if deleted_code:
         st.session_state.pop("selected_catalog_ticket", None)
+        st.session_state.pop(widget_key, None)
 
-    title = "Mis solicitudes" if brand_view else "Solicitudes de catálogo"
+    title = "Mis solicitudes de catálogo" if brand_view else "Centro de solicitudes de catálogo"
     subtitle = (
-        "Consulta el avance, las observaciones y el resultado de tus solicitudes."
+        "Consulta tus archivos, observaciones y resultados."
         if brand_view
-        else "Revisa, asigna y cierra solicitudes sin perder trazabilidad."
+        else "Prioriza, asigna y controla cada solicitud desde su recepción hasta el cierre."
     )
     st.markdown(
-        f'<div class="ticket-hero"><p>Gestión de catálogo</p><h1>{escape(title)}</h1><span>{escape(subtitle)}</span></div>',
+        f'<div class="ticket-hero"><p>Flujo controlado</p><h1>{escape(title)}</h1><span>{escape(subtitle)}</span></div>',
         unsafe_allow_html=True,
     )
     if deleted_code:
@@ -15207,92 +11213,79 @@ def render_ticket_inbox(service, actor, brand_view=False):
     except TicketError as exc:
         st.error(f"No se pudo leer la bandeja: {exc}")
         return
-
-    quick_key = f"ticket_quick_filter_{role_key}"
-    if quick_key not in st.session_state:
-        st.session_state[quick_key] = "all"
+    actor_user = clean_value(actor.get("user")).casefold()
+    recent_notifications = []
+    for ticket in all_tickets:
+        for notification in ticket.get("notifications", []):
+            recipients = {clean_value(value).casefold() for value in notification.get("recipients", [])}
+            if not recipients or actor_user in recipients or actor.get("role") == ROLE_ADMIN:
+                recent_notifications.append({
+                    "Fecha": clean_value(notification.get("created_at")).replace("T", " ")[:16],
+                    "Ticket": ticket.get("code"),
+                    "Mensaje": notification.get("message"),
+                    "Canal": "Interna" if notification.get("channel") == "internal" else notification.get("channel"),
+                })
+    if recent_notifications:
+        recent_notifications = sorted(recent_notifications, key=lambda item: item["Fecha"], reverse=True)[:20]
+        with st.expander(f"Notificaciones recientes ({len(recent_notifications)})"):
+            st.dataframe(pd.DataFrame(recent_notifications), use_container_width=True, hide_index=True)
     if not brand_view:
-        states = [item.get("status") for item in all_tickets]
+        states = [ticket.get("status") for ticket in all_tickets]
         kpis = [
-            ("Pendientes", states.count(STATE_PENDING), "pending"),
-            ("Sin asignar", sum(1 for item in all_tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_REJECTED, STATE_CANCELED}), "unassigned"),
-            ("En revisión", sum(1 for value in states if value in {STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED}), "review"),
-            ("En carga", sum(1 for value in states if value in {STATE_LOADING, STATE_VALIDATING}), "loading"),
-            ("Completados", sum(1 for value in states if value in {STATE_COMPLETED, STATE_COMPLETED_OBS}), "completed"),
-            ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets), "overdue"),
+            ("Pendientes", states.count(STATE_PENDING), "blue"),
+            ("Sin asignar", sum(1 for item in all_tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_REJECTED}), "amber"),
+            ("Asignados a mí", sum(1 for item in all_tickets if item.get("assignee") == actor.get("user")), "blue"),
+            ("En revisión", states.count(STATE_REVIEW), "amber"),
+            ("Observados", states.count(STATE_OBSERVED), "red"),
+            ("Aprobados", states.count(STATE_APPROVED), "green"),
+            ("En carga", states.count(STATE_LOADING), "blue"),
+            ("Vencidos", sum(ticket_is_overdue(item) for item in all_tickets), "red"),
+            ("Completados", states.count(STATE_COMPLETED) + states.count(STATE_COMPLETED_OBS), "green"),
+            ("Fallidos", states.count(STATE_FAILED), "red"),
         ]
-        kpi_tones = {
-            "pending": "blue", "unassigned": "yellow", "review": "yellow",
-            "loading": "blue", "completed": "green", "overdue": "red",
-        }
-        kpi_html = "".join(
-            f'<div class="ticket-kpi-card {kpi_tones.get(filter_value, "blue")}"><small>{escape(label)}</small><strong>{value}</strong></div>'
-            for label, value, filter_value in kpis
-        )
-        st.markdown(f'<div class="ticket-kpi-grid">{kpi_html}</div>', unsafe_allow_html=True)
-        quick_labels = {
-            "Todas": "all", "Pendientes": "pending", "Sin asignar": "unassigned",
-            "En revisión": "review", "En carga": "loading", "Completados": "completed", "Vencidos": "overdue",
-        }
-        quick_selector_key = f"{quick_key}_selector"
-        if quick_selector_key not in st.session_state:
-            current = st.session_state.get(quick_key, "all")
-            st.session_state[quick_selector_key] = next(
-                (label for label, value in quick_labels.items() if value == current), "Todas"
-            )
-        quick_label = st.selectbox(
-            "Vista rápida", list(quick_labels), key=quick_selector_key,
-            help="Filtra la bandeja por estado sin cambiar de pantalla.",
-        )
-        st.session_state[quick_key] = quick_labels[quick_label]
-
-    brands = sorted({clean_value(item.get("brand")) for item in all_tickets if clean_value(item.get("brand"))})
-    statuses = sorted({item.get("status") for item in all_tickets if item.get("status")})
-    assignees = sorted({clean_value(item.get("assignee")) for item in all_tickets if clean_value(item.get("assignee"))})
-    sites = sorted({site for item in all_tickets for site in item.get("sites", []) if clean_value(site)})
-    load_type_labels = {"complete": "Completa", "partial": "Parcial"}
-    load_types = sorted({clean_value(item.get("load_type")) for item in all_tickets if clean_value(item.get("load_type"))})
-    filter_prefix = f"ticket_filter_{role_key}"
-    clear_keys = [
-        f"{filter_prefix}_search", f"{filter_prefix}_brand", f"{filter_prefix}_state",
-        f"{filter_prefix}_priority", f"{filter_prefix}_assignee", f"{filter_prefix}_site",
-        f"{filter_prefix}_type", f"{filter_prefix}_from", f"{filter_prefix}_to",
-        f"{quick_key}_selector",
-    ]
-    filter_head, clear_head = st.columns([8, 1])
-    with clear_head:
-        if st.button("Limpiar", key=f"{filter_prefix}_clear", use_container_width=True):
-            for key in clear_keys:
-                st.session_state.pop(key, None)
-            st.session_state[quick_key] = "all"
-            st.rerun()
-    with filter_head:
-        filter_cols = st.columns([1.45, 1, 1, 1, 1.1], gap="small")
+        render_ticket_kpi_grid(kpis)
+    with st.container(border=True):
+        st.markdown("<h3 class=\"ticket-filter-title\">Buscar y filtrar solicitudes</h3>", unsafe_allow_html=True)
+        filter_cols = st.columns([1.2, 1, 1, 1, 1.2])
+        brands = sorted({clean_value(item.get("brand")) for item in all_tickets if clean_value(item.get("brand"))})
+        statuses = sorted({item.get("status") for item in all_tickets if item.get("status")})
+        assignees = sorted({clean_value(item.get("assignee")) for item in all_tickets if clean_value(item.get("assignee"))})
         with filter_cols[0]:
-            search = st.text_input("Buscar", placeholder="Código, archivo o solicitante", key=f"{filter_prefix}_search")
+            search = st.text_input("Buscar", placeholder="Ticket, Mod-Col, archivo o usuario", key=f"ticket_search_{actor.get('role')}")
         with filter_cols[1]:
-            brand_filter = st.selectbox("Marca", ["Todas"] + brands, key=f"{filter_prefix}_brand")
+            brand_filter = st.selectbox("Marca", ["Todas"] + brands, key=f"ticket_brand_filter_{actor.get('role')}")
         with filter_cols[2]:
             state_label_options = ["Todos"] + [STATE_LABELS.get(value, value) for value in statuses]
-            state_label = st.selectbox("Estado", state_label_options, key=f"{filter_prefix}_state")
+            state_label = st.selectbox("Estado", state_label_options, key=f"ticket_state_filter_{actor.get('role')}")
         with filter_cols[3]:
-            priority_label = st.selectbox("Prioridad", ["Todas"] + [PRIORITY_LABELS[key] for key in PRIORITIES], key=f"{filter_prefix}_priority")
+            priority_label = st.selectbox("Prioridad", ["Todas"] + [PRIORITY_LABELS[key] for key in PRIORITIES], key=f"ticket_priority_filter_{actor.get('role')}")
         with filter_cols[4]:
-            assignee_filter = st.selectbox("Responsable", ["Todos"] + assignees, key=f"{filter_prefix}_assignee")
-    with st.expander("Más filtros", expanded=False):
-        secondary = st.columns(4, gap="small")
-        with secondary[0]:
-            site_filter = st.selectbox("Sitio", ["Todos"] + sites, key=f"{filter_prefix}_site")
-        with secondary[1]:
-            load_type_label = st.selectbox("Tipo de carga", ["Todas"] + [load_type_labels.get(value, value.title()) for value in load_types], key=f"{filter_prefix}_type")
-        with secondary[2]:
-            date_from = st.date_input("Desde", value=None, key=f"{filter_prefix}_from")
-        with secondary[3]:
-            date_to = st.date_input("Hasta", value=None, key=f"{filter_prefix}_to")
-
-    state_filter = next((key for key, value in STATE_LABELS.items() if value == state_label), "") if state_label != "Todos" else ""
-    priority_filter = next((key for key, value in PRIORITY_LABELS.items() if value == priority_label), "") if priority_label != "Todas" else ""
-    load_type_filter = next((key for key, value in load_type_labels.items() if value == load_type_label), "") if load_type_label != "Todas" else ""
+            assignee_filter = st.selectbox("Responsable", ["Todos"] + assignees, key=f"ticket_assignee_filter_{actor.get('role')}")
+        secondary_filters = st.columns([1, 1, 1, 1])
+        sites = sorted({site for item in all_tickets for site in item.get("sites", []) if clean_value(site)})
+        load_types = sorted({clean_value(item.get("load_type")) for item in all_tickets if clean_value(item.get("load_type"))})
+        with secondary_filters[0]:
+            site_filter = st.selectbox("Sitio", ["Todos"] + sites, key=f"ticket_site_filter_{actor.get('role')}")
+        with secondary_filters[1]:
+            load_type_labels = {"complete": "Completa", "partial": "Parcial"}
+            load_type_label = st.selectbox(
+                "Tipo de carga",
+                ["Todas"] + [load_type_labels.get(value, value.title()) for value in load_types],
+                key=f"ticket_load_filter_{actor.get('role')}",
+            )
+        with secondary_filters[2]:
+            date_from = st.date_input("Desde", value=None, key=f"ticket_date_from_{actor.get('role')}")
+        with secondary_filters[3]:
+            date_to = st.date_input("Hasta", value=None, key=f"ticket_date_to_{actor.get('role')}")
+    state_filter = ""
+    if state_label != "Todos":
+        state_filter = next((key for key, value in STATE_LABELS.items() if value == state_label), "")
+    priority_filter = ""
+    if priority_label != "Todas":
+        priority_filter = next((key for key, value in PRIORITY_LABELS.items() if value == priority_label), "")
+    load_type_filter = ""
+    if load_type_label != "Todas":
+        load_type_filter = next((key for key, value in load_type_labels.items() if value == load_type_label), "")
     filters = {
         "brand": "" if brand_filter == "Todas" else brand_filter,
         "status": state_filter,
@@ -15308,196 +11301,21 @@ def render_ticket_inbox(service, actor, brand_view=False):
     except TicketError as exc:
         st.error(str(exc))
         return
-    quick_filter = st.session_state.get(quick_key, "all")
-    if quick_filter == "pending":
-        tickets = [item for item in tickets if item.get("status") == STATE_PENDING]
-    elif quick_filter == "unassigned":
-        tickets = [item for item in tickets if not item.get("assignee") and item.get("status") not in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_REJECTED, STATE_CANCELED}]
-    elif quick_filter == "review":
-        tickets = [item for item in tickets if item.get("status") in {STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED}]
-    elif quick_filter == "loading":
-        tickets = [item for item in tickets if item.get("status") in {STATE_LOADING, STATE_VALIDATING}]
-    elif quick_filter == "completed":
-        tickets = [item for item in tickets if item.get("status") in {STATE_COMPLETED, STATE_COMPLETED_OBS}]
-    elif quick_filter == "overdue":
-        tickets = [item for item in tickets if ticket_is_overdue(item)]
-
     if not tickets:
-        st.info("No hay solicitudes que coincidan con los filtros actuales.")
+        st.info("No hay solicitudes que coincidan con los filtros.")
         return
-    ticket_codes = [clean_value(ticket.get("code")) for ticket in tickets]
-    selected_code = clean_value(st.session_state.get("selected_catalog_ticket"))
-    if selected_code not in ticket_codes:
-        selected_code = ticket_codes[0]
-        st.session_state["selected_catalog_ticket"] = selected_code
-    st.markdown(
-        f'<div class="ticket-list-panel"><strong>Solicitudes encontradas</strong><span>{len(tickets)} activas en esta vista</span></div>',
-        unsafe_allow_html=True,
-    )
-    visible_cards = tickets[:12]
-    st.markdown(
-        f'<div class="ticket-request-grid">{"".join(_ticket_card_html(ticket, clean_value(ticket.get("code")) == selected_code) for ticket in visible_cards)}</div>',
-        unsafe_allow_html=True,
-    )
-    if len(tickets) > len(visible_cards):
-        st.caption(f"Mostrando las primeras {len(visible_cards)} solicitudes de {len(tickets)}. Usa los filtros para acotar la bandeja.")
-
-    ticket_labels = {
-        clean_value(ticket.get("code")): f"{clean_value(ticket.get('code'))} · {clean_value(ticket.get('brand')) or 'Sin marca'}"
-        for ticket in tickets
-    }
-    selected_code = st.selectbox(
-        "Abrir solicitud",
-        ticket_codes,
-        index=ticket_codes.index(selected_code),
-        format_func=lambda value: ticket_labels.get(value, value),
-        key=f"ticket_open_{role_key}",
-    )
+    table_df = _ticket_table(tickets)
+    st.dataframe(table_df, use_container_width=True, hide_index=True)
+    ticket_codes = [ticket.get("code") for ticket in tickets]
+    if st.session_state.get(widget_key) not in ticket_codes:
+        st.session_state.pop(widget_key, None)
+    if st.session_state.get("selected_catalog_ticket") not in ticket_codes:
+        st.session_state.pop("selected_catalog_ticket", None)
+    selected_default = st.session_state.get("selected_catalog_ticket")
+    selected_index = ticket_codes.index(selected_default) if selected_default in ticket_codes else 0
+    selected_code = st.selectbox("Abrir solicitud", ticket_codes, index=selected_index, key=widget_key)
     st.session_state["selected_catalog_ticket"] = selected_code
     render_ticket_detail(service, actor, selected_code)
-
-
-def _render_ticket_public_status(ticket, status, status_label, summary, job, saved_result):
-    """Vista de seguimiento para Comercial, sin acciones internas ni datos sensibles."""
-    code = clean_value(ticket.get("code"))
-    is_closed = status in {STATE_COMPLETED, STATE_COMPLETED_OBS}
-    public_result = ticket.get("public_result") if isinstance(ticket.get("public_result"), dict) else {}
-    successful = safe_int_value(public_result.get("successful"), safe_int_value(saved_result.get("successful"), 0))
-    warnings = safe_int_value(public_result.get("warnings"), safe_int_value(saved_result.get("warnings"), 0))
-    errors = safe_int_value(public_result.get("errors"), safe_int_value(saved_result.get("errors"), 0))
-    result_processed = safe_int_value(
-        public_result.get("processed"),
-        safe_int_value(saved_result.get("processed"), successful + warnings + errors),
-    )
-    if result_processed and not successful:
-        successful = max(result_processed - warnings - errors, 0)
-
-    total = max(
-        safe_int_value(summary.get("products"), 0),
-        safe_int_value(job.get("total"), 0),
-        result_processed,
-        successful + warnings + errors,
-    )
-    processed = max(safe_int_value(job.get("processed"), 0), result_processed)
-    progress = safe_int_value(job.get("progress"), 0)
-    if is_closed:
-        # El cierre es la fuente de verdad: un ticket finalizado no debe mostrar 0%.
-        processed = max(processed, total)
-        progress = 100
-    elif total:
-        progress = max(progress, round((processed / total) * 100))
-    progress = max(0, min(100, progress))
-
-    sites = ticket.get("sites", [])
-    if isinstance(sites, (list, tuple, set)):
-        site_text = ", ".join(clean_value(site) for site in sites if clean_value(site))
-    else:
-        site_text = clean_value(sites)
-    brand = clean_value(ticket.get("brand")) or "Marca"
-    owner = clean_value(ticket.get("assigned_to")) or "Equipo de catálogo"
-    update_text = clean_value(job.get("updated_at")) or clean_value(ticket.get("updated_at")) or "En seguimiento"
-    result_total = max(successful + warnings + errors, processed, total)
-    success_rate = round((successful / result_total) * 100) if result_total else (100 if is_closed else 0)
-    state_class = _ticket_state_color(status)
-
-    st.markdown(
-        f'''<section class="brand-request-summary">
-            <div class="brand-request-heading">
-                <div><p class="brand-request-eyebrow">SEGUIMIENTO DE CARGA</p><h2>Solicitud {escape(code)}</h2>
-                <p>{escape(brand)}{(" · " + escape(site_text)) if site_text else ""}</p></div>
-                <span class="ticket-state {state_class}">{escape(status_label)}</span>
-            </div>
-            <div class="brand-request-kpis">
-                <div class="brand-request-kpi"><small>PRODUCTOS</small><strong>{total}</strong></div>
-                <div class="brand-request-kpi blue"><small>PROCESADOS</small><strong>{processed}/{total}</strong></div>
-                <div class="brand-request-kpi {'green' if is_closed else 'blue'}"><small>AVANCE</small><strong>{progress}%</strong></div>
-                <div class="brand-request-kpi"><small>PRIORIDAD</small><strong>{escape(clean_value(ticket.get('priority')) or 'Normal')}</strong></div>
-            </div>
-            <div class="brand-request-progress"><div class="brand-request-progress-head"><span>Progreso de la solicitud</span><span>{progress}%</span></div>
-                <div class="brand-request-track"><span style="width:{progress}%"></span></div></div>
-            <div class="brand-request-meta"><div><small>RESPONSABLE</small><strong>{escape(owner)}</strong></div>
-                <div><small>ULTIMA ACTUALIZACION</small><strong>{escape(update_text)}</strong></div>
-                <div><small>ESTADO</small><strong>{escape(status_label)}</strong></div></div>
-        </section>''',
-        unsafe_allow_html=True,
-    )
-
-    if is_closed:
-        has_observations = status == STATE_COMPLETED_OBS or warnings > 0 or errors > 0
-        message = clean_value(public_result.get("message")) or clean_value(saved_result.get("message"))
-        note = message or ("La carga finalizo con incidencias para revisar." if has_observations else "Carga finalizada y registrada.")
-        st.markdown(
-            f'''<div class="brand-request-results">
-                <div class="brand-request-result green"><small>CORRECTOS</small><strong>{successful}</strong></div>
-                <div class="brand-request-result yellow"><small>ADVERTENCIAS</small><strong>{warnings}</strong></div>
-                <div class="brand-request-result red"><small>FALLIDOS</small><strong>{errors}</strong></div>
-                <div class="brand-request-result {'yellow' if has_observations else 'green'}"><small>EXITO</small><strong>{success_rate}%</strong></div>
-            </div>
-            <div class="brand-request-note {'review' if has_observations else 'complete'}">{escape(note)}</div>''',
-            unsafe_allow_html=True,
-        )
-    else:
-        message = clean_value(job.get("message")) or "Solicitud recibida. El equipo de catalogo la esta gestionando."
-        st.markdown(f'<div class="brand-request-note active">{escape(message)}</div>', unsafe_allow_html=True)
-
-
-def _render_ticket_execution_summary(ticket, summary, job, saved_result, code, latest_version, status, status_label):
-    """Renderiza el avance y el cierre sin depender de controles de sesión."""
-    total = max(
-        safe_int_value(job.get("total"), 0),
-        safe_int_value(summary.get("products"), 0),
-    )
-    processed = safe_int_value(job.get("processed"), 0)
-    progress = safe_int_value(job.get("progress"), 0)
-    if total:
-        progress = max(progress, round((processed / total) * 100))
-    progress = max(0, min(100, progress))
-
-    status_detail = clean_value(job.get("message")) or clean_value(ticket.get("public_result", {}).get("message"))
-    if not status_detail:
-        status_detail = "Aún no hay un proceso externo iniciado para esta solicitud."
-    st.markdown(
-        f'<div class="ticket-compact-alert"><strong>{escape(status_label)}</strong><br>{escape(status_detail)}</div>',
-        unsafe_allow_html=True,
-    )
-    metrics = st.columns(4)
-    metrics[0].metric("Productos", total)
-    metrics[1].metric("Procesados", processed)
-    metrics[2].metric("Pendientes", max(total - processed, 0))
-    metrics[3].metric("Avance", f"{progress}%")
-    if job:
-        st.progress(progress / 100.0)
-
-    if not saved_result:
-        return
-
-    result = saved_result
-    public_result = ticket.get("public_result", {})
-    processed_result = safe_int_value(public_result.get("processed"), safe_int_value(result.get("processed"), processed))
-    errors_result = safe_int_value(public_result.get("errors"), safe_int_value(result.get("errors"), 0))
-    warnings_result = safe_int_value(result.get("warnings"), safe_int_value(result.get("partial"), 0))
-    created_result = safe_int_value(result.get("created"), safe_int_value(result.get("created_products"), 0))
-    updated_result = safe_int_value(result.get("updated"), safe_int_value(result.get("updated_products"), 0))
-    successful_result = safe_int_value(result.get("successful"), safe_int_value(result.get("ok"), created_result + updated_result))
-    if not successful_result and processed_result:
-        successful_result = max(processed_result - errors_result - warnings_result, 0)
-    success_rate = round((successful_result / processed_result) * 100) if processed_result else 0
-    st.markdown(
-        f'''<div class="ticket-result-grid">
-            <div><small>Correctos</small><strong>{successful_result}</strong></div>
-            <div><small>Actualizados</small><strong>{updated_result}</strong></div>
-            <div><small>Advertencias</small><strong>{warnings_result}</strong></div>
-            <div><small>Fallidos</small><strong>{errors_result}</strong></div>
-            <div><small>Éxito</small><strong>{success_rate}%</strong></div>
-        </div>''',
-        unsafe_allow_html=True,
-    )
-    st.download_button(
-        "Descargar reporte final",
-        dataframe_to_excel_bytes({"Resultado": pd.DataFrame([result])}),
-        file_name=f"{code}_resultado_final.xlsx",
-        key=f"ticket_final_report_{code}",
-    )
 
 
 def render_ticket_detail(service, actor, code):
@@ -15510,44 +11328,30 @@ def render_ticket_detail(service, actor, code):
     status_label = STATE_LABELS.get(status, status)
     status_color = _ticket_state_color(status)
     summary = ticket.get("summary", {})
-    job = ticket.get("job") if isinstance(ticket.get("job"), dict) else {}
-    saved_result = ticket.get("result") if isinstance(ticket.get("result"), dict) else {}
-    role = actor.get("role")
-    # Comercial consulta únicamente el avance y resultado; las marcas conservan
-    # sus flujos de corrección cuando una solicitud queda observada.
-    # El portal comercial solo requiere una comparación estable de correo; no
-    # depende del normalizador de columnas del catálogo.
-    commercial_status_only = clean_value(actor.get("user")).strip().lower() in {
-        clean_value(email).strip().lower() for email in COMMERCIAL_INPUT_ONLY_USERS
-    }
-    if commercial_status_only:
-        _render_ticket_public_status(ticket, status, status_label, summary, job, saved_result)
-        return
     st.markdown(
         f"""
         <div class="ticket-detail-header">
           <div><p>Solicitud de catálogo</p><h2>{escape(ticket.get('code', ''))}</h2></div>
           <span class="ticket-state {status_color}">{escape(status_label)}</span>
         </div>
-        <div class="ticket-chip-row ticket-detail-chips">
-          <span>{escape(ticket.get('brand') or 'Sin marca')}</span>
-          <span>{escape(', '.join(ticket.get('sites', [])) or 'Sin sitio')}</span>
-          <span>{safe_int_value(summary.get('products'), 0)} productos</span>
-          <span>{escape(PRIORITY_LABELS.get(ticket.get('priority'), ticket.get('priority','Normal')))}</span>
-          <span>{escape(ticket.get('assignee') or 'Sin asignar')}</span>
-          <span>{escape(ticket.get('requester') or 'Sin solicitante')}</span>
+        <div class="ticket-detail-shell">
+          <div class="ticket-summary">
+            <div><small>Marca y sitios</small><strong>{escape(ticket.get('brand',''))}</strong><span>{escape(', '.join(ticket.get('sites', [])))}</span></div>
+            <div><small>Productos</small><strong>{int(summary.get('products',0))}</strong><span>{int(summary.get('model_colors',0))} modelo-color</span></div>
+            <div><small>Solicitante</small><strong style="font-size:14px">{escape(ticket.get('requester',''))}</strong><span>{escape(ticket.get('filename',''))}</span></div>
+            <div><small>Responsable</small><strong style="font-size:14px">{escape(ticket.get('assignee') or 'Sin asignar')}</strong><span>{escape(PRIORITY_LABELS.get(ticket.get('priority'), ticket.get('priority','')))}</span></div>
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
     latest_version = (ticket.get("versions") or [{}])[-1]
-    _render_ticket_stepper(status)
-    alert_message = clean_value(job.get("message")) or clean_value(ticket.get("public_result", {}).get("message"))
-    if not alert_message:
-        alert_message = "Solicitud lista para gestión operativa." if status in {STATE_PENDING, STATE_ASSIGNED, STATE_REVIEW} else status_label
-    st.markdown(f'<div class="ticket-compact-alert">{escape(alert_message)}</div>', unsafe_allow_html=True)
-    tab_summary, tab_products, tab_files, tab_activity = st.tabs(["Resumen", "Productos", "Archivo y validación", "Actividad"])
-    with tab_products:
+    st.markdown(
+        f'<p class="ticket-info-line">Versión validada {latest_version.get("number", 1)} de {len(ticket.get("versions", []))} · '
+        f'Hash {escape(clean_value(latest_version.get("hash"))[:12])} · Plantilla {escape(clean_value(ticket.get("template_version")))}</p>',
+        unsafe_allow_html=True,
+    )
+    with st.expander("Vista previa de la solicitud", expanded=False):
         preview_cols = st.columns(3)
         preview_cols[0].metric("Productos nuevos", int(summary.get("new_products", 0)))
         preview_cols[1].metric("Productos a actualizar", int(summary.get("updated_products", 0)))
@@ -15562,7 +11366,8 @@ def render_ticket_detail(service, actor, code):
             )
         else:
             st.caption("El detalle completo está disponible en el archivo de validación descargable.")
-    with tab_files:
+    with st.container(border=True):
+        st.markdown('<p class="ticket-section-label">Documentación</p><h3>Archivos y validación</h3><p>Descarga la versión validada o su reporte antes de continuar la gestión.</p>', unsafe_allow_html=True)
         download_cols = st.columns(3)
         try:
             if latest_version.get("input_path"):
@@ -15581,21 +11386,55 @@ def render_ticket_detail(service, actor, code):
                 )
         except TicketError as exc:
             st.warning(f"No se pudo descargar un adjunto: {exc}")
-        if ticket.get("warnings"):
-            with st.expander(f"Advertencias ({len(ticket['warnings'])})"):
-                for warning in ticket["warnings"][:100]:
-                    st.write(f"- {warning}")
-        if ticket.get("observations"):
-            with st.expander(f"Observaciones activas ({len(ticket['observations'])})", expanded=status == STATE_OBSERVED):
-                observations_df = pd.DataFrame(ticket["observations"])
-                if not observations_df.empty:
-                    st.dataframe(observations_df, use_container_width=True, hide_index=True)
-    with tab_summary:
+    if ticket.get("warnings"):
+        with st.expander(f"Advertencias ({len(ticket['warnings'])})"):
+            for warning in ticket["warnings"][:100]:
+                st.write(f"- {warning}")
+    if ticket.get("observations"):
+        with st.expander(f"Observaciones activas ({len(ticket['observations'])})", expanded=status == STATE_OBSERVED):
+            observations_df = pd.DataFrame(ticket["observations"])
+            if not observations_df.empty:
+                st.dataframe(observations_df, use_container_width=True, hide_index=True)
+    if ticket.get("job"):
+        job = ticket.get("job", {})
+        progress = max(0, min(100, safe_int_value(job.get("progress"), 0)))
+        st.markdown("#### Estado del proceso")
+        st.progress(progress / 100.0)
         st.caption(
-            f"Versión {latest_version.get('number', 1)} de {len(ticket.get('versions', []))} · "
-            f"Archivo: {clean_value(latest_version.get('filename')) or clean_value(ticket.get('filename')) or 'Sin archivo'}"
+            f"Job {clean_value(job.get('id')) or 'pendiente'} · {clean_value(job.get('status')) or status_label} · {progress}%"
         )
-        _render_ticket_execution_summary(ticket, summary, job, saved_result, code, latest_version, status, status_label)
+    if ticket.get("result"):
+        result = ticket.get("result", {})
+        public_result = ticket.get("public_result", {})
+        result_df = pd.DataFrame([result])
+        result_status = clean_value(public_result.get("status")) or status_label
+        result_message = clean_value(public_result.get("message")) or clean_value(result.get("message"))
+        st.markdown("#### Cierre de la solicitud")
+        if status == STATE_COMPLETED:
+            st.success(
+                f"{result_status}. El archivo quedó registrado como cargado"
+                + (f": {result_message}" if result_message else ".")
+            )
+        elif status == STATE_COMPLETED_OBS:
+            st.warning(
+                f"{result_status}. La carga terminó y conserva observaciones"
+                + (f": {result_message}" if result_message else ".")
+            )
+        result_cols = st.columns(4)
+        result_cols[0].metric("Productos procesados", safe_int_value(public_result.get("processed"), safe_int_value(result.get("processed"), 0)))
+        result_cols[1].metric("Errores registrados", safe_int_value(public_result.get("errors"), safe_int_value(result.get("errors"), 0)))
+        result_cols[2].metric("Versión cargada", clean_value(result.get("file_version")) or latest_version.get("number", 1))
+        result_cols[3].metric("Finalizado por", clean_value(result.get("closed_by")) or "Operaciones")
+        st.caption(
+            f"Archivo: {clean_value(result.get('filename')) or latest_version.get('filename') or ticket.get('filename') or 'Sin nombre'}"
+        )
+        st.dataframe(result_df, use_container_width=True, hide_index=True)
+        download_cols[2].download_button(
+            "Descargar reporte final",
+            dataframe_to_excel_bytes({"Resultado": result_df}),
+            file_name=f"{code}_resultado_final.xlsx",
+            key=f"ticket_final_report_{code}",
+        )
     role = actor.get("role")
     if role == ROLE_BRAND and status == STATE_OBSERVED:
         st.markdown('<div class="ticket-section"><p class="ticket-section-label">Corrección requerida</p><h3>Enviar una nueva versión</h3><p>La versión anterior se conservará para mantener la trazabilidad.</p></div>', unsafe_allow_html=True)
@@ -15628,8 +11467,9 @@ def render_ticket_detail(service, actor, code):
                     st.error(str(exc))
     if role in {ROLE_OPERATOR, ROLE_ADMIN}:
         st.markdown(
-            '<div class="ticket-section"><p class="ticket-section-label">Gestión interna</p>'
-            '<h3>Gestionar solicitud</h3></div>',
+            '<div class="ticket-section"><p class="ticket-section-label">Gestión operativa</p><h3>Acciones internas</h3>'
+            '<p>Asigna responsables, define prioridad y lleva la solicitud por cada etapa sin perder trazabilidad.</p>'
+            '<div class="ticket-action-note">Las acciones disponibles se adaptan automáticamente al estado actual de la solicitud.</div></div>',
             unsafe_allow_html=True,
         )
         current_priority = ticket.get("priority", "normal")
@@ -15712,13 +11552,13 @@ def render_ticket_detail(service, actor, code):
                     st.error(str(exc))
         if status == STATE_APPROVED:
             run_cols = st.columns(2)
-            if run_cols[0].button("Validar solicitud", key=f"dry_run_{code}"):
+            if run_cols[0].button("Ejecutar simulación", key=f"dry_run_{code}"):
                 try:
                     service.run_dry_run(actor, code)
                     st.rerun()
                 except TicketError as exc:
                     st.error(str(exc))
-            if ticket.get("dry_run", {}).get("status") == "completed" and run_cols[1].button("Registrar carga iniciada", type="primary", key=f"start_load_{code}"):
+            if ticket.get("dry_run", {}).get("status") == "completed" and run_cols[1].button("Marcar carga iniciada", type="primary", key=f"start_load_{code}"):
                 try:
                     service.start_load(actor, code)
                     st.rerun()
@@ -15734,58 +11574,79 @@ def render_ticket_detail(service, actor, code):
         if status in {STATE_LOADING, STATE_VALIDATING}:
             st.markdown(
                 '<div class="ticket-section"><p class="ticket-section-label">Cierre operativo</p>'
-                '<h3>Finalizar carga</h3>'
-                '<p>Cuando verifiques la carga en Shopify, registra aquí el resultado final.</p></div>',
+                '<h3>Cerrar carga de catálogo</h3>'
+                '<p>Cuando termines la carga y la revisión en Shopify, registra aquí el resultado. '
+                'La solicitud se actualizará para Operaciones y para el equipo comercial.</p></div>',
                 unsafe_allow_html=True,
             )
-            close_cols = st.columns([1, 2])
-            close_outcome = close_cols[0].selectbox(
-                "Resultado",
-                ["Completada", "Completada con incidencias"],
-                key=f"close_ticket_outcome_{code}",
+            close_metrics = st.columns(2)
+            processed_count = close_metrics[0].number_input(
+                "Productos procesados",
+                min_value=0,
+                value=max(0, safe_int_value(summary.get("products"), 0)),
+                step=1,
+                key=f"close_ticket_processed_{code}",
             )
-            close_note = close_cols[1].text_area(
-                "Comentario de cierre",
+            error_count = close_metrics[1].number_input(
+                "Productos con error",
+                min_value=0,
+                value=0,
+                step=1,
+                key=f"close_ticket_errors_{code}",
+            )
+            close_note = st.text_area(
+                "Resultado u observaciones de la carga",
                 key=f"close_ticket_note_{code}",
-                placeholder="Resumen breve de la carga y de cualquier incidencia.",
+                placeholder="Ejemplo: carga completada y revisada en Shopify.",
             )
             close_confirmed = st.checkbox(
-                "Confirmo que revisé la carga en Shopify y puedo cerrar la solicitud.",
+                "Confirmo que la carga terminó y que revisé el resultado en Shopify.",
                 key=f"close_ticket_confirmed_{code}",
             )
-            has_incidents = close_outcome == "Completada con incidencias"
-            # El cierre solo se habilita cuando el proceso dejó evidencia real.
-            # El total solicitado no cuenta como un resultado verificable.
-            processed_count = safe_int_value(job.get("processed"), 0)
-            has_verifiable_result = bool(saved_result) or processed_count > 0
             close_result = {
-                "processed": processed_count,
-                "errors": 0,
-                "warnings": 1 if has_incidents else 0,
-                "successful": processed_count,
-                "message": clean_value(close_note) or "Carga finalizada y registrada.",
+                "processed": int(processed_count),
+                "errors": int(error_count),
+                "message": clean_value(close_note) or "Carga completada y validada en Shopify.",
                 "detail": clean_value(close_note),
                 "closed_by": actor.get("user"),
                 "filename": latest_version.get("filename") or ticket.get("filename"),
                 "file_version": latest_version.get("number", 1),
                 "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
             }
-            final_label = "Finalizar con incidencias" if has_incidents else "Finalizar solicitud de carga"
-            if not has_verifiable_result:
-                st.caption("El cierre se habilitará cuando la carga registre al menos un producto procesado o un resultado final.")
-            if st.button(
-                final_label,
+            close_cols = st.columns(3)
+            if close_cols[0].button(
+                "Finalizar carga",
                 type="primary",
                 key=f"complete_load_{code}",
-                disabled=not (close_confirmed and has_verifiable_result),
+                disabled=not close_confirmed,
+            ):
+                try:
+                    service.record_job_result(actor, code, success=True, result=close_result)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+            if close_cols[1].button(
+                "Finalizar con observaciones",
+                key=f"complete_obs_load_{code}",
+                disabled=not close_confirmed,
+            ):
+                try:
+                    service.record_job_result(actor, code, success=True, observations=True, result=close_result)
+                    st.rerun()
+                except TicketError as exc:
+                    st.error(str(exc))
+            if close_cols[2].button(
+                "Registrar incidencia",
+                key=f"fail_load_{code}",
+                disabled=not close_confirmed,
             ):
                 try:
                     service.record_job_result(
                         actor,
                         code,
-                        success=True,
-                        observations=has_incidents,
+                        success=False,
                         result=close_result,
+                        error=clean_value(close_note) or "Incidencia registrada por Operaciones.",
                     )
                     st.rerun()
                 except TicketError as exc:
@@ -15804,31 +11665,30 @@ def render_ticket_detail(service, actor, code):
                         st.rerun()
                     except TicketError as exc:
                         st.error(str(exc))
-    with tab_activity:
-        st.markdown(
-            '<div class="ticket-section"><p class="ticket-section-label">Colaboración</p><h3>Actividad y comentarios</h3>'
-            '<p>Deja contexto para la marca y el equipo operativo. Cada mensaje queda registrado en el historial.</p></div>',
-            unsafe_allow_html=True,
-        )
-        comment = st.text_area("Agregar comentario", key=f"ticket_comment_{code}", label_visibility="collapsed", placeholder="Escribe un comentario para el equipo...")
-        if st.button("Publicar comentario", key=f"add_ticket_comment_{code}"):
-            try:
-                service.add_comment(actor, code, comment)
-                st.rerun()
-            except TicketError as exc:
-                st.error(str(exc))
-        comments = list(reversed(ticket.get("comments", [])))
-        if not comments:
-            st.markdown('<div class="ticket-comments-empty">Aún no hay comentarios para esta solicitud.</div>', unsafe_allow_html=True)
-        for item in comments:
-            st.markdown(f"**{escape(item.get('user',''))}** · {escape(item.get('created_at',''))}<br>{escape(item.get('message',''))}", unsafe_allow_html=True)
-        with st.expander("Historial y auditoría", expanded=False):
-            for event in reversed(ticket.get("events", [])):
-                state_text = STATE_LABELS.get(event.get("to_state"), event.get("to_state", ""))
-                st.markdown(
-                    f'<div class="ticket-event"><strong>{escape(state_text or event.get("action", ""))}</strong><br><small>{escape(event.get("created_at", ""))} · {escape(event.get("user", ""))}</small><br>{escape(event.get("detail", ""))}</div>',
-                    unsafe_allow_html=True,
-                )
+    st.markdown(
+        '<div class="ticket-section"><p class="ticket-section-label">Colaboración</p><h3>Comentarios</h3>'
+        '<p>Deja contexto para la marca y el equipo operativo. Cada mensaje queda registrado en el historial.</p></div>',
+        unsafe_allow_html=True,
+    )
+    comment = st.text_area("Agregar comentario", key=f"ticket_comment_{code}", label_visibility="collapsed", placeholder="Escribe un comentario para el equipo...")
+    if st.button("Publicar comentario", key=f"add_ticket_comment_{code}"):
+        try:
+            service.add_comment(actor, code, comment)
+            st.rerun()
+        except TicketError as exc:
+            st.error(str(exc))
+    comments = list(reversed(ticket.get("comments", [])))
+    if not comments:
+        st.markdown('<div class="ticket-comments-empty">Aún no hay comentarios para esta solicitud.</div>', unsafe_allow_html=True)
+    for item in comments:
+        st.markdown(f"**{escape(item.get('user',''))}** · {escape(item.get('created_at',''))}<br>{escape(item.get('message',''))}", unsafe_allow_html=True)
+    with st.expander("Historial y auditoría", expanded=False):
+        for event in reversed(ticket.get("events", [])):
+            state_text = STATE_LABELS.get(event.get("to_state"), event.get("to_state", ""))
+            st.markdown(
+                f'<div class="ticket-event"><strong>{escape(state_text or event.get("action", ""))}</strong><br><small>{escape(event.get("created_at", ""))} · {escape(event.get("user", ""))}</small><br>{escape(event.get("detail", ""))}</div>',
+                unsafe_allow_html=True,
+            )
 
 
 def main():
@@ -15845,18 +11705,13 @@ def main():
     commercial_input_only = auth_scope == "commercial_input"
     ticket_actor = current_ticket_actor()
     ticket_operator = ticket_actor.get("role") == ROLE_OPERATOR
-    if auth_user and st.session_state.get("_activity_logged_user") != auth_user:
-        log_user_activity("Sesion activa", "Usuario entro a la app.", user=auth_user, module="App")
-        st.session_state["_activity_logged_user"] = auth_user
-    render_sidebar_account_card(auth_user)
-    render_sidebar_user_activity_log(auth_user)
     with st.sidebar.container(key="logout_card"):
+        user_label = auth_user or "Usuario"
+        st.caption(f"Sesion: {user_label}")
         if st.button("Cerrar sesion"):
-            log_user_activity("Cierre de sesion", "Sesion cerrada desde sidebar.", user=auth_user, module="Login")
             st.session_state.pop("authenticated", None)
             st.session_state.pop("auth_user", None)
             st.session_state.pop("auth_scope", None)
-            st.session_state.pop("_activity_logged_user", None)
             st.rerun()
     site_options = {config["site_label"]: key for key, config in SITE_CONFIGS.items()}
     current_site_label = clean_value(st.session_state.get("site_picker")) or next(iter(site_options))

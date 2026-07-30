@@ -21,7 +21,9 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from engines.ticket_flow import OBSERVADA as FLUJO_OBSERVADA
 from engines.ticket_flow import ETIQUETAS as FLUJO_ETIQUETAS
+from engines.ticket_flow import estado_visible as flujo_estado_visible
 from engines.ticket_flow import ORDEN as FLUJO_ORDEN
 from engines.ticket_flow import acciones_disponibles as flujo_acciones
 from engines.ticket_flow import etiqueta as flujo_etiqueta
@@ -13036,6 +13038,53 @@ def inject_custom_css(config):
             font-size:13.5px; font-weight:500; color:var(--c-text);
             display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
         }}
+        .lista-head {{
+            display:flex; align-items:center; justify-content:space-between;
+            gap:10px; padding:11px 14px; margin:0 0 8px;
+            border:1px solid var(--c-border-hair); border-radius:12px;
+            background:var(--c-surface);
+        }}
+        .lista-head b {{ font-size:14px; font-weight:600; color:var(--c-text); }}
+        .lista-contador {{
+            min-width:26px; padding:3px 10px; border-radius:999px;
+            background:var(--c-accent-bg); color:var(--c-forus-action);
+            font-size:12.5px; font-weight:700; text-align:center;
+        }}
+
+        .pasos {{
+            display:grid; grid-template-columns:repeat(4,minmax(0,1fr));
+            gap:8px; margin:14px 0 4px;
+        }}
+        .paso {{
+            display:flex; align-items:center; gap:8px;
+            padding:10px 12px; border-radius:10px;
+            background:var(--c-surface-soft); border:1px solid var(--c-border-hair);
+            transition:background 160ms ease, border-color 160ms ease;
+        }}
+        .paso span {{
+            flex:none; width:22px; height:22px; border-radius:50%;
+            display:flex; align-items:center; justify-content:center;
+            font-size:11.5px; font-weight:700;
+            background:var(--c-border); color:var(--c-text-soft);
+        }}
+        .paso b {{ font-size:12px; font-weight:600; color:var(--c-text-muted); line-height:1.25; }}
+        .paso.hecho {{ background:var(--c-ok-bg); border-color:transparent; }}
+        .paso.hecho span {{ background:var(--c-ok); color:#fff; }}
+        .paso.hecho b {{ color:var(--c-ok-text); }}
+        .paso.actual {{ background:var(--brand-primary); border-color:var(--brand-primary); }}
+        .paso.actual span {{ background:rgba(255,255,255,.24); color:#fff; }}
+        .paso.actual b {{ color:#fff; }}
+        .paso.obs {{ background:var(--c-bad-bg); border-color:transparent; }}
+        .paso.obs span {{ background:var(--c-bad); color:#fff; }}
+        .paso.obs b {{ color:var(--c-bad-text); }}
+        .paso-aviso {{
+            margin:8px 0 0; padding:10px 13px; border-radius:10px;
+            background:var(--c-bad-bg); color:var(--c-bad-text);
+            font-size:12.5px; font-weight:500;
+        }}
+        @media (max-width:820px) {{
+            .pasos {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -16043,7 +16092,8 @@ def render_ticket_inbox(service, actor, brand_view=False):
         selected_code = ticket_codes[0]
         st.session_state["selected_catalog_ticket"] = selected_code
     st.markdown(
-        f'<div class="ticket-list-panel"><strong>Solicitudes encontradas</strong><span>{len(tickets)} activas en esta vista</span></div>',
+        f'<div class="lista-head"><b>Solicitudes</b>'
+        f'<span class="lista-contador">{len(tickets)}</span></div>',
         unsafe_allow_html=True,
     )
     visible_cards = tickets[:12]
@@ -16067,6 +16117,36 @@ def render_ticket_inbox(service, actor, brand_view=False):
     )
     st.session_state["selected_catalog_ticket"] = selected_code
     render_ticket_detail(service, actor, selected_code)
+
+
+def _barra_pasos_html(status):
+    """Barra de 4 pasos para que la marca vea el avance de un vistazo.
+
+    Los pasos y el mapeo salen de engines/ticket_flow, que tiene pruebas.
+    Una solicitud observada se marca aparte: no avanza, requiere accion.
+    """
+    visible = flujo_estado_visible(status)
+    paso = flujo_paso_actual(status)
+    observada = visible == FLUJO_OBSERVADA
+    bloques = []
+    for indice, clave in enumerate(FLUJO_ORDEN, start=1):
+        if observada and indice >= paso:
+            clase = "obs" if indice == paso else ""
+        elif indice < paso:
+            clase = "hecho"
+        elif indice == paso:
+            clase = "actual"
+        else:
+            clase = ""
+        bloques.append(
+            f'<div class="paso {clase}"><span>{indice}</span>'
+            f'<b>{escape(FLUJO_ETIQUETAS[clave])}</b></div>'
+        )
+    aviso = ""
+    if observada:
+        aviso = ('<p class="paso-aviso">Tu solicitud tiene observaciones. '
+                 "Revisa los comentarios y envía una corrección.</p>")
+    return f'<div class="pasos">{"".join(bloques)}</div>{aviso}'
 
 
 def _render_ticket_public_status(ticket, status, status_label, summary, job, saved_result):
@@ -16123,6 +16203,7 @@ def _render_ticket_public_status(ticket, status, status_label, summary, job, sav
                 <p>{escape(brand)}{(" · " + escape(site_text)) if site_text else ""}</p></div>
                 <span class="ticket-state {state_class}">{escape(status_label)}</span>
             </div>
+            {_barra_pasos_html(status)}
             <div class="brand-request-kpis">
                 <div class="brand-request-kpi"><small>PRODUCTOS</small><strong>{total}</strong></div>
                 <div class="brand-request-kpi blue"><small>PROCESADOS</small><strong>{processed}/{total}</strong></div>

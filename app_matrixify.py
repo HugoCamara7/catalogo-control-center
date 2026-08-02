@@ -1264,7 +1264,7 @@ def manual_sizes_from_text(value):
     text = clean_value(value)
     if not text:
         return []
-    parts = re.split(r"[,;/|]+", text)
+    parts = text.split("|") if "|" in text else re.split(r"[,;/]+", text)
     return sorted({normalize_size(part) for part in parts if normalize_size(part)}, key=size_sort_key)
 
 
@@ -2507,6 +2507,38 @@ def build_body_html_from_commercial_row(row):
     return "\n".join(sections)
 
 
+def revisar_separadores_lista(valor):
+    """Comprueba si un campo de lista usa bien el separador |.
+
+    Devuelve "" si esta bien, o el texto del aviso.
+
+    La regla anterior marcaba cualquier coma del valor. Eso rechazaba bullets
+    correctos: "...algodon organico|Polar Snap-T de corte recto, con un largo
+    a la altura de la cadera|..." tiene el separador bien puesto y las comas
+    son puntuacion dentro de cada frase.
+
+    Criterio actual:
+      - Si el valor ya trae "|", el formato es correcto: no se avisa.
+      - Si no lo trae, solo se avisa ante saltos de linea o punto y coma, que
+        si delatan otro separador. Una coma sola no basta: un unico bullet
+        puede llevar comas legitimamente.
+    """
+    valor = clean_value(valor)
+    if not valor:
+        return ""
+    if "||" in valor:
+        return "contiene separadores vacios ||. Deja un solo | entre valores."
+    if "|" in valor:
+        return ""
+    if any(salto in valor for salto in ("\n", "\r")):
+        return ("usa saltos de linea como separador. Reemplazalos por | para que "
+                "la app arme la lista y los bullets del Body HTML.")
+    if ";" in valor:
+        return ("usa ; como separador. Reemplazalo por | para que la app arme "
+                "la lista y los bullets del Body HTML.")
+    return ""
+
+
 def validate_brand_commercial_input(uploaded_file, brand_name):
     try:
         xls = pd.ExcelFile(uploaded_file)
@@ -2606,18 +2638,11 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                     row_status = "Con advertencia"
                 row_messages.append(f"{issue.get('field')}: {issue.get('message')}")
         for list_column in COMMERCIAL_INPUT_TEXT_LIST_COLUMNS:
-            value = normalized.get(list_column)
-            if "||" in value:
+            aviso = revisar_separadores_lista(normalized.get(list_column))
+            if aviso:
                 if row_status == "Listo":
                     row_status = "Con advertencia"
-                row_messages.append(f"{list_column} contiene separadores vacios ||.")
-            if value and any(separator in value for separator in [",", ";", "\n", "\r"]):
-                if row_status == "Listo":
-                    row_status = "Con advertencia"
-                row_messages.append(
-                    f"{list_column} debe usar solo | para separar valores. "
-                    "La app convierte | en listas compatibles con Shopify y bullets del Body HTML."
-                )
+                row_messages.append(f"{list_column} {aviso}")
         description = normalized.get("Descripcion")
         visible_len = len(strip_html(description))
         if description and visible_len < 150:
@@ -4080,7 +4105,12 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
 
 
 def _split_tags(value):
-    return [tag.strip() for tag in clean_value(value).split(",") if tag.strip()]
+    """Separa tags. El | del input comercial manda sobre la coma de Shopify."""
+    texto = clean_value(value)
+    if not texto:
+        return []
+    separador = "|" if "|" in texto else ","
+    return [tag.strip() for tag in texto.split(separador) if tag.strip()]
 
 
 def _join_tags(values):

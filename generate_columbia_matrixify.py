@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -490,7 +490,13 @@ def split_technology_items(value):
                 return [clean(item) for item in parsed if clean(item)]
         except Exception:
             pass
-    items = [item.strip() for item in re.split(r"[,;|\n]+", text) if item.strip()]
+    # El | es el separador declarado del input comercial: si aparece, manda.
+    # Asi un valor como "Gore-Tex, 2 capas|Omni-Heat" da dos tecnologias y no
+    # tres. Sin | se mantiene la tolerancia para datos de Shopify o historicos.
+    if "|" in text:
+        items = [item.strip() for item in text.split("|") if item.strip()]
+    else:
+        items = [item.strip() for item in re.split(r"[,;\n]+", text) if item.strip()]
     return list(dict.fromkeys(items))
 
 

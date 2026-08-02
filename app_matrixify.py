@@ -1461,19 +1461,29 @@ def dataframe_to_excel_bytes(sheets):
 
 COMMERCIAL_INPUT_TEMPLATE_VERSION = "CCC_INPUT_MARCA_V7_2026-07-22"
 COMMERCIAL_INPUT_MAX_ROWS = 5000
+# Materiales y Cuidados quedaron como OPCIONALES para todas las marcas:
+# muchas fichas no traen esa informacion y bloquear la carga por eso frenaba
+# productos que por lo demas estaban completos. Siguen apareciendo en el
+# formato y, si vienen, se validan igual (separador | y bullets del Body HTML).
+# Minimo de caracteres visibles de la descripcion. Bajado de 150 a 50 porque
+# hay fichas cortas legitimas y el aviso frenaba cargas validas.
+DESCRIPCION_MINIMA = 50
+
+# TEMPORAL: campos cuyo fallo se avisa pero no bloquea la carga, mientras se
+# terminan de afinar los validadores. Vaciar este conjunto restablece el
+# bloqueo sin tocar nada mas.
+VALIDACIONES_SOLO_AVISO = {"Tipo de prenda"}
+
 COMMERCIAL_INPUT_REQUIRED_COLUMNS = [
     "Mod-Col",
     "Marca",
     "Genero",
     "Clase",
-    "Tipo de prenda",
     "Color Comercial",
     "Color web/filtro",
     "Nombre de Producto",
     "Descripcion",
     "Caracteristicas",
-    "Materiales",
-    "Cuidados",
 ]
 COMMERCIAL_INPUT_TEXT_LIST_COLUMNS = [
     "Caracteristicas",
@@ -1938,7 +1948,7 @@ def _commercial_dictionary_rows(brand_name):
                 "Tipo de dato": "Fecha" if column == "Fecha publicacion" else "Texto",
                 "Formato permitido": "SI/NO" if is_site else ("yyyy-mm-dd hh:mm" if column == "Fecha publicacion" else "Texto limpio"),
                 "Obligatorio": "SI" if required else "NO",
-                "Longitud minima": 150 if column == "Descripcion" else "",
+                "Longitud minima": DESCRIPCION_MINIMA if column == "Descripcion" else "",
                 "Longitud recomendada": "300-1000" if column == "Descripcion" else ("30-80" if column == "Nombre de Producto" else ""),
                 "Longitud maxima": 5000 if column == "Descripcion" else "",
                 "Valores permitidos": "SI|NO" if is_site else "",
@@ -2284,7 +2294,7 @@ def _commercial_brand_fill_guide_df(brand_name):
         "Color Comercial": "Nombre comercial del color informado por la marca.",
         "Color web/filtro": "Color simple que verá el cliente, por ejemplo Negro, Azul o Beige.",
         "Nombre de Producto": "Nombre comercial completo del producto.",
-        "Descripcion": "Descripción comercial principal del producto.",
+        "Descripcion": f"Descripción comercial principal del producto. Mínimo {DESCRIPCION_MINIMA} caracteres.",
         "Caracteristicas": "Beneficios principales. Si hay varios, sepáralos únicamente con |.",
         "Materiales": "Materiales o composición. Si hay varios, sepáralos únicamente con |.",
         "Cuidados": "Recomendaciones de cuidado. Si hay varias, sepáralas únicamente con |.",
@@ -2632,11 +2642,13 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
         for issue in type_decision.get("issues", []):
             if issue.get("field") in {"Tipo de prenda", "Guia de tallas"}:
                 level = clean_value(issue.get("level"))
-                if level == "bloqueo":
+                campo = clean_value(issue.get("field"))
+                if level == "bloqueo" and campo not in VALIDACIONES_SOLO_AVISO:
                     row_status = "Bloqueado"
                 elif row_status == "Listo":
                     row_status = "Con advertencia"
-                row_messages.append(f"{issue.get('field')}: {issue.get('message')}")
+                sufijo = " (no bloquea la carga)" if campo in VALIDACIONES_SOLO_AVISO else ""
+                row_messages.append(f"{campo}: {issue.get('message')}{sufijo}")
         for list_column in COMMERCIAL_INPUT_TEXT_LIST_COLUMNS:
             aviso = revisar_separadores_lista(normalized.get(list_column))
             if aviso:
@@ -2645,10 +2657,12 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                 row_messages.append(f"{list_column} {aviso}")
         description = normalized.get("Descripcion")
         visible_len = len(strip_html(description))
-        if description and visible_len < 150:
+        if description and visible_len < DESCRIPCION_MINIMA:
             if row_status == "Listo":
                 row_status = "Con advertencia"
-            row_messages.append("Descripcion bajo 150 caracteres visibles.")
+            row_messages.append(
+                f"Descripcion bajo {DESCRIPCION_MINIMA} caracteres visibles."
+            )
         handle = build_catalog_handle(
             product_type=normalized.get("Tipo de prenda"),
             gender=normalized.get("Genero"),

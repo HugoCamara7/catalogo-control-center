@@ -320,6 +320,48 @@ def normalize_handle(handle, mod_col):
     return base
 
 
+class MissingInputColumnError(ValueError):
+    """El input comercial no trae una columna obligatoria."""
+
+
+def _append_handle_part(parts, extra):
+    """Agrega un tramo al handle salvo que ya este presente como palabra."""
+    if not extra:
+        return
+    current = "-".join(parts)
+    if f"-{extra}-" in f"-{current}-":
+        return
+    parts.append(extra)
+
+
+def build_image_alt_text(title, image_count):
+    """Replica el nombre del producto y numera cada imagen.
+
+    Devuelve 'Nombre - 1; Nombre - 2; ...' con el mismo separador '; ' que usa
+    la columna Image Src, para que Matrixify empareje cada alt con su foto.
+    """
+    name = clean(title).replace(";", ",")
+    if not name:
+        return ""
+    total = max(1, safe_int(image_count))
+    return "; ".join(f"{name} - {position}" for position in range(1, total + 1))
+
+
+def build_product_handle(title, mod_col, color_web):
+    """Arma el handle con la estructura nombre-producto-codigo-modelo-color-color.
+
+    Todo queda en formato handle: minusculas, sin tildes, sin caracteres
+    especiales y separado por guiones. Los tramos vacios se omiten y no se
+    repite un tramo que el nombre ya contenga.
+    """
+    parts = []
+    _append_handle_part(parts, normalize_text(title))
+    _append_handle_part(parts, normalize_text(mod_col))
+    _append_handle_part(parts, normalize_text(color_web))
+    handle = "-".join(part for part in parts if part)
+    return re.sub(r"-+", "-", handle).strip("-")
+
+
 def model_code(mod_col):
     text = clean(mod_col).upper()
     if "-" not in text:
@@ -479,6 +521,63 @@ def size_sort_key(value):
     return (9, 9999, size)
 
 
+_DECIMAL_PIPE_RE = re.compile(r"(?<=\d)\|(?=\d)")
+_DECIMAL_PIPE_TOKEN = "\x00"
+
+
+def protect_decimal_pipes(value):
+    """Marca los | que no son separadores para no cortar por ellos.
+
+    En el input de Patagonia aparece "Cuerpo: 5|3-oz (150 g)", donde el | hace
+    de coma decimal (150 g son 5.3 oz). Un | entre digitos nunca separa items,
+    asi que se reemplaza por una marca temporal antes de cortar.
+    """
+    return _DECIMAL_PIPE_RE.sub(_DECIMAL_PIPE_TOKEN, clean(value))
+
+
+def restore_decimal_pipes(text):
+    """Devuelve el | original a los tramos protegidos por protect_decimal_pipes."""
+    return str(text).replace(_DECIMAL_PIPE_TOKEN, "|")
+
+
+def split_pipe_items(value):
+    """Separa un valor del input comercial en items, sin repetidos.
+
+    El | es el separador declarado del input comercial: si aparece, manda. Asi
+    un valor como "Gore-Tex, 2 capas|Omni-Heat" da dos items y no tres. Sin |
+    se mantiene la tolerancia a coma, punto y coma y salto de linea para datos
+    que vienen de Shopify o de archivos historicos.
+    """
+    text = protect_decimal_pipes(value)
+    if not text:
+        return []
+    if "|" in text:
+        items = [restore_decimal_pipes(item).strip() for item in text.split("|")]
+        items = [item for item in items if item]
+    else:
+        items = [
+            restore_decimal_pipes(item).strip()
+            for item in re.split(r"[,;\n]+", text)
+            if item.strip()
+        ]
+    return list(dict.fromkeys(items))
+
+
+def join_pipe_items(value, separator=" | "):
+    """Reune en una sola linea los items separados por | del input comercial.
+
+    Se usa en los metafields de tipo single_line_text_field, donde no cabe una
+    lista, para que el separador quede con espacios parejos en vez de pegado
+    al texto anterior.
+    """
+    return separator.join(split_pipe_items(value))
+
+
+def format_tags(value):
+    """Normaliza los tags del input al formato de Shopify (separados por coma)."""
+    return ", ".join(split_pipe_items(value))
+
+
 def split_technology_items(value):
     text = clean(value)
     if not text:
@@ -490,14 +589,7 @@ def split_technology_items(value):
                 return [clean(item) for item in parsed if clean(item)]
         except Exception:
             pass
-    # El | es el separador declarado del input comercial: si aparece, manda.
-    # Asi un valor como "Gore-Tex, 2 capas|Omni-Heat" da dos tecnologias y no
-    # tres. Sin | se mantiene la tolerancia para datos de Shopify o historicos.
-    if "|" in text:
-        items = [item.strip() for item in text.split("|") if item.strip()]
-    else:
-        items = [item.strip() for item in re.split(r"[,;\n]+", text) if item.strip()]
-    return list(dict.fromkeys(items))
+    return split_pipe_items(text)
 
 
 def format_technology(value):
@@ -1083,13 +1175,18 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
 
 
 def html_list(value):
-    text = clean(value)
+    text = protect_decimal_pipes(value)
     if not text:
         return ""
     text = re.sub(r"\s*[•·]\s*", "\n", text)
-    items = [item.strip(" -") for item in re.split(r"[\n\r]+", text) if item.strip(" -")]
+    text = re.sub(r"\s*\|\s*", "\n", text)
+    items = [
+        restore_decimal_pipes(item).strip(" -")
+        for item in re.split(r"[\n\r]+", text)
+        if item.strip(" -")
+    ]
     if not items:
-        items = [text]
+        items = [restore_decimal_pipes(text)]
     return "<ul>" + "".join(f"<li>{item}</li>" for item in items) + "</ul>"
 
 
@@ -1113,8 +1210,19 @@ def strip_body_heading_prefix(value, headings):
 
 TITLE_COLUMNS = [
     "Title", "Product Title", "Product Name", "Nombre del Producto", "Nombre Producto",
+    "Nombre de Producto", "Nombre de producto",
     "Nombre", "Titulo", "Título", "Producto", "Nombre Web", "Nombre Corto", "Nombre corto",
     "Metafield: custom.nombre_corto [single_line_text_field]",
+]
+
+# Color usado para armar el handle. Se prefiere el color web/filtro porque es el
+# valor normalizado que comparten todos los sitios. No se toca COLOR_WEB_COLUMNS
+# para no alterar los metafields de siblings de las marcas ya cargadas.
+HANDLE_COLOR_COLUMNS = [
+    "Color web/filtro", "Color Web/Filtro", "Color web", "Color Web", "Color Forus",
+    "Metafield: custom.color_forus [single_line_text_field]",
+    "Metafield: custom.grupo_color [single_line_text_field]",
+    "Color visible", "Color filtro", "Grupo Color", "Color Comercial", "Color",
 ]
 
 DESCRIPTION_COLUMNS = [
@@ -1152,7 +1260,10 @@ COLOR_WEB_COLUMNS = [
     "Grupo Color", "Metafield: custom.grupo_color [single_line_text_field]",
 ]
 
-TAG_COLUMNS = ["Tags", "Etiquetas", "Product Tags", "Shopify Tags", "Tag"]
+TAG_COLUMNS = [
+    "Tags", "Etiquetas", "Product Tags", "Shopify Tags", "Tag",
+    "Tags adicionales", "Tags sugeridos", "Tags extra", "Etiquetas adicionales",
+]
 
 
 def row_alias_value(row, columns):
@@ -1163,6 +1274,13 @@ def row_alias_value(row, columns):
     by_normalized = {normalize_header_key(column): column for column in getattr(row, "index", [])}
     for column in columns:
         found = by_normalized.get(normalize_header_key(column))
+        if found is not None:
+            value = clean(row.get(found))
+            if value:
+                return value
+    by_loose = {normalize_header_loose_key(column): column for column in getattr(row, "index", [])}
+    for column in columns:
+        found = by_loose.get(normalize_header_loose_key(column))
         if found is not None:
             value = clean(row.get(found))
             if value:
@@ -1230,6 +1348,11 @@ def first_existing(df, candidates):
         found = normalized_compact.get(normalize_header_key(candidate))
         if found is not None:
             return found
+    normalized_loose = {normalize_header_loose_key(col): col for col in df.columns}
+    for candidate in candidates:
+        found = normalized_loose.get(normalize_header_loose_key(candidate))
+        if found is not None:
+            return found
     return None
 
 
@@ -1238,6 +1361,25 @@ def normalize_header_key(value):
     text = text.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
     text = text.replace("ñ", "n")
     return re.sub(r"[^a-z0-9]+", "", text)
+
+
+# Conectores que las marcas escriben distinto en sus formatos de input.
+HEADER_CONNECTOR_WORDS = frozenset({"de", "del", "la", "el", "los", "las", "y", "the", "of"})
+
+
+def normalize_header_loose_key(value):
+    """Clave de comparacion que ademas ignora conectores como de/del/la/el.
+
+    Sirve para que 'Nombre de Producto', 'Nombre del Producto' y 'Nombre Producto'
+    se reconozcan como la misma columna en el input de cualquier marca, sin tener
+    que declarar cada variante a mano.
+    """
+    text = normalize_brand_name(value).lower()
+    text = text.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+    text = text.replace("ñ", "n")
+    words = [word for word in re.split(r"[^a-z0-9]+", text) if word]
+    filtered = [word for word in words if word not in HEADER_CONNECTOR_WORDS]
+    return "".join(filtered or words)
 
 
 def ensure_mod_col_column(df):
@@ -2106,6 +2248,7 @@ def build_existing_lookup(matrixify_df):
         product_payload = {
             "ID": clean(row.get("ID")),
             "Handle": handle,
+            "Title": clean(row.get("Title")),
             "Created At": row.get("Created At", ""),
             "Updated At": row.get("Updated At", ""),
             "Published At": row.get("Published At", ""),
@@ -2240,6 +2383,13 @@ def row_first_existing(product, candidates):
     by_normalized = {normalize_header_key(column): column for column in getattr(product, "index", [])}
     for column in candidates:
         found = by_normalized.get(normalize_header_key(column))
+        if found is not None:
+            value = clean(product.get(found))
+            if value:
+                return value
+    by_loose = {normalize_header_loose_key(column): column for column in getattr(product, "index", [])}
+    for column in candidates:
+        found = by_loose.get(normalize_header_loose_key(column))
         if found is not None:
             value = clean(product.get(found))
             if value:
@@ -2804,8 +2954,26 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     input_df = ensure_mod_col_column(input_df.dropna(how="all").copy())
     input_df["__KEY"] = input_df["Mod-Col"].map(lambda value: clean(value).upper())
     input_df["__MODEL"] = input_df["Mod-Col"].map(model_code)
+
+    # El nombre del producto es obligatorio: sin el no se arma ni el Title ni el
+    # handle. Si la columna no existe se corta con un error claro en vez de caer
+    # al codigo modelo-color, que es lo que ensuciaba el catalogo.
+    title_column = first_existing(input_df, TITLE_COLUMNS)
+    if title_column is None:
+        raise MissingInputColumnError(
+            "El input no tiene la columna con el nombre del producto. "
+            "Agrega una columna 'Nombre de Producto' (tambien se aceptan "
+            "'Nombre del Producto', 'Nombre Producto' o 'Title') y vuelve a cargarlo. "
+            f"Columnas encontradas: {', '.join(str(column) for column in input_df.columns)}"
+        )
+    input_df["__TITLE"] = input_df.apply(lambda row: row_alias_value(row, TITLE_COLUMNS), axis=1)
+    input_df["__HANDLE_COLOR"] = input_df.apply(lambda row: row_alias_value(row, HANDLE_COLOR_COLUMNS), axis=1)
+    # El handle se arma siempre con la estructura nombre-codigo-color, para
+    # todas las marcas y sitios. El Handle que traiga el input solo se usa como
+    # respaldo si la fila no tiene nombre de producto.
     input_df["__HANDLE"] = input_df.apply(
-        lambda row: normalize_handle(row.get("Handle Input") or row.get("Handle"), row.get("Mod-Col")),
+        lambda row: build_product_handle(row.get("__TITLE"), row.get("Mod-Col"), row.get("__HANDLE_COLOR"))
+        or normalize_handle(row.get("Handle Input") or row.get("Handle"), row.get("Mod-Col")),
         axis=1,
     )
     siblings_by_model = (
@@ -2983,9 +3151,36 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     "Fila input": input_index + 2,
                 }
             )
-        title = row_alias_value(product, TITLE_COLUMNS)
+        # El nombre real manda. Si la fila viene vacia se conserva el nombre que
+        # ya tiene el producto en Shopify; nunca se reemplaza por el Mod-Col.
+        title = clean(product.get("__TITLE")) or row_alias_value(product, TITLE_COLUMNS)
+        if not title:
+            title = clean((product_by_key.get(key) or {}).get("Title"))
+            if title:
+                issues.append(
+                    {
+                        "Mod-Col": key,
+                        "Problema": (
+                            f"La columna '{title_column}' esta vacia en esta fila. "
+                            "Se mantuvo el nombre actual de Shopify."
+                        ),
+                        "Fila input": input_index + 2,
+                    }
+                )
+            else:
+                issues.append(
+                    {
+                        "Mod-Col": key,
+                        "Problema": (
+                            f"La columna '{title_column}' esta vacia y el producto no existe en Shopify. "
+                            "Se omitio la fila: completa el nombre del producto en el input."
+                        ),
+                        "Fila input": input_index + 2,
+                    }
+                )
+                continue
         body_html = build_body_html(product)
-        tags = row_alias_value(product, TAG_COLUMNS)
+        tags = format_tags(row_alias_value(product, TAG_COLUMNS))
         product_type = row_alias_value(product, TYPE_COLUMNS)
         if not product_type and not variants.empty:
             product_type = row_alias_value(variants.iloc[0], TYPE_COLUMNS)
@@ -3014,7 +3209,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         product_brand_label = brand_display_name(product_brand_raw, brand_config["label"])
         publication_date = product_publication_date(product)
         siblings_value = siblings_by_model.get(product["__MODEL"], handle)
-        image_alt = f"{title} {color_web}".strip()
+        image_alt = build_image_alt_text(title, len(product_images))
         existing_product = product_by_key.get(key) or product_by_handle.get(handle) or {}
         existing_handle = existing_product.get("Handle") or handle
         existing_rows = matrixify_rows_for_handle(matrixify_df, existing_handle)
@@ -3158,14 +3353,16 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                             product.get("Metafield: custom.codigo_modelo_color [id]")
                         )
                         or key,
-                        "Metafield: custom.materialidad [single_line_text_field]": row_first_existing(
-                            product,
-                            [
-                                "Metafield: custom.materialidad [single_line_text_field]",
-                                "Materialidad",
-                                "Materiales",
-                                "Material",
-                            ],
+                        "Metafield: custom.materialidad [single_line_text_field]": join_pipe_items(
+                            row_first_existing(
+                                product,
+                                [
+                                    "Metafield: custom.materialidad [single_line_text_field]",
+                                    "Materialidad",
+                                    "Materiales",
+                                    "Material",
+                                ],
+                            )
                         ),
                         "Metafield: custom.marca [single_line_text_field]": product_brand_label,
                         "Metafield: custom.sub_categoria [single_line_text_field]": clean(

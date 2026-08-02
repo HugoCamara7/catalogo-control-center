@@ -80,6 +80,7 @@ from ticket_system import (
 
 from generate_columbia_matrixify import (
     SITE_CONFIGS,
+    MissingInputColumnError,
     build_body_html as build_matrixify_body_html,
     build_columbia_matrixify,
     build_matrixify_updates,
@@ -97,6 +98,7 @@ from generate_columbia_matrixify import (
     normalize_size as normalize_master_size,
     size_sort_key as master_size_sort_key,
     split_model_color,
+    split_pipe_items,
     strip_html,
     is_zero_size,
     read_arti_source,
@@ -4119,12 +4121,11 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
 
 
 def _split_tags(value):
-    """Separa tags. El | del input comercial manda sobre la coma de Shopify."""
-    texto = clean_value(value)
-    if not texto:
-        return []
-    separador = "|" if "|" in texto else ","
-    return [tag.strip() for tag in texto.split(separador) if tag.strip()]
+    """Separa tags. El | del input comercial manda sobre la coma de Shopify.
+
+    Delega en el separador canonico del generador para no tener dos reglas.
+    """
+    return split_pipe_items(value)
 
 
 def _join_tags(values):
@@ -9105,9 +9106,15 @@ def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=N
             else:
                 if progress_callback:
                     progress_callback(position, total_products, handle, "Creando producto")
+                new_title = clean_value(row.get("Title"))
+                if not new_title:
+                    raise RuntimeError(
+                        "El producto no tiene nombre (Title vacio). Completa la columna del nombre "
+                        "en el input comercial. No se usa el codigo modelo-color como nombre."
+                    )
                 created_product = product_create(
                     shopify_config,
-                    title=clean_value(row.get("Title")) or handle,
+                    title=new_title,
                     handle=handle or None,
                     body_html=clean_value(row.get("Body HTML")) or None,
                     tags=_split_tags(row.get("Tags")) if clean_value(row.get("Tags")) else None,
@@ -17931,6 +17938,8 @@ api_version = "{DEFAULT_API_VERSION}"
                             session_key=f"shopify_complete_job_{brand_config['site_key']}",
                         )
             st.markdown("</div>", unsafe_allow_html=True)
+        except MissingInputColumnError as exc:
+            st.error(f"Falta una columna obligatoria en el input: {exc}")
         except Exception as exc:
             st.error("No pude procesar los archivos.")
             st.exception(exc)

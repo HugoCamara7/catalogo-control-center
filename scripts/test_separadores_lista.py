@@ -216,5 +216,196 @@ class TestNoSeRompeLoQueVieneDeShopify(unittest.TestCase):
         self.assertEqual(self.tec("Omni-Heat|Omni-Heat"), ["Omni-Heat"])
 
 
+class TestMaterialesYCuidadosSonOpcionales(unittest.TestCase):
+    """Ninguna marca debe bloquear una carga por falta de Materiales o Cuidados."""
+
+    def setUp(self):
+        from app_matrixify import (
+            COMMERCIAL_INPUT_REQUIRED_COLUMNS,
+            COMMERCIAL_INPUT_TEXT_LIST_COLUMNS,
+            commercial_input_columns_for_brand,
+            configured_commercial_brands,
+        )
+        self.requeridas = COMMERCIAL_INPUT_REQUIRED_COLUMNS
+        self.listas = COMMERCIAL_INPUT_TEXT_LIST_COLUMNS
+        self.columnas_de = commercial_input_columns_for_brand
+        self.marcas = configured_commercial_brands
+
+    def test_no_estan_entre_las_obligatorias(self):
+        for campo in ["Materiales", "Cuidados"]:
+            self.assertNotIn(campo, self.requeridas, campo)
+
+    def test_lo_esencial_sigue_siendo_obligatorio(self):
+        # "Tipo de prenda" salio de la lista a proposito: ver
+        # TestTipoDePrendaNoBloquea.
+        for campo in ["Mod-Col", "Marca", "Genero", "Clase",
+                      "Nombre de Producto", "Descripcion", "Caracteristicas"]:
+            self.assertIn(campo, self.requeridas, campo)
+
+    def test_siguen_en_el_formato_de_todas_las_marcas(self):
+        """Opcional no es lo mismo que ausente: la columna debe seguir estando."""
+        for marca in self.marcas():
+            columnas = self.columnas_de(marca)
+            for campo in ["Materiales", "Cuidados"]:
+                self.assertIn(campo, columnas, f"{campo} falta en {marca}")
+
+    def test_siguen_usando_el_separador_pipe(self):
+        for campo in ["Materiales", "Cuidados"]:
+            self.assertIn(campo, self.listas, campo)
+
+    def test_el_excel_los_marca_como_no_obligatorios(self):
+        import pandas as pd
+
+        from app_matrixify import build_brand_commercial_input_workbook
+
+        for marca in ["Columbia", "Rockford"]:
+            xls = pd.ExcelFile(build_brand_commercial_input_workbook(marca))
+            guia = pd.read_excel(xls, sheet_name="COMO_LLENAR")
+            campo_col = next(c for c in guia.columns
+                             if any(k in str(c).lower() for k in ["campo", "columna", "nombre"]))
+            obl_col = next(c for c in guia.columns if "obligator" in str(c).lower())
+            for campo, esperado in [("Materiales", "NO"), ("Cuidados", "NO"),
+                                    ("Descripcion", "SI"), ("Caracteristicas", "SI")]:
+                fila = guia[guia[campo_col].astype(str) == campo]
+                self.assertFalse(fila.empty, f"{campo} no aparece en la guia de {marca}")
+                self.assertEqual(str(fila.iloc[0][obl_col]).strip(), esperado,
+                                 f"{campo} en {marca}")
+
+    def test_si_vienen_se_siguen_convirtiendo_en_bullets(self):
+        import re
+
+        from app_matrixify import build_body_html_from_commercial_row
+
+        html = build_body_html_from_commercial_row({
+            "Descripcion": "Casaca impermeable",
+            "Materiales": "100% poliester|Forro de malla",
+            "Cuidados": "Lavar en frio|No usar lejia",
+        })
+        self.assertEqual(len(re.findall(r"<li>", html)), 4)
+        self.assertIn("Materiales", html)
+        self.assertIn("Cuidados", html)
+
+    def test_vacios_no_generan_secciones(self):
+        from app_matrixify import build_body_html_from_commercial_row
+
+        html = build_body_html_from_commercial_row({
+            "Descripcion": "Casaca impermeable", "Materiales": "", "Cuidados": "",
+        })
+        self.assertNotIn("<li>", html)
+        self.assertIn("Casaca impermeable", html)
+
+
+class TestDescripcionMinima(unittest.TestCase):
+    def setUp(self):
+        from app_matrixify import DESCRIPCION_MINIMA
+        self.minimo = DESCRIPCION_MINIMA
+
+    def test_el_minimo_es_50(self):
+        self.assertEqual(self.minimo, 50)
+
+    def test_el_excel_publica_el_mismo_minimo(self):
+        """La guia del formato no puede decir un numero y el validador otro."""
+        import pandas as pd
+
+        from app_matrixify import build_brand_commercial_input_workbook
+
+        xls = pd.ExcelFile(build_brand_commercial_input_workbook("Columbia"))
+        guia = pd.read_excel(xls, sheet_name="COMO_LLENAR")
+        campo_col = guia.columns[0]
+        texto_col = next(c for c in guia.columns if "completar" in str(c).lower())
+        fila = guia[guia[campo_col].astype(str) == "Descripcion"]
+        self.assertFalse(fila.empty, "Descripcion no aparece en la guia")
+        self.assertIn(str(self.minimo), str(fila.iloc[0][texto_col]),
+                      "la guia no menciona el minimo de caracteres")
+
+
+class TestTipoDePrendaNoBloquea(unittest.TestCase):
+    """TEMPORAL: avisa pero deja continuar, hasta afinar los validadores."""
+
+    def setUp(self):
+        from app_matrixify import (
+            COMMERCIAL_INPUT_REQUIRED_COLUMNS,
+            VALIDACIONES_SOLO_AVISO,
+            commercial_input_columns_for_brand,
+            configured_commercial_brands,
+        )
+        self.requeridas = COMMERCIAL_INPUT_REQUIRED_COLUMNS
+        self.solo_aviso = VALIDACIONES_SOLO_AVISO
+        self.columnas_de = commercial_input_columns_for_brand
+        self.marcas = configured_commercial_brands
+
+    def test_esta_marcado_como_solo_aviso(self):
+        self.assertIn("Tipo de prenda", self.solo_aviso)
+
+    def test_no_esta_entre_las_obligatorias(self):
+        self.assertNotIn("Tipo de prenda", self.requeridas)
+
+    def test_sigue_en_el_formato_de_todas_las_marcas(self):
+        for marca in self.marcas():
+            self.assertIn("Tipo de prenda", self.columnas_de(marca), marca)
+
+    def test_una_ficha_con_tipo_invalido_no_queda_bloqueada(self):
+        import io
+
+        import pandas as pd
+
+        from app_matrixify import (
+            commercial_input_columns_for_brand,
+            validate_brand_commercial_input,
+        )
+
+        cols = commercial_input_columns_for_brand("Columbia")
+        fila = {c: "" for c in cols}
+        fila.update({
+            "Mod-Col": "1234567-NRY", "Marca": "Columbia", "Genero": "Mujer",
+            "Clase": "Vestuario", "Tipo de prenda": "TipoQueNoExiste",
+            "Color Comercial": "Negro", "Color web/filtro": "Negro",
+            "Nombre de Producto": "Casaca impermeable Arcadia II",
+            "Descripcion": "Casaca impermeable para lluvia ligera.",
+            "Caracteristicas": "Costuras selladas|Capucha ajustable",
+        })
+        for c in cols:
+            if c.startswith("PUBLICAR_"):
+                fila[c] = "SI"
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            pd.DataFrame([fila]).to_excel(w, index=False, sheet_name="INPUT_COMERCIAL")
+        buf.seek(0)
+        preview, _, resumen = validate_brand_commercial_input(buf, "Columbia")
+        self.assertFalse(preview.empty)
+        self.assertNotEqual(preview.iloc[0]["Estado"], "Bloqueado")
+        bloqueados = int(resumen[resumen["Indicador"].eq("Registros bloqueados")]["Valor"].iloc[0])
+        self.assertEqual(bloqueados, 0)
+
+    def test_el_aviso_dice_que_no_bloquea(self):
+        import io
+
+        import pandas as pd
+
+        from app_matrixify import (
+            commercial_input_columns_for_brand,
+            validate_brand_commercial_input,
+        )
+
+        cols = commercial_input_columns_for_brand("Columbia")
+        fila = {c: "" for c in cols}
+        fila.update({
+            "Mod-Col": "1234567-NRY", "Marca": "Columbia", "Genero": "Mujer",
+            "Clase": "Vestuario", "Tipo de prenda": "TipoQueNoExiste",
+            "Color Comercial": "Negro", "Color web/filtro": "Negro",
+            "Nombre de Producto": "Casaca", "Descripcion": "Corta.",
+            "Caracteristicas": "Costuras selladas",
+        })
+        for c in cols:
+            if c.startswith("PUBLICAR_"):
+                fila[c] = "SI"
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            pd.DataFrame([fila]).to_excel(w, index=False, sheet_name="INPUT_COMERCIAL")
+        buf.seek(0)
+        preview, _, _ = validate_brand_commercial_input(buf, "Columbia")
+        self.assertIn("no bloquea la carga", preview.iloc[0]["Mensaje"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

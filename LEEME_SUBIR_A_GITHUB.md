@@ -7,9 +7,10 @@ encima.
 ## Hay que subir 2 archivos
 
 ```
-app_matrixify.py                 (nombres restaurados + slugify con enie)
-generate_columbia_matrixify.py   (tipos unificados + acentos + WHERE del ARTI)
-shopify_api.py                   (10 fotos por producto + espera segun costo)
+app_matrixify.py                 (nombres, enie, inventario en bloque, estado manual)
+generate_columbia_matrixify.py   (tipos, subcategoria, acentos, WHERE del ARTI)
+shopify_api.py                   (10 fotos, activacion en bloque, espera por costo)
+ticket_system.py                 (reintento de guardado + cambio manual de estado)
 ```
 
 Lo demas ya esta correcto en `main` y aqui queda igual. **No toques**
@@ -318,6 +319,115 @@ catalogo completo cada vez, por diseno.
 La palanca que queda ahi es procesar varios productos en paralelo en vez de uno
 por uno. No esta hecho: cambia el manejo de errores y el reporte de avance, y
 preferi no mezclarlo con esta entrega. Ninguna de estas palancas es mas RAM.
+
+---
+
+## Problema 5: la subcategoria salia de otra fuente
+
+`TYPE_COLUMNS` no incluia `Tipo de prenda`, que es como lo nombran los formatos
+de input. Al no encontrar la columna, la variable quedaba vacia y el codigo caia
+a buscar el tipo **en el ARTI**, que es otra fuente:
+
+```
+TYPE_COLUMNS encontraba en el input:  None
+Columna real:                         'Tipo de prenda'
+row_alias_value(TYPE_COLUMNS)   ->    ''      (vacio)
+metafield custom.tipo           ->    'Polares'  (correcto)
+```
+
+Esa variable alimenta dos cosas: la columna `Type` de Shopify y el metafield
+`custom.sub_categoria`. Por eso `custom.tipo` salia bien (esa busqueda si lista
+"Tipo de prenda") pero la subcategoria salia de otro lado.
+
+**Solucion:** se agregan `Tipo de prenda`, `Tipo de Prenda` y `Tipo prenda` a
+`TYPE_COLUMNS`, antes de `Categoria` para que el tipo mande sobre la clase.
+
+Resultado sobre los 252 productos de Patagonia:
+
+| Control | Resultado |
+|---|---|
+| `Type` vacio | 0 |
+| `sub_categoria` vacia | 0 |
+| `Type` igual a Tipo de prenda | 252 de 252 |
+| `sub_categoria` igual a `custom.tipo` | 252 de 252 |
+
+```
+Mod-Col      Type          sub_categoria   categoria
+20265-IKE    Polares       Polares         VESTUARIO
+21218-N11    Pantalones    Pantalones      VESTUARIO
+22397-ORH    Cuelleras     Cuelleras       ACCESORIOS
+```
+
+No regresion: Columbia, Hush Puppies y Vans siguen detectando la misma columna
+que antes y dan 0 diferencias. Solo cambia Patagonia, que antes no encontraba
+ninguna.
+
+---
+
+## Orden de tallas: verificado
+
+Se probo metiendo las tallas **deliberadamente desordenadas** en 30 productos:
+
+| Control | Resultado |
+|---|---|
+| Productos con tallas desordenadas | 0 de 30 |
+| `XL S M L XS` revuelto | sale `XS S M L XL` |
+| `36 30 38 32 34` revuelto | sale `30 32 34 36 38` |
+| `Variant Position` consecutiva desde 1 | si |
+
+Tambien se verifico `size_sort_key` con medias tallas de calzado
+(`7 7.5 8 9 10 11.5`), tallas de nino (`2 4 6 8 10 12 14`) y `2XL` despues de
+`XL`.
+
+Hay dos redes: el orden se calcula al generar el Excel, y la sincronizacion
+ejecuta ademas `product_variants_bulk_reorder` dentro de Shopify.
+
+---
+
+## Problema 6: el ticket quedaba trabado y no se podia finalizar
+
+Dos sintomas que resultaron ser el mismo problema de fondo.
+
+**"El ticket cambio en otra sesion. Recarga antes de continuar."**
+
+Los tickets viven en GitHub (`backend = "github"`) y la revision que usa el
+control de concurrencia es el **SHA del archivo**. Una sola accion encadena
+varias escrituras y lecturas; por ejemplo `run_dry_run` hace tres escrituras y
+dos lecturas seguidas. La API de contenidos de GitHub es eventualmente
+consistente: una lectura hecha justo despues de una escritura puede devolver el
+SHA anterior, y entonces la escritura siguiente sale con un SHA viejo.
+
+`_save` no reintentaba: un solo SHA desfasado y el ticket quedaba trabado, sin
+que nadie mas lo hubiera tocado. Por eso pasaba "a veces" y por eso reintentar
+el mismo boton repetia la misma carrera.
+
+**"La solicitud no esta lista para cargar" / no se podia cerrar**
+
+Los botones de cierre (Finalizar carga, con observaciones, incidencia) solo
+aparecen cuando el estado es `loading` o `validating`. Si la carga se ejecuto de
+verdad en Shopify pero el ticket quedo atrasado en "Aprobada para carga", la
+pantalla de cierre **no aparecia nunca** y no habia forma de finalizarlo.
+
+### Solucion
+
+- **`_save` reintenta** hasta 3 veces: relee la revision vigente y vuelve a
+  guardar, con una espera corta entre intentos. Un conflicto real y persistente
+  **sigue avisando** despues del tercer intento, no se oculta.
+- **`set_status_manual()` (nueva)**: cambia el estado a mano, sin pasar por la
+  maquina de transiciones. Solo operador o admin, exige un motivo, y queda en el
+  historial como `status_changed_manual` con el usuario y el motivo. Graba
+  `resolved_at` y `load_started_at` cuando corresponde.
+- **Panel "Cambiar estado manualmente"** en la pantalla de cargas pendientes,
+  visible solo para operador y admin.
+
+Verificado: recupera de 2 conflictos seguidos, avisa al tercero, el rol marca no
+puede usarlo, y un estado inventado se rechaza. Los 28 tests de
+`test_ticket_system.py` y los 29 de `test_engines_ticket_flow.py` siguen pasando.
+
+**Sobre el trade-off:** al reintentar, tu cambio pisa lo que hubiera escrito el
+otro. En el caso real el "otro" es tu propia escritura anterior que aun no se
+veia, asi que es correcto. Si algun dia dos personas editan el mismo ticket a la
+vez, ganaria la ultima.
 
 ---
 

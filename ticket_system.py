@@ -1031,10 +1031,68 @@ class TicketService:
         self._notify(ticket, f"status_{target}", message=f"{ticket['code']}: {STATE_LABELS.get(target, target)}")
         return self._save(ticket)
 
-    def _save(self, ticket, expected_revision=None):
+    def _save(self, ticket, expected_revision=None, intentos=3):
+        """Guarda el ticket reintentando si la revision quedo desfasada.
+
+        Con el backend de GitHub la revision es el SHA del archivo, y la API de
+        contenidos es eventualmente consistente: una lectura hecha justo
+        despues de una escritura puede devolver el SHA anterior. Como una sola
+        accion encadena varias escrituras, la ultima salia con un SHA viejo y
+        el ticket quedaba trabado con "cambio en otra sesion" sin que nadie mas
+        lo hubiera tocado.
+
+        Al reintentar se relee la revision vigente y se vuelve a guardar este
+        contenido. Es "gana el ultimo": correcto para el caso real, donde el
+        conflicto es contra una escritura propia anterior.
+        """
         revision = expected_revision if expected_revision is not None else ticket.get("_revision")
         ticket["updated_at"] = utc_now()
-        return self.store.update_ticket(ticket, revision)
+        ultimo_error = None
+        for intento in range(1, max(1, int(intentos)) + 1):
+            try:
+                return self.store.update_ticket(ticket, revision)
+            except TicketConflictError as exc:
+                ultimo_error = exc
+                if intento >= intentos:
+                    break
+                time.sleep(0.4 * intento)
+                try:
+                    vigente = self.store.get_ticket(ticket["code"])
+                except Exception:
+                    break
+                if not vigente:
+                    break
+                revision = vigente.get("_revision")
+                ticket["updated_at"] = utc_now()
+        raise ultimo_error
+
+    def set_status_manual(self, actor, code, target, note=""):
+        """Cambia el estado a mano, sin pasar por la maquina de transiciones.
+
+        Sirve cuando la carga ya se ejecuto de verdad pero el ticket quedo
+        atrasado: los botones de cierre solo aparecen en loading/validating, asi
+        que sin esto no habia forma de finalizarlo. Queda registrado en el
+        historial como cambio manual, con quien lo hizo y por que.
+        """
+        if actor.get("role") not in {ROLE_OPERATOR, ROLE_ADMIN}:
+            raise TicketPermissionError("Tu rol no puede cambiar el estado a mano.")
+        target = internal_state(target)
+        if target not in STATE_LABELS:
+            raise TicketValidationError(f"Estado desconocido: {target}")
+        ticket = self.get_ticket(actor, code)
+        self._assert_internal_owner(actor, ticket, allow_take_unassigned=True)
+        anterior = ticket.get("status")
+        if anterior == target:
+            return ticket
+        ticket["status"] = target
+        if target == STATE_LOADING and not ticket.get("load_started_at"):
+            ticket["load_started_at"] = utc_now()
+        if target in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_FAILED, STATE_REJECTED, STATE_CANCELED}:
+            ticket["resolved_at"] = utc_now()
+        detalle = normalize_text(note) or "Cambio manual de estado"
+        self._event(ticket, actor, "status_changed_manual", anterior, target, detalle)
+        self._notify(ticket, f"status_{target}", message=f"{ticket['code']}: {STATE_LABELS.get(target, target)}")
+        return self._save(ticket)
 
     @staticmethod
     def _event(ticket, actor, action, from_state, to_state, detail=""):

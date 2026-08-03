@@ -16016,6 +16016,58 @@ def render_full_load_ticket_queue(brand_config):
         elif status in {STATE_LOADING, STATE_VALIDATING}:
             _render_full_load_ticket_close(service, actor, ticket, latest_version)
 
+        _render_cambio_manual_estado(service, actor, ticket)
+
+
+def _render_cambio_manual_estado(service, actor, ticket):
+    """Permite mover el estado a mano cuando la carga real ya se hizo.
+
+    Los botones de cierre solo aparecen en loading/validating. Si la carga se
+    ejecuto pero el ticket quedo atrasado, no habia forma de finalizarlo. Esto
+    destraba ese caso y queda registrado en el historial como cambio manual.
+    """
+    if clean_value(actor.get("role")) not in {"operator", "admin"}:
+        return
+    code = clean_value(ticket.get("code"))
+    actual = ticket.get("status")
+    with st.expander("Cambiar estado manualmente", expanded=False):
+        st.caption(
+            "Usalo cuando la carga ya se ejecuto en Shopify y el ticket quedo atrasado. "
+            "Queda registrado en el historial con tu usuario y el motivo."
+        )
+        st.write(f"Estado actual: **{STATE_LABELS.get(actual, actual)}**")
+        opciones = [
+            STATE_LOADING,
+            STATE_VALIDATING,
+            STATE_COMPLETED,
+            STATE_COMPLETED_OBS,
+            STATE_FAILED,
+            STATE_READY_EXECUTE,
+            STATE_APPROVED,
+        ]
+        opciones = [estado for estado in dict.fromkeys(opciones) if estado != actual]
+        destino = st.selectbox(
+            "Nuevo estado",
+            opciones,
+            format_func=lambda value: STATE_LABELS.get(value, value),
+            key=f"estado_manual_sel_{code}",
+        )
+        motivo = st.text_input(
+            "Motivo",
+            placeholder="Ej: la carga se ejecuto completa en Shopify el 03/08",
+            key=f"estado_manual_motivo_{code}",
+        )
+        if st.button("Aplicar cambio de estado", key=f"estado_manual_btn_{code}"):
+            if not clean_value(motivo):
+                st.warning("Escribe el motivo: queda en el historial de la solicitud.")
+            else:
+                try:
+                    service.set_status_manual(actor, code, destino, note=motivo)
+                    st.success(f"Estado cambiado a {STATE_LABELS.get(destino, destino)}.")
+                    st.rerun()
+                except TicketError as exc:
+                    _mostrar_error_ticket(exc, code)
+
 
 def _ticket_workflow_step(status):
     if status in {STATE_PENDING, STATE_ASSIGNED}:

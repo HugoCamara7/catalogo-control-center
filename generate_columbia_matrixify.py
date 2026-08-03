@@ -1266,8 +1266,12 @@ CARE_COLUMNS = [
     "Instrucciones De Cuidado", "Lavado", "Mantenimiento", "Indicaciones de cuidado",
 ]
 
+# El tipo de prenda es lo que manda: alimenta la columna Type de Shopify y el
+# metafield sub_categoria. Faltaba "Tipo de prenda", que es como lo nombran los
+# formatos de input, asi que quedaba vacio y se terminaba tomando del ARTI.
 TYPE_COLUMNS = [
-    "Type", "Product Type", "Tipo", "Tipo de Producto", "Tipo Producto", "Categoria", "Categoría",
+    "Type", "Product Type", "Tipo de prenda", "Tipo de Prenda", "Tipo prenda",
+    "Tipo", "Tipo de Producto", "Tipo Producto", "Categoria", "Categoría",
     "Categoria ", "Category", "Sub Categoria", "Sub Categoría",
     "Metafield: custom.tipo [single_line_text_field]",
 ]

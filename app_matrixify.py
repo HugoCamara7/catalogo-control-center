@@ -15804,6 +15804,64 @@ class ArchivoDeSolicitud(io.BytesIO):
         self.ticket_code = codigo
 
 
+def _render_acciones_solicitud_tras_carga():
+    """Tres acciones sobre la solicitud, sin salir de la pantalla de carga.
+
+    Cuando la carga salio de una solicitud, al terminar habia que volver a la
+    bandeja para cerrarla. Aqui quedan las tres unicas cosas que tiene sentido
+    hacer en ese momento: observarla, dejarla en curso o completarla.
+    """
+    codigo = clean_value(st.session_state.get("carga_desde_solicitud"))
+    if not codigo:
+        return
+    actor = current_ticket_actor()
+    if not _puede_completar_carga(actor):
+        return
+    try:
+        servicio, _ = get_ticket_service()
+        ticket = servicio.get_ticket(actor, codigo)
+    except TicketError:
+        return
+
+    st.markdown("---")
+    st.markdown(f"#### Solicitud {escape(codigo)}")
+    st.caption(f"Etapa actual: **{flujo_etiqueta(ticket.get('status'))}**. Elige como queda tras esta carga.")
+
+    columnas = st.columns(3)
+    if columnas[0].button("Observar", key=f"tras_carga_observar_{codigo}", use_container_width=True,
+                          help="Devuelve la solicitud a la marca para que corrija."):
+        st.session_state[f"tras_carga_modo_{codigo}"] = "observar"
+    if columnas[1].button("Continuar después", key=f"tras_carga_seguir_{codigo}", use_container_width=True,
+                          help="Deja la solicitud en curso; la retomas cuando quieras."):
+        st.session_state.pop(f"tras_carga_modo_{codigo}", None)
+        st.info("La solicitud queda en curso. Puedes retomarla desde Solicitudes.")
+    if columnas[2].button("Completar carga", key=f"tras_carga_completar_{codigo}", type="primary",
+                          use_container_width=True, help="Cierra la solicitud como finalizada."):
+        st.session_state[f"tras_carga_modo_{codigo}"] = "completar"
+
+    modo = clean_value(st.session_state.get(f"tras_carga_modo_{codigo}"))
+    if not modo:
+        return
+    etiqueta_motivo = "Qué debe corregir la marca" if modo == "observar" else "Motivo del cierre"
+    motivo = st.text_input(etiqueta_motivo, key=f"tras_carga_motivo_{codigo}")
+    confirmar = "Enviar observación" if modo == "observar" else "Finalizar solicitud"
+    if st.button(confirmar, type="primary", key=f"tras_carga_ok_{codigo}"):
+        if not clean_value(motivo):
+            st.warning("Escribe el motivo: queda en el historial y en la auditoría.")
+            return
+        try:
+            if modo == "observar":
+                servicio.request_correction(actor, codigo, motivo)
+                st.success("Solicitud observada y devuelta a la marca.")
+            else:
+                servicio.set_status_manual(actor, codigo, STATE_COMPLETED, note=motivo)
+                st.success("Solicitud finalizada.")
+            st.session_state.pop(f"tras_carga_modo_{codigo}", None)
+            st.rerun()
+        except TicketError as exc:
+            _mostrar_error_ticket(exc, codigo)
+
+
 def solicitudes_ejecutables(service, actor, brand_config):
     """Solicitudes aprobadas o en curso, del sitio activo, con archivo adjunto."""
     try:
@@ -18085,6 +18143,7 @@ api_version = "{DEFAULT_API_VERSION}"
                             activate_inventory_locations=True,
                             session_key=f"shopify_complete_job_{brand_config['site_key']}",
                         )
+                        _render_acciones_solicitud_tras_carga()
             st.markdown("</div>", unsafe_allow_html=True)
         except MissingInputColumnError as exc:
             st.error(f"Falta una columna obligatoria en el input: {exc}")

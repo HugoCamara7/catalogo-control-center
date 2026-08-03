@@ -23,6 +23,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from engines.ticket_flow import OBSERVADA as FLUJO_OBSERVADA
+from engines.ticket_flow import PENDIENTE as FLUJO_PENDIENTE
+from engines.ticket_flow import LISTA as FLUJO_LISTA
+from engines.ticket_flow import EJECUCION as FLUJO_EJECUCION
+from engines.ticket_flow import FINALIZADA as FLUJO_FINALIZADA
 from engines.ticket_flow import ETIQUETAS as FLUJO_ETIQUETAS
 from engines.ticket_flow import estado_visible as flujo_estado_visible
 from engines.ticket_flow import ORDEN as FLUJO_ORDEN
@@ -16016,83 +16020,95 @@ def render_full_load_ticket_queue(brand_config):
         elif status in {STATE_LOADING, STATE_VALIDATING}:
             _render_full_load_ticket_close(service, actor, ticket, latest_version)
 
-        _render_cambio_manual_estado(service, actor, ticket)
+        _render_completar_carga(service, actor, ticket)
 
 
-def _render_cambio_manual_estado(service, actor, ticket):
-    """Permite mover el estado a mano cuando la carga real ya se hizo.
+# Etapas que el equipo Digital puede fijar desde la solicitud. Son las visibles
+# de engines/ticket_flow, no los 19 estados internos: el motor conserva el
+# detalle para permisos y trazabilidad, la pantalla muestra cinco.
+ETAPAS_DIGITAL = [
+    (FLUJO_PENDIENTE, STATE_REVIEW, "La solicitud vuelve a revisión del equipo."),
+    (FLUJO_LISTA, STATE_APPROVED, "Aprobada y lista para ejecutar la carga."),
+    (FLUJO_EJECUCION, STATE_LOADING, "La carga se está ejecutando en Shopify."),
+    (FLUJO_OBSERVADA, STATE_OBSERVED, "Con observaciones: la marca debe corregir."),
+    (FLUJO_FINALIZADA, STATE_COMPLETED, "Carga terminada y solicitud cerrada."),
+]
 
-    Los botones de cierre solo aparecen en loading/validating. Si la carga se
-    ejecuto pero el ticket quedo atrasado, no habia forma de finalizarlo. Esto
-    destraba ese caso y queda registrado en el historial como cambio manual.
+
+def _puede_completar_carga(actor):
+    """Solo Digital (operador) y administrador cierran una solicitud."""
+    return clean_value(actor.get("role")) in {ROLE_OPERATOR, ROLE_ADMIN}
+
+
+def _render_completar_carga(service, actor, ticket):
+    """Completar la carga y fijar la etapa, sin depender del resultado del job.
+
+    El ticket no se mueve solo por cuantos productos proceso el motor: lo cierra
+    una persona de Digital cuando confirma que la carga quedo bien. Cada cambio
+    queda en la auditoria con usuario, etapa anterior, etapa nueva y motivo.
     """
-    if clean_value(actor.get("role")) not in {"operator", "admin"}:
+    if not _puede_completar_carga(actor):
         return
     code = clean_value(ticket.get("code"))
     actual = ticket.get("status")
-    with st.expander("Cambiar estado manualmente", expanded=False):
+    etapa_actual = flujo_estado_visible(actual)
+
+    st.markdown("#### Completar carga")
+    if etapa_actual == FLUJO_FINALIZADA:
+        st.caption("Esta solicitud ya está finalizada. Puedes reabrirla eligiendo otra etapa.")
+    else:
         st.caption(
-            "Usalo cuando la carga ya se ejecuto en Shopify y el ticket quedo atrasado. "
-            "Queda registrado en el historial con tu usuario y el motivo."
+            "Cuando termines la carga en Shopify, marca aquí en qué etapa queda la solicitud. "
+            "Queda registrado con tu usuario y el motivo."
         )
-        st.write(f"Estado actual: **{STATE_LABELS.get(actual, actual)}**")
-        opciones = [
-            STATE_LOADING,
-            STATE_VALIDATING,
-            STATE_COMPLETED,
-            STATE_COMPLETED_OBS,
-            STATE_FAILED,
-            STATE_READY_EXECUTE,
-            STATE_APPROVED,
-        ]
-        opciones = [estado for estado in dict.fromkeys(opciones) if estado != actual]
+
+    opciones = [etapa for etapa, _interno, _ayuda in ETAPAS_DIGITAL if etapa != etapa_actual]
+    ayudas = {etapa: ayuda for etapa, _interno, ayuda in ETAPAS_DIGITAL}
+    internos = {etapa: interno for etapa, interno, _ayuda in ETAPAS_DIGITAL}
+
+    columnas = st.columns([2, 3])
+    with columnas[0]:
         destino = st.selectbox(
-            "Nuevo estado",
+            "Etapa",
             opciones,
-            format_func=lambda value: STATE_LABELS.get(value, value),
-            key=f"estado_manual_sel_{code}",
+            index=opciones.index(FLUJO_FINALIZADA) if FLUJO_FINALIZADA in opciones else 0,
+            format_func=lambda value: FLUJO_ETIQUETAS.get(value, value),
+            key=f"etapa_destino_{code}",
         )
+    with columnas[1]:
         motivo = st.text_input(
             "Motivo",
-            placeholder="Ej: la carga se ejecuto completa en Shopify el 03/08",
-            key=f"estado_manual_motivo_{code}",
+            placeholder="Ej: carga ejecutada completa en Shopify, revisada y conforme",
+            key=f"etapa_motivo_{code}",
         )
-        if st.button("Aplicar cambio de estado", key=f"estado_manual_btn_{code}"):
-            if not clean_value(motivo):
-                st.warning("Escribe el motivo: queda en el historial de la solicitud.")
-            else:
-                try:
-                    service.set_status_manual(actor, code, destino, note=motivo)
-                    st.success(f"Estado cambiado a {STATE_LABELS.get(destino, destino)}.")
-                    st.rerun()
-                except TicketError as exc:
-                    _mostrar_error_ticket(exc, code)
+    st.caption(ayudas.get(destino, ""))
 
-
-def _ticket_workflow_step(status):
-    if status in {STATE_PENDING, STATE_ASSIGNED}:
-        return 1
-    if status in {STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED}:
-        return 2
-    if status in {STATE_APPROVED, STATE_DRY_RUN, STATE_READY_EXECUTE}:
-        return 3
-    if status == STATE_LOADING:
-        return 4
-    if status == STATE_VALIDATING:
-        return 5
-    if status in {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_REJECTED, STATE_CANCELED, STATE_FAILED}:
-        return 6
-    return 1
+    etiqueta_boton = "Finalizar solicitud" if destino == FLUJO_FINALIZADA else "Actualizar etapa"
+    if st.button(etiqueta_boton, type="primary", key=f"etapa_btn_{code}"):
+        if not clean_value(motivo):
+            st.warning("Escribe el motivo: queda en el historial y en la auditoría.")
+        else:
+            try:
+                service.set_status_manual(actor, code, internos[destino], note=motivo)
+                st.success(f"Solicitud en etapa: {FLUJO_ETIQUETAS.get(destino, destino)}.")
+                st.rerun()
+            except TicketError as exc:
+                _mostrar_error_ticket(exc, code)
 
 
 def _render_ticket_stepper(status):
-    steps = ["Solicitud", "Revisión", "Aprobación", "Carga", "Validación", "Finalizada"]
-    current = _ticket_workflow_step(status)
+    """Las mismas etapas visibles que el resto de la app.
+
+    Antes habia dos steppers distintos: uno de seis pasos aqui y otro de cuatro
+    en el detalle, lo que hacia que la misma solicitud se viera en una etapa
+    distinta segun la pantalla. Ahora los dos salen de engines/ticket_flow.
+    """
+    actual = flujo_paso_actual(status)
     rendered = []
-    for index, label in enumerate(steps):
-        position = index + 1
-        tone = "done" if position < current else ("active" if position == current else "")
-        rendered.append(f'<div class="ticket-step {tone}"><b>{index + 1}</b><span>{escape(label)}</span></div>')
+    for indice, clave in enumerate(FLUJO_ORDEN, start=1):
+        tono = "done" if indice < actual else ("active" if indice == actual else "")
+        etiqueta_paso = FLUJO_ETIQUETAS.get(clave, clave)
+        rendered.append(f'<div class="ticket-step {tono}"><b>{indice}</b><span>{escape(etiqueta_paso)}</span></div>')
     st.markdown(f'<div class="ticket-stepper">{"".join(rendered)}</div>', unsafe_allow_html=True)
 
 
@@ -16411,61 +16427,27 @@ def _render_ticket_public_status(ticket, status, status_label, summary, job, sav
 
 
 def _render_ticket_execution_summary(ticket, summary, job, saved_result, code, latest_version, status, status_label):
-    """Renderiza el avance y el cierre sin depender de controles de sesión."""
-    total = max(
-        safe_int_value(job.get("total"), 0),
-        safe_int_value(summary.get("products"), 0),
-    )
-    processed = safe_int_value(job.get("processed"), 0)
-    progress = safe_int_value(job.get("progress"), 0)
-    if total:
-        progress = max(progress, round((processed / total) * 100))
-    progress = max(0, min(100, progress))
+    """Estado de la solicitud, sin contadores de avance.
 
+    El ticket dice en que etapa esta la tarea, no cuantos productos van. El
+    detalle tecnico de la carga vive en el panel de sincronizacion, que es donde
+    sirve. Aqui solo se muestra la etapa y, si ya termino, el reporte para
+    descargar.
+    """
     status_detail = clean_value(job.get("message")) or clean_value(ticket.get("public_result", {}).get("message"))
     if not status_detail:
-        status_detail = "Aún no hay un proceso externo iniciado para esta solicitud."
+        status_detail = "La carga aún no se ha ejecutado para esta solicitud."
     st.markdown(
         f'<div class="ticket-compact-alert"><strong>{escape(status_label)}</strong><br>{escape(status_detail)}</div>',
-        unsafe_allow_html=True,
-    )
-    pendientes = max(total - processed, 0)
-    st.markdown(
-        '<div class="ejec-grid">'
-        f'<div class="ejec-stat"><small>Productos</small><strong>{total:,}</strong></div>'
-        f'<div class="ejec-stat"><small>Procesados</small><strong>{processed:,}</strong></div>'
-        f'<div class="ejec-stat"><small>Pendientes</small><strong>{pendientes:,}</strong></div>'
-        "</div>",
         unsafe_allow_html=True,
     )
 
     if not saved_result:
         return
 
-    result = saved_result
-    public_result = ticket.get("public_result", {})
-    processed_result = safe_int_value(public_result.get("processed"), safe_int_value(result.get("processed"), processed))
-    errors_result = safe_int_value(public_result.get("errors"), safe_int_value(result.get("errors"), 0))
-    warnings_result = safe_int_value(result.get("warnings"), safe_int_value(result.get("partial"), 0))
-    created_result = safe_int_value(result.get("created"), safe_int_value(result.get("created_products"), 0))
-    updated_result = safe_int_value(result.get("updated"), safe_int_value(result.get("updated_products"), 0))
-    successful_result = safe_int_value(result.get("successful"), safe_int_value(result.get("ok"), created_result + updated_result))
-    if not successful_result and processed_result:
-        successful_result = max(processed_result - errors_result - warnings_result, 0)
-    success_rate = round((successful_result / processed_result) * 100) if processed_result else 0
-    st.markdown(
-        f'''<div class="ticket-result-grid">
-            <div><small>Correctos</small><strong>{successful_result}</strong></div>
-            <div><small>Actualizados</small><strong>{updated_result}</strong></div>
-            <div><small>Advertencias</small><strong>{warnings_result}</strong></div>
-            <div><small>Fallidos</small><strong>{errors_result}</strong></div>
-            <div><small>Éxito</small><strong>{success_rate}%</strong></div>
-        </div>''',
-        unsafe_allow_html=True,
-    )
     st.download_button(
         "Descargar reporte final",
-        dataframe_to_excel_bytes({"Resultado": pd.DataFrame([result])}),
+        dataframe_to_excel_bytes({"Resultado": pd.DataFrame([saved_result])}),
         file_name=f"{code}_resultado_final.xlsx",
         key=f"ticket_final_report_{code}",
         on_click=log_descarga, args=("Descargar reporte final", "_render_ticket_execution_summary"),

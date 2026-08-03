@@ -1,6 +1,7 @@
 ﻿import json
 import os
 import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -292,20 +293,25 @@ def compare_clean(value):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def fold_accents(value):
+    """Convierte cualquier acento a su letra base, sin perder la letra.
+
+    Usa NFKD en vez de una lista escrita a mano, que siempre se queda corta:
+    la anterior cubria a/e/i/o/u y la enie, pero no la dieresis, asi que
+    "Pinguino" con dieresis perdia la u y quedaba "ping-ino". Con NFKD entran
+    tambien la cedilla y los acentos graves de nombres importados.
+    """
+    text = clean(value)
+    if not text:
+        return ""
+    descompuesto = unicodedata.normalize("NFKD", text)
+    return "".join(caracter for caracter in descompuesto if not unicodedata.combining(caracter))
+
+
 def normalize_text(value):
-    text = clean(value).lower()
-    replacements = {
-        "á": "a",
-        "é": "e",
-        "í": "i",
-        "ó": "o",
-        "ú": "u",
-        "ñ": "n",
-        "™": "",
-        "®": "",
-    }
-    for old, new in replacements.items():
-        text = text.replace(old, new)
+    text = fold_accents(value).lower()
+    for simbolo in ("™", "®", "©"):
+        text = text.replace(simbolo, "")
     text = re.sub(r"[^a-z0-9]+", "-", text)
     return re.sub(r"-+", "-", text).strip("-")
 
@@ -1357,9 +1363,7 @@ def first_existing(df, candidates):
 
 
 def normalize_header_key(value):
-    text = normalize_brand_name(value).lower()
-    text = text.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
-    text = text.replace("ñ", "n")
+    text = fold_accents(normalize_brand_name(value)).lower()
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
@@ -1374,9 +1378,7 @@ def normalize_header_loose_key(value):
     se reconozcan como la misma columna en el input de cualquier marca, sin tener
     que declarar cada variante a mano.
     """
-    text = normalize_brand_name(value).lower()
-    text = text.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
-    text = text.replace("ñ", "n")
+    text = fold_accents(normalize_brand_name(value)).lower()
     words = [word for word in re.split(r"[^a-z0-9]+", text) if word]
     filtered = [word for word in words if word not in HEADER_CONNECTOR_WORDS]
     return "".join(filtered or words)
@@ -1448,45 +1450,96 @@ def input_brand_report(input_df, brand_config):
     return brand_column, detected, blocked
 
 
+def read_csv_any_encoding(path, **kwargs):
+    """Lee un CSV probando UTF-8 y cayendo a Latin-1 si viene del ERP.
+
+    Los export de ARTI a veces salen en cp1252 y pandas, que asume UTF-8,
+    revienta o deja mojibake justo en las palabras con tilde o enie.
+    """
+    for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            return pd.read_csv(path, encoding=encoding, **kwargs)
+        except UnicodeDecodeError:
+            continue
+    return pd.read_csv(path, encoding="latin-1", errors="replace", **kwargs)
+
+
 def normalize_compare(value):
     return re.sub(r"\s+", " ", clean(value)).strip().upper()
 
 
-def load_known_types(path=KNOWN_TYPES_PATH):
-    if not path.exists():
-        return set(), ""
+def normalize_type_key(value):
+    """Clave para comparar tipos de prenda, sin acentos.
 
-    values = set()
-    if path.suffix.lower() in (".txt", ".csv"):
-        if path.suffix.lower() == ".txt":
-            for line in path.read_text(encoding="utf-8-sig").splitlines():
-                if normalize_compare(line):
-                    values.add(normalize_compare(line))
-        else:
-            df = pd.read_csv(path, dtype=object)
-            for column in df.columns:
-                if any(word in str(column).lower() for word in ["tipo", "type", "familia", "prenda"]):
-                    values.update(normalize_compare(value) for value in df[column].dropna())
-            if not values and len(df.columns):
-                values.update(normalize_compare(value) for value in df.iloc[:, 0].dropna())
-        return {value for value in values if value}, str(path)
+    catalog_rules escribe "Interiores Termicos" y data/tipos_shopify.xlsx
+    escribe "Interiores Termicos" con tilde. Sin quitar acentos las dos fuentes
+    no cruzan y un tipo perfectamente valido se reporta como tipo nuevo.
+    """
+    return fold_accents(normalize_compare(value))
 
-    xl = pd.ExcelFile(path)
-    for sheet_name in xl.sheet_names:
-        df = pd.read_excel(path, sheet_name=sheet_name, dtype=object)
-        if df.empty:
+
+def catalog_rule_type_names():
+    """Tipos de prenda declarados en catalog_rules.PRODUCT_TYPE_RULES.
+
+    Es el diccionario que mantiene Catalog Control Center. Se suma al archivo
+    data/tipos_shopify.xlsx para que un tipo agregado a las reglas no se avise
+    como nuevo en la carga.
+    """
+    try:
+        from catalog_rules import PRODUCT_TYPE_RULES
+    except Exception:
+        return []
+    names = []
+    for rule in PRODUCT_TYPE_RULES:
+        if not isinstance(rule, dict):
             continue
-        candidate_columns = [
-            column
-            for column in df.columns
-            if any(word in str(column).lower() for word in ["tipo", "type", "familia", "prenda"])
-        ]
-        if not candidate_columns and len(df.columns):
-            candidate_columns = [df.columns[0]]
-        for column in candidate_columns:
-            values.update(normalize_compare(value) for value in df[column].dropna())
+        for key in ("plural", "normalized"):
+            value = clean(rule.get(key))
+            if value:
+                names.append(value)
+    return names
 
-    return {value for value in values if value}, str(path)
+
+def load_known_types(path=KNOWN_TYPES_PATH):
+    values = set()
+    sources = []
+
+    if path.exists():
+        sources.append(str(path))
+        if path.suffix.lower() in (".txt", ".csv"):
+            if path.suffix.lower() == ".txt":
+                for line in path.read_text(encoding="utf-8-sig").splitlines():
+                    if normalize_type_key(line):
+                        values.add(normalize_type_key(line))
+            else:
+                df = read_csv_any_encoding(path, dtype=object)
+                for column in df.columns:
+                    if any(word in str(column).lower() for word in ["tipo", "type", "familia", "prenda"]):
+                        values.update(normalize_type_key(value) for value in df[column].dropna())
+                if not values and len(df.columns):
+                    values.update(normalize_type_key(value) for value in df.iloc[:, 0].dropna())
+        else:
+            xl = pd.ExcelFile(path)
+            for sheet_name in xl.sheet_names:
+                df = pd.read_excel(path, sheet_name=sheet_name, dtype=object)
+                if df.empty:
+                    continue
+                candidate_columns = [
+                    column
+                    for column in df.columns
+                    if any(word in str(column).lower() for word in ["tipo", "type", "familia", "prenda"])
+                ]
+                if not candidate_columns and len(df.columns):
+                    candidate_columns = [df.columns[0]]
+                for column in candidate_columns:
+                    values.update(normalize_type_key(value) for value in df[column].dropna())
+
+    rule_names = catalog_rule_type_names()
+    if rule_names:
+        values.update(normalize_type_key(name) for name in rule_names)
+        sources.append("catalog_rules.PRODUCT_TYPE_RULES")
+
+    return {value for value in values if value}, " + ".join(sources)
 
 
 def build_new_type_warnings(input_df):
@@ -1514,7 +1567,7 @@ def build_new_type_warnings(input_df):
             continue
         work = input_df[["Mod-Col", column]].copy()
         work["__VALUE"] = work[column].map(clean)
-        work["__KEY"] = work[column].map(normalize_compare)
+        work["__KEY"] = work[column].map(normalize_type_key)
         work = work[(work["__KEY"] != "") & (~work["__KEY"].isin(known_types))]
         for value, group in work.groupby("__VALUE", dropna=True):
             rows.append(
@@ -2176,9 +2229,9 @@ def read_arti_source(
                 raise RuntimeError(f"No se pudo leer ARTI desde BigQuery. Detalle: {exc}") from exc
             print(f"No se pudo leer BigQuery; usando respaldo local. Detalle: {exc}")
     if zip_path.exists():
-        return normalize_arti_required_columns(pd.read_csv(zip_path, dtype=object)), str(zip_path)
+        return normalize_arti_required_columns(read_csv_any_encoding(zip_path, dtype=object)), str(zip_path)
     if csv_path.exists():
-        return normalize_arti_required_columns(pd.read_csv(csv_path, dtype=object)), str(csv_path)
+        return normalize_arti_required_columns(read_csv_any_encoding(csv_path, dtype=object)), str(csv_path)
     if xlsx_path.exists():
         return (
             normalize_arti_required_columns(pd.read_excel(xlsx_path, sheet_name=0, dtype=object)),
@@ -3184,7 +3237,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         product_type = row_alias_value(product, TYPE_COLUMNS)
         if not product_type and not variants.empty:
             product_type = row_alias_value(variants.iloc[0], TYPE_COLUMNS)
-        product_type_key = normalize_compare(product_type)
+        product_type_key = normalize_type_key(product_type)
         if (
             known_types_for_report
             and product_type_key

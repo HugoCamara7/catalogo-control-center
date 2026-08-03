@@ -87,6 +87,7 @@ from generate_columbia_matrixify import (
     brand_display_name,
     brand_image_config,
     display_size_for_site,
+    fold_accents,
     get_brand_config,
     image_candidates,
     input_brand_report,
@@ -786,15 +787,14 @@ def size_sort_key(size):
 
 
 def slugify(value):
-    text = clean_value(value).lower()
-    text = (
-        text.replace("Ã¡", "a")
-        .replace("Ã©", "e")
-        .replace("Ã­", "i")
-        .replace("Ã³", "o")
-        .replace("Ãº", "u")
-        .replace("Ã±", "n")
-    )
+    """Convierte un texto a formato handle sin perder letras acentuadas.
+
+    Antes solo reemplazaba las secuencias mojibake (Ã±, Ã¡...), nunca los
+    caracteres reales, asi que "Casaca Nino" con enie salia "casaca-ni-o" y
+    "Bano" con enie salia "ba-o". Se repara primero el mojibake y despues se
+    doblan los acentos con el mismo criterio que usa el generador.
+    """
+    text = fold_accents(repair_mojibake_text(clean_value(value))).lower()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     return text.strip("-") or "producto"
 

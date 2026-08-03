@@ -76,6 +76,39 @@ def resolve_access_token(config):
     return token, "client_credentials"
 
 
+# Ultimo informe de costo que devolvio Shopify. Sirve para saber si la lentitud
+# viene de throttling y no de la red.
+ULTIMO_COSTO_GRAPHQL = {}
+
+
+def _remember_query_cost(data):
+    cost = ((data or {}).get("extensions") or {}).get("cost") or {}
+    if cost:
+        ULTIMO_COSTO_GRAPHQL.clear()
+        ULTIMO_COSTO_GRAPHQL.update(cost)
+
+
+def _throttle_wait_seconds(data, attempt, default_wait=1.5):
+    """Cuanto esperar cuando Shopify responde THROTTLED.
+
+    Shopify informa cuantos puntos quedan y a que velocidad se recargan. Antes
+    se dormia 1.5 segundos a ciegas: a veces de mas, y a veces de menos y se
+    gastaba un reintento. Con el dato real se espera lo justo.
+    """
+    estado = (((data or {}).get("extensions") or {}).get("cost") or {}).get("throttleStatus") or {}
+    solicitado = (((data or {}).get("extensions") or {}).get("cost") or {}).get("requestedQueryCost")
+    try:
+        disponible = float(estado.get("currentlyAvailable"))
+        recarga = float(estado.get("restoreRate")) or 50.0
+        necesario = float(solicitado) if solicitado is not None else float(estado.get("maximumAvailable") or 1000)
+    except (TypeError, ValueError):
+        return default_wait * attempt
+    faltante = max(0.0, necesario - disponible)
+    if not faltante:
+        return default_wait
+    return max(0.2, min(faltante / recarga + 0.2, 10.0))
+
+
 def graphql_request(shop_domain, access_token, query, variables=None, api_version=DEFAULT_API_VERSION, timeout=20, max_retries=2):
     shop_domain = normalize_shop_domain(shop_domain)
     access_token = clean(access_token)
@@ -106,9 +139,10 @@ def graphql_request(shop_domain, access_token, query, variables=None, api_versio
                 error_message = json.dumps(data["errors"], ensure_ascii=False)
                 retryable = "THROTTLED" in error_message or "throttled" in error_message.lower()
                 if retryable and attempt < attempts:
-                    time.sleep(1.5 * attempt)
+                    time.sleep(_throttle_wait_seconds(data, attempt))
                     continue
                 raise ShopifyApiError(error_message)
+            _remember_query_cost(data)
             return data.get("data", {})
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -235,6 +269,15 @@ def _product_node_to_record(node):
 
 def fetch_products(config, max_products=5000):
     shop_domain, api_version, token = _client(config)
+    # Cuantos productos pedir por pagina. Shopify cobra por costo de consulta y
+    # una pagina de 250 productos con sus variantes y fotos es muy cara: si el
+    # balde se vacia, cada pagina paga una espera. Se puede bajar desde Secrets
+    # con products_page_size si el catalogo del sitio hace throttling.
+    try:
+        page_size = int(clean(config.get("products_page_size")) or 250)
+    except (TypeError, ValueError):
+        page_size = 250
+    page_size = max(1, min(page_size, 250))
     publication_id = ""
     try:
         publication_id = online_store_publication_id(config)
@@ -285,7 +328,7 @@ def fetch_products(config, max_products=5000):
           customSiblingsColor: metafield(namespace: "custom", key: "siblings_color") {
             value
           }
-          media(first: 20) {
+          media(first: 10) {
             nodes {
               id
               ... on MediaImage {
@@ -325,7 +368,7 @@ def fetch_products(config, max_products=5000):
     records = []
     after = None
     while len(records) < max_products:
-        variables = {"first": min(250, max_products - len(records)), "after": after}
+        variables = {"first": min(page_size, max_products - len(records)), "after": after}
         if publication_id:
             variables["publicationId"] = publication_id
         data = graphql_request(shop_domain, token, query, variables=variables, api_version=api_version, timeout=45)
@@ -1194,6 +1237,56 @@ def inventory_item_active_locations(config, inventory_item_id):
     return locations
 
 
+def inventory_bulk_activate(config, inventory_item_id, location_ids):
+    """Activa un inventory item en varias sucursales con una sola llamada.
+
+    Antes se hacia una mutacion por cada par (variante, sucursal). Con 10 tallas
+    y 8 sucursales eso eran 80 llamadas por producto; asi son 10. Shopify expone
+    inventoryBulkToggleActivation justamente para esto.
+
+    Devuelve la lista de mensajes de error que no sean "ya estaba activo".
+    """
+    inventory_item_id = clean(inventory_item_id)
+    location_ids = [clean(value) for value in (location_ids or []) if clean(value)]
+    if not inventory_item_id or not location_ids:
+        return []
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation InventoryBulkActivateForMatrixify($inventoryItemId: ID!, $updates: [InventoryBulkToggleActivationInput!]!) {
+      inventoryBulkToggleActivation(inventoryItemId: $inventoryItemId, inventoryItemUpdates: $updates) {
+        inventoryItem {
+          id
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    variables = {
+        "inventoryItemId": inventory_item_id,
+        "updates": [{"locationId": location_id, "activate": True} for location_id in location_ids],
+    }
+    try:
+        data = graphql_request(shop_domain, token, mutation, variables, api_version=api_version, timeout=45)
+    except ShopifyApiError as exc:
+        message = str(exc)
+        if "ACCESS_DENIED" in message or "Access denied" in message:
+            raise ShopifyApiError(
+                "Shopify nego activar inventario. El token necesita permiso de escritura de inventario "
+                "(write_inventory / Inventory management). Actualiza los permisos del token o crea un token nuevo con ese scope."
+            ) from exc
+        raise
+    payload = data.get("inventoryBulkToggleActivation") or {}
+    errores = []
+    for error in payload.get("userErrors") or []:
+        texto = clean(error.get("message"))
+        if texto and "already" not in texto.lower() and "ya " not in texto.lower():
+            errores.append(texto)
+    return errores
+
+
 def inventory_activate(config, inventory_item_id, location_id, available=None):
     inventory_item_id = clean(inventory_item_id)
     location_id = clean(location_id)
@@ -1285,6 +1378,15 @@ def fetch_product_options_and_variants(config, product_id):
               legacyResourceId
               sku
               tracked
+              inventoryLevels(first: 50) {
+                nodes {
+                  location {
+                    id
+                    legacyResourceId
+                    name
+                  }
+                }
+              }
             }
             selectedOptions {
               name

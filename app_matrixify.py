@@ -5,6 +5,7 @@ import json
 import math
 import os
 import pickle
+import hashlib
 import re
 import time
 import unicodedata
@@ -175,6 +176,7 @@ fetch_products = _shopify_attr("fetch_products")
 file_create = _shopify_attr("file_create")
 inventory_item_update = _shopify_attr("inventory_item_update", None)
 inventory_activate = _shopify_attr("inventory_activate", None)
+inventory_bulk_activate = _shopify_attr("inventory_bulk_activate", None)
 inventory_item_active_locations = _shopify_attr("inventory_item_active_locations", None)
 fetch_locations = _shopify_attr("fetch_locations", None)
 metafields_set = _shopify_attr("metafields_set")
@@ -339,6 +341,11 @@ def first_existing_column(df, candidates):
 def clean_value(value):
     if value is None:
         return ""
+    # Camino rapido: la mayoria de los valores ya son texto. Saltarse la cadena
+    # de isinstance y sobre todo pd.isna (que entra a pandas) baja mucho el
+    # costo, porque esta funcion se llama cientos de miles de veces por corrida.
+    if type(value) is str:
+        return value.strip()
     if isinstance(value, (list, tuple, set)):
         parts = [clean_value(item) for item in value]
         return " | ".join(part for part in parts if part)
@@ -952,11 +959,12 @@ def clear_shopify_products_cache(site_key):
         st.session_state.pop(key, None)
 
 
-def read_arti_for_app(brand_config):
+def read_arti_for_app(brand_config, mod_cols=None):
     arti_df, source = read_arti_source(
         bigquery_config=get_bigquery_config(),
         allow_local_fallback=False,
         brand_config=brand_config,
+        mod_cols=mod_cols,
     )
     arti_df = normalize_arti_columns_for_app(arti_df).dropna(how="all")
     arti_df, ean_source = enrich_arti_barcodes_from_bigquery_table(arti_df, get_bigquery_config())
@@ -965,7 +973,18 @@ def read_arti_for_app(brand_config):
     return arti_df, source
 
 
-def session_arti_for_app(brand_config, force_refresh=False):
+def mod_cols_from_input(input_df):
+    """Lista de Mod-Col del input, para filtrar el ARTI en el propio WHERE."""
+    if input_df is None or not len(input_df):
+        return []
+    for column in ("Mod-Col", "COD MOD COL", "Mod Col", "codigo_modelo_color"):
+        if column in input_df.columns:
+            valores = [clean_value(value).upper() for value in input_df[column].dropna()]
+            return sorted({value for value in valores if value and not value.startswith("EJEMPLO-")})
+    return []
+
+
+def session_arti_for_app(brand_config, force_refresh=False, mod_cols=None):
     site_key = clean_value(brand_config.get("site_key"))
     cache_key = f"arti_cache_{site_key}"
     source_key = f"{cache_key}_source"
@@ -977,6 +996,7 @@ def session_arti_for_app(brand_config, force_refresh=False):
         "dataset": clean_value(bigquery_config.get("dataset")),
         "project_id": clean_value(bigquery_config.get("project_id")),
         "query": clean_value(bigquery_config.get("query")),
+        "mod_cols": hashlib.sha1("|".join(mod_cols or []).encode("utf-8")).hexdigest() if mod_cols else "",
     }
     if (
         not force_refresh
@@ -985,7 +1005,7 @@ def session_arti_for_app(brand_config, force_refresh=False):
     ):
         return st.session_state[cache_key], st.session_state.get(source_key, "BigQuery")
     try:
-        arti_df, source = read_arti_for_app(brand_config)
+        arti_df, source = read_arti_for_app(brand_config, mod_cols=mod_cols)
     except Exception:
         for key in (cache_key, source_key, meta_key):
             st.session_state.pop(key, None)
@@ -8554,9 +8574,21 @@ def _inventory_activation_rows_from_product_data(product_data):
                     "Inventory Item ID": clean_value(inventory_item.get("legacyResourceId")),
                     "Inventory Item GID": inventory_item_id,
                     "Tracked": bool(inventory_item.get("tracked")),
+                    # Las sucursales activas ya vienen en la misma consulta del
+                    # producto. Antes se preguntaba una vez por variante.
+                    "Sucursales activas": _active_location_keys_from_inventory_item(inventory_item),
                 }
             )
     return rows
+
+
+def _active_location_keys_from_inventory_item(inventory_item):
+    claves = set()
+    niveles = ((inventory_item or {}).get("inventoryLevels") or {}).get("nodes") or []
+    for nivel in niveles:
+        location = nivel.get("location") or {}
+        claves.update(_location_lookup_keys(location))
+    return claves
 
 
 def _inventory_activation_rows_from_products(shopify_products, only_codes=None, only_skus=None):
@@ -8645,6 +8677,22 @@ def _active_location_keys_for_inventory_item(shopify_config, inventory_gid):
     return keys
 
 
+def _activate_inventory_bulk_with_retries(shopify_config, inventory_gid, location_ids, max_attempts=3):
+    """Activa un inventory item en varias sucursales de una sola llamada."""
+    ultimo = None
+    for intento in range(1, max(1, int(max_attempts or 1)) + 1):
+        try:
+            return inventory_bulk_activate(shopify_config, inventory_gid, location_ids)
+        except Exception as exc:
+            ultimo = exc
+            if intento >= max_attempts or not _is_transient_sync_error(clean_value(exc)):
+                raise
+            time.sleep(min(1.5 * intento, 6))
+    if ultimo:
+        raise ultimo
+    return []
+
+
 def _activate_inventory_with_retries(shopify_config, inventory_gid, location_id, available=None, max_attempts=3):
     last_error = None
     for attempt in range(1, max(1, max_attempts) + 1):
@@ -8717,8 +8765,12 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
     results = []
     activated_this_run = 0
     for item in unique_items.values():
+        precargadas = item.get("Sucursales activas")
         try:
-            active_location_keys = _active_location_keys_for_inventory_item(shopify_config, item["Inventory Item GID"])
+            if precargadas is not None:
+                active_location_keys = set(precargadas)
+            else:
+                active_location_keys = _active_location_keys_for_inventory_item(shopify_config, item["Inventory Item GID"])
         except Exception as exc:
             active_location_keys = set()
             results.append(
@@ -8736,6 +8788,7 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                 }
             )
             continue
+        pendientes = []
         for location in locations:
             location_id = clean_value(location.get("id"))
             location_name = clean_value(location.get("name")) or location_id
@@ -8774,7 +8827,7 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                     }
                 )
                 continue
-            if max_actions and activated_this_run >= max_actions:
+            if max_actions and activated_this_run + len(pendientes) >= max_actions:
                 results.append(
                     {
                         "Handle": clean_value(item.get("Handle")),
@@ -8790,12 +8843,29 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                     }
                 )
                 continue
+            pendientes.append((location_id, location_name, pair_key))
+
+        # Una sola llamada por variante para todas sus sucursales pendientes.
+        # Antes era una mutacion por cada par variante-sucursal.
+        if pendientes:
+            usar_bloque = inventory_bulk_activate is not None and available is None
             try:
-                _activate_inventory_with_retries(shopify_config, item["Inventory Item GID"], location_id, available=available)
-                activated_this_run += 1
-                done_keys.add(pair_key)
-                results.append(
-                    {
+                if usar_bloque:
+                    errores = _activate_inventory_bulk_with_retries(
+                        shopify_config, item["Inventory Item GID"], [p[0] for p in pendientes]
+                    )
+                    if errores:
+                        raise ShopifyApiError(" | ".join(errores))
+                else:
+                    for location_id, _nombre, _clave in pendientes:
+                        _activate_inventory_with_retries(
+                            shopify_config, item["Inventory Item GID"], location_id, available=available
+                        )
+                for location_id, location_name, pair_key in pendientes:
+                    activated_this_run += 1
+                    done_keys.add(pair_key)
+                    results.append(
+                        {
                         "Handle": clean_value(item.get("Handle")),
                         "Mod-Col": clean_value(item.get("Mod-Col")),
                         "SKU": item["SKU"],
@@ -8807,8 +8877,8 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                         "Resultado": "OK",
                         "Mensaje": "Inventario activo en sucursal",
                     }
-                )
-                if activated_this_run % batch_size == 0:
+                    )
+                if activated_this_run % batch_size < len(pendientes):
                     progress["done"] = sorted(done_keys)
                     _save_inventory_activation_progress(shopify_config, progress)
             except Exception as exc:
@@ -8818,8 +8888,9 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                         "Shopify nego activar inventario. El token necesita permiso de escritura de inventario "
                         "(write_inventory / Inventory management). Actualiza los permisos del token o crea un token nuevo con ese scope."
                     )
-                results.append(
-                    {
+                for location_id, location_name, pair_key in pendientes:
+                    results.append(
+                        {
                         "Handle": clean_value(item.get("Handle")),
                         "Mod-Col": clean_value(item.get("Mod-Col")),
                         "SKU": item["SKU"],
@@ -8831,17 +8902,17 @@ def _activate_inventory_items_in_locations(shopify_config, activation_rows, loca
                         "Resultado": "ERROR",
                         "Mensaje": error_message[:500],
                     }
-                )
-                progress.setdefault("errors", []).append(
-                    {
-                        "sku": item["SKU"],
-                        "inventory_item_gid": item["Inventory Item GID"],
-                        "location_gid": location_id,
-                        "location": location_name,
-                        "error": error_message[:500],
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
+                    )
+                    progress.setdefault("errors", []).append(
+                        {
+                            "sku": item["SKU"],
+                            "inventory_item_gid": item["Inventory Item GID"],
+                            "location_gid": location_id,
+                            "location": location_name,
+                            "error": error_message[:500],
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
                 progress["done"] = sorted(done_keys)
                 _save_inventory_activation_progress(shopify_config, progress)
                 fatal_error = (
@@ -17776,7 +17847,9 @@ api_version = "{DEFAULT_API_VERSION}"
                     st.stop()
 
                 try:
-                    arti_df, arti_source = session_arti_for_app(brand_config)
+                    arti_df, arti_source = session_arti_for_app(
+                        brand_config, mod_cols=mod_cols_from_input(input_df)
+                    )
                 except FileNotFoundError:
                     st.error(
                         "Falta configurar BigQuery o dejar un respaldo local de ARTI: "

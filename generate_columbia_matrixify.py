@@ -2,6 +2,7 @@
 import os
 import re
 import unicodedata
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -256,6 +257,11 @@ def brand_image_config(brand_name, fallback_config):
 def clean(value):
     if value is None:
         return ""
+    # Camino rapido: la mayoria de los valores ya son texto. Saltarse la cadena
+    # de isinstance y sobre todo pd.isna (que entra a pandas) baja mucho el
+    # costo, porque esta funcion se llama cientos de miles de veces por corrida.
+    if type(value) is str:
+        return value.strip()
     if isinstance(value, (list, tuple, set)):
         parts = [clean(item) for item in value]
         return " | ".join(part for part in parts if part)
@@ -304,6 +310,11 @@ def fold_accents(value):
     text = clean(value)
     if not text:
         return ""
+    return _fold_accents_cached(text)
+
+
+@lru_cache(maxsize=8192)
+def _fold_accents_cached(text):
     descompuesto = unicodedata.normalize("NFKD", text)
     return "".join(caracter for caracter in descompuesto if not unicodedata.combining(caracter))
 
@@ -1272,19 +1283,35 @@ TAG_COLUMNS = [
 ]
 
 
+@lru_cache(maxsize=256)
+def _column_key_maps(columns):
+    """Mapa de columnas a su clave normalizada, calculado una sola vez.
+
+    row_alias_value se llama varias veces por producto y antes rearmaba estos
+    diccionarios en cada llamada, corriendo la normalizacion Unicode sobre
+    todas las columnas cada vez. Con el cache el costo se paga una vez por
+    juego de columnas.
+    """
+    exacto = {}
+    flexible = {}
+    for column in columns:
+        exacto.setdefault(normalize_header_key(column), column)
+        flexible.setdefault(normalize_header_loose_key(column), column)
+    return exacto, flexible
+
+
 def row_alias_value(row, columns):
     for column in columns:
         value = clean(row.get(column))
         if value:
             return value
-    by_normalized = {normalize_header_key(column): column for column in getattr(row, "index", [])}
+    by_normalized, by_loose = _column_key_maps(tuple(getattr(row, "index", [])))
     for column in columns:
         found = by_normalized.get(normalize_header_key(column))
         if found is not None:
             value = clean(row.get(found))
             if value:
                 return value
-    by_loose = {normalize_header_loose_key(column): column for column in getattr(row, "index", [])}
     for column in columns:
         found = by_loose.get(normalize_header_loose_key(column))
         if found is not None:
@@ -1362,9 +1389,13 @@ def first_existing(df, candidates):
     return None
 
 
+@lru_cache(maxsize=8192)
+def _normalize_header_key_cached(text):
+    return re.sub(r"[^a-z0-9]+", "", fold_accents(normalize_brand_name(text)).lower())
+
+
 def normalize_header_key(value):
-    text = fold_accents(normalize_brand_name(value)).lower()
-    return re.sub(r"[^a-z0-9]+", "", text)
+    return _normalize_header_key_cached(clean(value))
 
 
 # Conectores que las marcas escriben distinto en sus formatos de input.
@@ -1378,7 +1409,12 @@ def normalize_header_loose_key(value):
     se reconozcan como la misma columna en el input de cualquier marca, sin tener
     que declarar cada variante a mano.
     """
-    text = fold_accents(normalize_brand_name(value)).lower()
+    return _normalize_header_loose_key_cached(clean(value))
+
+
+@lru_cache(maxsize=8192)
+def _normalize_header_loose_key_cached(text):
+    text = fold_accents(normalize_brand_name(text)).lower()
     words = [word for word in re.split(r"[^a-z0-9]+", text) if word]
     filtered = [word for word in words if word not in HEADER_CONNECTOR_WORDS]
     return "".join(filtered or words)
@@ -2114,8 +2150,21 @@ def _bigquery_model_color_expression(column_map, model_column, color_column):
     return f"CONCAT(CAST(`{model_column}` AS STRING), '-', CAST(`{color_column}` AS STRING))"
 
 
-def _read_arti_from_bigquery(config, brand_config=None):
+def _normalized_mod_cols(mod_cols):
+    """Deja la lista de Mod-Col lista para el WHERE: en mayusculas y sin repetidos."""
+    if not mod_cols:
+        return []
+    valores = []
+    for value in mod_cols:
+        texto = clean(value).upper()
+        if texto:
+            valores.append(texto)
+    return sorted(dict.fromkeys(valores))
+
+
+def _read_arti_from_bigquery(config, brand_config=None, mod_cols=None):
     brand_config = brand_config or get_brand_config()
+    mod_cols = _normalized_mod_cols(mod_cols)
     try:
         from google.cloud import bigquery
         from google.oauth2 import service_account
@@ -2137,6 +2186,7 @@ def _read_arti_from_bigquery(config, brand_config=None):
     job_project_id = job_project_id or client.project
     project_id = project_id or job_project_id
     query = clean(config.get("query"))
+    query_parameters = []
     if not query:
         dataset = clean(config.get("dataset"))
         table = clean(config.get("table"))
@@ -2194,6 +2244,17 @@ def _read_arti_from_bigquery(config, brand_config=None):
             allowed_brands = ", ".join(f"'{brand}'" for brand in brand_config["allowed_arti_brands"])
             where_lines.append(f"UPPER(CAST(`{column_map['MARCA_MA']}` AS STRING)) IN ({allowed_brands})")
 
+        # Filtrar por los Mod-Col del input en el propio WHERE. Antes se bajaba
+        # el maestro completo de todas las marcas del sitio y el filtro real
+        # ocurria despues, ya en memoria.
+        if mod_cols:
+            if model_color_expression:
+                mod_col_expression = model_color_expression
+            else:
+                mod_col_expression = f"CAST(`{column_map['COD MOD COL']}` AS STRING)"
+            where_lines.append(f"UPPER({mod_col_expression}) IN UNNEST(@mod_cols)")
+            query_parameters.append(bigquery.ArrayQueryParameter("mod_cols", "STRING", mod_cols))
+
         query = f"""
         SELECT
           {", ".join(select_lines)}
@@ -2201,7 +2262,7 @@ def _read_arti_from_bigquery(config, brand_config=None):
         WHERE {" AND ".join(where_lines)}
         """
 
-    job_config = bigquery.QueryJobConfig(use_legacy_sql=False)
+    job_config = bigquery.QueryJobConfig(use_legacy_sql=False, query_parameters=query_parameters)
     query_job = client.query(query, job_config=job_config, location=clean(config.get("location")) or None)
     df = query_job.to_dataframe()
     df = normalize_arti_required_columns(df)
@@ -2217,13 +2278,14 @@ def read_arti_source(
     bigquery_config=None,
     allow_local_fallback=True,
     brand_config=None,
+    mod_cols=None,
 ):
     brand_config = brand_config or get_brand_config()
     if bigquery_config is None:
         bigquery_config = _bigquery_config_from_streamlit() or _bigquery_config_from_env()
     if _bigquery_configured(bigquery_config):
         try:
-            return _read_arti_from_bigquery(bigquery_config, brand_config=brand_config)
+            return _read_arti_from_bigquery(bigquery_config, brand_config=brand_config, mod_cols=mod_cols)
         except Exception as exc:
             if not allow_local_fallback:
                 raise RuntimeError(f"No se pudo leer ARTI desde BigQuery. Detalle: {exc}") from exc
@@ -2433,14 +2495,13 @@ def row_first_existing(product, candidates):
         value = clean(product.get(column))
         if value:
             return value
-    by_normalized = {normalize_header_key(column): column for column in getattr(product, "index", [])}
+    by_normalized, by_loose = _column_key_maps(tuple(getattr(product, "index", [])))
     for column in candidates:
         found = by_normalized.get(normalize_header_key(column))
         if found is not None:
             value = clean(product.get(found))
             if value:
                 return value
-    by_loose = {normalize_header_loose_key(column): column for column in getattr(product, "index", [])}
     for column in candidates:
         found = by_loose.get(normalize_header_loose_key(column))
         if found is not None:
@@ -2471,11 +2532,14 @@ def fill_top_row_product_fields(output_df, input_df, tech_col=None, brand_config
 
     tech_by_key = {}
     publication_by_key = {}
+    # La columna de tecnologia es la misma para todo el archivo: se resuelve una
+    # vez. Antes se recalculaba dentro del bucle, una vez por producto.
+    tech_column_fallback = find_technology_column(input_df)
     for _, product in input_df.iterrows():
         key = clean(product.get("__KEY")) or clean(product.get("Mod-Col")).upper()
         if not key:
             continue
-        tech_by_key[key] = row_first_existing(product, [tech_col, find_technology_column(input_df)])
+        tech_by_key[key] = row_first_existing(product, [tech_col, tech_column_fallback])
         publication_by_key[key] = product_publication_date(product)
 
     if "Handle" in output_df.columns:
@@ -3019,8 +3083,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             "'Nombre del Producto', 'Nombre Producto' o 'Title') y vuelve a cargarlo. "
             f"Columnas encontradas: {', '.join(str(column) for column in input_df.columns)}"
         )
-    input_df["__TITLE"] = input_df.apply(lambda row: row_alias_value(row, TITLE_COLUMNS), axis=1)
-    input_df["__HANDLE_COLOR"] = input_df.apply(lambda row: row_alias_value(row, HANDLE_COLOR_COLUMNS), axis=1)
+    handle_color_column = first_existing(input_df, HANDLE_COLOR_COLUMNS)
+    input_df["__TITLE"] = input_df[title_column].map(clean)
+    input_df["__HANDLE_COLOR"] = input_df[handle_color_column].map(clean) if handle_color_column else ""
     # El handle se arma siempre con la estructura nombre-codigo-color, para
     # todas las marcas y sitios. El Handle que traiga el input solo se usa como
     # respaldo si la fila no tiene nombre de producto.

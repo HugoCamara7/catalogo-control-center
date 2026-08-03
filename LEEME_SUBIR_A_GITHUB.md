@@ -8,7 +8,8 @@ encima.
 
 ```
 app_matrixify.py                 (nombres restaurados + slugify con enie)
-generate_columbia_matrixify.py   (tipos de prenda unificados + acentos)
+generate_columbia_matrixify.py   (tipos unificados + acentos + WHERE del ARTI)
+shopify_api.py                   (10 fotos por producto + espera segun costo)
 ```
 
 Lo demas ya esta correcto en `main` y aqui queda igual. **No toques**
@@ -154,6 +155,169 @@ perdidas. Mojibake residual (`Ã`, `Â`, `â€`) en Title, Body y materialidad:
 Tambien se reviso que ningun `open()`, `read_text()` ni `to_csv()` quede sin
 codificacion declarada, y que los `json.dumps` que viajan a Shopify no escapen
 las tildes.
+
+---
+
+## Problema 4: velocidad
+
+### El WHERE del ARTI (la ganancia grande)
+
+La consulta a BigQuery filtraba por marca pero **no por los productos del
+input**. Para Rockford bajaba el maestro completo de las cinco marcas del sitio
+y el filtro real ocurria despues, ya en memoria:
+
+```python
+arti = arti[arti["__KEY"].isin(wanted_keys)]   # tarde
+```
+
+Ahora los Mod-Col del input viajan hasta el propio WHERE, igual que ya se hacia
+en `app_matrixify.py` linea 1148 para los codigos de barras. Se verifico con un
+cliente de BigQuery simulado, para las dos formas de tabla que soporta el codigo:
+
+```sql
+-- tabla con la columna de mod-col directa
+UPPER(CAST(`COD_MOD_COL` AS STRING)) IN UNNEST(@mod_cols)
+
+-- tabla con modelo y color separados
+UPPER(CONCAT(CAST(`codmod_ma` AS STRING), '-', CAST(`codcol_ma` AS STRING))) IN UNNEST(@mod_cols)
+```
+
+La lista va como parametro (`ArrayQueryParameter`), en mayusculas, sin repetidos
+y sin vacios. Piezas nuevas: `_normalized_mod_cols()` y `mod_cols_from_input()`.
+La clave de cache de sesion incluye un hash de la lista, asi que cambiar de
+input vuelve a consultar en vez de devolver datos de otro archivo.
+
+Si tienes una `query` propia configurada en secrets, ese camino queda como
+estaba: no se le puede agregar el filtro sin saber como se llama la columna en
+tu consulta.
+
+### Lo demas que se optimizo
+
+- **`clean()` y `clean_value()`**: camino rapido para texto. Se llaman ~163.000
+  veces por corrida y cada llamada entraba a `pd.isna()`. Se verifico que el
+  resultado no cambia para texto, vacio, None, NaN, NaT, int, float, listas,
+  diccionarios y booleanos.
+- **`lru_cache`** en `fold_accents`, `normalize_header_key` y
+  `normalize_header_loose_key`: se llaman miles de veces con los mismos nombres
+  de columna.
+- **`_column_key_maps()`** (nueva): el mapa de columnas a su clave normalizada
+  se calcula una vez por juego de columnas. Antes `row_alias_value` lo rearmaba
+  en cada llamada, corriendo la normalizacion Unicode sobre todas las columnas.
+- **`__TITLE` y `__HANDLE_COLOR`** se resuelven por columna, una vez por
+  archivo, en vez de fila por fila.
+- **`find_technology_column()`** salio del bucle de
+  `fill_top_row_product_fields`. Esto ya estaba mal desde antes de esta entrega:
+  se recalculaba una vez por producto.
+
+### Resultado
+
+Mismo input de 252 productos, corridas alternadas y descartando la primera:
+
+| Version | Minimo | Mediana |
+|---|---|---|
+| main de julio | 6,50 s | 6,67 s |
+| esta entrega | **5,15 s** | 5,19 s |
+
+**21% mas rapido que julio**, y eso generando 42% mas contenido:
+
+| | main de julio | esta entrega |
+|---|---|---|
+| Titles generados | 0 | 252 |
+| Tags generados | 0 | 252 |
+| Bullets del Body HTML | 504 | 3.094 |
+| Textos alt de imagen | 252 | 2.520 |
+| Caracteres de contenido | 410.008 | 583.928 |
+
+El main de julio "terminaba antes" en parte porque dejaba el Title y los Tags
+vacios y armaba un solo bullet.
+
+Nota sobre las mediciones: los tiempos absolutos varian bastante segun la carga
+de la maquina. Lo que vale es la relacion, medida alternando las dos versiones
+en la misma corrida.
+
+
+### Lectura del catalogo de Shopify
+
+- **`media(first: 20)` paso a `media(first: 10)`.** El generador ya usaba
+  `MAX_IMAGES_PER_PRODUCT = 10`, asi que pedir 20 traia el doble de datos por
+  producto para descartar la mitad.
+
+- **Espera segun el costo real, no a ciegas.** Shopify cobra por costo de
+  consulta con un balde que se recarga a ~50 puntos/segundo, e informa en cada
+  respuesta cuanto queda y a que velocidad se recarga. El cliente dormia
+  `1.5 * intento` sin mirar ese dato: a veces esperaba de mas, y a veces de
+  menos y gastaba un reintento. Ahora `_throttle_wait_seconds()` calcula la
+  espera justa. Si Shopify no manda el dato, se comporta como antes.
+
+- **`ULTIMO_COSTO_GRAPHQL`** guarda el ultimo informe de costo, para poder ver
+  si la lentitud viene de throttling y no de la red.
+
+- **Tamano de pagina configurable.** Una pagina de 250 productos con sus
+  variantes y fotos es una consulta muy cara. Se puede bajar desde Secrets:
+
+  ```toml
+  [shopify]
+  products_page_size = 50
+  ```
+
+  Por defecto sigue en 250, asi que no cambia nada hasta que lo ajustes.
+
+**Esto ultimo no esta medido contra tu tienda.** Es el unico cambio de esta
+entrega que no pude verificar con datos reales: hace falta correr una carga y
+mirar si el costo informado se acerca a cero.
+
+
+### Activacion de inventario en sucursales (el cuello real)
+
+Era, por cada producto:
+
+- **1 consulta por variante** para ver en que sucursales estaba activa
+- **1 mutacion por cada par (variante, sucursal)**
+
+Con 10 tallas y 8 sucursales, ~90 llamadas por producto. Por 252 productos,
+mas de 20.000 llamadas a la API. Dos cambios lo colapsan:
+
+1. **Las sucursales activas ya vienen en la consulta del producto.**
+   `fetch_product_options_and_variants` pedia `inventoryItem` pero no sus
+   `inventoryLevels`, asi que despues se preguntaba variante por variante. Ahora
+   llegan en la misma consulta que ya se hacia: **cero consultas extra**.
+
+2. **`inventory_bulk_activate()` (nueva)**: usa
+   `inventoryBulkToggleActivation`, la mutacion de Shopify que activa un
+   inventory item en varias sucursales de una sola llamada. Una llamada por
+   variante en vez de una por sucursal.
+
+Medido con un cliente simulado, 10 variantes x 8 sucursales:
+
+| | antes | ahora |
+|---|---|---|
+| Consultas por variante | 10 | **0** |
+| Mutaciones | 80 | **10** |
+| **Total de llamadas** | **90** | **10** |
+
+**9 veces menos llamadas**, con el mismo reporte fila por sucursal (80 filas) y
+los mismos estados OK / ACTIVO / ERROR / PENDIENTE.
+
+Se verificaron los caminos de error:
+
+- Error de permisos: corta de inmediato (8 filas, no 80) con el mensaje sobre
+  `write_inventory`.
+- Error normal en una variante: sigue con las demas (32 OK + 8 ERROR de 40).
+- Tope `max_actions=20`: respeta el limite exacto (20 OK, 60 PENDIENTE).
+
+Si `inventory_bulk_activate` no existiera (por ejemplo si se sube un
+`shopify_api.py` viejo), vuelve solo al camino de a una sucursal por vez.
+
+### Lo que no se toco, y por que
+
+Queda el resto de la sincronizacion: crear el producto, publicarlo, las
+variantes y las fotos. Eso sigue siendo una llamada por paso y por producto, y
+es tiempo de red. Como el criterio es que siempre se actualice todo, procesa el
+catalogo completo cada vez, por diseno.
+
+La palanca que queda ahi es procesar varios productos en paralelo en vez de uno
+por uno. No esta hecho: cambia el manejo de errores y el reporte de avance, y
+preferi no mezclarlo con esta entrega. Ninguna de estas palancas es mas RAM.
 
 ---
 

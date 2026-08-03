@@ -58,6 +58,14 @@ _VALORES_SENSIBLES = re.compile(
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----)")
 OCULTO = "[oculto]"
 
+# Pares "clave=valor" escritos dentro de un texto libre. Un mensaje de error
+# puede traer "password=Secreta123" y el patron de token no lo detecta porque no
+# tiene forma de token. Se tapa solo el valor y se conserva el resto del
+# mensaje, que es lo util para diagnosticar.
+_PAR_SENSIBLE = re.compile(
+    r"((?:pass\w*|clave|secret\w*|token|credential\w*|authorization|api[_-]?key|private[_-]?key)"
+    r"\s*[:=]\s*)(\S+)", re.I)
+
 
 def _texto(valor):
     if valor is None:
@@ -80,7 +88,7 @@ def sanitize_value(valor, clave=""):
         return OCULTO
     if _VALORES_SENSIBLES.search(texto):
         return OCULTO
-    return texto
+    return _PAR_SENSIBLE.sub(lambda m: f"{m.group(1)}{OCULTO}", texto)
 
 
 def ahora_lima():
@@ -455,6 +463,7 @@ ACCIONES_TICKET = {
     "record_job_result": "Registrar resultado de carga",
     "cancel_ticket": "Cancelar solicitud",
     "change_state": "Cambiar estado",
+    "set_status_manual": "Completar carga",
     "mark_notification_read": None,        # ruido: no se registra
     "mark_all_notifications_read": None,   # ruido: no se registra
 }

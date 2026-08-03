@@ -35,6 +35,8 @@ from engines.ticket_flow import etiqueta as flujo_etiqueta
 from engines.ticket_flow import paso_actual as flujo_paso_actual
 from engines.ticket_flow import tono as flujo_tono
 from engines.audit import formato_lima as audit_formato_lima
+from engines.audit import MODULO_CARGA as AUDIT_MODULO_CARGA
+from engines.audit import MODULO_INPUT as AUDIT_MODULO_INPUT
 from engines.audit import (
     ACCIONES_TICKET,
     AuditedTicketService,
@@ -2820,6 +2822,19 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
         if uploaded is not None and st.button("Analizar input comercial", type="primary", key="analyze_brand_commercial_input"):
             input_bytes = uploaded.getvalue()
             preview_df, report_df, summary_df = validate_brand_commercial_input(uploaded, selected_brand)
+            # La subida y validacion del archivo no quedaba registrada: solo se
+            # auditaba el ticket que se creaba despues. Sin esto no se puede
+            # saber quien probo un archivo que nunca llego a solicitud.
+            _bloqueos = 0
+            if report_df is not None and not report_df.empty and "Estado" in report_df.columns:
+                _bloqueos = int((report_df["Estado"].map(clean_value) == "Bloqueado").sum())
+            log_user_activity(
+                "Validar input comercial",
+                detail=f"{clean_value(uploaded.name)} · {_bloqueos} observaciones bloqueantes",
+                module=AUDIT_MODULO_INPUT,
+                marca=selected_brand,
+                resultado="error" if _bloqueos else "ok",
+            )
             st.session_state["brand_input_preview_df"] = preview_df
             st.session_state["brand_input_report_df"] = report_df
             st.session_state["brand_input_summary_df"] = summary_df
@@ -9890,6 +9905,30 @@ def _update_sync_job_batch_size(job_id, batch_size):
     return job
 
 
+def _auditar_bloque_carga(job, site_key, label, marca=""):
+    """Deja en la auditoria que se ejecuto un bloque de carga y como salio.
+
+    La ejecucion real contra Shopify no se registraba: solo quedaba el
+    "Iniciar carga" del ticket. Sin esto no habia forma de demostrar quien
+    ejecuto que, ni cuando fallo.
+    """
+    if not isinstance(job, dict):
+        return
+    errores = int(job.get("error_products") or 0)
+    detalle = (
+        f"{label} · bloque {int(job.get('current_block') or 0)} · "
+        f"estado {clean_value(job.get('status'))}"
+    )
+    log_user_activity(
+        "Ejecutar bloque de carga",
+        detail=detalle,
+        site_key=site_key,
+        module=AUDIT_MODULO_CARGA,
+        marca=marca,
+        resultado="error" if errores else "ok",
+    )
+
+
 def render_persistent_sync_job_panel(
     shopify_config,
     brand_config,
@@ -9954,6 +9993,7 @@ def render_persistent_sync_job_panel(
             st.session_state[session_key] = job["id"]
             progress_callback = make_sync_progress_callback(label)
             job = process_sync_job_next_block(job["id"], shopify_config, progress_callback=progress_callback)
+            _auditar_bloque_carga(job, site_key, label, marca=clean_value(brand_config.get("label")))
             clear_shopify_products_cache(site_key)
             st.success("Primer bloque procesado. Puedes continuar con el siguiente bloque o salir y retomarlo luego.")
         else:
@@ -9990,6 +10030,7 @@ def render_persistent_sync_job_panel(
         job = _update_sync_job_batch_size(job["id"], min(max(1, int(batch_size or 20)), max(pending, 1))) or job
         progress_callback = make_sync_progress_callback(label)
         job = process_sync_job_next_block(job["id"], shopify_config, progress_callback=progress_callback)
+        _auditar_bloque_carga(job, site_key, label, marca=clean_value(brand_config.get("label")))
         clear_shopify_products_cache(site_key)
         st.success("Bloque procesado y avance guardado.")
     if job.get("error_keys") and action_cols[1].button("Reintentar errores", key=f"{session_key}_retry"):

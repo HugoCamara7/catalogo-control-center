@@ -2364,6 +2364,18 @@ def _commercial_brand_fill_guide_df(brand_name):
     return pd.DataFrame(rows)
 
 
+@st.cache_data(show_spinner=False, max_entries=12)
+def build_brand_commercial_input_workbook_bytes(brand_name):
+    """Version cacheada del formato por marca.
+
+    El formato solo depende de la marca, pero se reconstruia en cada render de
+    la pantalla: subir un archivo, escribir en un campo o pulsar cualquier boton
+    volvia a armar el Excel entero. Con el cache se arma una vez por marca.
+    """
+    resultado = build_brand_commercial_input_workbook(brand_name)
+    return resultado.getvalue() if hasattr(resultado, "getvalue") else resultado
+
+
 def build_brand_commercial_input_workbook(brand_name):
     """Build the three-sheet, Brand-facing commercial workbook."""
     from openpyxl.comments import Comment
@@ -2817,7 +2829,7 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
             )
             st.dataframe(site_rules, use_container_width=True, hide_index=True)
 
-        workbook_bytes = build_brand_commercial_input_workbook(selected_brand)
+        workbook_bytes = build_brand_commercial_input_workbook_bytes(selected_brand)
         file_date = datetime.now().strftime("%Y%m%d")
         file_brand = re.sub(r"[^A-Za-z0-9]+", "_", selected_brand).strip("_").upper()
         st.download_button(

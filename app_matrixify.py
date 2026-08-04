@@ -6,7 +6,9 @@ import math
 import os
 import pickle
 import hashlib
+import queue
 import re
+import threading
 import time
 import unicodedata
 import uuid
@@ -2740,10 +2742,49 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
     return preview_df, report_df, summary_df
 
 
+def _mostrar_marcas_validas():
+    """Lista los nombres exactos que la app acepta en app_auth.brands."""
+    oficiales = configured_commercial_brands()
+    if not oficiales:
+        st.warning(
+            "Tampoco hay marcas configuradas en `shopify_sites`. Sin eso la app no "
+            "puede saber que marcas existen."
+        )
+        return
+    st.info(
+        "Valores aceptados en `app_auth.brands` (no distingue mayusculas ni espacios):\n\n"
+        + "\n".join(f"- {marca}" for marca in oficiales)
+    )
+
+
+def _avisar_marcas_no_reconocidas(brand_options):
+    """Avisa que valores de Secrets no se reconocieron, en vez de callarlos.
+
+    El sintoma era que la marca "no lee nada": el selector salia vacio o sin su
+    marca y no habia ninguna pista de por que. Ahora se dice exactamente que
+    valor se rechazo.
+    """
+    rechazados = [clean_value(v) for v in (st.session_state.get("_marcas_no_reconocidas") or []) if clean_value(v)]
+    if not rechazados:
+        return
+    st.warning(
+        "No se reconocieron estas marcas de tu usuario: "
+        + ", ".join(f"`{v}`" for v in rechazados)
+        + ". Se ignoraron."
+        + ("" if brand_options else " Por eso no ves ninguna marca disponible.")
+    )
+    _mostrar_marcas_validas()
+
+
 def render_commercial_input_center(download_only=False, forced_brands=None, actor=None):
     brand_options = list(forced_brands or configured_commercial_brands())
+    _avisar_marcas_no_reconocidas(brand_options)
     if not brand_options:
-        st.error("Tu usuario no tiene marcas autorizadas. Solicita al administrador configurar app_auth.brands en Secrets.")
+        st.error(
+            "Tu usuario no tiene marcas autorizadas, por eso no puedes descargar ni subir el input. "
+            "Pide al administrador que revise `app_auth.brands` en Secrets."
+        )
+        _mostrar_marcas_validas()
         return
     if st.session_state.get("commercial_input_brand") not in brand_options:
         st.session_state["commercial_input_brand"] = brand_options[0]
@@ -14702,13 +14743,53 @@ def auth_allowed_brands(username, role=None):
     if normalized_username in COMMERCIAL_INPUT_ONLY_USERS:
         return configured_labels
     configured_by_key = {_input_norm_key(label): label for label in configured_labels}
+    rechazados = []
     for value in values:
-        label = configured_by_key.get(_input_norm_key(value))
-        if label and label not in allowed:
-            allowed.append(label)
+        label = _resolver_marca_configurada(value, configured_by_key)
+        if label:
+            if label not in allowed:
+                allowed.append(label)
+        elif clean_value(value):
+            rechazados.append(clean_value(value))
+    # Antes los valores no reconocidos se descartaban en silencio y el usuario
+    # quedaba sin marcas, sin ninguna pista de por que. Se guardan para poder
+    # mostrarlos en pantalla.
+    st.session_state["_marcas_no_reconocidas"] = rechazados
     if role == ROLE_OPERATOR and not allowed:
         return configured_labels
     return allowed
+
+
+# Alias con los que el equipo escribe las marcas en Secrets. No amplian permisos:
+# solo permiten reconocer el mismo nombre escrito de otra forma.
+ALIAS_MARCAS_AUTORIZADAS = {
+    "mhw": "Mountain Hardwear",
+    "hp": "Accesorios HP",
+    "accesorioshushpuppies": "Accesorios HP",
+    "hushpuppieskids": "Hush Puppies Kids",
+    "hpkids": "Hush Puppies Kids",
+}
+
+
+def _resolver_marca_configurada(value, configured_by_key):
+    """Traduce lo escrito en Secrets al nombre oficial de la marca.
+
+    Acepta el nombre tal cual, con sufijo de sitio ("Columbia.pe", "Rockford PE")
+    y los alias de uso interno. Si no reconoce nada devuelve cadena vacia para
+    que el llamador lo reporte.
+    """
+    clave = _input_norm_key(value)
+    if not clave:
+        return ""
+    label = configured_by_key.get(clave)
+    if label:
+        return label
+    # Sufijos de sitio: columbia.pe, rockfordpe, vans.pe
+    sin_sitio = re.sub(r"(pe|com|cl|co)$", "", clave)
+    label = configured_by_key.get(sin_sitio)
+    if label:
+        return label
+    return ALIAS_MARCAS_AUTORIZADAS.get(clave, "") if ALIAS_MARCAS_AUTORIZADAS.get(clave) in configured_by_key.values() else ""
 
 
 USER_ACTIVITY_LOG_PATH = Path("outputs") / "user_activity_log.jsonl"
@@ -14832,9 +14913,49 @@ def log_acceso_modulo(nombre):
     )
 
 
+_AUDIT_COLA = queue.Queue(maxsize=500)
+_AUDIT_HILO = None
+_AUDIT_LOCK = threading.Lock()
+
+
+def _audit_worker():
+    """Escribe los eventos de auditoria fuera del hilo que dibuja la pantalla."""
+    while True:
+        datos = _AUDIT_COLA.get()
+        try:
+            if datos is None:
+                return
+            servicio, argumentos = datos
+            servicio.record(*argumentos[0], **argumentos[1])
+        except Exception:
+            pass
+        finally:
+            _AUDIT_COLA.task_done()
+
+
+def _encolar_auditoria(servicio, args, kwargs):
+    """Deja el evento en cola y vuelve de inmediato.
+
+    Con el backend de GitHub, cada evento son dos viajes HTTP: se descarga el
+    archivo del mes completo, se le agrega la linea y se sube entero. Hacerlo en
+    el hilo de la pantalla congelaba la interfaz justo al analizar un input.
+    Si la cola se llena se descarta el evento: la auditoria no puede frenar el
+    trabajo del usuario.
+    """
+    global _AUDIT_HILO
+    with _AUDIT_LOCK:
+        if _AUDIT_HILO is None or not _AUDIT_HILO.is_alive():
+            _AUDIT_HILO = threading.Thread(target=_audit_worker, name="auditoria", daemon=True)
+            _AUDIT_HILO.start()
+    try:
+        _AUDIT_COLA.put_nowait((servicio, (args, kwargs)))
+    except queue.Full:
+        return
+
+
 def log_user_activity(action, detail="", user=None, site_key="", module="", extra=None,
                       ticket="", marca="", estado_anterior="", estado_nuevo="", resultado="ok"):
-    """Registra una accion del usuario.
+    """Registra una accion del usuario, sin bloquear la pantalla.
 
     La firma original se conserva; los parametros nuevos son opcionales.
     Nunca lanza: la auditoria no debe bloquear login, carga ni sincronizacion.
@@ -14843,9 +14964,9 @@ def log_user_activity(action, detail="", user=None, site_key="", module="", extr
     if not username:
         return
     try:
-        get_audit_service().record(
-            clean_value(action),
-            username,
+        servicio = get_audit_service()
+        argumentos = (clean_value(action), username)
+        opciones = dict(
             nombre=auth_display_name(username),
             rol=auth_scope_label(auth_access_scope(username)),
             modulo=clean_value(module),
@@ -14858,6 +14979,7 @@ def log_user_activity(action, detail="", user=None, site_key="", module="", extr
             detalle=clean_value(detail),
             extra=extra,
         )
+        _encolar_auditoria(servicio, argumentos, opciones)
     except Exception:
         # La auditoria nunca debe bloquear login, carga o sincronizacion.
         return
@@ -16316,31 +16438,65 @@ def render_ticket_inbox(service, actor, brand_view=False):
                 st.session_state.pop(key, None)
             st.session_state[quick_key] = "all"
             st.rerun()
-    with filter_head:
-        filter_cols = st.columns([1.45, 1, 1, 1, 1.1], gap="small")
-        with filter_cols[0]:
-            search = st.text_input("Buscar", placeholder="Código, archivo o solicitante", key=f"{filter_prefix}_search")
-        with filter_cols[1]:
-            brand_filter = st.selectbox("Marca", ["Todas"] + brands, key=f"{filter_prefix}_brand")
-        with filter_cols[2]:
-            state_label_options = ["Todos"] + [STATE_LABELS.get(value, value) for value in statuses]
-            state_label = st.selectbox("Estado", state_label_options, key=f"{filter_prefix}_state")
-        with filter_cols[3]:
-            priority_label = st.selectbox("Prioridad", ["Todas"] + [PRIORITY_LABELS[key] for key in PRIORITIES], key=f"{filter_prefix}_priority")
-        with filter_cols[4]:
-            assignee_filter = st.selectbox("Responsable", ["Todos"] + assignees, key=f"{filter_prefix}_assignee")
-    with st.expander("Más filtros", expanded=False):
-        secondary = st.columns(4, gap="small")
-        with secondary[0]:
-            site_filter = st.selectbox("Sitio", ["Todos"] + sites, key=f"{filter_prefix}_site")
-        with secondary[1]:
-            load_type_label = st.selectbox("Tipo de carga", ["Todas"] + [load_type_labels.get(value, value.title()) for value in load_types], key=f"{filter_prefix}_type")
-        with secondary[2]:
-            date_from = st.date_input("Desde", value=None, key=f"{filter_prefix}_from")
-        with secondary[3]:
-            date_to = st.date_input("Hasta", value=None, key=f"{filter_prefix}_to")
-
-    state_filter = next((key for key, value in STATE_LABELS.items() if value == state_label), "") if state_label != "Todos" else ""
+    etapa_filtro = ""
+    if brand_view:
+        # La marca ve una barra compacta: buscar, etapa y nada mas. Las etapas
+        # son las cinco visibles de engines/ticket_flow, no los 19 estados
+        # internos, y no se muestran filtros tecnicos (sitio, tipo de carga,
+        # prioridad ni responsable), que son de operacion.
+        etapas_presentes = [
+            clave for clave in list(FLUJO_ORDEN) + [FLUJO_OBSERVADA]
+            if any(flujo_estado_visible(item.get("status")) == clave for item in all_tickets)
+        ]
+        with filter_head:
+            columnas_marca = st.columns([2, 1.2, 1.2] if len(brands) > 1 else [2.6, 1.4], gap="small")
+            with columnas_marca[0]:
+                search = st.text_input("Buscar", placeholder="Código o archivo", key=f"{filter_prefix}_search")
+            with columnas_marca[1]:
+                etiquetas_etapa = ["Todas"] + [FLUJO_ETIQUETAS.get(clave, clave) for clave in etapas_presentes]
+                etiqueta_elegida = st.selectbox("Etapa", etiquetas_etapa, key=f"{filter_prefix}_state")
+                if etiqueta_elegida != "Todas":
+                    etapa_filtro = next(
+                        (clave for clave in etapas_presentes if FLUJO_ETIQUETAS.get(clave, clave) == etiqueta_elegida),
+                        "",
+                    )
+            if len(brands) > 1:
+                with columnas_marca[2]:
+                    brand_filter = st.selectbox("Marca", ["Todas"] + brands, key=f"{filter_prefix}_brand")
+            else:
+                brand_filter = "Todas"
+        state_filter = ""
+        priority_label = "Todas"
+        assignee_filter = "Todos"
+        site_filter = "Todos"
+        load_type_label = "Todas"
+        date_from = None
+        date_to = None
+    else:
+        with filter_head:
+            filter_cols = st.columns([1.45, 1, 1, 1, 1.1], gap="small")
+            with filter_cols[0]:
+                search = st.text_input("Buscar", placeholder="Código, archivo o solicitante", key=f"{filter_prefix}_search")
+            with filter_cols[1]:
+                brand_filter = st.selectbox("Marca", ["Todas"] + brands, key=f"{filter_prefix}_brand")
+            with filter_cols[2]:
+                state_label_options = ["Todos"] + [STATE_LABELS.get(value, value) for value in statuses]
+                state_label = st.selectbox("Estado", state_label_options, key=f"{filter_prefix}_state")
+            with filter_cols[3]:
+                priority_label = st.selectbox("Prioridad", ["Todas"] + [PRIORITY_LABELS[key] for key in PRIORITIES], key=f"{filter_prefix}_priority")
+            with filter_cols[4]:
+                assignee_filter = st.selectbox("Responsable", ["Todos"] + assignees, key=f"{filter_prefix}_assignee")
+        with st.expander("Más filtros", expanded=False):
+            secondary = st.columns(4, gap="small")
+            with secondary[0]:
+                site_filter = st.selectbox("Sitio", ["Todos"] + sites, key=f"{filter_prefix}_site")
+            with secondary[1]:
+                load_type_label = st.selectbox("Tipo de carga", ["Todas"] + [load_type_labels.get(value, value.title()) for value in load_types], key=f"{filter_prefix}_type")
+            with secondary[2]:
+                date_from = st.date_input("Desde", value=None, key=f"{filter_prefix}_from")
+            with secondary[3]:
+                date_to = st.date_input("Hasta", value=None, key=f"{filter_prefix}_to")
+        state_filter = next((key for key, value in STATE_LABELS.items() if value == state_label), "") if state_label != "Todos" else ""
     priority_filter = next((key for key, value in PRIORITY_LABELS.items() if value == priority_label), "") if priority_label != "Todas" else ""
     load_type_filter = next((key for key, value in load_type_labels.items() if value == load_type_label), "") if load_type_label != "Todas" else ""
     filters = {
@@ -16358,6 +16514,10 @@ def render_ticket_inbox(service, actor, brand_view=False):
     except TicketError as exc:
         st.error(str(exc))
         return
+    if etapa_filtro:
+        # Una etapa visible agrupa varios estados internos, asi que el filtro se
+        # aplica sobre el resultado y no en la consulta.
+        tickets = [item for item in tickets if flujo_estado_visible(item.get("status")) == etapa_filtro]
     quick_filter = st.session_state.get(quick_key, "all")
     if quick_filter == "pending":
         tickets = [item for item in tickets if item.get("status") == STATE_PENDING]

@@ -4,3 +4,4 @@ streamlit
 google-cloud-bigquery
 google-auth
 db-dtypes
+xlsxwriter

@@ -5,6 +5,7 @@ import json
 import math
 import os
 import pickle
+import gc
 import hashlib
 import queue
 import re
@@ -1425,6 +1426,37 @@ def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
     return buffer
 
 
+def _guardar_excel_en_disco(buffer, brand_config):
+    """Guarda el Excel generado y devuelve la ruta.
+
+    Antes se retenia el archivo entero en st.session_state. Con el catalogo
+    completo eso son decenas de MB que no se liberan nunca, en un proceso que
+    Streamlit comparte entre todos los usuarios.
+    """
+    try:
+        destino = Path("outputs") / "cargas"
+        destino.mkdir(parents=True, exist_ok=True)
+        nombre = clean_value(brand_config.get("output_filename")) or "matrixify.xlsx"
+        ruta = destino / f"{clean_value(brand_config.get('site_key')) or 'sitio'}_{nombre}"
+        datos = buffer.getvalue() if hasattr(buffer, "getvalue") else buffer
+        ruta.write_bytes(datos)
+        return str(ruta)
+    except Exception:
+        return ""
+
+
+def _leer_excel_de_disco(ruta):
+    """Lee el Excel guardado. Devuelve None si no existe."""
+    ruta = clean_value(ruta)
+    if not ruta:
+        return None
+    try:
+        archivo = Path(ruta)
+        return archivo.read_bytes() if archivo.exists() else None
+    except Exception:
+        return None
+
+
 def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_df=None, skipped_df=None, sial_df=None, centry_df=None, centry_issues_df=None):
     matrixify_df = repair_mojibake_dataframe(coalesce_duplicate_columns(matrixify_df))
     summary_df = repair_mojibake_dataframe(coalesce_duplicate_columns(summary_df))
@@ -1435,7 +1467,7 @@ def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_d
     centry_df = repair_mojibake_dataframe(coalesce_duplicate_columns(centry_df))
     centry_issues_df = repair_mojibake_dataframe(coalesce_duplicate_columns(centry_issues_df))
     buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+    with pd.ExcelWriter(buffer, engine=MOTOR_EXCEL) as writer:
         matrixify_df.to_excel(writer, index=False, sheet_name="Products")
         summary_df.to_excel(writer, index=False, sheet_name="Resumen")
         issues_df.to_excel(writer, index=False, sheet_name="Revision")
@@ -1450,13 +1482,37 @@ def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_d
         if skipped_df is not None:
             skipped_df.to_excel(writer, index=False, sheet_name="Omitidos sin cambios")
 
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for column_cells in sheet.columns:
-                sheet.column_dimensions[column_cells[0].column_letter].width = 18
+        _dar_formato_hojas(writer, ancho=18)
 
     buffer.seek(0)
     return buffer
+
+
+# openpyxl arma el libro entero en memoria como objetos de Python. Con el
+# catalogo completo eso es el pico de memoria mas alto de la app y es lo que
+# tumbaba el proceso. xlsxwriter genera el mismo archivo con un tercio de la
+# memoria y en la mitad de tiempo.
+#
+# NO se usa el modo constant_memory: se probo y pierde la primera fila de cada
+# hoja, aun dando el formato antes de escribir. La correccion no vale un archivo
+# con datos faltantes.
+MOTOR_EXCEL = "xlsxwriter"
+
+
+def _dar_formato_hojas(writer, ancho=18):
+    """Congela la fila de encabezados y fija el ancho, con cualquier motor."""
+    if getattr(writer, "engine", "") == "xlsxwriter" or MOTOR_EXCEL == "xlsxwriter":
+        for hoja in writer.sheets.values():
+            try:
+                hoja.freeze_panes(1, 0)
+                hoja.set_column(0, 200, ancho)
+            except Exception:
+                continue
+        return
+    for hoja in writer.book.worksheets:
+        hoja.freeze_panes = "A2"
+        for celdas in hoja.columns:
+            hoja.column_dimensions[celdas[0].column_letter].width = ancho
 
 
 def update_to_excel_bytes(matrixify_df, issues_df):
@@ -13535,6 +13591,7 @@ def clear_complete_load_state():
         "complete_detected_brands",
         "complete_data_context",
         "complete_excel_bytes",
+        "complete_excel_path",
     ):
         st.session_state.pop(key, None)
 
@@ -18221,9 +18278,16 @@ api_version = "{DEFAULT_API_VERSION}"
                     f"Analisis terminado: {len(matrixify_df):,} filas Matrixify, "
                     f"{len(issues_df):,} observaciones, {len(skipped_df):,} omitidos sin cambios."
                 )
-                st.session_state["complete_excel_bytes"] = columbia_to_excel_bytes(
-                    matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df
+                st.session_state["complete_excel_path"] = _guardar_excel_en_disco(
+                    columbia_to_excel_bytes(
+                        matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df
+                    ),
+                    brand_config,
                 )
+                # El catalogo Shopify en crudo ya no se necesita: los siblings
+                # se aplicaron arriba. Retenerlo era decenas de MB por sesion.
+                st.session_state.pop("complete_shopify_products", None)
+                gc.collect()
 
             matrixify_df = st.session_state.get("complete_matrixify_df")
             if matrixify_df is not None:
@@ -18285,12 +18349,15 @@ api_version = "{DEFAULT_API_VERSION}"
                             st.write("Vista previa Carga Sial")
                             st.dataframe(sial_df.head(100), use_container_width=True, height=320)
 
-                excel_bytes = st.session_state.get("complete_excel_bytes")
+                excel_bytes = _leer_excel_de_disco(st.session_state.get("complete_excel_path"))
                 if excel_bytes is None:
-                    excel_bytes = columbia_to_excel_bytes(
-                        matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df
+                    st.session_state["complete_excel_path"] = _guardar_excel_en_disco(
+                        columbia_to_excel_bytes(
+                            matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df
+                        ),
+                        brand_config,
                     )
-                    st.session_state["complete_excel_bytes"] = excel_bytes
+                    excel_bytes = _leer_excel_de_disco(st.session_state.get("complete_excel_path"))
                 st.download_button(
                     "Descargar estructura Matrixify",
                     data=excel_bytes,

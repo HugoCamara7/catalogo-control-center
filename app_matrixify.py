@@ -2954,6 +2954,47 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
         summary_df = st.session_state.get("brand_input_summary_df")
         preview_df = st.session_state.get("brand_input_preview_df")
         report_df = st.session_state.get("brand_input_report_df")
+
+        # Cuando falta una columna obligatoria o el archivo no trae filas, el
+        # validador devuelve el resumen vacio y el motivo solo en el reporte.
+        # Todo el bloque de resultados colgaba de que el resumen tuviera filas,
+        # asi que en esos dos casos la pantalla no mostraba NADA: ni la vista
+        # previa ni el error. El usuario veia que "no lee el documento".
+        _resumen_vacio = not (isinstance(summary_df, pd.DataFrame) and not summary_df.empty)
+        _hay_reporte = isinstance(report_df, pd.DataFrame) and not report_df.empty
+        if _resumen_vacio and _hay_reporte:
+            _bloqueos_df = report_df
+            if "Estado" in report_df.columns:
+                _solo_bloqueos = report_df[report_df["Estado"].map(clean_value) == "Bloqueado"]
+                if not _solo_bloqueos.empty:
+                    _bloqueos_df = _solo_bloqueos
+            _motivos = []
+            for _, _fila in _bloqueos_df.iterrows():
+                _campo = clean_value(_fila.get("Campo"))
+                _mensaje = clean_value(_fila.get("Mensaje"))
+                _texto = f"**{_campo}**: {_mensaje}" if _campo else _mensaje
+                if _texto and _texto not in _motivos:
+                    _motivos.append(_texto)
+            st.error(
+                "No se pudo leer el archivo. Corrige esto y vuelve a subirlo:\n\n"
+                + "\n".join(f"- {_m}" for _m in _motivos[:10])
+            )
+            _columnas_esperadas = commercial_input_columns_for_brand(
+                commercial_brand_display_name(selected_brand)
+            )
+            with st.expander("Columnas que debe tener el archivo"):
+                st.write(
+                    "Descarga el formato editable de arriba y completa solo sus columnas. "
+                    f"Para **{selected_brand}** se esperan:"
+                )
+                st.markdown("\n".join(f"- {_c}" for _c in _columnas_esperadas))
+            st.dataframe(report_df, use_container_width=True, hide_index=True)
+        elif _resumen_vacio and st.session_state.get("brand_input_validated_hash"):
+            st.warning(
+                "El archivo se leyó pero no quedó ninguna fila utilizable. "
+                "Revisa que los Mod-Col estén completos y que no sean las filas de ejemplo."
+            )
+
         if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
             cols = st.columns(min(4, len(summary_df)))
             for idx, row in summary_df.iterrows():

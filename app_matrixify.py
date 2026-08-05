@@ -2647,6 +2647,101 @@ def revisar_separadores_lista(valor):
     return ""
 
 
+ESTILOS_OBSERVACIONES = """
+<style>
+.obs-grupo{border:1px solid #E2E8F0;border-radius:12px;padding:14px 16px;margin-bottom:10px;background:#fff}
+.obs-cab{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.obs-campo{font-weight:800;color:#0F172A;font-size:15px}
+.obs-pill{font-size:11px;font-weight:800;padding:3px 9px;border-radius:999px;letter-spacing:.02em}
+.obs-bloqueo{background:#FEE2E2;color:#B91C1C}
+.obs-aviso{background:#FEF3C7;color:#92400E}
+.obs-cuenta{font-size:12px;color:#64748B;font-weight:700}
+.obs-accion{font-size:13px;color:#334155;margin:6px 0 10px}
+.obs-valores{display:flex;flex-wrap:wrap;gap:6px}
+.obs-valor{background:#F1F5F9;border:1px solid #E2E8F0;border-radius:8px;padding:4px 10px;font-size:12px;color:#0F172A;font-weight:600}
+.obs-mas{font-size:12px;color:#64748B;padding:4px 0}
+</style>
+"""
+
+
+def _acciones_por_campo_df(report_df):
+    """Hoja 'Que hacer' del Excel: una fila por campo, con los valores a corregir.
+
+    Es el mismo resumen que se ve en pantalla, para que la marca pueda mandarlo
+    al equipo de catalogo sin tener que explicar nada.
+    """
+    if not isinstance(report_df, pd.DataFrame) or report_df.empty or "Campo" not in report_df.columns:
+        return pd.DataFrame(columns=["Campo", "Bloquea la carga", "Filas afectadas", "Valores a corregir", "Que hacer"])
+    filas = []
+    for campo, grupo in report_df.groupby("Campo", sort=False):
+        estados = {clean_value(v) for v in grupo.get("Estado", pd.Series(dtype=object))}
+        valores = []
+        for valor in grupo.get("Valor original", pd.Series(dtype=object)):
+            valor = clean_value(valor)
+            if valor and valor not in valores:
+                valores.append(valor)
+        if not valores:
+            valores = list(dict.fromkeys(clean_value(v) for v in grupo.get("Mensaje", pd.Series(dtype=object)) if clean_value(v)))
+        accion = next((clean_value(v) for v in grupo.get("Accion recomendada", pd.Series(dtype=object)) if clean_value(v)), "")
+        filas.append({
+            "Campo": clean_value(campo),
+            "Bloquea la carga": "SI" if "Bloqueado" in estados else "NO",
+            "Filas afectadas": len(grupo),
+            "Valores a corregir": " | ".join(valores),
+            "Que hacer": accion,
+        })
+    filas.sort(key=lambda f: (f["Bloquea la carga"] != "SI", -f["Filas afectadas"]))
+    return pd.DataFrame(filas)
+
+
+def _render_resumen_observaciones(report_df):
+    """Agrupa las observaciones por campo, con el valor exacto que fallo.
+
+    La tabla cruda repetia la misma advertencia decenas de veces y no dejaba ver
+    cuantos valores distintos habia que arreglar. Aqui se agrupa por campo y se
+    listan los valores unicos, que es lo accionable.
+    """
+    st.markdown(ESTILOS_OBSERVACIONES, unsafe_allow_html=True)
+    if "Campo" not in report_df.columns:
+        st.dataframe(report_df, use_container_width=True, hide_index=True)
+        return
+    bloques = []
+    for campo, grupo in report_df.groupby("Campo", sort=False):
+        estados = {clean_value(v) for v in grupo.get("Estado", pd.Series(dtype=object))}
+        bloquea = "Bloqueado" in estados
+        pill = ("obs-bloqueo", "Bloquea la carga") if bloquea else ("obs-aviso", "No bloquea")
+        accion = next((clean_value(v) for v in grupo.get("Accion recomendada", pd.Series(dtype=object)) if clean_value(v)), "")
+        valores = []
+        for valor in grupo.get("Valor original", pd.Series(dtype=object)):
+            valor = clean_value(valor)
+            if valor and valor not in valores:
+                valores.append(valor)
+        if not valores:
+            mensajes = [clean_value(v) for v in grupo.get("Mensaje", pd.Series(dtype=object)) if clean_value(v)]
+            valores = list(dict.fromkeys(mensajes))[:6]
+        chips = "".join(f'<span class="obs-valor">{escape(v)}</span>' for v in valores[:12])
+        extra = f'<div class="obs-mas">y {len(valores) - 12} más</div>' if len(valores) > 12 else ""
+        bloques.append(
+            '<div class="obs-grupo">'
+            f'<div class="obs-cab"><span class="obs-campo">{escape(clean_value(campo))}</span>'
+            f'<span class="obs-pill {pill[0]}">{pill[1]}</span>'
+            f'<span class="obs-cuenta">{len(grupo)} filas · {len(valores)} valor(es) distinto(s)</span></div>'
+            + (f'<div class="obs-accion">{escape(accion)}</div>' if accion else "")
+            + f'<div class="obs-valores">{chips}</div>{extra}'
+            "</div>"
+        )
+    st.markdown("".join(bloques), unsafe_allow_html=True)
+
+
+# Que debe hacer la marca ante cada observacion. El tipo de prenda no lo puede
+# resolver ella sola: el diccionario lo mantiene el equipo de catalogo.
+ACCIONES_POR_CAMPO = {
+    "Tipo de prenda": "Avisar al equipo de catalogo para agregar este tipo al diccionario.",
+    "Guia de tallas": "Avisar al equipo de catalogo para revisar la guia de tallas.",
+    "Descripcion": "Amplia la descripcion del producto.",
+}
+
+
 def validate_brand_commercial_input(uploaded_file, brand_name):
     try:
         xls = pd.ExcelFile(uploaded_file)
@@ -2693,6 +2788,7 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
             continue
         row_status = "Listo"
         row_messages = []
+        row_issues = []
         row_brand = normalize_brand_name(normalized.get("Marca"))
         expected_brand = normalize_brand_name(brand_label)
         if row_brand != expected_brand:
@@ -2747,12 +2843,27 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                     row_status = "Con advertencia"
                 sufijo = " (no bloquea la carga)" if campo in VALIDACIONES_SOLO_AVISO else ""
                 row_messages.append(f"{campo}: {issue.get('message')}{sufijo}")
+                # Se guarda el campo real y el valor que fallo. Antes la fila del
+                # reporte decia "Validacion" y no mostraba cual era el tipo malo,
+                # asi que no habia forma de saber que corregir.
+                row_issues.append({
+                    "campo": campo,
+                    "valor": clean_value(normalized.get(campo)),
+                    "mensaje": clean_value(issue.get("message")),
+                    "accion": ACCIONES_POR_CAMPO.get(campo, "Corregir el valor en el input."),
+                })
         for list_column in COMMERCIAL_INPUT_TEXT_LIST_COLUMNS:
             aviso = revisar_separadores_lista(normalized.get(list_column))
             if aviso:
                 if row_status == "Listo":
                     row_status = "Con advertencia"
                 row_messages.append(f"{list_column} {aviso}")
+                row_issues.append({
+                    "campo": list_column,
+                    "valor": clean_value(normalized.get(list_column))[:120],
+                    "mensaje": aviso,
+                    "accion": "Usa solo | para separar los valores.",
+                })
         description = normalized.get("Descripcion")
         visible_len = len(strip_html(description))
         if description and visible_len < DESCRIPCION_MINIMA:
@@ -2761,6 +2872,12 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
             row_messages.append(
                 f"Descripcion bajo {DESCRIPCION_MINIMA} caracteres visibles."
             )
+            row_issues.append({
+                "campo": "Descripcion",
+                "valor": f"{visible_len} caracteres",
+                "mensaje": f"Descripcion bajo {DESCRIPCION_MINIMA} caracteres visibles.",
+                "accion": "Amplia la descripcion del producto.",
+            })
         handle = build_catalog_handle(
             product_type=normalized.get("Tipo de prenda"),
             gender=normalized.get("Genero"),
@@ -2781,18 +2898,18 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                 "Mensaje": " | ".join(row_messages),
             }
         )
-        if row_messages:
-            for message in row_messages:
+        if row_issues:
+            for observacion in row_issues:
                 report_rows.append(
                     {
                         "Fila": excel_row,
                         "Mod-Col": mod_col,
-                        "Campo": "Validacion",
-                        "Valor original": "",
+                        "Campo": observacion["campo"],
+                        "Valor original": observacion["valor"],
                         "Valor normalizado": "",
                         "Estado": row_status,
-                        "Mensaje": message,
-                        "Accion recomendada": "Corregir input o aprobar valor nuevo en diccionario.",
+                        "Mensaje": observacion["mensaje"],
+                        "Accion recomendada": observacion["accion"],
                     }
                 )
     preview_df = pd.DataFrame(preview_rows)
@@ -3003,13 +3120,16 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
                 st.subheader("Vista previa")
                 st.dataframe(preview_df, use_container_width=True, hide_index=True)
             if isinstance(report_df, pd.DataFrame) and not report_df.empty:
-                st.subheader("Errores y advertencias")
-                st.dataframe(report_df, use_container_width=True, hide_index=True)
+                st.subheader("Qué hay que revisar")
+                _render_resumen_observaciones(report_df)
+                with st.expander("Ver el detalle fila por fila"):
+                    st.dataframe(report_df, use_container_width=True, hide_index=True)
             st.download_button(
                 "Descargar reporte de validacion",
                 data=(validation_report_bytes := dataframe_to_excel_bytes(
                     {
                         "Resumen": summary_df,
+                        "Que hacer": _acciones_por_campo_df(report_df),
                         "Vista previa": preview_df if isinstance(preview_df, pd.DataFrame) else pd.DataFrame(),
                         "Errores y advertencias": report_df if isinstance(report_df, pd.DataFrame) else pd.DataFrame(),
                     }

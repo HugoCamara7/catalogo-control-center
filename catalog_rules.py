@@ -752,7 +752,11 @@ def validate_catalog_row(row):
         issues.append({"field": "Talla", "level": "bloqueo", "message": "Talla invalida para creacion."})
     type_rule = normalize_product_type(normalized.get("Tipo de prenda"))
     if not type_rule:
-        issues.append({"field": "Tipo de prenda", "level": "advertencia", "message": "Tipo no reconocido en diccionario."})
+        # Se nombra el tipo que fallo. Antes el mensaje era generico y la marca
+        # no sabia cual de sus valores corregir.
+        tipo_recibido = normalize_text(normalized.get("Tipo de prenda"))
+        detalle = f'"{tipo_recibido}" no esta en el diccionario de tipos.' if tipo_recibido else "Tipo de prenda vacio."
+        issues.append({"field": "Tipo de prenda", "level": "advertencia", "message": detalle})
     size_decision = resolve_size_guide(
         brand=normalized.get("Marca"),
         category=normalized.get("Categoria"),

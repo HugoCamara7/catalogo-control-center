@@ -2961,6 +2961,19 @@ def _avisar_marcas_no_reconocidas(brand_options):
     _mostrar_marcas_validas()
 
 
+def _avisar_solicitud_repetida(exc):
+    """Muestra el aviso de duplicado como advertencia, no como error tecnico."""
+    texto = str(exc)
+    if "ya fue enviado" in texto or "repite" in texto:
+        st.warning(texto)
+        st.caption(
+            "Si tu archivo trae productos nuevos ademas de los repetidos, quita los que "
+            "ya enviaste y vuelve a subirlo."
+        )
+        return
+    st.error(texto)
+
+
 def render_commercial_input_center(download_only=False, forced_brands=None, actor=None):
     brand_options = list(forced_brands or configured_commercial_brands())
     _avisar_marcas_no_reconocidas(brand_options)
@@ -3023,6 +3036,11 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
             """,
             unsafe_allow_html=True,
         )
+
+    creada = clean_value(st.session_state.pop("_solicitud_recien_creada", ""))
+    if creada:
+        st.success(f"Solicitud {creada} creada y enviada a Operaciones.")
+        st.caption("El formulario se limpio para evitar que se envie dos veces la misma solicitud.")
 
     if download_only:
         return
@@ -3222,11 +3240,26 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
                             priority=priority,
                         )
                         st.session_state["selected_catalog_ticket"] = ticket["code"]
-                        st.success(f"Solicitud {ticket['code']} creada y enviada a Operaciones.")
-                        if backend == "local":
-                            st.info("Prueba local: el ticket se guardó en outputs/catalog_tickets. En producción configura el backend GitHub.")
+                        # Se limpia el archivo validado para que un segundo clic
+                        # no tenga nada que reenviar. Antes el formulario quedaba
+                        # intacto y con la casilla marcada, asi que volver a
+                        # pulsar creaba otra solicitud igual.
+                        for clave_form in (
+                            "brand_input_preview_df",
+                            "brand_input_report_df",
+                            "brand_input_summary_df",
+                            "brand_input_validated_bytes",
+                            "brand_input_validated_name",
+                            "brand_input_validated_hash",
+                            "brand_input_validated_brand",
+                            "brand_ticket_confirmed",
+                            "brand_ticket_comment",
+                        ):
+                            st.session_state.pop(clave_form, None)
+                        st.session_state["_solicitud_recien_creada"] = ticket["code"]
+                        st.rerun()
                     except TicketError as exc:
-                        st.error(str(exc))
+                        _avisar_solicitud_repetida(exc)
 
 
 CENTRY_BASE_COLUMNS = [

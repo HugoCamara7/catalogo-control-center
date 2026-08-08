@@ -722,11 +722,43 @@ class TicketService:
             raise TicketValidationError("Selecciona al menos un sitio con valor SI.")
         digest = file_sha256(input_bytes)
         duplicate_key = file_sha256(f"{normalize_key(brand)}|{template_version}|{digest}".encode("utf-8"))
-        for existing in self.store.list_tickets():
-            if existing.get("duplicate_key") == duplicate_key and internal_state(existing.get("status")) not in {
-                STATE_REJECTED, STATE_CANCELED
-            }:
+        nuevos_mod_col = {normalize_key(v) for v in (model_colors or []) if normalize_key(v)}
+        abiertos = [
+            t for t in self.store.list_tickets()
+            if internal_state(t.get("status")) not in {STATE_REJECTED, STATE_CANCELED}
+        ]
+        for existing in abiertos:
+            if existing.get("duplicate_key") == duplicate_key:
                 raise TicketConflictError(f"Este archivo ya fue enviado en {existing.get('code')}.")
+        # El control por hash solo detecta el MISMO archivo byte a byte: basta con
+        # volver a guardar el Excel para esquivarlo. Por eso se compara tambien
+        # que productos trae, que es lo que de verdad identifica una solicitud.
+        #
+        # Solo cuenta contra solicitudes EN CURSO. Si la anterior ya se cargo,
+        # reenviar los mismos productos es legitimo: es una actualizacion.
+        terminados = {STATE_COMPLETED, STATE_COMPLETED_OBS, STATE_REJECTED, STATE_CANCELED}
+        en_curso = [t for t in abiertos if internal_state(t.get("status")) not in terminados]
+        if nuevos_mod_col:
+            for existing in en_curso:
+                if normalize_key(existing.get("brand")) != normalize_key(brand):
+                    continue
+                previos = {normalize_key(v) for v in (existing.get("model_colors") or []) if normalize_key(v)}
+                if not previos:
+                    continue
+                repetidos = nuevos_mod_col & previos
+                if not repetidos:
+                    continue
+                porcentaje = len(repetidos) * 100 // len(nuevos_mod_col)
+                if porcentaje >= 80:
+                    muestra = ", ".join(sorted(repetidos)[:5]).upper()
+                    etiqueta = STATE_LABELS.get(internal_state(existing.get("status")), "")
+                    raise TicketConflictError(
+                        f"Esta solicitud repite {porcentaje}% de los productos de {existing.get('code')}"
+                        + (f" ({etiqueta})" if etiqueta else "")
+                        + f". Repetidos: {muestra}"
+                        + (" y otros." if len(repetidos) > 5 else "")
+                        + " Si de verdad necesitas cargarlos otra vez, cierra o cancela la solicitud anterior."
+                    )
         code = self.store.allocate_code()
         now = utc_now()
         deadline = (datetime.now(timezone.utc) + timedelta(hours=float(self.sla_hours[priority]))).isoformat(timespec="seconds")

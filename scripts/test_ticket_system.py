@@ -75,7 +75,10 @@ class CatalogTicketTests(unittest.TestCase):
             },
             warnings=["Advertencia de prueba"],
             comment="Campana de prueba",
-            model_colors=["ABC-001", "ABC-002"],
+            # Cada solicitud lleva sus propios Mod-Col: la app bloquea reenviar
+            # los mismos productos mientras haya otra solicitud en curso.
+            # El prefijo ABC- se mantiene para que la busqueda siga encontrandolas.
+            model_colors=[f"ABC-001-{suffix}", f"ABC-002-{suffix}"],
             priority=priority,
         )
 
@@ -289,7 +292,7 @@ class CatalogTicketTests(unittest.TestCase):
         self.create_ticket("filter-two", priority="urgent")
         by_priority = self.service.list_tickets(self.admin, filters={"priority": "urgent"})
         self.assertEqual(len(by_priority), 1)
-        by_search = self.service.list_tickets(self.admin, search="ABC-001")
+        by_search = self.service.list_tickets(self.admin, search="ABC-001")   # prefijo comun
         self.assertEqual(len(by_search), 2)
         by_code = self.service.list_tickets(self.admin, search=first["code"])
         self.assertEqual(len(by_code), 1)

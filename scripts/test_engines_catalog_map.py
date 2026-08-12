@@ -82,6 +82,51 @@ class TestTipoShopify(unittest.TestCase):
         self.assertEqual(namespace_key("Metafield: sinpunto [text]"), ("", ""))
 
 
+class TestSiblings(unittest.TestCase):
+    """El mismo metafield estaba declarado con tipos distintos segun la ruta."""
+
+    def test_custom_siblings_es_referencia_de_producto(self):
+        """El mantenedor y la API ya usaban este tipo; otras 4 rutas, no."""
+        for columna in ("Metafield: custom.siblings [single_line_text_field]",
+                        "Metafield: custom.siblings [list.product_reference]",
+                        "Metafield: custom.siblings [id]"):
+            self.assertEqual(tipo_shopify(columna), "list.product_reference", columna)
+
+    def test_theme_siblings_es_lista_de_texto(self):
+        for columna in ("Metafield: theme.siblings [single_line_text_field]",
+                        "Metafield: theme.siblings [list.single_line_text_field]"):
+            self.assertEqual(tipo_shopify(columna), LISTA_TEXTO, columna)
+
+    def test_los_color_son_texto_simple(self):
+        for columna in ("Metafield: custom.siblings_color [single_line_text_field]",
+                        "Metafield: theme.siblings_color [single_line_text_field]"):
+            self.assertEqual(tipo_shopify(columna), TEXTO, columna)
+
+    def test_no_se_confunden_custom_y_theme(self):
+        self.assertNotEqual(tipo_shopify("Metafield: custom.siblings [x]"),
+                            tipo_shopify("Metafield: theme.siblings [x]"))
+
+    def test_mismos_criterios_en_todos_los_sitios(self):
+        """El usuario lo confirmo: no hay variacion por sitio."""
+        for clave in ("siblings", "siblings_color", "siblings_tema", "siblings_color_tema"):
+            self.assertIsNone(mapa.CAMPOS_POR_CLAVE[clave].sitios, clave)
+        for sitio in ("columbia", "vans", "rockford", "hush_puppies", "patagonia"):
+            claves = {c.clave for c in campos_para_sitio(sitio)}
+            self.assertIn("siblings", claves, sitio)
+            self.assertIn("siblings_tema", claves, sitio)
+
+    def test_los_cuatro_salen_juntos(self):
+        fila = {"Mod-Col": "A-1", "Siblings": "handle-uno|handle-dos",
+                "Siblings Color": "Negro"}
+        rutas = {f'{m["namespace"]}.{m["key"]}': m for m in build_metafields(fila, "rockford")}
+        self.assertEqual(rutas["custom.siblings"]["type"], "list.product_reference")
+        self.assertEqual(rutas["theme.siblings"]["type"], LISTA_TEXTO)
+        self.assertEqual(json.loads(rutas["theme.siblings"]["value"]),
+                         ["handle-uno", "handle-dos"])
+        self.assertEqual(rutas["custom.siblings_color"]["value"], "Negro")
+        self.assertEqual(rutas["theme.siblings_color"]["value"], "Negro")
+
+
 class TestCamposPorSitio(unittest.TestCase):
     def test_los_comunes_aplican_a_todos(self):
         for sitio in ("columbia", "vans", "rockford", "hush_puppies"):

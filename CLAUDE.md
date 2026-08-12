@@ -48,10 +48,14 @@ Fuentes de datos: **BigQuery** (maestro ARTI y stock), **Shopify Admin API**
 ## 2. Arquitectura
 
 ```
-app_matrixify.py        17.842 lineas · 383 funciones · UI + routing + logica
+app_matrixify.py        18.7xx lineas · 439 funciones · UI + routing + logica
 ├── engines/            motores sin Streamlit, testeables
-│   ├── audit.py        530 lin · auditoria (2 backends, 45 pruebas)
-│   ├── ticket_flow.py  264 lin · 19 estados -> 5 visibles (29 pruebas)
+│   ├── audit.py        535 lin · auditoria (2 backends, 45 pruebas)
+│   ├── notify.py       700 lin · correo transaccional (80 pruebas)
+│   ├── stock.py        215 lin · stock por Mod-Col (35 pruebas)
+│   ├── metrics.py      190 lin · metricas por Mod-Col (26 pruebas)
+│   ├── price_check.py  200 lin · validacion precio/stock (19 pruebas)
+│   ├── ticket_flow.py  390 lin · 23 estados -> 5 visibles (40 pruebas)
 │   └── storage_check.py 176 lin · diagnostico de persistencia
 ├── ticket_system.py    1.093 lin · maquina de estados, 2 stores, 28 pruebas
 ├── generate_columbia_matrixify.py  3.319 lin · motor de catalogo
@@ -87,7 +91,8 @@ de UI. Se arregla extrayendo `engines/shopify_sync.py` (~2.080 líneas).
 
 ## 3. Estados de solicitud
 
-`ticket_system.py` define **19 estados internos**. No se tocaron: las
+`ticket_system.py` define **23 estados internos** (19 originales + 4 del
+cierre de carga por etapas, agosto 2026). Los 19 primeros no se tocaron: las
 solicitudes históricas se leen sin migración.
 
 `engines/ticket_flow.py` los traduce a **5 visibles**:
@@ -96,12 +101,12 @@ solicitudes históricas se leen sin migración.
 |---|---|
 | Pendiente de revisión | draft, request_received, pending_assignment, assigned, digital_review, correction_received |
 | Lista para ejecutar | load_approved, preparing_catalog, dry_run, ready_execute |
-| En ejecución | loading, validating_results |
+| En ejecución | loading, validating_results, sial_loaded, price_load_requested, price_stock_validation, ready_to_close |
 | Finalizada | completed, completed_with_observations, rejected, canceled |
 | Observada | observed, waiting_brand_correction, failed |
 
 Los matices se conservan entre paréntesis: "Finalizada (rechazada)",
-"Observada (con incidencia)".
+"En ejecución (esperando carga de precios)".
 
 **Recorrido feliz** (una sola acción principal por estado):
 
@@ -113,7 +118,32 @@ load_approved      → Ejecutar carga
 loading            → Finalizar solicitud
 ```
 
-Hay un test que falla si algún estado de `ticket_system` queda sin mapear.
+**Cierre de carga por etapas** (6 etapas, `flujo.ETAPAS_CARGA`):
+
+```
+loading                → Carga SIAL terminada      (acción SECUNDARIA)
+sial_loaded            → Notificar a Producto
+price_load_requested   → Precios cargados
+price_stock_validation → (validar) → ready_to_close
+ready_to_close         → Finalizar solicitud       → completed
+```
+
+**"Completada" SOLO se alcanza desde `ready_to_close`.** Antes se podía cerrar
+en cuanto terminaba el SIAL, sin precios cargados ni validados: ese era el
+error a corregir. `TRANSITIONS[ROLE_SYSTEM]` ya no permite
+`sial_loaded/price_*` → `completed`, y `finalize_request()` lo comprueba otra
+vez. Hay 5 pruebas que intentan cerrar antes de tiempo y esperan que falle.
+
+"Carga SIAL terminada" es secundaria a propósito: si fuera principal
+desplazaría a "Finalizar solicitud" y rompería el recorrido de quien no usa la
+cadena. Hay un test que lo fija.
+
+`flujo.seguimiento_carga(estado)` devuelve las 6 etapas con su situación
+("hecha"/"actual"/"pendiente") como DATOS. `render_seguimiento_carga()` solo
+las dibuja. No metas la cadena de etapas en una pantalla.
+
+Hay un test que falla si algún estado de `ticket_system` queda sin mapear, y
+otro que cuenta 23. Si agregas un estado, actualiza ambos.
 
 ---
 
@@ -146,13 +176,68 @@ Detrás está `engines/audit.py` con dos backends (`LocalAuditStore` efímero,
 `GitHubAuditStore` persistente), saneado de secretos, filtros, paginación de
 30, KPIs, resumen por usuario y exportación.
 
+**Destinatarios de la marca:** `brand_notification_recipients()` resuelve por
+asociación EXPLÍCITA en `[app_auth.brands]`. **No uses `auth_allowed_brands()`
+para esto**: a los admin y a los 8 comerciales les devuelve *todas* las marcas,
+así que les llegaría cada cambio de cada marca.
+
 **La instrumentación es automática:** `AuditedTicketService` envuelve
 `TicketService` e intercepta 14 acciones capturando estado anterior y nuevo.
 No hay que recordar una llamada en cada punto. Los 22 `download_button` llevan
 `on_click=log_descarga`.
 
-Se registran 20 tipos de acción. Los intentos denegados por permisos también
+Se registran 23 tipos de acción. Los intentos denegados por permisos también
 quedan, con `resultado="error"`.
+
+---
+
+## 5 bis. Notificaciones por correo (agosto 2026)
+
+`engines/notify.py`. Documento completo en `docs/MOTOR_NOTIFICACIONES.md`.
+
+**Punto de enganche:** `TicketService` ya recibía el notificador por inyección
+y ya llamaba a `notifier.notify()` en cada transición. Enchufando
+`AdaptadorCorreoTickets` ahí, el correo sale desde las 18 pantallas sin tocar
+ninguna. **No pongas lógica de correo en una pantalla.**
+
+- Tres transportes: `smtp`, `graph` (Microsoft 365 sin SMTP AUTH) y `consola`.
+  Sin sección `[notificaciones]` en Secrets cae a `consola` y no envía nada.
+- **Mailchimp se evaluó y se descartó**: su producto transaccional es Mandrill,
+  de pago aparte, y por la API de marketing una baja de marketing apagaría los
+  avisos operativos de una persona. El razonamiento completo está en el doc.
+- No duplica: si el estado no cambió no arma el mensaje, y hay clave de
+  idempotencia con ventana de 5 minutos contra el historial de la solicitud.
+- El envío va en un hilo aparte, como la auditoría: un viaje SMTP en el hilo
+  de la pantalla dejaría el botón colgado justo al aprobar o finalizar. Para
+  la cola se usa `motor.preparar()`, **nunca `motor.enviar()`**: con `enviar()`
+  el aviso sale dos veces, una en línea y otra al desencolar.
+- El correo al Área de Producto lleva **el archivo Carga SIAL adjunto**. El
+  archivo se guarda como artefacto de la solicitud al pulsar "Carga SIAL
+  terminada", no queda en la sesión. En el registro solo va el nombre: el
+  registro se serializa dentro del ticket JSON.
+- Ningún fallo de correo puede tumbar ni deshacer un cambio de estado.
+
+**`assign()` no pasa por `_transition`**: cambia el estado a mano. Por eso
+tiene su propio aviso de cambio de estado. Si agregas otro método que cambie
+`ticket["status"]` sin `_transition`, tiene que hacer lo mismo o la marca no
+se entera.
+
+---
+
+## 5 ter. Stock por Código Modelo-Color
+
+`engines/stock.py`. El stock llega por variante, pero el producto que se
+prende o apaga es el Modelo-Color.
+
+**Consolida primero por talla y después por modelo.** Sumar filas contaba dos
+veces la misma existencia cuando una talla venía repetida (dos SKU del maestro
+que normalizan a la misma talla). Medido: un modelo con 2 SKU sobre la talla 8
+daba 20 unidades y 2 tallas con stock; lo correcto es 10 unidades y 1 talla.
+
+`build_catalog_kpis` usa el motor para `Stock_total`, `Tallas_BigQuery`,
+`Tallas_con_stock` y `Debe estar visible`. El resto de la función no cambió.
+El KPI **"Filas de talla repetidas"** muestra cuántas se consolidaron: si es
+alto, el maestro está duplicando variantes.
 
 ---
 
@@ -275,7 +360,11 @@ GitHub Actions usa sus propios secretos (Settings → Secrets → Actions):
 python scripts/test_brand_commercial_input.py          # 6
 python scripts/test_carga_desde_solicitud.py           # 20
 python scripts/test_engines_audit.py                   # 45
-python scripts/test_engines_ticket_flow.py             # 29
+python scripts/test_engines_metrics.py                 # 26
+python scripts/test_engines_notify.py                  # 88
+python scripts/test_engines_price_check.py             # 19
+python scripts/test_engines_stock.py                   # 35
+python scripts/test_engines_ticket_flow.py             # 40
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_ticket_system.py                   # 28
 ```

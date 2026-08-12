@@ -590,6 +590,33 @@ def join_pipe_items(value, separator=" | "):
     return separator.join(split_pipe_items(value))
 
 
+from engines.catalog_map import build_tags as _catalogo_build_tags
+from engines.catalog_map import tags_a_texto as _catalogo_tags_a_texto
+
+
+def build_tags_para_producto(product, brand_config=None):
+    """Tags finales = genericos + reglas del sitio + adicionales del Excel.
+
+    Antes esto era `row_alias_value(product, TAG_COLUMNS)`, que devuelve EL
+    PRIMER alias no vacio. Como "Tags" y "Tags adicionales" estaban en la misma
+    lista, con "Tags" lleno los adicionales se descartaban enteros. Medido:
+    {'Tags': 'Hombre, Vestuario', 'Tags adicionales': 'Chalecos, Sweaters'}
+    daba 'Hombre, Vestuario'.
+
+    Ademas el motor no generaba NINGUN tag generico: salian solo del Excel, y
+    por eso Rockford creaba productos sin Hombre/Mujer, sin Vestuario y sin el
+    tipo de prenda.
+    """
+    if hasattr(product, "to_dict"):
+        fila = product.to_dict()
+    elif isinstance(product, dict):
+        fila = dict(product)
+    else:
+        fila = {}
+    sitio = clean((brand_config or {}).get("site_key"))
+    return _catalogo_tags_a_texto(_catalogo_build_tags(fila, sitio))
+
+
 def format_tags(value):
     """Normaliza los tags del input al formato de Shopify (separados por coma)."""
     return ", ".join(split_pipe_items(value))
@@ -3302,7 +3329,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                 )
                 continue
         body_html = build_body_html(product)
-        tags = format_tags(row_alias_value(product, TAG_COLUMNS))
+        tags = build_tags_para_producto(product, brand_config)
         product_type = row_alias_value(product, TYPE_COLUMNS)
         if not product_type and not variants.empty:
             product_type = row_alias_value(variants.iloc[0], TYPE_COLUMNS)

@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -40,6 +40,8 @@ from engines.ticket_flow import tono as flujo_tono
 from engines.audit import formato_lima as audit_formato_lima
 from engines.audit import MODULO_CARGA as AUDIT_MODULO_CARGA
 from engines.audit import MODULO_INPUT as AUDIT_MODULO_INPUT
+from engines.audit import MODULO_NOTIFICACIONES as AUDIT_MODULO_NOTIFICACIONES
+from engines.audit import ACCION_NOTIFICACION as AUDIT_ACCION_NOTIFICACION
 from engines.audit import (
     ACCIONES_TICKET,
     AuditedTicketService,
@@ -47,6 +49,32 @@ from engines.audit import (
     AuditService,
     GitHubAuditStore,
     LocalAuditStore,
+)
+from engines.notify import (
+    AdaptadorCorreoTickets,
+    MotorNotificaciones,
+    correos_validos,
+)
+from engines.catalog_map import build_handle as catalogo_build_handle
+from engines.catalog_map import build_metafields as catalogo_build_metafields
+from engines.catalog_map import build_tags as catalogo_build_tags
+from engines.catalog_map import campos_para_sitio as catalogo_campos_para_sitio
+from engines.catalog_map import metafields_perdidos as catalogo_metafields_perdidos
+from engines.catalog_map import tipo_shopify as catalogo_tipo_shopify
+from engines.metrics import (
+    productos_sin_foto,
+    ratio as metrica_ratio,
+    resumen_modelo_color,
+)
+from engines.metrics import filas_desde_dataframe as filas_metricas_desde_dataframe
+from engines.price_check import filas_para_informe as filas_precio_informe
+from engines.price_check import validar as validar_precio_stock
+from engines.ticket_flow import seguimiento_carga as flujo_seguimiento
+from engines.stock import (
+    consolidar_por_modelo_color,
+    filas_desde_dataframe as filas_stock_desde_dataframe,
+    indice_por_modelo_color,
+    resumen_consolidado,
 )
 from engines.storage_check import check_github_store, check_local_store
 from engines.storage_check import resumen as storage_resumen
@@ -74,9 +102,13 @@ from ticket_system import (
     STATE_OBSERVED,
     STATE_PENDING,
     STATE_PREPARING,
+    STATE_PRICE_REQUESTED,
+    STATE_PRICE_VALIDATION,
+    STATE_READY_CLOSE,
     STATE_READY_EXECUTE,
     STATE_REJECTED,
     STATE_REVIEW,
+    STATE_SIAL_LOADED,
     STATE_VALIDATING,
     TicketConflictError,
     TicketError,
@@ -6785,16 +6817,14 @@ def split_mod_col_code(mod_col):
 
 
 def suggested_handle(title, mod_col, brand_label="", product_type="", gender=""):
-    technical_handle = build_catalog_handle(product_type=product_type, gender=gender, brand=brand_label, mod_col=mod_col)
-    if technical_handle:
-        return technical_handle
-    base = first_non_empty(title, mod_col)
-    text = f"{base} {brand_label} {mod_col}".strip()
-    text = unicodedata.normalize("NFKD", clean_value(text)).encode("ascii", "ignore").decode("ascii")
-    text = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
-    return text or clean_value(mod_col).lower()
+    """Handle sugerido. Delega en engines/catalog_map.build_handle.
 
-
+    Antes construia el handle por su cuenta y DESCARTABA el nombre del
+    producto: "Chaleco Powder Lite" salia como `chalecos-hombre-columbia-...`.
+    El generador de catalogo hacia otra cosa distinta, asi que el mismo
+    producto tenia dos handles segun el camino. Ahora hay uno solo.
+    """
+    return catalogo_build_handle(title, gender, mod_col, "")
 def pluralize_spanish_label(value):
     text = clean_value(value)
     if not text:
@@ -7224,9 +7254,6 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         expected.groupby("Mod-Col KPI", as_index=False)
         .agg(
             Marca=("MARCA_MA", "first"),
-            Stock_total=("stock_total", "sum"),
-            Tallas_BigQuery=("Talla KPI", "nunique"),
-            Tallas_con_stock=("Con stock", "sum"),
             Producto_creado=("Producto creado Shopify", "max"),
             Visible_Shopify=("Visible Shopify", "max"),
             Status_Shopify=("Status Shopify", "first"),
@@ -7236,7 +7263,41 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             Fotos_Shopify=("Fotos Shopify", "max"),
         )
     )
-    model_stock["Debe estar visible"] = model_stock["Stock_total"] > 0
+
+    # El stock del producto se consolida por Codigo Modelo-Color, no sumando
+    # filas. Una talla puede venir en mas de una fila (dos SKU del maestro que
+    # normalizan a la misma talla, o filas repetidas): sumarlas contaba dos
+    # veces la misma existencia e inflaba el total del modelo. El motor
+    # consolida primero por talla y despues por modelo.
+    stock_consolidado = consolidar_por_modelo_color(
+        filas_stock_desde_dataframe(
+            expected, "Mod-Col KPI", "Talla KPI", "stock_total",
+            columna_marca="MARCA_MA", columna_sku="SKU",
+        )
+    )
+    stock_por_modelo = indice_por_modelo_color(stock_consolidado)
+    stock_totales = resumen_consolidado(stock_consolidado)
+
+    # Productos sin NINGUNA foto, consolidados por modelo-color. La fuente es
+    # el catalogo real de Shopify, no el maestro: lo que importa es si el
+    # producto publicado tiene imagenes.
+    fotos_modelo = productos_sin_foto(
+        filas_metricas_desde_dataframe(
+            products_df, "Mod-Col", columna_fotos="Fotos", columna_marca="Vendor",
+        )
+    )
+
+    def _stock_campo(campo, defecto=0):
+        return model_stock["Mod-Col KPI"].map(
+            lambda valor: stock_por_modelo.get(clean_value(valor).upper(), {}).get(campo, defecto)
+        )
+
+    model_stock["Stock_total"] = pd.to_numeric(_stock_campo("unidades"), errors="coerce").fillna(0)
+    model_stock["Tallas_BigQuery"] = pd.to_numeric(_stock_campo("tallas_total"), errors="coerce").fillna(0).astype(int)
+    model_stock["Tallas_con_stock"] = pd.to_numeric(_stock_campo("tallas_con_stock"), errors="coerce").fillna(0).astype(int)
+    model_stock["Tallas_sin_stock"] = pd.to_numeric(_stock_campo("tallas_sin_stock"), errors="coerce").fillna(0).astype(int)
+    model_stock["Cobertura_tallas"] = pd.to_numeric(_stock_campo("cobertura", 0.0), errors="coerce").fillna(0.0)
+    model_stock["Debe estar visible"] = _stock_campo("debe_estar_visible", False).map(bool)
     model_stock["Estado"] = model_stock.apply(
         lambda row: (
             "OK visible con stock"
@@ -7494,10 +7555,28 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "modelos_no_creados_shopify": int(len(missing_models)),
         "modelos_creados_no_visibles": int(len(non_visible_web)),
         "modelos_visibles_reales_web": int(web_visible),
+        # Productos (modelo-color) sin NINGUNA imagen. Cuenta productos, no
+        # imagenes faltantes ni variantes: es lo unico que responde "cuantos no
+        # puedo publicar por falta de fotos". engines/metrics.py.
+        "productos_sin_ninguna_foto": int(fotos_modelo["sin_foto"]),
+        "productos_total_fotos": int(fotos_modelo["total"]),
+        "productos_sin_foto_ratio": fotos_modelo["ratio"],
+        "productos_sin_foto_pct": float(fotos_modelo["porcentaje"]),
+        "productos_sin_foto_con_stock": int(fotos_modelo["sin_foto_con_stock"]),
+        # Consolidacion de stock por modelo-color (engines/stock.py).
+        "stock_tallas_total": int(stock_totales["tallas"]),
+        "stock_tallas_con_stock": int(stock_totales["tallas_con_stock"]),
+        "stock_tallas_sin_stock": int(stock_totales["tallas_sin_stock"]),
+        "stock_filas_leidas": int(stock_totales["filas_leidas"]),
+        "stock_filas_colapsadas": int(stock_totales["filas_colapsadas"]),
     }
     kpi_audit = pd.DataFrame(
         [
             {"Indicador": "Total modelos fuente ARTI/BigQuery", "Valor": kpis["modelos_total_auditoria"], "Lectura": "Modelo-color detectados con tallas validas."},
+            {"Indicador": "Productos sin ninguna foto", "Valor": kpis["productos_sin_foto_ratio"], "Lectura": "Modelo-color sin una sola imagen en Shopify. Cuenta productos, no imagenes ni variantes."},
+            {"Indicador": "Tallas consolidadas por modelo-color", "Valor": kpis["stock_tallas_total"], "Lectura": "Tallas unicas tras consolidar. El stock del producto se controla por modelo-color."},
+            {"Indicador": "Tallas con stock", "Valor": kpis["stock_tallas_con_stock"], "Lectura": "Tallas con unidades disponibles despues de aplicar el stock de seguridad."},
+            {"Indicador": "Filas de talla repetidas", "Valor": kpis["stock_filas_colapsadas"], "Lectura": "Filas que traian una talla ya vista y se consolidaron. Si es alto, el maestro esta duplicando variantes."},
             {"Indicador": "Modelos con stock eComm", "Valor": kpis["modelos_con_stock"], "Lectura": "Modelo-color que deberian venderse por stock eComm."},
             {"Indicador": "Modelos ya creados en Shopify", "Valor": kpis["modelos_creados_shopify"], "Lectura": "Existe producto Shopify con codigo modelo-color."},
             {"Indicador": "Modelos no creados en Shopify", "Valor": kpis["modelos_no_creados_shopify"], "Lectura": "Existe en fuente pero no en Shopify."},
@@ -7740,10 +7819,15 @@ def _product_gid(value):
 
 
 def _metafield_type_from_column(column):
-    match = re.search(r"\[(.+?)\]$", clean_value(column))
-    if not match:
-        return "single_line_text_field"
-    return match.group(1)
+    """Tipo REAL que acepta Shopify, desde engines/catalog_map.
+
+    Antes se devolvia tal cual lo que hubiera entre corchetes. Con
+    `custom.codigo_modelo_color [id]` eso mandaba `type: "id"`, que NO es un
+    tipo de metafield: la API lo rechazaba en cada carga y el Codigo
+    Modelo-Color nunca llegaba por integracion directa (por Matrixify si, y de
+    ahi que el mismo producto saliera distinto segun el camino).
+    """
+    return catalogo_tipo_shopify(column)
 
 
 def _metafield_can_write_direct(column):
@@ -9546,6 +9630,9 @@ def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=N
                     continue
                 namespace, key = _metafield_namespace_key(column)
                 if not namespace or not key:
+                    # Antes esto era un `continue` mudo: el metafield
+                    # desaparecia sin dejar rastro en ningun informe.
+                    skipped_metafields.append(f"{column}: cabecera sin namespace.key legible")
                     continue
                 can_write, skip_reason = _metafield_can_write_direct(column)
                 if not can_write:
@@ -15150,6 +15237,188 @@ def _registrar_accion_ticket(accion, usuario="", rol="", **kwargs):
     )
 
 
+def _notificaciones_config():
+    """Seccion [notificaciones] de Secrets, con valores por defecto seguros.
+
+    Sin configuracion, el transporte es "consola": la app funciona igual y no
+    sale ningun correo. Nunca hay que tocar codigo para apagar los avisos.
+    """
+    try:
+        config = dict(st.secrets.get("notificaciones", {}))
+    except Exception:
+        config = {}
+    return {
+        "activo": bool(config.get("activo", False)),
+        "transporte": clean_value(config.get("transporte")).casefold() or "consola",
+        "remitente": clean_value(config.get("remitente") or os.getenv("CATALOG_MAIL_FROM")),
+        "remitente_nombre": clean_value(config.get("remitente_nombre")) or "Catalog Control Center",
+        "url_app": clean_value(config.get("url_app")),
+        "copia_siempre": correos_validos(config.get("copia_siempre") or []),
+        "area_producto": correos_validos(config.get("area_producto") or []),
+        "ventana_duplicado": config.get("ventana_duplicado", 300),
+        "smtp": dict(config.get("smtp") or {}),
+        "graph": dict(config.get("graph") or {}),
+    }
+
+
+# Equipo de Producto que cargar los precios. Se puede sobrescribir desde
+# [notificaciones].area_producto en Secrets; esto es el valor por defecto para
+# que el boton "Notificar a Producto" funcione sin configurar nada.
+#
+# anthony.fernandez NO esta: su correo quedo por confirmar. Se agrega en
+# Secrets en cuanto se sepa, sin tocar codigo.
+PRODUCT_AREA_USERS = (
+    "rosa.terrones@forus.pe",
+    "melisa.senador@forus.pe",
+    "candy.rios@forus.pe",
+    "andrea.ventocilla@forus.pe",
+)
+
+PRODUCT_AREA_PENDIENTES = ("anthony.fernandez",)
+
+
+def area_producto_users():
+    """Correos del Area de Producto que reciben el aviso de carga de precios."""
+    return _notificaciones_config()["area_producto"] or correos_validos(PRODUCT_AREA_USERS)
+
+
+def brand_notification_recipients(brand):
+    """Correos asociados a una marca, para avisarle de cada cambio de estado.
+
+    Se resuelve por asociacion EXPLICITA en [app_auth.brands]. No se usa
+    auth_allowed_brands() porque a los administradores y a los 8 comerciales
+    les devuelve TODAS las marcas: cualquier cambio de cualquier marca les
+    llegaria por correo.
+
+    Se puede fijar a mano por marca en [notificaciones.marcas].
+    """
+    marca = _input_norm_key(brand)
+    if not marca:
+        return []
+    try:
+        config = dict(st.secrets.get("notificaciones", {}))
+        por_marca = dict(config.get("marcas", {}))
+    except Exception:
+        por_marca = {}
+    for etiqueta, correos in por_marca.items():
+        if _input_norm_key(etiqueta) == marca:
+            return correos_validos(correos)
+
+    try:
+        auth_config = dict(st.secrets.get("app_auth", {}))
+        asignadas = dict(auth_config.get("brands", {}))
+    except Exception:
+        asignadas = {}
+    destinatarios = []
+    for usuario, valor in asignadas.items():
+        if isinstance(valor, str):
+            marcas = re.split(r"[,;|]", valor)
+        elif isinstance(valor, (list, tuple, set)):
+            marcas = list(valor)
+        else:
+            continue
+        if any(_input_norm_key(item) == marca for item in marcas):
+            destinatarios.append(_normalize_auth_username(usuario))
+    return correos_validos(destinatarios)
+
+
+@st.cache_resource(show_spinner=False)
+def get_notify_engine():
+    """Motor de notificaciones. Uno solo por proceso."""
+    return MotorNotificaciones.desde_config(_notificaciones_config())
+
+
+_MAIL_COLA = queue.Queue(maxsize=300)
+_MAIL_HILO = None
+_MAIL_LOCK = threading.Lock()
+
+
+def _registrar_notificacion(registro):
+    """Deja el envio en la auditoria: quien, a quien, cuando y con que resultado.
+
+    Corre en el hilo de correo, fuera del contexto de Streamlit, asi que no
+    puede leer st.session_state: el usuario responsable viaja dentro del
+    registro. Nunca lanza.
+    """
+    try:
+        registro = dict(registro or {})
+        destinatarios = ", ".join(registro.get("destinatarios") or []) or "sin destinatarios"
+        motivo = clean_value(registro.get("motivo"))
+        asunto = clean_value(registro.get("asunto")) or clean_value(registro.get("evento"))
+        detalle = f"{asunto} -> {destinatarios}"
+        if motivo:
+            detalle = f"{detalle} ({motivo})"
+        resultado = clean_value(registro.get("resultado"))
+        responsable = clean_value(registro.get("responsable"))
+        if "@" not in responsable:
+            responsable = "sistema@catalogo"
+        log_user_activity(
+            AUDIT_ACCION_NOTIFICACION,
+            detail=detalle,
+            user=responsable,
+            module=AUDIT_MODULO_NOTIFICACIONES,
+            ticket=clean_value(registro.get("solicitud")),
+            marca=clean_value(registro.get("marca")),
+            estado_anterior=clean_value(registro.get("estado_anterior")),
+            estado_nuevo=clean_value(registro.get("estado_nuevo")),
+            resultado="ok" if resultado == "ok" else "error" if resultado == "error" else "aviso",
+        )
+    except Exception:
+        return
+
+
+def _mail_worker():
+    """Entrega los correos fuera del hilo que dibuja la pantalla."""
+    while True:
+        datos = _MAIL_COLA.get()
+        try:
+            if datos is None:
+                return
+            motor, evento, contexto, destinatarios, registrar, adjuntos = datos
+            registro = motor.enviar(evento, contexto, destinatarios, historial=(),
+                                    forzar=True, adjuntos=adjuntos)
+            if registrar:
+                registrar(registro)
+        except Exception:
+            pass
+        finally:
+            _MAIL_COLA.task_done()
+
+
+def _encolar_correo(motor, evento, contexto, destinatarios, registrar=None, adjuntos=None):
+    """Encola un envio y vuelve de inmediato.
+
+    Un viaje SMTP tarda entre medio segundo y varios segundos. Hacerlo en el
+    hilo de la pantalla dejaria el boton colgado justo despues de aprobar o
+    finalizar una solicitud, que es el momento en que mas se nota. Si la cola
+    se llena se descarta el aviso: el correo no puede frenar la operacion.
+
+    La decision de enviar (estado que cambia, duplicados) ya la tomo el motor
+    antes de encolar; por eso aqui va forzar=True.
+    """
+    global _MAIL_HILO
+    with _MAIL_LOCK:
+        if _MAIL_HILO is None or not _MAIL_HILO.is_alive():
+            _MAIL_HILO = threading.Thread(target=_mail_worker, name="notificaciones", daemon=True)
+            _MAIL_HILO.start()
+    try:
+        _MAIL_COLA.put_nowait((motor, evento, contexto, destinatarios, registrar, adjuntos))
+    except queue.Full:
+        return
+
+
+def get_notify_adapter():
+    """Adaptador que TicketService usa como notifier."""
+    config = _notificaciones_config()
+    return AdaptadorCorreoTickets(
+        motor=get_notify_engine(),
+        etiquetas=STATE_LABELS,
+        area_producto=config["area_producto"],
+        encolar=_encolar_correo,
+        registrar=_registrar_notificacion,
+    )
+
+
 def log_descarga(nombre_archivo, modulo="", ticket="", marca=""):
     """Registra una descarga. Se llama desde on_click de los download_button."""
     log_user_activity(
@@ -15618,12 +15887,22 @@ def get_ticket_service():
         sla = {clean_value(key).casefold(): float(value) for key, value in dict(config.get("sla_hours", {})).items()}
     except (TypeError, ValueError):
         sla = {}
+    # El notificador es el unico punto por donde sale un correo. TicketService
+    # ya lo llama en cada transicion, asi que enchufarlo aqui cubre las 18
+    # pantallas sin tocar ninguna. Si [notificaciones] no esta configurado, el
+    # adaptador cae a consola y no envia nada.
+    try:
+        notifier = get_notify_adapter()
+    except Exception:
+        notifier = MockNotificationAdapter()
     service = TicketService(
         store,
-        notifier=MockNotificationAdapter(),
+        notifier=notifier,
         jobs=MockJobAdapter(),
         sla_hours=sla,
         operator_users=ticket_operator_users(),
+        product_area_users=area_producto_users(),
+        brand_recipients=brand_notification_recipients,
     )
     # Envolver el servicio registra en auditoria las 14 acciones que cambian
     # una solicitud, con su estado anterior y nuevo, sin tener que recordar
@@ -16110,6 +16389,11 @@ FULL_LOAD_TICKET_STATES = {
     STATE_LOADING,
     STATE_VALIDATING,
     STATE_FAILED,
+    # Etapas del cierre por pasos: la solicitud sigue siendo ejecutable, y hay
+    # que poder volver a ella para pedir precios o reintentar la carga.
+    STATE_SIAL_LOADED,
+    STATE_PRICE_REQUESTED,
+    STATE_PRICE_VALIDATION,
 }
 
 
@@ -16189,12 +16473,53 @@ class ArchivoDeSolicitud(io.BytesIO):
         self.ticket_code = codigo
 
 
+def _conteo_carga_sial():
+    """Cuanto se acaba de procesar: filas de la hoja Carga Sial y modelos-color.
+
+    Sale de lo que quedo en pantalla tras generar el catalogo. Si no hay nada
+    en sesion devuelve ceros y quien llama cae al resumen de la solicitud.
+    """
+    filas = 0
+    modelos = 0
+    sial_df = st.session_state.get("complete_sial_df")
+    if isinstance(sial_df, pd.DataFrame) and not sial_df.empty:
+        filas = len(sial_df)
+        if "Mod-Col" in sial_df.columns:
+            modelos = int(sial_df["Mod-Col"].map(lambda v: clean_value(v).upper()).nunique())
+    if not modelos:
+        matrixify_df = st.session_state.get("complete_matrixify_df")
+        if isinstance(matrixify_df, pd.DataFrame) and not matrixify_df.empty and "Handle" in matrixify_df.columns:
+            modelos = int(matrixify_df["Handle"].nunique())
+    return filas, modelos
+
+
+def _archivo_carga_sial(codigo, marca=""):
+    """El Excel de Carga SIAL de la carga recien hecha, listo para adjuntar.
+
+    Se guarda como adjunto de la solicitud, asi que tiene que salir de la
+    sesion en el momento del cierre. Devuelve (bytes, nombre); si no hay hoja
+    Carga Sial en pantalla devuelve (b"", "") y el aviso sale sin adjunto.
+    """
+    sial_df = st.session_state.get("complete_sial_df")
+    if not isinstance(sial_df, pd.DataFrame) or sial_df.empty:
+        return b"", ""
+    etiqueta = fold_accents(clean_value(marca)).upper().replace(" ", "_") or "CATALOGO"
+    nombre = f"Carga_SIAL_{etiqueta}_{clean_value(codigo)}.xlsx"
+    try:
+        return dataframe_to_excel_bytes({"Carga Sial": sial_df}), nombre
+    except Exception:
+        return b"", ""
+
+
 def _render_acciones_solicitud_tras_carga():
-    """Tres acciones sobre la solicitud, sin salir de la pantalla de carga.
+    """Acciones sobre la solicitud sin salir de la pantalla de carga.
 
     Cuando la carga salio de una solicitud, al terminar habia que volver a la
-    bandeja para cerrarla. Aqui quedan las tres unicas cosas que tiene sentido
-    hacer en ese momento: observarla, dejarla en curso o completarla.
+    bandeja para cerrarla. Aqui queda lo que tiene sentido hacer en ese
+    momento, y cambia segun la etapa: mientras se ejecuta, cerrar la carga
+    SIAL; una vez cerrada, solicitar la carga de precios; despues, validar
+    precio y stock. Las reglas de que se puede hacer en cada estado viven en
+    ticket_system, no aqui.
     """
     codigo = clean_value(st.session_state.get("carga_desde_solicitud"))
     if not codigo:
@@ -16208,11 +16533,18 @@ def _render_acciones_solicitud_tras_carga():
     except TicketError:
         return
 
+    estado = clean_value(ticket.get("status"))
     st.markdown("---")
     st.markdown(f"#### Solicitud {escape(codigo)}")
-    st.caption(f"Etapa actual: **{flujo_etiqueta(ticket.get('status'))}**. Elige como queda tras esta carga.")
+    st.caption(f"Etapa actual: **{flujo_etiqueta(estado)}**. Elige como queda tras esta carga.")
 
-    columnas = st.columns(3)
+    if estado in {STATE_SIAL_LOADED, STATE_PRICE_REQUESTED,
+                  STATE_PRICE_VALIDATION, STATE_READY_CLOSE}:
+        render_seguimiento_carga(ticket)
+        _render_cadena_cierre_carga(servicio, actor, ticket)
+        return
+
+    columnas = st.columns(4)
     if columnas[0].button("Observar", key=f"tras_carga_observar_{codigo}", use_container_width=True,
                           help="Devuelve la solicitud a la marca para que corrija."):
         st.session_state[f"tras_carga_modo_{codigo}"] = "observar"
@@ -16220,9 +16552,27 @@ def _render_acciones_solicitud_tras_carga():
                           help="Deja la solicitud en curso; la retomas cuando quieras."):
         st.session_state.pop(f"tras_carga_modo_{codigo}", None)
         st.info("La solicitud queda en curso. Puedes retomarla desde Solicitudes.")
-    if columnas[2].button("Completar carga", key=f"tras_carga_completar_{codigo}", type="primary",
-                          use_container_width=True, help="Cierra la solicitud como finalizada."):
+    if columnas[2].button("Completar carga", key=f"tras_carga_completar_{codigo}", use_container_width=True,
+                          help="Cierra la solicitud como finalizada, sin pasar por precios."):
         st.session_state[f"tras_carga_modo_{codigo}"] = "completar"
+    if columnas[3].button("Carga SIAL terminada", key=f"tras_carga_sial_{codigo}", type="primary",
+                          use_container_width=True,
+                          help="Guarda el archivo Carga SIAL en la solicitud y habilita el pedido de precios."):
+        filas, modelos = _conteo_carga_sial()
+        contenido, nombre = _archivo_carga_sial(codigo, ticket.get("brand"))
+        try:
+            servicio.complete_sial_load(actor, codigo, processed=filas, model_colors=modelos,
+                                        sial_bytes=contenido, sial_filename=nombre)
+            st.session_state.pop(f"tras_carga_modo_{codigo}", None)
+            if contenido:
+                st.success(f"Carga SIAL registrada y {nombre} guardado en la solicitud. "
+                           "Ya puedes solicitar la carga de precios.")
+            else:
+                st.warning("Carga SIAL registrada, pero no había hoja Carga Sial en pantalla: "
+                           "el aviso al Área de Producto saldrá sin archivo adjunto.")
+            st.rerun()
+        except TicketError as exc:
+            _mostrar_error_ticket(exc, codigo)
 
     modo = clean_value(st.session_state.get(f"tras_carga_modo_{codigo}"))
     if not modo:
@@ -16245,6 +16595,210 @@ def _render_acciones_solicitud_tras_carga():
             st.rerun()
         except TicketError as exc:
             _mostrar_error_ticket(exc, codigo)
+
+
+def _comprobar_precio_stock(ticket):
+    """Compara precio y stock de la solicitud contra Shopify.
+
+    Devuelve None si no se pudo consultar Shopify, para distinguir "no se pudo
+    comprobar" de "se comprobo y esta mal". Confundir esas dos cosas cerraria
+    solicitudes sin haber validado nada.
+    """
+    modelos = [clean_value(v).upper() for v in (ticket.get("model_colors") or []) if clean_value(v)]
+    if not modelos:
+        return None
+    site_key = clean_value(st.session_state.get("site_picker"))
+    if not site_key:
+        return None
+    try:
+        brand_config = get_brand_config(site_key)
+        shopify_config = get_shopify_config(site_key)
+        productos = session_shopify_products(brand_config["site_key"], shopify_config)
+    except Exception:
+        return None
+    _, variantes_df = flatten_shopify_for_kpis(productos)
+    if variantes_df is None or variantes_df.empty:
+        return None
+    en_shopify = []
+    for registro in variantes_df.to_dict("records"):
+        en_shopify.append({
+            "mod_col": registro.get("Mod-Col"),
+            "precio": registro.get("Variant Price"),
+            "stock": registro.get("Variant Inventory Qty"),
+        })
+    esperados = [{"mod_col": modelo, "marca": clean_value(ticket.get("brand"))} for modelo in modelos]
+    return validar_precio_stock(esperados, en_shopify)
+
+
+def render_seguimiento_carga(ticket):
+    """Las 6 etapas de la carga, de un vistazo.
+
+    Las etapas y su situacion salen de engines/ticket_flow: aqui solo se
+    dibujan. Sin porcentajes ni pasos intermedios: lo unico que hace falta
+    saber es en que etapa se esta y que falta para cerrar.
+    """
+    estado = clean_value(ticket.get("status"))
+    datos = flujo_seguimiento(estado)
+    if datos["indice_actual"] < 0 and not datos["detenida"]:
+        return
+
+    clase_cabecera = "seg-detenida" if datos["detenida"] else (
+        "seg-lista" if datos["completada"] else "seg-curso")
+    titulo = "Solicitud detenida" if datos["detenida"] else datos["titulo_actual"]
+    detalle = (flujo_etiqueta(estado) if datos["detenida"] else datos["detalle_actual"])
+
+    pasos = []
+    for etapa in datos["etapas"]:
+        marca = "✓" if etapa["situacion"] == "hecha" else str(etapa["numero"])
+        pasos.append(
+            f'<li class="seg-paso seg-{etapa["situacion"]}">'
+            f'<span class="seg-punto">{marca}</span>'
+            f'<span class="seg-texto"><b>{escape(etapa["titulo"])}</b>'
+            f'<em>{escape(etapa["detalle"])}</em></span></li>'
+        )
+    st.markdown(
+        f'<div class="seg-carga {clase_cabecera}">'
+        f'<div class="seg-cabecera"><p>Avance de la carga</p>'
+        f'<h3>{escape(titulo)}</h3><span>{escape(detalle)}</span></div>'
+        f'<ol class="seg-lista-pasos">{"".join(pasos)}</ol>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    verificacion = ticket.get("price_check") if isinstance(ticket.get("price_check"), dict) else {}
+    if verificacion.get("checked_at"):
+        bloqueos = safe_int_value(verificacion.get("bloqueos"), 0)
+        revisados = safe_int_value(verificacion.get("revisados"), 0)
+        conformes = safe_int_value(verificacion.get("conformes"), 0)
+        if bloqueos:
+            st.error(f"Validación de precio y stock: {bloqueos} de {revisados} modelo-color "
+                     f"con problema. {clean_value(verificacion.get('detalle'))}")
+        else:
+            st.success(f"Precio y stock validados: {conformes} de {revisados} modelo-color "
+                       f"correctos en Shopify.")
+
+
+def _render_cadena_cierre_carga(servicio, actor, ticket):
+    """El siguiente paso del cierre: precios, validacion o Shopify.
+
+    Una sola accion visible por etapa. Lo que se envio y a quien queda escrito
+    debajo, para no tener que abrir la auditoria a confirmarlo.
+    """
+    codigo = clean_value(ticket.get("code"))
+    estado = clean_value(ticket.get("status"))
+    sial = ticket.get("sial") if isinstance(ticket.get("sial"), dict) else {}
+    resumen = ticket.get("summary") if isinstance(ticket.get("summary"), dict) else {}
+    procesados = safe_int_value(sial.get("processed") or resumen.get("products"), 0)
+    modelos = safe_int_value(sial.get("model_colors") or len(ticket.get("model_colors") or []), 0)
+
+    if estado == STATE_SIAL_LOADED:
+        destino = area_producto_users()
+        adjunto = clean_value(sial.get("filename"))
+        st.markdown(
+            f'<div class="accion-hint"><b>Siguiente paso:</b> avisar al Área de Producto que '
+            f'la carga SIAL terminó ({modelos} modelos-color, {procesados} productos) '
+            f'y que corresponde cargar los precios.</div>',
+            unsafe_allow_html=True,
+        )
+        if adjunto:
+            st.caption(f"Se adjuntará **{adjunto}** al correo.")
+            try:
+                st.download_button(
+                    "Descargar Carga SIAL", servicio.store.get_artifact(sial.get("path")),
+                    file_name=adjunto, key=f"precios_sial_dl_{codigo}",
+                    on_click=log_descarga, args=("Carga SIAL", "render_cadena_cierre_carga", codigo),
+                )
+            except TicketError:
+                st.caption("El archivo quedó registrado pero no se pudo leer para la vista previa.")
+        else:
+            st.warning(
+                "Esta solicitud no tiene guardado el archivo Carga SIAL, así que el correo saldrá "
+                "sin adjunto. Vuelve a generar el catálogo y pulsa **Carga SIAL terminada** para guardarlo."
+            )
+        if not destino:
+            st.warning(
+                "No hay correos del Área de Producto configurados. "
+                'Agrega area_producto = ["..."] en la sección [notificaciones] de Secrets.'
+            )
+        nota = st.text_input("Observación para el Área de Producto (opcional)",
+                             key=f"precios_nota_{codigo}")
+        if st.button("Notificar a Producto", type="primary", key=f"precios_pedir_{codigo}",
+                     disabled=not destino,
+                     help=f'Envía el aviso a: {", ".join(destino) or "sin destinatarios"}'):
+            try:
+                guardado = servicio.request_price_load(actor, codigo, note=clean_value(nota))
+                adjuntado = bool((guardado.get("price_load") or {}).get("attached"))
+                st.success(
+                    f'Aviso enviado a {", ".join(destino)}'
+                    + (f' con {adjunto} adjunto.' if adjuntado else " (sin archivo adjunto).")
+                    + " La marca recibió la actualización de estado."
+                )
+                st.rerun()
+            except TicketError as exc:
+                _mostrar_error_ticket(exc, codigo)
+        return
+
+    if estado == STATE_PRICE_REQUESTED:
+        precios = ticket.get("price_load") if isinstance(ticket.get("price_load"), dict) else {}
+        enviado_a = ", ".join(precios.get("recipients") or []) or "sin destinatarios"
+        st.caption(f'Aviso de precios enviado a {enviado_a} el {audit_formato_lima(precios.get("requested_at"))}.')
+        if st.button("Precios cargados", type="primary", key=f"precios_validar_{codigo}",
+                     help="Producto ya cargó los precios: pasa a validarlos en Shopify."):
+            try:
+                servicio.start_price_validation(actor, codigo)
+                st.success("Solicitud en validación de precio y stock.")
+                st.rerun()
+            except TicketError as exc:
+                _mostrar_error_ticket(exc, codigo)
+        return
+
+    if estado == STATE_PRICE_VALIDATION:
+        st.caption("Se comprueba que los precios cargados por Producto llegaron a Shopify. "
+                   "La solicitud no se puede cerrar mientras haya bloqueos.")
+        columnas = st.columns(2)
+        if columnas[0].button("Comprobar contra Shopify", type="primary",
+                              key=f"precios_check_{codigo}",
+                              help="Compara precio y stock de cada modelo-color con Shopify."):
+            with st.spinner("Comprobando precio y stock en Shopify..."):
+                resultado = _comprobar_precio_stock(ticket)
+            if resultado is None:
+                st.warning("No se pudo consultar Shopify. Registra la validación a mano si ya la hiciste.")
+            else:
+                try:
+                    servicio.record_price_validation(actor, codigo, resultado=resultado)
+                    st.session_state[f"precios_informe_{codigo}"] = resultado
+                    st.rerun()
+                except TicketError as exc:
+                    _mostrar_error_ticket(exc, codigo)
+        if columnas[1].button("Validado manualmente", key=f"precios_manual_{codigo}",
+                              help="Si ya lo comprobaste por fuera, deja constancia y pasa al cierre."):
+            try:
+                servicio.record_price_validation(
+                    actor, codigo,
+                    resultado={"revisados": modelos, "conformes": modelos, "bloqueos": 0,
+                               "detalle": "Validación registrada manualmente por el responsable."},
+                )
+                st.rerun()
+            except TicketError as exc:
+                _mostrar_error_ticket(exc, codigo)
+
+        informe = st.session_state.get(f"precios_informe_{codigo}")
+        if informe and informe.get("problemas"):
+            st.dataframe(pd.DataFrame(filas_precio_informe(informe)),
+                         use_container_width=True, hide_index=True)
+        return
+
+    if estado == STATE_READY_CLOSE:
+        st.caption("Precios cargados y validados. Solo falta cerrar la solicitud.")
+        nota = st.text_input("Nota de cierre (opcional)", key=f"cierre_nota_{codigo}")
+        if st.button("Finalizar solicitud", type="primary", key=f"cierre_ok_{codigo}",
+                     help="Cierra la solicitud como completada y avisa a la marca."):
+            try:
+                servicio.finalize_request(actor, codigo, note=clean_value(nota))
+                st.success("Solicitud completada. La marca recibió el correo de cierre.")
+                st.rerun()
+            except TicketError as exc:
+                _mostrar_error_ticket(exc, codigo)
 
 
 def solicitudes_ejecutables(service, actor, brand_config):
@@ -17048,8 +17602,16 @@ def render_barra_acciones(service, actor, ticket):
             metodo = getattr(service, accion["metodo"])
             if accion["clave"] == "tomar":
                 metodo(actor, codigo, actor.get("user"))
-            elif accion["clave"] == "reabrir":
+            elif accion.get("destino"):
+                # "reabrir" y "publicar_shopify": van a un estado concreto.
                 metodo(actor, codigo, accion["destino"], clean_value(comentario))
+            elif accion["metodo"] == "record_job_result":
+                # success es obligatorio y va por nombre; sin esto el boton
+                # "Finalizar solicitud" reventaba con TypeError.
+                metodo(actor, codigo, success=True, result={
+                    "message": clean_value(comentario) or "Solicitud cerrada desde la barra de acciones.",
+                    "closed_by": actor.get("user"),
+                })
             elif accion.get("pide_comentario"):
                 metodo(actor, codigo, clean_value(comentario))
             else:
@@ -17057,6 +17619,8 @@ def render_barra_acciones(service, actor, ticket):
             st.rerun()
         except TicketError as exc:
             _mostrar_error_ticket(exc, codigo)
+        except TypeError as exc:
+            st.error(f'No se pudo ejecutar "{etiqueta}": {exc}')
 
 
 def render_ticket_detail(service, actor, code):
@@ -17101,6 +17665,9 @@ def render_ticket_detail(service, actor, code):
     )
     latest_version = (ticket.get("versions") or [{}])[-1]
     _render_ticket_stepper(status)
+    # Avance de la carga en 6 etapas. Solo aparece cuando la solicitud ya entro
+    # en carga: antes no aporta nada y estorba.
+    render_seguimiento_carga(ticket)
     alert_message = clean_value(job.get("message")) or clean_value(ticket.get("public_result", {}).get("message"))
     if not alert_message:
         alert_message = "Solicitud lista para gestión operativa." if status in {STATE_PENDING, STATE_ASSIGNED, STATE_REVIEW} else status_label

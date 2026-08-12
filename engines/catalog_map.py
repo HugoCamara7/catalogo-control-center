@@ -89,10 +89,18 @@ CAMPOS = [
      ["Mod-Col", "COD MOD COL", "Codigo Modelo-Color", "Código Modelo-Color",
       "codigo_modelo_color", "COD_MOD_COL"], None, "mayusculas"),
     ("marca", "custom.marca", TEXTO, ["Marca", "Vendor", "Brand"], None, "texto"),
-    ("categoria", "custom.categoria", TEXTO, ["Categoria", "Categoría", "Category"], None, "texto"),
+    # Categoria = la CLASE (Vestuario, Calzado, Accesorios).
+    ("categoria", "custom.categoria", TEXTO,
+     ["Categoria", "Categoría", "Category", "Clase"], None, "texto"),
+    # Subcategoria = el TIPO DE PRENDA. Son el mismo dato con dos nombres, asi
+    # que ambos metafields leen los dos juegos de alias: llene el brand la
+    # columna que llene, los dos salen con valor.
     ("subcategoria", "custom.subcategoria", TEXTO,
-     ["Subcategoria", "Subcategoría", "Sub Categoria", "Subcategory"], None, "texto"),
-    ("tipo", "custom.tipo", TEXTO, ["Tipo", "Tipo de prenda", "Type"], None, "texto"),
+     ["Subcategoria", "Subcategoría", "Sub Categoria", "Sub Categoría", "Subcategory",
+      "Tipo de prenda", "Tipo de Prenda", "Tipo prenda"], None, "texto"),
+    ("tipo", "custom.tipo", TEXTO,
+     ["Tipo de prenda", "Tipo de Prenda", "Tipo prenda", "Tipo",
+      "Subcategoria", "Subcategoría", "Sub Categoria", "Type"], None, "texto"),
     ("genero", "custom.genero", TEXTO, ["Genero", "Género", "Gender"], None, "texto"),
     ("color_forus", "custom.color_forus", TEXTO,
      ["Color Forus", "Color", "Color Web"], None, "texto"),
@@ -108,9 +116,24 @@ CAMPOS = [
     ("tecnologia_texto", "custom.tecnologia", TEXTO,
      ["Tecnologia", "Tecnología", "Tecnologias", "Tecnologías"],
      {"rockford", "vans", "hush_puppies", "patagonia", "sorel"}, "lista_pipe"),
+    # SIBLINGS. Los criterios son los mismos en los cuatro sitios: la app
+    # relaciona los colores del mismo modelo, el brand no los llena.
+    #
+    # Son CUATRO metafields, no dos, y cada uno con su tipo. El mismo
+    # `custom.siblings` estaba declarado como `list.product_reference` en el
+    # mantenedor y en la API, pero como `single_line_text_field` en otras
+    # cuatro rutas. Shopify rechaza la que no coincide con la definicion, y de
+    # ahi que unos siblings llegaran y otros no segun por donde pasara la carga.
+    #
+    # theme.*  -> lo que lee el tema de la tienda: handles en texto.
+    # custom.* -> la relacion de verdad: referencias al producto.
     ("siblings", "custom.siblings", LISTA_REFERENCIA_PRODUCTO,
      ["Siblings", "Productos relacionados"], None, "lista_json"),
     ("siblings_color", "custom.siblings_color", TEXTO,
+     ["Siblings Color", "Color Sibling"], None, "texto"),
+    ("siblings_tema", "theme.siblings", LISTA_TEXTO,
+     ["Siblings", "Productos relacionados"], None, "lista_json"),
+    ("siblings_color_tema", "theme.siblings_color", TEXTO,
      ["Siblings Color", "Color Sibling"], None, "texto"),
     ("estilo", "custom.estilo", TEXTO, ["Estilo"], {"hush_puppies"}, "texto"),
     ("categoria_de_tecnologia", "custom.categoria_de_tecnologia", TEXTO,

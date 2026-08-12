@@ -1147,7 +1147,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
     brand_label = clean(brand_label) or brand_config["label"]
     display_size = sial_size_value(variant.get("__SIAL_SIZE") or variant["__SIZE"])
     model, color = split_model_color(key)
-    product_type = row_alias_value(product, TYPE_COLUMNS)
+    product_type, _ = resolve_product_type(product)
     color_web = row_alias_value(product, COLOR_WEB_COLUMNS)
     title = row_alias_value(product, TITLE_COLUMNS)
     body_html = build_body_html(product)
@@ -1296,12 +1296,46 @@ CARE_COLUMNS = [
 # El tipo de prenda es lo que manda: alimenta la columna Type de Shopify y el
 # metafield sub_categoria. Faltaba "Tipo de prenda", que es como lo nombran los
 # formatos de input, asi que quedaba vacio y se terminaba tomando del ARTI.
+# El modelo de datos, igual en los cuatro sitios:
+#     Categoria    = la CLASE          (Vestuario, Calzado, Accesorios)
+#     Subcategoria = el TIPO DE PRENDA (Chalecos, Poleras, Zapatillas)
+#
+# La clase se DERIVA del tipo: catalog_rules.normalize_product_type("Chalecos")
+# devuelve category="Vestuario". Nunca al reves.
+#
+# Por eso la Categoria NO puede ser fuente del tipo de prenda. Estaba en esta
+# misma lista, y como row_alias_value() devuelve el primer alias no vacio,
+# Patagonia cargado en Rockford salia como "Outdoor" -- que es su clase, y que
+# el diccionario de tipos ni siquiera reconoce como prenda.
+#
+# El orden es la regla: primero lo que llena el brand.
 TYPE_COLUMNS = [
-    "Type", "Product Type", "Tipo de prenda", "Tipo de Prenda", "Tipo prenda",
-    "Tipo", "Tipo de Producto", "Tipo Producto", "Categoria", "Categoría",
-    "Categoria ", "Category", "Sub Categoria", "Sub Categoría",
+    "Tipo de prenda", "Tipo de Prenda", "Tipo prenda",
+    "Subcategoria", "Subcategoría", "Sub Categoria", "Sub Categoría",
+    "Subcategoria ", "Sub-Categoria", "Subcategory",
+    "Tipo", "Tipo de Producto", "Tipo Producto",
+    "Metafield: custom.subcategoria [single_line_text_field]",
     "Metafield: custom.tipo [single_line_text_field]",
+    "Type", "Product Type",
 ]
+
+# Vacia a proposito. La Categoria era el unico "respaldo" y daba un tipo
+# equivocado. Es preferible quedarse sin tipo y avisarlo en la validacion que
+# publicar un producto clasificado como "Outdoor".
+TYPE_FALLBACK_COLUMNS = []
+
+
+def resolve_product_type(row):
+    """Tipo de prenda del producto y de donde salio.
+
+    Devuelve (valor, origen) con origen en {"input", ""}. Vacio significa que
+    el brand no llenó ni "Tipo de prenda" ni "Subcategoria", y eso tiene que
+    verse en la validacion previa, no taparse con la clase del producto.
+    """
+    valor = row_alias_value(row, TYPE_COLUMNS)
+    if valor:
+        return valor, "input"
+    return "", ""
 
 COLOR_WEB_COLUMNS = [
     "Color Web", "Color", "Color Name", "Color Nombre", "Nombre Color", "Color Comercial",
@@ -1353,14 +1387,29 @@ def row_alias_value(row, columns):
 
 
 def build_body_html(row):
-    description = row_alias_value(row, DESCRIPTION_COLUMNS)
+    """Body HTML del producto: Descripcion + Caracteristicas + Materiales + Cuidados.
+
+    La Descripcion se emite como SU PROPIA seccion. Antes se leia pero solo se
+    usaba como sustituto de Caracteristicas, con dos consecuencias medidas:
+
+    - Con Descripcion Y Caracteristicas (el caso de Rockford, que llena las
+      tres columnas), la Descripcion se perdia entera.
+    - Con solo Descripcion, salia publicada bajo el titulo "Caracteristicas".
+
+    Para Caracteristicas, Materiales y Cuidados se mantiene `|` como separador
+    de bullets. La Descripcion es prosa: solo se vuelve lista si trae `|`.
+    """
+    description = valid_body_section_text(
+        strip_body_heading_prefix(
+            row_alias_value(row, DESCRIPTION_COLUMNS),
+            ["Descripción", "Descripcion", "Description", "Detalle"],
+        )
+    )
     features = valid_body_section_text(
         strip_body_heading_prefix(
             row_alias_value(row, FEATURE_COLUMNS),
             ["Características", "Caracteristicas", "Features", "Beneficios"],
         )
-    ) or valid_body_section_text(
-        strip_body_heading_prefix(description, ["Descripción", "Descripcion", "Description"])
     )
     material = valid_body_section_text(
         strip_body_heading_prefix(
@@ -1376,6 +1425,17 @@ def build_body_html(row):
     )
 
     parts = []
+    if description:
+        # Prosa, no bullets: solo se lista si el usuario puso separadores.
+        # Sin escapar, igual que html_list: la descripcion puede traer HTML
+        # legitimo del origen y escaparlo lo publicaria como texto plano.
+        cuerpo = html_list(description) if "|" in description else f"<p>{description}</p>"
+        parts.append(
+            '<div class="nweb__Descripcion" data-titulo="Descripción">'
+            '<h3 class="nweb__Descripcion-titulo">Descripción</h3>'
+            f'{cuerpo}'
+            "</div>"
+        )
     if features:
         parts.append(
             '<div class="nweb__Caracteristicas" data-titulo="Características">'
@@ -3330,9 +3390,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                 continue
         body_html = build_body_html(product)
         tags = build_tags_para_producto(product, brand_config)
-        product_type = row_alias_value(product, TYPE_COLUMNS)
+        product_type, _ = resolve_product_type(product)
         if not product_type and not variants.empty:
-            product_type = row_alias_value(variants.iloc[0], TYPE_COLUMNS)
+            product_type, _ = resolve_product_type(variants.iloc[0])
         product_type_key = normalize_type_key(product_type)
         if (
             known_types_for_report

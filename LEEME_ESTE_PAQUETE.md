@@ -3,11 +3,11 @@
 Agosto 2026. Construido sobre el commit `6da7f0d72` de `main`.
 
 Este paquete **reemplaza a todos los ZIP anteriores de esta tanda**. Trae los
-20 archivos que cambiaron, con la estructura exacta del repositorio.
+22 archivos que cambiaron, con la estructura exacta del repositorio.
 
 ---
 
-## 1. Qué subir (20 archivos)
+## 1. Qué subir (22 archivos)
 
 Sube todo respetando las carpetas. Los que están en `engines/` van dentro de
 `engines/`, no en la raíz.
@@ -26,7 +26,7 @@ assets/app.css
 CLAUDE.md
 ```
 
-### Nuevos (11)
+### Nuevos (13)
 
 ```
 engines/catalog_map.py
@@ -39,6 +39,8 @@ scripts/test_engines_notify.py
 scripts/test_engines_stock.py
 scripts/test_engines_metrics.py
 scripts/test_engines_price_check.py
+scripts/test_body_html.py
+scripts/test_tipo_de_prenda_por_sitio.py
 docs/MOTOR_NOTIFICACIONES.md
 ```
 
@@ -57,7 +59,7 @@ Streamlit Cloud → tu app → ⋮ **Settings** → pestaña **Secrets**.
 [notificaciones]
 activo           = true
 transporte       = "smtp"
-remitente        = "catalogo@forus.pe"
+remitente        = "bi@forus.pe"
 remitente_nombre = "Catalog Control Center"
 url_app          = "https://TU-APP.streamlit.app"
 area_producto    = [
@@ -70,12 +72,15 @@ area_producto    = [
 [notificaciones.smtp]
 host    = "smtp.office365.com"
 puerto  = 587
-usuario = "catalogo@forus.pe"
+usuario = "bi@forus.pe"
 clave   = "AQUI_LA_CLAVE_DE_APLICACION"
 ```
 
-Cambia `url_app`, `remitente`/`usuario` y `clave`. Guarda: la app se reinicia
-sola.
+Cambia `url_app` y `clave`. Guarda: la app se reinicia sola.
+
+`remitente` y `usuario` tienen que ser **la misma casilla**: Microsoft 365
+rechaza el envío si intentas mandar «desde» un buzón distinto del que inició
+sesión.
 
 **Tres errores típicos:**
 
@@ -97,11 +102,18 @@ transporte = "graph"
 tenant_id     = "..."
 client_id     = "..."
 client_secret = "..."
-usuario_envio = "catalogo@forus.pe"
+usuario_envio = "bi@forus.pe"
 ```
 
 Sistemas necesita crear un registro de aplicación en Entra ID con el permiso
 **de aplicación** `Mail.Send`.
+
+Para SMTP hacen falta **dos** cosas y solo una la puedes hacer tú:
+
+| Requisito | Quién |
+|---|---|
+| Contraseña de aplicación de `bi@forus.pe` | Tú, en mysignins.microsoft.com/security-info → Agregar método → Contraseña de aplicación (si no aparece, está bloqueada por el administrador) |
+| **SMTP AUTH habilitado en el buzón** | Solo el administrador |
 
 ### Sin configurar nada
 
@@ -134,12 +146,14 @@ La app lee los originales de `data/`.
 ## 4. Probar que quedó bien
 
 ```bash
-python scripts/test_engines_catalog_map.py   # 48
+python scripts/test_engines_catalog_map.py   # 54
 python scripts/test_engines_notify.py        # 88
 python scripts/test_engines_ticket_flow.py   # 40
 python scripts/test_engines_stock.py         # 35
 python scripts/test_engines_metrics.py       # 26
 python scripts/test_engines_price_check.py   # 19
+python scripts/test_body_html.py             # 14
+python scripts/test_tipo_de_prenda_por_sitio.py  # 14
 ```
 
 En la app:
@@ -165,13 +179,33 @@ precios cargados ni validados.
 `TicketService` ya llamaba al notificador: sale desde las 18 pantallas sin
 tocar ninguna. No duplica si el estado no cambió. Todo envío queda auditado.
 
-**Motor de catálogo.** Tres fugas de datos corregidas:
+**Motor de catálogo.** Seis fugas de datos corregidas:
 
 - `[id]` mandaba un tipo que Shopify rechaza siempre → el Código Modelo-Color
   no llegaba por integración directa.
 - Los "Tags adicionales" **reemplazaban** a los genéricos en vez de sumarse, y
   el motor no generaba ningún tag genérico.
 - Había dos constructores de handle y uno descartaba el nombre del producto.
+- **Body HTML nunca emitía la Descripción.** La leía, pero solo como sustituto
+  de Características. Con las dos columnas llenas —el caso de Rockford, que
+  llena las tres— la Descripción se perdía entera; con solo Descripción, salía
+  publicada bajo el título "Características".
+- **El tipo de prenda no leía el campo del brand.** El modelo es
+  `Categoría = clase` y `Subcategoría = tipo de prenda`, igual en los cuatro
+  sitios. Pero `"Type"`/`"Product Type"` iban antes que `"Tipo de prenda"`, y
+  `"Categoria"` estaba en la MISMA lista de alias. Como se toma el primer alias
+  no vacío, Patagonia en Rockford salía como **"Outdoor"** — su clase, que el
+  diccionario de tipos ni reconoce como prenda. Ahora la clase se deriva del
+  tipo (`Chalecos → Vestuario`), nunca al revés, y sin tipo se avisa en vez de
+  inventarlo.
+- **Siblings con tipos contradictorios.** `custom.siblings` estaba declarado
+  como `list.product_reference` en el mantenedor y en la API, pero como
+  `single_line_text_field` en otras cuatro rutas; `theme.siblings` igual. El
+  que no coincidía lo rechazaba Shopify, y de ahí que unos siblings llegaran y
+  otros no según por dónde pasara la carga. Los cuatro metafields
+  (`custom.siblings`, `custom.siblings_color`, `theme.siblings`,
+  `theme.siblings_color`) están ahora en el registro con un solo tipo cada uno,
+  iguales en los cuatro sitios.
 
 **Stock.** Se consolida por Modelo-Color, deduplicando talla a talla. Un caso
 medido pasaba de 20 unidades a las 10 reales.
@@ -185,10 +219,8 @@ variantes), con ratio `12 / 185 productos`.
 
 No lo hice para no tocar a ciegas lo que hoy funciona:
 
-- **Tipo de prenda por sitio** — Patagonia en Rockford sigue saliendo Outdoor.
-- **Body HTML** de Rockford.
-- **Siblings** — necesito que me confirmes el tipo declarado en tu Shopify para
-  `custom.siblings` y `custom.siblings_color`. Adivinarlo es exactamente lo que
-  causó el problema del `[id]`.
+- **Tipos sin regla en el diccionario.** `Sweaters`, `Poleras` y `Chaquetas`
+  no están en `catalog_rules.py`, así que no derivan categoría ni subcategoría.
+  Es una tabla: dime a qué clase pertenecen y se agregan.
 - **Correo de anthony.fernandez** — no lo inventé. Cuando lo tengas, agrégalo a
   `area_producto` en Secrets.

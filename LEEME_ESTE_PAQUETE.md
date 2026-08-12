@@ -3,21 +3,22 @@
 Agosto 2026. Construido sobre el commit `6da7f0d72` de `main`.
 
 Este paquete **reemplaza a todos los ZIP anteriores de esta tanda**. Trae los
-22 archivos que cambiaron, con la estructura exacta del repositorio.
+23 archivos que cambiaron, con la estructura exacta del repositorio.
 
 ---
 
-## 1. Qué subir (22 archivos)
+## 1. Qué subir (23 archivos)
 
 Sube todo respetando las carpetas. Los que están en `engines/` van dentro de
 `engines/`, no en la raíz.
 
-### Modificados (9)
+### Modificados (10)
 
 ```
 app_matrixify.py
 ticket_system.py
 generate_columbia_matrixify.py
+catalog_rules.py
 engines/audit.py
 engines/ticket_flow.py
 scripts/test_engines_ticket_flow.py
@@ -219,8 +220,41 @@ variantes), con ratio `12 / 185 productos`.
 
 No lo hice para no tocar a ciegas lo que hoy funciona:
 
-- **Tipos sin regla en el diccionario.** `Sweaters`, `Poleras` y `Chaquetas`
-  no están en `catalog_rules.py`, así que no derivan categoría ni subcategoría.
-  Es una tabla: dime a qué clase pertenecen y se agregan.
+- **Tres decisiones de criterio del diccionario** (ver sección 7).
 - **Correo de anthony.fernandez** — no lo inventé. Cuando lo tengas, agrégalo a
   `area_producto` en Secrets.
+
+
+---
+
+## 7. Diccionario de tipos: qué quedó y qué falta decidir
+
+`PRODUCT_TYPE_RULES` pasó de **24 a 45 reglas**. Calzado, que tenía solo 2
+tipos pese a ser marcas de calzado, ahora tiene 9. **Los 55 tipos de
+`data/tipos_shopify.xlsx` quedan reconocidos: cero sin regla.**
+
+Se agregaron, entre otros: Botas, Botines, Sandalias, Pantuflas, Zapatos,
+Mocasines, Ballerinas, Sweaters (= Chompas), Blusas, Jeans, Enterizos, Medias
+(= Calcetines), Pasamontañas, Lentes de Sol, Billeteras, Botellas, Coolers,
+Bastones, Cuchillas y Fundas para Lata.
+
+### Tres cosas que NO decidí yo
+
+El diccionario ya tenía dueño para estos alias, y son criterio de negocio:
+
+| Alias | Hoy apunta a | ¿Debería ser su propio tipo? |
+|---|---|---|
+| `chaqueta`, `jacket` | **Casacas** | ¿O separar Chaquetas? |
+| `falda` | **Shorts** | Una falda no es un short |
+| `cartera` | **Bolsos** | ¿O separar Carteras? |
+
+Dime tu criterio en cada uno y los ajusto. Mientras tanto quedan como estaban,
+que es lo que hoy funciona.
+
+### `Calzado` usado como tipo
+
+Vans usa **`Calzado`** —que es la clase— como tipo de prenda en ~309
+productos, y hoy el diccionario lo resuelve como *Zapatillas*. Puede ser
+correcto, pero también podrían ser botas o sandalias. Lo dejé como estaba para
+no cambiar 309 productos sin tu visto bueno. Es el mismo caso que `Outdoor`,
+que sí quedó sin regla para que se avise.

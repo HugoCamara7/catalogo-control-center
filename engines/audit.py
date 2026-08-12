@@ -43,6 +43,10 @@ MODULO_INPUT = "Input comercial"
 MODULO_CARGA = "Carga de catalogo"
 MODULO_KPIS = "KPIs de catalogo"
 MODULO_CONFIG = "Configuracion"
+MODULO_NOTIFICACIONES = "Notificaciones"
+
+# Accion con la que queda registrado cada correo que sale de la app.
+ACCION_NOTIFICACION = "Notificar por correo"
 
 RESULTADOS = ("ok", "error", "aviso")
 
@@ -460,6 +464,9 @@ ACCIONES_TICKET = {
     "set_priority": "Cambiar prioridad",
     "run_dry_run": "Ejecutar validación previa",
     "start_load": "Iniciar carga",
+    "complete_sial_load": "Cerrar carga SIAL",
+    "request_price_load": "Solicitar carga de precios",
+    "start_price_validation": "Validar precio y stock",
     "record_job_result": "Registrar resultado de carga",
     "cancel_ticket": "Cancelar solicitud",
     "change_state": "Cambiar estado",

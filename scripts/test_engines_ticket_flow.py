@@ -40,8 +40,17 @@ class TestCompatibilidadHistorica(unittest.TestCase):
         sobran = sorted(set(flujo.MAPA) - self._estados_internos())
         self.assertEqual(sobran, [], f"estados que no existen en ticket_system: {sobran}")
 
-    def test_son_19_estados(self):
-        self.assertEqual(len(flujo.MAPA), 19)
+    def test_son_23_estados(self):
+        # 19 originales + las 4 etapas del cierre de carga (SIAL, precios,
+        # validacion de precio y stock, lista para cierre). Si este numero cambia sin querer, es
+        # que alguien agrego un estado y no lo mapeo.
+        self.assertEqual(len(flujo.MAPA), 23)
+
+    def test_las_etapas_del_cierre_estan_mapeadas(self):
+        for estado in [ts.STATE_SIAL_LOADED, ts.STATE_PRICE_REQUESTED,
+                       ts.STATE_PRICE_VALIDATION, ts.STATE_READY_CLOSE]:
+            self.assertEqual(flujo.estado_visible(estado), flujo.EJECUCION, estado)
+            self.assertFalse(flujo.es_terminal(estado), estado)
 
     def test_un_estado_desconocido_no_revienta(self):
         self.assertEqual(flujo.estado_visible("estado_de_2019"), flujo.PENDIENTE)
@@ -160,6 +169,32 @@ class TestAccionesContextuales(unittest.TestCase):
             self.assertIsNotNone(principal, estado)
             self.assertEqual(principal["clave"], esperada, estado)
 
+    def test_recorrido_del_cierre_por_etapas(self):
+        """Carga SIAL -> precios -> validacion -> Shopify, una accion por paso."""
+        recorrido = [
+            (ts.STATE_SIAL_LOADED, "solicitar_precios"),
+            (ts.STATE_PRICE_REQUESTED, "validar_precio_stock"),
+            (ts.STATE_READY_CLOSE, "finalizar_solicitud"),
+        ]
+        for estado, esperada in recorrido:
+            for rol in ("operator", "admin"):
+                principal = flujo.accion_principal(estado, rol)
+                self.assertIsNotNone(principal, f"{estado}/{rol}")
+                self.assertEqual(principal["clave"], esperada, f"{estado}/{rol}")
+
+    def test_cerrar_la_carga_sial_no_desplaza_a_finalizar(self):
+        """En ejecucion el paso principal sigue siendo finalizar, no el SIAL."""
+        claves = {a["clave"] for a in flujo.acciones_disponibles(ts.STATE_LOADING, "operator")}
+        self.assertIn("sial_ok", claves)
+        self.assertEqual(flujo.accion_principal(ts.STATE_LOADING, "operator")["clave"], "finalizar")
+
+    def test_la_marca_no_toca_el_cierre_de_carga(self):
+        prohibidas = {"sial_ok", "solicitar_precios", "validar_precio_stock",
+                      "finalizar_solicitud", "revalidar_shopify"}
+        for estado in flujo.MAPA:
+            claves = {a["clave"] for a in flujo.acciones_disponibles(estado, "brand")}
+            self.assertEqual(claves & prohibidas, set(), estado)
+
     def test_toda_accion_apunta_a_un_metodo_real_de_ticketservice(self):
         for accion in flujo.ACCIONES:
             self.assertTrue(hasattr(ts.TicketService, accion["metodo"]),
@@ -183,6 +218,44 @@ class TestResumen(unittest.TestCase):
     def test_la_suma_cuadra(self):
         estados = list(flujo.MAPA)
         self.assertEqual(sum(flujo.resumen_estados(estados).values()), len(estados))
+
+
+class TestSeguimientoCarga(unittest.TestCase):
+    """Las 6 etapas que se dibujan en el ticket."""
+
+    def test_son_seis_etapas(self):
+        self.assertEqual(len(flujo.ETAPAS_CARGA), 6)
+        self.assertEqual(len(flujo.seguimiento_carga(ts.STATE_LOADING)["etapas"]), 6)
+
+    def test_marca_hecha_actual_y_pendiente(self):
+        datos = flujo.seguimiento_carga(ts.STATE_PRICE_REQUESTED)
+        situaciones = [e["situacion"] for e in datos["etapas"]]
+        self.assertEqual(situaciones, ["hecha", "hecha", "actual", "pendiente", "pendiente", "pendiente"])
+
+    def test_el_titulo_dice_donde_esta(self):
+        self.assertEqual(flujo.seguimiento_carga(ts.STATE_SIAL_LOADED)["titulo_actual"],
+                         "Carga SIAL realizada")
+        self.assertIn("Esperando carga de precios",
+                      flujo.seguimiento_carga(ts.STATE_SIAL_LOADED)["detalle_actual"])
+
+    def test_completada_marca_todas(self):
+        datos = flujo.seguimiento_carga(ts.STATE_COMPLETED)
+        self.assertTrue(datos["completada"])
+        self.assertEqual(datos["etapas"][-1]["situacion"], "actual")
+
+    def test_una_observada_no_finge_avance(self):
+        datos = flujo.seguimiento_carga(ts.STATE_OBSERVED)
+        self.assertTrue(datos["detenida"])
+        self.assertNotIn("actual", [e["situacion"] for e in datos["etapas"]])
+
+    def test_un_estado_previo_a_la_carga_no_revienta(self):
+        datos = flujo.seguimiento_carga(ts.STATE_PENDING_ASSIGNMENT)
+        self.assertEqual(datos["indice_actual"], -1)
+        self.assertEqual(len(datos["etapas"]), 6)
+
+    def test_estado_desconocido(self):
+        self.assertEqual(flujo.seguimiento_carga("inventado")["indice_actual"], -1)
+        self.assertEqual(flujo.seguimiento_carga(None)["indice_actual"], -1)
 
 
 if __name__ == "__main__":

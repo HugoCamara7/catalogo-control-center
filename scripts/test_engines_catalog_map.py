@@ -29,6 +29,7 @@ from engines.catalog_map import (
     namespace_key,
     separar_lista,
     slug,
+    nombre_propio,
     tipo_shopify,
 )
 
@@ -80,6 +81,57 @@ class TestTipoShopify(unittest.TestCase):
                          ("custom", "marca"))
         self.assertEqual(namespace_key("Vendor"), ("", ""))
         self.assertEqual(namespace_key("Metafield: sinpunto [text]"), ("", ""))
+
+
+class TestNombrePropio(unittest.TestCase):
+    """Categoria, Subcategoria, Tipo, Clase y Color: siempre Nombre Propio."""
+
+    def test_mayusculas_y_minusculas_dan_lo_mismo(self):
+        for entrada in ("VESTUARIO", "vestuario", "Vestuario", "vEsTuArIo"):
+            self.assertEqual(nombre_propio(entrada), "Vestuario", entrada)
+
+    def test_los_conectores_van_en_minuscula(self):
+        self.assertEqual(nombre_propio("LENTES DE SOL"), "Lentes de Sol")
+        self.assertEqual(nombre_propio("ropas de bano"), "Ropas de Bano")
+        self.assertEqual(nombre_propio("ROPA PARA NINO"), "Ropa para Nino")
+
+    def test_el_conector_al_principio_si_se_capitaliza(self):
+        self.assertEqual(nombre_propio("de vestir"), "De Vestir")
+
+    def test_las_tildes_y_la_enye_se_conservan(self):
+        self.assertEqual(nombre_propio("NIÑO"), "Niño")
+        self.assertEqual(nombre_propio("ropas de baño"), "Ropas de Baño")
+
+    def test_el_guion_separa_palabras(self):
+        self.assertEqual(nombre_propio("polo manga-corta"), "Polo Manga-Corta")
+
+    def test_los_codigos_no_se_tocan(self):
+        for codigo in ("HP2020-SMV", "IM5678-011", "22397-ORH"):
+            self.assertEqual(nombre_propio(codigo), codigo, codigo)
+
+    def test_espacios_sobrantes(self):
+        self.assertEqual(nombre_propio("  VESTUARIO   CASUAL  "), "Vestuario Casual")
+
+    def test_vacio(self):
+        self.assertEqual(nombre_propio(""), "")
+        self.assertEqual(nombre_propio(None), "")
+
+    def test_los_metafields_salen_normalizados(self):
+        fila = {"Mod-Col": "im5678-011", "Categoria": "VESTUARIO",
+                "Subcategoria": "chalecos", "Genero": "HOMBRE", "Color Web": "azul marino"}
+        v = {f'{m["namespace"]}.{m["key"]}': m["value"] for m in build_metafields(fila, "rockford")}
+        self.assertEqual(v["custom.categoria"], "Vestuario")
+        self.assertEqual(v["custom.sub_categoria"], "Chalecos")
+        self.assertEqual(v["custom.tipo"], "Chalecos")
+        self.assertEqual(v["custom.genero"], "Hombre")
+        self.assertEqual(v["custom.color_forus"], "Azul Marino")
+        self.assertEqual(v["custom.codigo_modelo_color"], "IM5678-011")
+
+    def test_los_tags_tambien(self):
+        tags = build_tags({"Genero": "HOMBRE", "Categoria": "vestuario",
+                           "Tipo": "CHALECOS"}, "rockford")
+        for esperado in ("Hombre", "Vestuario", "Chalecos"):
+            self.assertIn(esperado, tags, esperado)
 
 
 class TestSiblings(unittest.TestCase):
@@ -143,12 +195,19 @@ class TestCamposPorSitio(unittest.TestCase):
         self.assertIn("estilo", {c.clave for c in campos_para_sitio("hush_puppies")})
         self.assertNotIn("estilo", {c.clave for c in campos_para_sitio("rockford")})
 
-    def test_tecnologia_es_lista_en_columbia_y_texto_en_el_resto(self):
-        columbia = {c.clave: c for c in campos_para_sitio("columbia")}
-        rockford = {c.clave: c for c in campos_para_sitio("rockford")}
-        self.assertEqual(columbia["tecnologia"].tipo, LISTA_TEXTO)
-        self.assertEqual(rockford["tecnologia_texto"].tipo, TEXTO)
-        self.assertNotIn("tecnologia", rockford)
+    def test_tecnologia_es_el_mismo_tipo_en_todos_los_sitios(self):
+        """Un metafield, un tipo. Dos entradas para la misma clave hacian que
+        tipo_shopify() devolviera la primera sin mirar el sitio."""
+        for sitio in ("columbia", "rockford", "vans", "hush_puppies"):
+            campos = {c.clave: c for c in campos_para_sitio(sitio)}
+            self.assertIn("tecnologia", campos, sitio)
+            self.assertEqual(campos["tecnologia"].tipo, LISTA_TEXTO, sitio)
+        self.assertNotIn("tecnologia_texto", mapa.CAMPOS_POR_CLAVE)
+
+    def test_ninguna_clave_de_metafield_esta_repetida(self):
+        """Dos campos con el mismo namespace.key hacen ambiguo el tipo."""
+        rutas = [f"{c.namespace}.{c.key}" for c in mapa.CAMPOS_POR_CLAVE.values()]
+        self.assertEqual(len(rutas), len(set(rutas)), "hay namespace.key duplicados")
 
     def test_campo_por_columna(self):
         campo = campo_por_columna("Metafield: custom.familia [single_line_text_field]")
@@ -159,6 +218,48 @@ class TestCamposPorSitio(unittest.TestCase):
         campo = mapa.CAMPOS_POR_CLAVE["codigo_modelo_color"]
         self.assertEqual(campo.columna,
                          "Metafield: custom.codigo_modelo_color [single_line_text_field]")
+
+
+class TestHushPuppies(unittest.TestCase):
+    """Todos los campos que declara la plantilla de Hush tienen que salir."""
+
+    PLANTILLA = {
+        "custom.categoria", "custom.codigo_modelo_color", "custom.color_forus",
+        "custom.descripcion_corta", "custom.genero", "custom.grupo_color",
+        "custom.guia_de_tallas", "custom.marca", "custom.materialidad",
+        "custom.nombre_corto", "custom.pais_de_fabricacion", "custom.siblings_color",
+        "custom.sub_categoria", "custom.tecnologia", "custom.tipo",
+    }
+
+    def test_no_falta_ninguno(self):
+        tengo = {f"{c.namespace}.{c.key}" for c in campos_para_sitio("hush_puppies")}
+        self.assertEqual(self.PLANTILLA - tengo, set())
+
+    def test_la_clave_lleva_guion_bajo(self):
+        """En Shopify es custom.sub_categoria. Sin el guion es OTRO metafield."""
+        self.assertEqual(mapa.CAMPOS_POR_CLAVE["subcategoria"].key, "sub_categoria")
+
+    def test_pais_y_guia_aplican_a_todos_los_sitios(self):
+        for sitio in ("columbia", "vans", "rockford", "hush_puppies"):
+            claves = {c.clave for c in campos_para_sitio(sitio)}
+            self.assertIn("pais_de_fabricacion", claves, sitio)
+            self.assertIn("guia_de_tallas", claves, sitio)
+
+    def test_la_guia_de_tallas_la_escribe_matrixify(self):
+        campo = mapa.CAMPOS_POR_CLAVE["guia_de_tallas"]
+        self.assertEqual(campo.tipo, mapa.REFERENCIA_PAGINA)
+        self.assertFalse(campo.escribible_por_api())
+
+    def test_una_ficha_completa_de_hush_sale_entera(self):
+        fila = {"Mod-Col": "HP2020-SMV", "Marca": "Hush Puppies", "Categoria": "Calzado",
+                "Subcategoria": "Mocasines", "Genero": "Mujer", "Color Web": "Azul",
+                "Material": "Cuero", "Pais de Fabricacion": "Brasil", "Estilo": "Casual"}
+        rutas = {f'{m["namespace"]}.{m["key"]}' for m in build_metafields(fila, "hush_puppies")}
+        for esperado in ("custom.codigo_modelo_color", "custom.sub_categoria",
+                         "custom.pais_de_fabricacion", "custom.estilo", "custom.tipo"):
+            self.assertIn(esperado, rutas, esperado)
+        self.assertEqual(metafields_perdidos(fila, "hush_puppies",
+                                             build_metafields(fila, "hush_puppies")), [])
 
 
 class TestBuildMetafields(unittest.TestCase):
@@ -193,9 +294,10 @@ class TestBuildMetafields(unittest.TestCase):
         self.assertEqual(json.loads(claves["tecnologia"]["value"]),
                          ["Omni-Heat", "Omni-Shield"])
 
-    def test_tecnologia_como_texto_en_rockford(self):
+    def test_tecnologia_como_lista_en_rockford(self):
         claves = {m["clave"]: m for m in build_metafields(self.FILA, "rockford")}
-        self.assertEqual(claves["tecnologia_texto"]["value"], "Omni-Heat | Omni-Shield")
+        self.assertEqual(json.loads(claves["tecnologia"]["value"]),
+                         ["Omni-Heat", "Omni-Shield"])
 
     def test_los_vacios_no_se_envian(self):
         claves = {m["clave"] for m in build_metafields({"Mod-Col": "A-1", "Marca": ""}, "vans")}

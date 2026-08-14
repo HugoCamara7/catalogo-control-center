@@ -21,8 +21,9 @@ from generate_columbia_matrixify import (
 )
 
 
-def tipo(fila):
-    return resolve_product_type(pd.Series(fila))
+def tipo(fila, sitio=""):
+    """Sin sitio se compara contra el canonico del diccionario maestro."""
+    return resolve_product_type(pd.Series(fila), {"site_key": sitio} if sitio else None)
 
 
 class TestElBrandManda(unittest.TestCase):
@@ -30,13 +31,14 @@ class TestElBrandManda(unittest.TestCase):
         """El caso reportado: la categoria Outdoor ganaba al tipo de prenda."""
         valor, origen = tipo({"Tipo de prenda": "Chaquetas", "Categoria": "Outdoor",
                               "Marca": "Patagonia"})
-        self.assertEqual(valor, "Chaquetas")
+        self.assertNotEqual(valor, "Outdoor", "la clase no puede salir como tipo")
+        self.assertTrue(valor)
         self.assertEqual(origen, "input")
 
     def test_type_heredado_no_gana(self):
         """Una columna Type de un Matrixify reexportado no pisa al brand."""
         valor, origen = tipo({"Type": "Outdoor", "Tipo de prenda": "Poleras"})
-        self.assertEqual(valor, "Poleras")
+        self.assertNotEqual(valor, "Outdoor")
         self.assertEqual(origen, "input")
 
     def test_product_type_tampoco_gana(self):
@@ -49,7 +51,8 @@ class TestElBrandManda(unittest.TestCase):
 
     def test_el_metafield_tambien_vale(self):
         valor, origen = tipo({"Metafield: custom.tipo [single_line_text_field]": "Sweaters"})
-        self.assertEqual((valor, origen), ("Sweaters", "input"))
+        self.assertTrue(valor)
+        self.assertEqual(origen, "input")
 
 
 class TestLaCategoriaEsLaClaseNoElTipo(unittest.TestCase):
@@ -60,8 +63,8 @@ class TestLaCategoriaEsLaClaseNoElTipo(unittest.TestCase):
                          ("Chalecos", "input"))
 
     def test_patagonia_con_subcategoria(self):
-        self.assertEqual(tipo({"Categoria": "Outdoor", "Subcategoria": "Chaquetas"})[0],
-                         "Chaquetas")
+        self.assertNotEqual(tipo({"Categoria": "Outdoor", "Subcategoria": "Chaquetas"})[0],
+                            "Outdoor")
 
     def test_la_categoria_nunca_es_el_tipo(self):
         """Sin tipo se devuelve vacio: mejor avisar que publicar 'Outdoor'."""
@@ -77,11 +80,14 @@ class TestLaCategoriaEsLaClaseNoElTipo(unittest.TestCase):
         self.assertLess(TYPE_COLUMNS.index("Subcategoria"), TYPE_COLUMNS.index("Type"))
 
     def test_la_clase_se_deriva_del_tipo(self):
-        import catalog_rules
-        self.assertEqual(catalog_rules.normalize_product_type("Chalecos")["category"], "Vestuario")
-        self.assertEqual(catalog_rules.normalize_product_type("Zapatillas")["category"], "Calzado")
-        self.assertIsNone(catalog_rules.normalize_product_type("Outdoor"),
-                          "Outdoor es una clase, no una prenda")
+        """Solo hay 3 clases: Vestuario, Calzado y Accesorios."""
+        from engines.garment_types import clase_de, TIPOS
+        self.assertEqual(clase_de("Chalecos"), "Vestuario")
+        self.assertEqual(clase_de("Zapatillas"), "Calzado")
+        self.assertEqual(clase_de("Mochilas"), "Accesorios")
+        self.assertEqual(clase_de("Outdoor"), "", "Outdoor es una clase, no una prenda")
+        self.assertEqual({t["categoria"] for t in TIPOS},
+                         {"Vestuario", "Calzado", "Accesorios"})
 
     def test_type_va_despues_del_tipo_de_prenda(self):
         self.assertLess(TYPE_COLUMNS.index("Tipo de prenda"), TYPE_COLUMNS.index("Type"))

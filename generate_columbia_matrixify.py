@@ -1314,7 +1314,7 @@ TYPE_COLUMNS = [
     "Subcategoria", "Subcategoría", "Sub Categoria", "Sub Categoría",
     "Subcategoria ", "Sub-Categoria", "Subcategory",
     "Tipo", "Tipo de Producto", "Tipo Producto",
-    "Metafield: custom.subcategoria [single_line_text_field]",
+    "Metafield: custom.sub_categoria [single_line_text_field]",
     "Metafield: custom.tipo [single_line_text_field]",
     "Type", "Product Type",
 ]

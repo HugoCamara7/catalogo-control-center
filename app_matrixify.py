@@ -16633,35 +16633,57 @@ def _comprobar_precio_stock(ticket):
 def render_seguimiento_carga(ticket):
     """Las 6 etapas de la carga, de un vistazo.
 
-    Las etapas y su situacion salen de engines/ticket_flow: aqui solo se
-    dibujan. Sin porcentajes ni pasos intermedios: lo unico que hace falta
-    saber es en que etapa se esta y que falta para cerrar.
+    Las etapas y su situacion salen de engines/ticket_flow; aqui solo se
+    dibujan. Con estilos EN LINEA a proposito: Streamlit no siempre aplica las
+    clases de assets/app.css dentro de un markdown, y la primera version se veia
+    como una lista suelta con los numeros pegados al titulo.
+
+    Tampoco se usa <ol>: numera solo y se sumaba a nuestro numero ("1Procesando
+    catalogo").
     """
     estado = clean_value(ticket.get("status"))
     datos = flujo_seguimiento(estado)
     if datos["indice_actual"] < 0 and not datos["detenida"]:
         return
 
-    clase_cabecera = "seg-detenida" if datos["detenida"] else (
-        "seg-lista" if datos["completada"] else "seg-curso")
+    borde = "#DC2626" if datos["detenida"] else ("#16A34A" if datos["completada"] else "#1D4ED8")
     titulo = "Solicitud detenida" if datos["detenida"] else datos["titulo_actual"]
-    detalle = (flujo_etiqueta(estado) if datos["detenida"] else datos["detalle_actual"])
+    detalle = flujo_etiqueta(estado) if datos["detenida"] else datos["detalle_actual"]
 
-    pasos = []
+    colores = {
+        "hecha":     ("#F0FDF4", "#BBF7D0", "#16A34A", "#FFFFFF", "#166534", "#4D7C5F"),
+        "actual":    ("#EFF6FF", "#BFDBFE", "#1D4ED8", "#FFFFFF", "#1E3A8A", "#3B82F6"),
+        "pendiente": ("#F8FAFC", "#EEF2F7", "#E2E8F0", "#64748B", "#64748B", "#94A3B8"),
+    }
+    tarjetas = []
     for etapa in datos["etapas"]:
-        marca = "✓" if etapa["situacion"] == "hecha" else str(etapa["numero"])
-        pasos.append(
-            f'<li class="seg-paso seg-{etapa["situacion"]}">'
-            f'<span class="seg-punto">{marca}</span>'
-            f'<span class="seg-texto"><b>{escape(etapa["titulo"])}</b>'
-            f'<em>{escape(etapa["detalle"])}</em></span></li>'
+        fondo, linea, punto, tinta_punto, tinta, tinta_sub = colores[etapa["situacion"]]
+        marca = "&#10003;" if etapa["situacion"] == "hecha" else str(etapa["numero"])
+        tarjetas.append(
+            f'<div style="flex:1 1 160px;min-width:160px;background:{fondo};'
+            f'border:1px solid {linea};border-radius:12px;padding:11px 13px;'
+            f'display:flex;gap:9px;align-items:flex-start;">'
+            f'<span style="flex:none;width:21px;height:21px;border-radius:50%;'
+            f'background:{punto};color:{tinta_punto};font-size:11px;font-weight:700;'
+            f'display:inline-flex;align-items:center;justify-content:center;'
+            f'line-height:1;">{marca}</span>'
+            f'<span style="min-width:0;">'
+            f'<b style="display:block;font-size:12.5px;line-height:1.25;color:{tinta};">'
+            f'{escape(etapa["titulo"])}</b>'
+            f'<span style="display:block;font-size:11px;line-height:1.3;color:{tinta_sub};'
+            f'margin-top:2px;">{escape(etapa["detalle"])}</span>'
+            f'</span></div>'
         )
+
     st.markdown(
-        f'<div class="seg-carga {clase_cabecera}">'
-        f'<div class="seg-cabecera"><p>Avance de la carga</p>'
-        f'<h3>{escape(titulo)}</h3><span>{escape(detalle)}</span></div>'
-        f'<ol class="seg-lista-pasos">{"".join(pasos)}</ol>'
-        f'</div>',
+        f'<div style="border:1px solid #E2E8F0;border-left:4px solid {borde};'
+        f'border-radius:14px;padding:16px 18px;margin:6px 0 16px;background:#FFFFFF;">'
+        f'<p style="margin:0;font-size:11px;letter-spacing:.14em;text-transform:uppercase;'
+        f'color:#94A3B8;">Avance de la carga</p>'
+        f'<h3 style="margin:3px 0 2px;font-size:18px;color:#0F172A;">{escape(titulo)}</h3>'
+        f'<span style="font-size:13px;color:#64748B;">{escape(detalle)}</span>'
+        f'<div style="display:flex;flex-wrap:wrap;gap:9px;margin-top:14px;">'
+        f'{"".join(tarjetas)}</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -16676,7 +16698,6 @@ def render_seguimiento_carga(ticket):
         else:
             st.success(f"Precio y stock validados: {conformes} de {revisados} modelo-color "
                        f"correctos en Shopify.")
-
 
 def _render_cadena_cierre_carga(servicio, actor, ticket):
     """El siguiente paso del cierre: precios, validacion o Shopify.
@@ -17557,15 +17578,18 @@ def render_barra_acciones(service, actor, ticket):
         st.caption("No hay acciones disponibles para esta solicitud en su estado actual.")
         return
 
-    # Barra de 4 pasos
-    paso = flujo_paso_actual(estado)
-    pasos_html = []
-    for indice, clave in enumerate(FLUJO_ORDEN, start=1):
-        clase = "hecho" if indice < paso else ("actual" if indice == paso else "")
-        pasos_html.append(
-            f'<div class="flujo-paso {clase}"><b>{indice}. {escape(FLUJO_ETIQUETAS[clave])}</b></div>'
-        )
-    st.markdown(f'<div class="flujo-barra">{"".join(pasos_html)}</div>', unsafe_allow_html=True)
+    # Barra de 4 pasos. Se omite cuando la solicitud ya entro en carga: ahi el
+    # seguimiento de 6 etapas ya dice lo mismo con mas detalle, y apilar las dos
+    # llenaba la pantalla de barras repetidas.
+    if flujo_seguimiento(estado)["indice_actual"] < 0:
+        paso = flujo_paso_actual(estado)
+        pasos_html = []
+        for indice, clave in enumerate(FLUJO_ORDEN, start=1):
+            clase = "hecho" if indice < paso else ("actual" if indice == paso else "")
+            pasos_html.append(
+                f'<div class="flujo-paso {clase}"><b>{indice}. {escape(FLUJO_ETIQUETAS[clave])}</b></div>'
+            )
+        st.markdown(f'<div class="flujo-barra">{"".join(pasos_html)}</div>', unsafe_allow_html=True)
 
     principal = next((a for a in acciones if a.get("principal")), None)
     if principal:
@@ -17664,10 +17688,13 @@ def render_ticket_detail(service, actor, code):
         unsafe_allow_html=True,
     )
     latest_version = (ticket.get("versions") or [{}])[-1]
-    _render_ticket_stepper(status)
-    # Avance de la carga en 6 etapas. Solo aparece cuando la solicitud ya entro
-    # en carga: antes no aporta nada y estorba.
-    render_seguimiento_carga(ticket)
+    # Una sola barra de avance. El seguimiento de 6 etapas reemplaza al stepper
+    # de 4 pasos cuando la solicitud ya entro en carga: apilar los dos (mas el
+    # de render_barra_acciones) daba tres barras diciendo lo mismo.
+    if flujo_seguimiento(status)["indice_actual"] >= 0:
+        render_seguimiento_carga(ticket)
+    else:
+        _render_ticket_stepper(status)
     alert_message = clean_value(job.get("message")) or clean_value(ticket.get("public_result", {}).get("message"))
     if not alert_message:
         alert_message = "Solicitud lista para gestión operativa." if status in {STATE_PENDING, STATE_ASSIGNED, STATE_REVIEW} else status_label

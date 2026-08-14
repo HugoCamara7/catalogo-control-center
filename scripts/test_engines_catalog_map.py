@@ -372,6 +372,34 @@ class TestTags(unittest.TestCase):
     def test_separadores(self):
         self.assertEqual(len(build_tags({"Tags": "a, b; c | d"})), 4)
 
+    def test_la_clase_se_deriva_del_tipo(self):
+        """El brand llena Subcategoria, no Categoria: la clase hay que deducirla.
+
+        Sin esto, "Vestuario" no salia como tag -- uno de los que faltaban en
+        Rockford -- aunque el diccionario de tipos si sabe que Chalecos es
+        Vestuario.
+        """
+        fila = {"Genero": "Hombre", "Subcategoria": "Chalecos", "Marca": "Rockford"}
+        sin_derivar = build_tags(fila, "rockford")
+        self.assertNotIn("Vestuario", sin_derivar)
+
+        con_derivar = build_tags(fila, "rockford",
+                                 clase_de_tipo=lambda t: "Vestuario" if t == "Chalecos" else "")
+        self.assertIn("Vestuario", con_derivar)
+        self.assertIn("Chalecos", con_derivar)
+
+    def test_la_clase_derivada_no_se_repite(self):
+        fila = {"Categoria": "Vestuario", "Subcategoria": "Chalecos"}
+        tags = build_tags(fila, "rockford", clase_de_tipo=lambda t: "Vestuario")
+        self.assertEqual(len([x for x in tags if x == "Vestuario"]), 1)
+
+    def test_un_derivador_roto_no_tumba_los_tags(self):
+        def roto(_tipo):
+            raise RuntimeError("diccionario caido")
+
+        tags = build_tags({"Genero": "Hombre"}, "rockford", clase_de_tipo=roto)
+        self.assertIn("Hombre", tags)
+
     def test_vacio(self):
         self.assertEqual(build_tags({}), [])
         self.assertEqual(build_tags(None), [])

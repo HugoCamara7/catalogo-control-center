@@ -2685,6 +2685,81 @@ def fill_top_row_product_fields(output_df, input_df, tech_col=None, brand_config
     return output_df
 
 
+# El Body HTML, el Top Row y los ~20 metafields se escriben una sola vez, en la
+# primera variante de cada producto. Si un filtro posterior borra justo esa
+# fila, el producto entero se queda sin descripcion y sin metafields.
+#
+# Eso es lo que vaciaba el Body HTML en Rockford: alli las tallas cero se
+# muestran como "Talla Unica" (display_size_for_site), ordenan primeras, se les
+# asigna la posicion 1 con todo el bloque encima, y `final_variant_filter` las
+# elimina despues por ser talla unica en calzado. Se iban 136 filas y con ellas
+# la descripcion de los 67 productos.
+#
+# La reparacion es en dos tiempos: arrastrar el bloque a todas las filas del
+# producto ANTES de filtrar, y volver a dejarlo solo en la que sobreviva.
+TOP_ROW_ONLY_COLUMNS = ("Body HTML", "Top Row")
+
+
+def _top_row_block_columns(columns):
+    """Columnas de producto: solo deben quedar en la primera fila del handle."""
+    return [
+        column
+        for column in columns
+        if column in TOP_ROW_ONLY_COLUMNS or str(column).startswith("Metafield: ")
+    ]
+
+
+def _handle_group_key(output_df):
+    """Handle de cada fila, arrastrando el ultimo no vacio hacia abajo."""
+    return output_df["Handle"].map(clean).replace("", pd.NA).ffill().fillna("").str.upper()
+
+
+def spread_top_row_block(output_df):
+    """Replica el bloque de producto en todas las filas del mismo producto.
+
+    Paso previo al filtro final. No cambia el archivo que se entrega: lo que
+    sobre se vuelve a borrar en `collapse_top_row_block`.
+    """
+    if output_df is None or output_df.empty or "Handle" not in output_df.columns:
+        return output_df
+    block_columns = [column for column in _top_row_block_columns(output_df.columns) if column != "Top Row"]
+    if not block_columns:
+        return output_df
+    output_df = output_df.copy()
+    handle_key = _handle_group_key(output_df)
+    for column in block_columns:
+        values = output_df[column].map(clean).replace("", pd.NA)
+        output_df[column] = values.groupby(handle_key).ffill().fillna("")
+    return output_df
+
+
+def collapse_top_row_block(output_df):
+    """Deja el bloque de producto solo en la primera fila que haya sobrevivido.
+
+    Tambien renumera `Row #` y `Variant Position` desde 1 dentro de cada
+    producto: si el filtro se llevo las primeras variantes, la numeracion
+    quedaba empezando en 3.
+    """
+    if output_df is None or output_df.empty or "Handle" not in output_df.columns:
+        return output_df
+    block_columns = _top_row_block_columns(output_df.columns)
+    if not block_columns:
+        return output_df
+    output_df = output_df.copy()
+    handle_key = _handle_group_key(output_df)
+    first_indexes = {group.index[0] for _, group in output_df.groupby(handle_key, sort=False) if len(group.index)}
+    is_first_row = output_df.index.isin(sorted(first_indexes))
+    for column in block_columns:
+        output_df.loc[~is_first_row, column] = ""
+    if "Top Row" in output_df.columns:
+        output_df.loc[is_first_row, "Top Row"] = "TRUE"
+    position = output_df.groupby(handle_key).cumcount() + 1
+    for column in ("Row #", "Variant Position"):
+        if column in output_df.columns:
+            output_df[column] = position
+    return output_df
+
+
 SKIP_COMPARE_EXCLUDED_COLUMNS = {
     "ID",
     "Command",
@@ -3311,7 +3386,15 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             )
             zero_size_mask = boolean_mask(variants["__SIZE"], is_zero_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
             internal_k_size_mask = boolean_mask(variants["__SIZE"], is_internal_k_size) if "__SIZE" in variants.columns else pd.Series(False, index=variants.index)
-        should_block_zero_size = category_blocks_zero_size(product) and clean(brand_config.get("site_label")) != "Rockford.pe"
+        # Rockford muestra la talla cero como "Talla Unica", y eso es correcto
+        # para accesorios que no tienen tallas reales. Pero si el producto SI
+        # las tiene, esa fila sobra: `final_variant_filter` la borraba igual al
+        # final, cuando ya se le habia asignado la posicion 1. Se descarta aqui
+        # para que la primera variante sea siempre una talla de verdad.
+        rockford_conserva_talla_cero = (
+            clean(brand_config.get("site_label")) == "Rockford.pe" and not real_size_count
+        )
+        should_block_zero_size = category_blocks_zero_size(product) and not rockford_conserva_talla_cero
         zero_size_count = safe_int(zero_size_mask.sum()) if should_block_zero_size else 0
         internal_k_size_count = safe_int(internal_k_size_mask.sum())
         if zero_size_count:
@@ -3676,7 +3759,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     sial_df = pd.DataFrame(sial_rows, columns=get_sial_columns(brand_config))
     sial_df = coalesce_duplicate_columns(sial_df)
     issues_df = pd.DataFrame(issues)
+    # El bloque de producto se arrastra antes de filtrar y se recoge despues,
+    # para que ninguna fila que borre el filtro se lleve el Body HTML ni los
+    # metafields del producto entero.
+    output_df = spread_top_row_block(output_df)
     output_df, sial_df, issues_df = final_variant_filter(output_df, sial_df, issues_df)
+    output_df = collapse_top_row_block(output_df)
     output_df = fill_top_row_product_fields(output_df, input_df, tech_col, brand_config)
     sial_df = coalesce_duplicate_columns(sial_df)
     skipped_df = pd.DataFrame(

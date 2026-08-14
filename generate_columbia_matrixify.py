@@ -580,6 +580,69 @@ def split_pipe_items(value):
     return list(dict.fromkeys(items))
 
 
+# Palabras que dentro de una frase van en minuscula. "Botas de Cuero", no
+# "Botas De Cuero". Al inicio del texto siempre se capitalizan.
+CONECTORES_EN_MINUSCULA = {
+    "a", "al", "con", "de", "del", "e", "el", "en", "la", "las", "los",
+    "o", "para", "por", "sin", "u", "y",
+}
+
+# Un valor que es puro codigo o referencia no se toca nunca: CLB_MUJER_CALZADO,
+# RK202011432-645, S/M. Se reconoce porque lleva digito o guion bajo.
+PATRON_CODIGO = re.compile(r"^[^\Wa-z]*[\d_][^\Wa-z]*$", re.UNICODE)
+
+
+def nombre_propio(value):
+    """Pasa un texto en MAYUSCULAS a Nombre Propio, respetando tildes y ñ.
+
+    El input comercial llega con los campos de lista en mayuscula sostenida
+    (CUERO, MOCASIN, MARRON, NO APLICA) y asi se publicaban en Shopify. Solo se
+    convierte lo que viene **entero en mayusculas**: si el texto ya trae alguna
+    minuscula, la caja es deliberada del origen (Outgravity, iD) y se respeta.
+
+    Los codigos y las referencias se devuelven intactos, y cada tramo separado
+    por guion o barra se capitaliza por su cuenta (GORE-TEX -> Gore-Tex).
+    """
+    texto = clean(value)
+    if not texto:
+        return ""
+    if any(caracter.islower() for caracter in texto):
+        return texto
+
+    def capitalizar_tramo(tramo, es_inicio):
+        if not tramo or any(caracter.isdigit() for caracter in tramo):
+            return tramo
+        base = tramo.lower()
+        if not es_inicio and base in CONECTORES_EN_MINUSCULA:
+            return base
+        return base[:1].upper() + base[1:]
+
+    def capitalizar_segmento(segmento):
+        if PATRON_CODIGO.match(segmento.strip()):
+            return segmento
+        piezas = re.split(r"(\s+)", segmento)
+        salida = []
+        palabras_vistas = 0
+        for pieza in piezas:
+            if not pieza.strip():
+                salida.append(pieza)
+                continue
+            tramos = re.split(r"([\-/])", pieza)
+            salida.append(
+                "".join(
+                    tramo
+                    if tramo in ("-", "/")
+                    else capitalizar_tramo(tramo, palabras_vistas == 0)
+                    for tramo in tramos
+                )
+            )
+            palabras_vistas += 1
+        return "".join(salida)
+
+    # Cada item de una lista con | arranca como si fuera el inicio del texto.
+    return "|".join(capitalizar_segmento(segmento) for segmento in texto.split("|"))
+
+
 def join_pipe_items(value, separator=" | "):
     """Reune en una sola linea los items separados por | del input comercial.
 
@@ -670,7 +733,9 @@ def site_uses_technology_logo_metaobjects(brand_config=None):
 
 
 def format_technology_for_site(value, brand_config=None):
-    items = split_technology_items(value)
+    # El input trae las tecnologias en mayuscula sostenida (NO APLICA, HONEY
+    # FOAM). Las que ya vienen con caja propia (Outgravity) se respetan.
+    items = [nombre_propio(item) for item in split_technology_items(value)]
     if not items:
         return ""
     if technology_metafield_column(brand_config).endswith("[list.single_line_text_field]"):
@@ -1438,16 +1503,23 @@ def build_body_html(row):
             ["Características", "Caracteristicas", "Features", "Beneficios"],
         )
     )
-    material = valid_body_section_text(
-        strip_body_heading_prefix(
-            row_alias_value(row, MATERIAL_COLUMNS),
-            ["Materiales", "Material", "Composición", "Composicion", "Composition"],
+    # Materiales y Cuidados llegan en mayuscula sostenida desde el input
+    # (CUERO, LAVAR A MANO) y se publicaban asi. La Descripcion y las
+    # Caracteristicas son prosa que escribe la marca: esas no se tocan.
+    material = nombre_propio(
+        valid_body_section_text(
+            strip_body_heading_prefix(
+                row_alias_value(row, MATERIAL_COLUMNS),
+                ["Materiales", "Material", "Composición", "Composicion", "Composition"],
+            )
         )
     )
-    care = valid_body_section_text(
-        strip_body_heading_prefix(
-            row_alias_value(row, CARE_COLUMNS),
-            ["Cuidados", "Cuidado", "Care", "Care Instructions"],
+    care = nombre_propio(
+        valid_body_section_text(
+            strip_body_heading_prefix(
+                row_alias_value(row, CARE_COLUMNS),
+                ["Cuidados", "Cuidado", "Care", "Care Instructions"],
+            )
         )
     )
 
@@ -2700,6 +2772,29 @@ def fill_top_row_product_fields(output_df, input_df, tech_col=None, brand_config
 TOP_ROW_ONLY_COLUMNS = ("Body HTML", "Top Row")
 
 
+# Metafields de texto que se publican en Nombre Propio. Quedan deliberadamente
+# fuera:
+#   - codigo_modelo_color y guia_de_tallas, que son codigo y referencia;
+#   - siblings y theme.siblings, que son handles y deben ir en minuscula;
+#   - nombre_corto y descripcion_corta, que son prosa ya escrita por la marca;
+#   - marca, que ya resuelve brand_display_name.
+# La tecnologia se convierte dentro de format_technology_for_site, porque en
+# algunos sitios se emite como JSON y no se puede tocar la cadena entera.
+METAFIELDS_EN_NOMBRE_PROPIO = (
+    "Metafield: custom.genero [single_line_text_field]",
+    "Metafield: custom.tipo [single_line_text_field]",
+    "Metafield: custom.grupo_color [single_line_text_field]",
+    "Metafield: custom.color_forus [single_line_text_field]",
+    "Metafield: custom.siblings_color [single_line_text_field]",
+    "Metafield: theme.siblings_color [single_line_text_field]",
+    "Metafield: custom.materialidad [single_line_text_field]",
+    "Metafield: custom.categoria [single_line_text_field]",
+    "Metafield: custom.sub_categoria [single_line_text_field]",
+    "Metafield: custom.pais_de_fabricacion [single_line_text_field]",
+    "Metafield: custom.estilo [single_line_text_field]",
+)
+
+
 def _top_row_block_columns(columns):
     """Columnas de producto: solo deben quedar en la primera fila del handle."""
     return [
@@ -3716,6 +3811,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     source_value = clean(product.get(column))
                     if source_value:
                         output[column] = source_value
+                # El input llega en mayuscula sostenida. Se convierte al final,
+                # para que alcance tambien a los valores que entraron por el
+                # respaldo de arriba.
+                for column in METAFIELDS_EN_NOMBRE_PROPIO:
+                    if column in output:
+                        output[column] = nombre_propio(output[column])
 
             product_rows.append(output)
             product_sial_rows.append(

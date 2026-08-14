@@ -618,16 +618,15 @@ def build_tags_para_producto(product, brand_config=None):
     def clase_de(tipo):
         """Vestuario / Calzado / Accesorios a partir del tipo de prenda.
 
-        El import va dentro para no crear una dependencia dura: si
-        catalog_rules no estuviera, los tags salen sin la clase en vez de
-        reventar la generacion del catalogo entero.
+        Sale del diccionario maestro que confirmo el usuario. El import va
+        dentro para no crear una dependencia dura: si faltara, los tags salen
+        sin la clase en vez de reventar la generacion entera.
         """
         try:
-            from catalog_rules import normalize_product_type
+            from engines.garment_types import clase_de as _clase
         except ImportError:
             return ""
-        regla = normalize_product_type(tipo)
-        return (regla or {}).get("category", "")
+        return _clase(tipo)
 
     return _catalogo_tags_a_texto(
         _catalogo_build_tags(fila, sitio, clase_de_tipo=clase_de))
@@ -1163,7 +1162,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
     brand_label = clean(brand_label) or brand_config["label"]
     display_size = sial_size_value(variant.get("__SIAL_SIZE") or variant["__SIZE"])
     model, color = split_model_color(key)
-    product_type, _ = resolve_product_type(product)
+    product_type, _ = resolve_product_type(product, brand_config)
     color_web = row_alias_value(product, COLOR_WEB_COLUMNS)
     title = row_alias_value(product, TITLE_COLUMNS)
     body_html = build_body_html(product)
@@ -1341,17 +1340,29 @@ TYPE_COLUMNS = [
 TYPE_FALLBACK_COLUMNS = []
 
 
-def resolve_product_type(row):
+def resolve_product_type(row, brand_config=None):
     """Tipo de prenda del producto y de donde salio.
 
     Devuelve (valor, origen) con origen en {"input", ""}. Vacio significa que
     el brand no llenó ni "Tipo de prenda" ni "Subcategoria", y eso tiene que
     verse en la validacion previa, no taparse con la clase del producto.
+
+    El valor que sale es el que usa ESE SITIO, no siempre el canonico: la misma
+    prenda puede llamarse distinto en Columbia y en Vans. Sale del diccionario
+    maestro. Si el tipo no se reconoce, se devuelve tal cual vino para no
+    perder el dato -- la validacion previa lo marcara.
     """
     valor = row_alias_value(row, TYPE_COLUMNS)
-    if valor:
+    if not valor:
+        return "", ""
+    try:
+        from engines.garment_types import resolver, tipo_para_sitio
+    except ImportError:
         return valor, "input"
-    return "", ""
+    if not resolver(valor):
+        return valor, "input"
+    sitio = clean((brand_config or {}).get("site_key"))
+    return (tipo_para_sitio(valor, sitio) or tipo_para_sitio(valor, "")), "input"
 
 COLOR_WEB_COLUMNS = [
     "Color Web", "Color", "Color Name", "Color Nombre", "Nombre Color", "Color Comercial",
@@ -3406,9 +3417,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                 continue
         body_html = build_body_html(product)
         tags = build_tags_para_producto(product, brand_config)
-        product_type, _ = resolve_product_type(product)
+        product_type, _ = resolve_product_type(product, brand_config)
         if not product_type and not variants.empty:
-            product_type, _ = resolve_product_type(variants.iloc[0])
+            product_type, _ = resolve_product_type(variants.iloc[0], brand_config)
         product_type_key = normalize_type_key(product_type)
         if (
             known_types_for_report

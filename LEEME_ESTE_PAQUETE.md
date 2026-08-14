@@ -1,4 +1,4 @@
-# Actualización — 5 archivos
+# Actualización — 7 archivos
 
 Agosto 2026. Sobre el commit `dc7290d91` de `main`.
 
@@ -15,7 +15,10 @@ Este paquete trae solo los **5 que cambiaron después**.
 app_matrixify.py
 generate_columbia_matrixify.py
 engines/catalog_map.py
+engines/garment_types.py              ← nuevo
 scripts/test_engines_catalog_map.py
+scripts/test_engines_garment_types.py ← nuevo
+scripts/test_tipo_de_prenda_por_sitio.py
 LEEME_ESTE_PAQUETE.md
 ```
 
@@ -27,7 +30,24 @@ riesgo de pisar algo.
 
 ---
 
-## Qué traen estos 5
+## Diccionario maestro de tipos
+
+`engines/garment_types.py` está **generado desde tu Excel corregido**, no
+transcrito a mano:
+
+- **60 tipos canónicos**, 345 nombres reconocidos
+- **Las 3 clases**: Vestuario (20), Calzado (11), Accesorios (29)
+- **El nombre por sitio**, que no siempre es el canónico
+- `Outdoor` **sigue sin reconocerse**, que es lo correcto: es una clase
+
+Un tipo que un sitio no vende devuelve vacío en vez de forzar un nombre que esa
+tienda no usa.
+
+Al generarlo salió una ambigüedad de tu Excel: `cremas renovadoras` figuraba
+como sinónimo de **Accesorios De Limpieza** y de **Crema renovadora** a la vez.
+Se quedó en el primero. Si prefieres al revés, dímelo.
+
+## Qué traen los demás
 
 **Nombre Propio siempre** en Categoría, Subcategoría, Tipo de prenda, Clase,
 Color, Color Forus, Grupo Color y Género — y también en los tags.
@@ -49,6 +69,16 @@ CHALECO POWDER LITE
   └─ handle    ->  chaleco-powder-lite-im5678-011
 ```
 
+**La clase se deriva del tipo en los tags.** El brand llena `Subcategoria`
+(Chalecos), no `Categoria` (Vestuario). Leyendo solo el Excel, el tag
+`Vestuario` no salía — uno de los que faltaban en Rockford. Ahora se deduce
+del diccionario de tipos:
+
+```
+input:  Genero=Hombre · Subcategoria=Chalecos · Marca=Rockford
+tags:   Hombre · Chalecos · Rockford · IM5678-011 · Vestuario
+```
+
 **Auditoría de metafields.** Los 25 que usa la app quedan cubiertos por el
 registro central, sin tipos contradictorios. Se agregaron `custom.color`,
 `custom.deporte` y `custom.logo`, y se unificó `custom.tecnologia`, que tenía
@@ -66,7 +96,8 @@ vez de tres apiladas.
 ## Después de subir
 
 ```bash
-python scripts/test_engines_catalog_map.py   # 70
+python scripts/test_engines_catalog_map.py     # 73
+python scripts/test_engines_garment_types.py   # 19
 ```
 
 Y en la app, abre una solicitud que esté en carga: el avance de 6 etapas debe

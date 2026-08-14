@@ -614,7 +614,23 @@ def build_tags_para_producto(product, brand_config=None):
     else:
         fila = {}
     sitio = clean((brand_config or {}).get("site_key"))
-    return _catalogo_tags_a_texto(_catalogo_build_tags(fila, sitio))
+
+    def clase_de(tipo):
+        """Vestuario / Calzado / Accesorios a partir del tipo de prenda.
+
+        El import va dentro para no crear una dependencia dura: si
+        catalog_rules no estuviera, los tags salen sin la clase en vez de
+        reventar la generacion del catalogo entero.
+        """
+        try:
+            from catalog_rules import normalize_product_type
+        except ImportError:
+            return ""
+        regla = normalize_product_type(tipo)
+        return (regla or {}).get("category", "")
+
+    return _catalogo_tags_a_texto(
+        _catalogo_build_tags(fila, sitio, clase_de_tipo=clase_de))
 
 
 def format_tags(value):

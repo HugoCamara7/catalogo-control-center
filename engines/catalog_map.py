@@ -74,6 +74,65 @@ def sin_tildes(valor):
     return "".join(c for c in texto if not unicodedata.combining(c))
 
 
+# Palabras que en castellano NO se capitalizan dentro de un nombre propio,
+# salvo que abran el texto: "Lentes de Sol", "Ropas de Bano", "Ropa para Nino".
+_CONECTORES = {
+    "de", "del", "la", "las", "el", "los", "y", "e", "o", "u",
+    "con", "sin", "para", "por", "a", "al", "en",
+}
+
+# Formas que tienen mayuscula propia y no se tocan.
+_EXCEPCIONES = {
+    "hp": "HP", "xl": "XL", "xxl": "XXL", "s": "S", "m": "M", "l": "L",
+    "uv": "UV", "usa": "USA", "eu": "EU", "3d": "3D",
+}
+
+
+def nombre_propio(valor):
+    """Deja el texto en Nombre Propio, respetando el castellano.
+
+    'VESTUARIO' y 'vestuario' salen los dos como 'Vestuario'. Los conectores
+    quedan en minuscula salvo al principio, y las tildes se conservan: solo
+    cambia la caja de la letra, nunca la letra.
+
+    Existe porque Categoria, Subcategoria, Tipo y Color llegan del Excel como
+    los escriba cada quien -- MAYUSCULAS en un sitio, minusculas en otro -- y
+    Shopify los publica tal cual: el mismo valor aparece como tres distintos
+    en los filtros de la tienda.
+    """
+    texto = re.sub(r"\s+", " ", _texto(valor))
+    if not texto:
+        return ""
+
+    def pieza(palabra, primera):
+        if not palabra:
+            return palabra
+        clave = palabra.casefold()
+        if clave in _EXCEPCIONES:
+            return _EXCEPCIONES[clave]
+        # Codigos alfanumericos (IM5678, HP2020-SMV) se dejan como estan.
+        if any(c.isdigit() for c in palabra):
+            return palabra
+        if not primera and clave in _CONECTORES:
+            return clave
+        return palabra[:1].upper() + palabra[1:].casefold()
+
+    salida = []
+    for indice, palabra in enumerate(texto.split(" ")):
+        # Un codigo se deja intacto ENTERO. Si se mira parte por parte,
+        # "HP2020-SMV" sale como "HP2020-Smv": la primera tiene digitos y la
+        # segunda no.
+        if any(c.isdigit() for c in palabra):
+            salida.append(palabra)
+            continue
+        # Un guion separa palabras: "manga-corta" -> "Manga-Corta".
+        partes = palabra.split("-")
+        salida.append("-".join(
+            pieza(parte, indice == 0 and j == 0) for j, parte in enumerate(partes)
+        ))
+    return " ".join(salida)
+
+
 def clave_columna(valor):
     """Forma canonica de un nombre de columna, para comparar alias."""
     return re.sub(r"[^a-z0-9]+", "", sin_tildes(valor).casefold())
@@ -91,31 +150,32 @@ CAMPOS = [
     ("marca", "custom.marca", TEXTO, ["Marca", "Vendor", "Brand"], None, "texto"),
     # Categoria = la CLASE (Vestuario, Calzado, Accesorios).
     ("categoria", "custom.categoria", TEXTO,
-     ["Categoria", "Categoría", "Category", "Clase"], None, "texto"),
+     ["Categoria", "Categoría", "Category", "Clase"], None, "nombre_propio"),
     # Subcategoria = el TIPO DE PRENDA. Son el mismo dato con dos nombres, asi
     # que ambos metafields leen los dos juegos de alias: llene el brand la
     # columna que llene, los dos salen con valor.
-    ("subcategoria", "custom.subcategoria", TEXTO,
+    ("subcategoria", "custom.sub_categoria", TEXTO,
      ["Subcategoria", "Subcategoría", "Sub Categoria", "Sub Categoría", "Subcategory",
-      "Tipo de prenda", "Tipo de Prenda", "Tipo prenda"], None, "texto"),
+      "Tipo de prenda", "Tipo de Prenda", "Tipo prenda"], None, "nombre_propio"),
     ("tipo", "custom.tipo", TEXTO,
      ["Tipo de prenda", "Tipo de Prenda", "Tipo prenda", "Tipo",
-      "Subcategoria", "Subcategoría", "Sub Categoria", "Type"], None, "texto"),
-    ("genero", "custom.genero", TEXTO, ["Genero", "Género", "Gender"], None, "texto"),
+      "Subcategoria", "Subcategoría", "Sub Categoria", "Type"], None, "nombre_propio"),
+    ("genero", "custom.genero", TEXTO, ["Genero", "Género", "Gender"], None, "nombre_propio"),
     ("color_forus", "custom.color_forus", TEXTO,
-     ["Color Forus", "Color", "Color Web"], None, "texto"),
-    ("grupo_color", "custom.grupo_color", TEXTO, ["Grupo Color", "Grupo de Color"], None, "texto"),
+     ["Color Forus", "Color", "Color Web"], None, "nombre_propio"),
+    ("grupo_color", "custom.grupo_color", TEXTO, ["Grupo Color", "Grupo de Color"], None, "nombre_propio"),
     ("nombre_corto", "custom.nombre_corto", TEXTO, ["Nombre Corto", "Nombre corto"], None, "texto"),
     ("descripcion_corta", "custom.descripcion_corta", TEXTO,
      ["Descripcion Corta", "Descripción Corta"], None, "texto"),
     ("materialidad", "custom.materialidad", TEXTO,
      ["Materialidad", "Material Principal", "Materiales"], None, "texto"),
+    # UN metafield, UN tipo. Antes habia dos entradas para custom.tecnologia
+    # (lista en Columbia, texto en el resto) y tipo_shopify() devolvia la
+    # primera sin mirar el sitio: Rockford habria recibido el tipo de Columbia.
+    # Se unifica al que la app ya usa 23 veces contra 5.
     ("tecnologia", "custom.tecnologia", LISTA_TEXTO,
      ["Tecnologia", "Tecnología", "Tecnologias", "Tecnologías",
-      "METAFIELD TECNOLOGIAS", "METAFIELD TECNOLOGÍAS"], {"columbia"}, "lista_json"),
-    ("tecnologia_texto", "custom.tecnologia", TEXTO,
-     ["Tecnologia", "Tecnología", "Tecnologias", "Tecnologías"],
-     {"rockford", "vans", "hush_puppies", "patagonia", "sorel"}, "lista_pipe"),
+      "METAFIELD TECNOLOGIAS", "METAFIELD TECNOLOGÍAS"], None, "lista_json"),
     # SIBLINGS. Los criterios son los mismos en los cuatro sitios: la app
     # relaciona los colores del mismo modelo, el brand no los llena.
     #
@@ -135,6 +195,24 @@ CAMPOS = [
      ["Siblings", "Productos relacionados"], None, "lista_json"),
     ("siblings_color_tema", "theme.siblings_color", TEXTO,
      ["Siblings Color", "Color Sibling"], None, "texto"),
+    # Los declara la plantilla de Hush Puppies y faltaban en el registro: sin
+    # ellos no habia validacion ni salian por integracion directa.
+    ("pais_de_fabricacion", "custom.pais_de_fabricacion", TEXTO,
+     ["Pais de Fabricacion", "País de Fabricación", "Pais de fabricacion",
+      "Origen", "Made in", "Country of Origin"], None, "texto"),
+    # page_reference: lo escribe Matrixify, no la API directa. Aparece en la
+    # validacion como "solo lo escribe Matrixify", que es informacion util, no
+    # un error.
+    ("guia_de_tallas", "custom.guia_de_tallas", REFERENCIA_PAGINA,
+     ["Guia de Tallas", "Guía de Tallas", "Guia de tallas", "Size Guide"], None, "texto"),
+    ("color", "custom.color", TEXTO,
+     ["Color", "Color Comercial", "Color Web"], None, "nombre_propio"),
+    ("deporte", "custom.deporte", LISTA_TEXTO,
+     ["Deporte", "Deportes", "Sport"], None, "lista_json"),
+    # list.metaobject_reference: la app lo resuelve con el GID del metaobjeto
+    # del logo. El brand no lo llena.
+    ("logo", "custom.logo", REFERENCIA_METAOBJETO,
+     ["Logo", "Logos"], None, "lista_json"),
     ("estilo", "custom.estilo", TEXTO, ["Estilo"], {"hush_puppies"}, "texto"),
     ("categoria_de_tecnologia", "custom.categoria_de_tecnologia", TEXTO,
      ["Categoria de Tecnologia", "Categoría de Tecnología"], {"hush_puppies"}, "texto"),
@@ -261,6 +339,11 @@ def transformar(campo, valor):
     modo = getattr(campo, "transformacion", "texto")
     if modo == "mayusculas":
         return texto.upper()
+    if modo == "nombre_propio":
+        return nombre_propio(texto)
+    if modo == "lista_nombre_propio":
+        items = separar_lista(texto) or [texto]
+        return json.dumps([nombre_propio(i) for i in items], ensure_ascii=False)
     if modo == "lista_json":
         items = separar_lista(texto) or [texto]
         return json.dumps(items, ensure_ascii=False)
@@ -389,7 +472,7 @@ def tags_genericos(fila, sitio=""):
         leer("Color Forus", "Color", "Color Web"),
         leer("Mod-Col", "COD MOD COL", "Codigo Modelo-Color", "Código Modelo-Color"),
     ):
-        salida.extend(separar_tags(valor))
+        salida.extend(nombre_propio(x) for x in separar_tags(valor))
     return salida
 
 

@@ -476,7 +476,7 @@ def tags_genericos(fila, sitio=""):
     return salida
 
 
-def build_tags(fila, sitio="", reglas_sitio=None):
+def build_tags(fila, sitio="", reglas_sitio=None, clase_de_tipo=None):
     """Tags finales = genericos + reglas del sitio + adicionales del Excel.
 
     La regla que hay que respetar: **los adicionales SUMAN, nunca reemplazan**.
@@ -489,6 +489,20 @@ def build_tags(fila, sitio="", reglas_sitio=None):
     """
     indice = {clave_columna(k): v for k, v in (fila or {}).items()}
     bruto = list(tags_genericos(fila, sitio))
+
+    # La CLASE casi nunca viene en el input: el brand llena "Subcategoria"
+    # (Chalecos) y no "Categoria" (Vestuario). Leyendo solo el Excel, el tag
+    # "Vestuario" no salia -- que es justo uno de los que faltaban en Rockford.
+    # Se deriva del tipo, igual que el metafield. Se recibe como funcion para
+    # que este motor no dependa de catalog_rules.
+    if clase_de_tipo:
+        for tipo in tags_genericos(fila, sitio):
+            try:
+                clase = _texto(clase_de_tipo(tipo))
+            except Exception:
+                clase = ""
+            if clase:
+                bruto.append(clase)
     for columna in COLUMNAS_TAGS_BASE:
         bruto.extend(separar_tags(indice.get(clave_columna(columna))))
     for tag in (reglas_sitio or []):

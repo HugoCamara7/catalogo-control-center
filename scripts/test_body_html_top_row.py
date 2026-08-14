@@ -22,11 +22,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from generate_columbia_matrixify import (  # noqa: E402
+    build_body_html,
     clean,
     collapse_top_row_block,
     display_size_for_site,
     final_variant_filter,
     get_brand_config,
+    nombre_propio,
     spread_top_row_block,
 )
 
@@ -120,6 +122,73 @@ class TestBloqueDeProducto(unittest.TestCase):
         self.assertEqual(
             codigos["sueco-cuero-mujer-rockford-rk228011233-n31"], "RK228011233-N31"
         )
+
+
+class TestNombrePropio(unittest.TestCase):
+    """El input comercial llega en mayuscula sostenida y se publicaba asi."""
+
+    def test_convierte_mayuscula_sostenida(self):
+        self.assertEqual(nombre_propio("CUERO"), "Cuero")
+        self.assertEqual(nombre_propio("MUJER"), "Mujer")
+        self.assertEqual(nombre_propio("NO APLICA"), "No Aplica")
+
+    def test_respeta_tildes_y_enie(self):
+        self.assertEqual(nombre_propio("MOCASÍN"), "Mocasín")
+        self.assertEqual(nombre_propio("MARRÓN"), "Marrón")
+        self.assertEqual(nombre_propio("PERÚ"), "Perú")
+        self.assertEqual(nombre_propio("ZAPATILLAS PARA NIÑO"), "Zapatillas para Niño")
+
+    def test_conectores_van_en_minuscula_salvo_al_inicio(self):
+        self.assertEqual(nombre_propio("BOTAS DE CUERO"), "Botas de Cuero")
+        self.assertEqual(nombre_propio("DE VESTIR"), "De Vestir")
+
+    def test_no_toca_lo_que_ya_trae_minusculas(self):
+        # Caja deliberada del origen: no se reescribe.
+        self.assertEqual(nombre_propio("Outgravity"), "Outgravity")
+        frase = "El mocasín Auckland es la elección perfecta"
+        self.assertEqual(nombre_propio(frase), frase)
+
+    def test_no_toca_codigos_ni_referencias(self):
+        self.assertEqual(nombre_propio("CLB_MUJER_CALZADO"), "CLB_MUJER_CALZADO")
+        self.assertEqual(nombre_propio("RK202011432-645"), "RK202011432-645")
+        self.assertEqual(nombre_propio("S/M"), "S/M")
+
+    def test_conserva_el_separador_de_lista(self):
+        self.assertEqual(nombre_propio("CUERO | TEXTIL"), "Cuero | Textil")
+        self.assertEqual(nombre_propio("GORE-TEX"), "Gore-Tex")
+
+    def test_vacio(self):
+        self.assertEqual(nombre_propio(""), "")
+        self.assertEqual(nombre_propio(None), "")
+
+
+class TestCajaEnElBodyHtml(unittest.TestCase):
+    def test_materiales_y_cuidados_salen_en_nombre_propio(self):
+        cuerpo = build_body_html(
+            {
+                "Descripcion": "El mocasín Auckland es la elección perfecta.",
+                "Caracteristicas": "Capellada: 100% Cuero|Forro: 100% Cuero",
+                "Materiales": "CUERO",
+                "Cuidados": "LAVAR A MANO|NO USAR LEJÍA",
+            }
+        )
+        self.assertIn("<li>Cuero</li>", cuerpo)
+        self.assertIn("<li>Lavar a Mano</li>", cuerpo)
+        self.assertIn("<li>No Usar Lejía</li>", cuerpo)
+        self.assertNotIn("<li>CUERO</li>", cuerpo)
+
+    def test_la_descripcion_y_las_caracteristicas_no_se_tocan(self):
+        cuerpo = build_body_html(
+            {
+                "Descripcion": "El mocasín Auckland es la elección perfecta.",
+                "Caracteristicas": "Capellada: 100% Cuero|Tipo De Taco: No Aplica",
+                "Materiales": "CUERO",
+                "Cuidados": "",
+            }
+        )
+        self.assertIn("El mocasín Auckland es la elección perfecta.", cuerpo)
+        self.assertIn("<li>Capellada: 100% Cuero</li>", cuerpo)
+        self.assertIn("<li>Tipo De Taco: No Aplica</li>", cuerpo)
 
 
 if __name__ == "__main__":

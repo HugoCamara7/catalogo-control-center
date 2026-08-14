@@ -162,7 +162,7 @@ CAMPOS = [
       "Subcategoria", "Subcategoría", "Sub Categoria", "Type"], None, "nombre_propio"),
     ("genero", "custom.genero", TEXTO, ["Genero", "Género", "Gender"], None, "nombre_propio"),
     ("color_forus", "custom.color_forus", TEXTO,
-     ["Color Forus", "Color", "Color Web"], None, "nombre_propio"),
+     ["Color Forus", "Color web/filtro", "Color Web", "Color web", "Color", "Color Comercial"], None, "nombre_propio"),
     ("grupo_color", "custom.grupo_color", TEXTO, ["Grupo Color", "Grupo de Color"], None, "nombre_propio"),
     ("nombre_corto", "custom.nombre_corto", TEXTO, ["Nombre Corto", "Nombre corto"], None, "texto"),
     ("descripcion_corta", "custom.descripcion_corta", TEXTO,
@@ -206,7 +206,7 @@ CAMPOS = [
     ("guia_de_tallas", "custom.guia_de_tallas", REFERENCIA_PAGINA,
      ["Guia de Tallas", "Guía de Tallas", "Guia de tallas", "Size Guide"], None, "texto"),
     ("color", "custom.color", TEXTO,
-     ["Color", "Color Comercial", "Color Web"], None, "nombre_propio"),
+     ["Color Comercial", "Color web/filtro", "Color Web", "Color web", "Color"], None, "nombre_propio"),
     ("deporte", "custom.deporte", LISTA_TEXTO,
      ["Deporte", "Deportes", "Sport"], None, "lista_json"),
     # list.metaobject_reference: la app lo resuelve con el GID del metaobjeto
@@ -469,7 +469,7 @@ def tags_genericos(fila, sitio=""):
         leer("Subcategoria", "Subcategoría", "Subcategory"),
         leer("Tipo", "Tipo de prenda", "Type"),
         leer("Marca", "Vendor", "Brand"),
-        leer("Color Forus", "Color", "Color Web"),
+        leer("Color Forus", "Color web/filtro", "Color Web", "Color", "Color Comercial"),
         leer("Mod-Col", "COD MOD COL", "Codigo Modelo-Color", "Código Modelo-Color"),
     ):
         salida.extend(nombre_propio(x) for x in separar_tags(valor))

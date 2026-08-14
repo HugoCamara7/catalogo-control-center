@@ -7830,12 +7830,41 @@ def _metafield_type_from_column(column):
     return catalogo_tipo_shopify(column)
 
 
-def _metafield_can_write_direct(column):
+def _metafield_can_write_direct(column, field_type=None):
     namespace, key = _metafield_namespace_key(column)
-    field_type = _metafield_type_from_column(column)
+    field_type = clean_value(field_type) or _metafield_type_from_column(column)
     if field_type in ("page_reference", "list.page_reference"):
         return False, f"{namespace}.{key} requiere IDs internos de Shopify; se mantiene para Matrixify"
     return True, ""
+
+
+# Tipos que apuntan a otro producto: no se pueden escribir con el handle, hay
+# que resolverlo a `gid://shopify/Product/...` primero.
+TIPOS_REFERENCIA_A_PRODUCTO = ("product_reference", "list.product_reference")
+
+
+def _tipo_metafield_de_la_tienda(shopify_config, namespace, key):
+    """Tipo REAL de la definicion del metacampo, leido de la tienda.
+
+    Shopify rechaza el valor cuando el tipo que mandas no coincide con el de la
+    definicion, y la ficha del producto lo muestra en blanco: ese era el caso de
+    `custom.codigo_modelo_color`, que Matrixify exporta como `[id]` y la tabla
+    interna resolvia como texto. Preguntarle a la tienda es lo unico que no se
+    puede equivocar. Se cachea por sesion; si la consulta falla se devuelve ""
+    y decide la tabla, como antes.
+    """
+    if fetch_metafield_definition is None or not namespace or not key:
+        return ""
+    cache_key = f"tipo_metafield_producto_{namespace}.{key}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+    try:
+        definicion = fetch_metafield_definition(shopify_config, "PRODUCT", namespace, key) or {}
+    except Exception:
+        definicion = {}
+    tipo = clean_value((definicion.get("type") or {}).get("name"))
+    st.session_state[cache_key] = tipo
+    return tipo
 
 
 def _logo_lookup_keys(record):
@@ -8388,9 +8417,9 @@ def _media_error_text(media):
     return "; ".join(messages) if messages else "sin detalle"
 
 
-def _metafield_value_for_api(column, value, shopify_config=None):
+def _metafield_value_for_api(column, value, shopify_config=None, field_type=None):
     text = clean_value(value)
-    field_type = _metafield_type_from_column(column)
+    field_type = clean_value(field_type) or _metafield_type_from_column(column)
     if field_type in ("metaobject_reference", "list.metaobject_reference"):
         if shopify_config is None:
             return text
@@ -9519,6 +9548,12 @@ def _reorder_product_sizes(shopify_config, product_gid, product_variant_rows):
 
 def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=None, activate_inventory_locations=True):
     rows = []
+    # Los metafields que apuntan a otro producto (siblings) necesitan el ID de
+    # productos que quiza todavia no existen cuando se procesa el primero. Se
+    # juntan aqui y se escriben al final, en _escribir_referencias_a_producto.
+    referencias_a_producto = {}
+    gid_por_handle = {}
+    fila_por_handle = {}
     product_rows = _top_product_rows(matrixify_df)
     total_products = len(product_rows)
     metafield_columns = [
@@ -9634,12 +9669,23 @@ def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=N
                     # desaparecia sin dejar rastro en ningun informe.
                     skipped_metafields.append(f"{column}: cabecera sin namespace.key legible")
                     continue
-                can_write, skip_reason = _metafield_can_write_direct(column)
+                # Manda la definicion de la tienda. La cabecera de Matrixify y la
+                # tabla interna son solo el respaldo.
+                field_type = _tipo_metafield_de_la_tienda(shopify_config, namespace, key) or _metafield_type_from_column(column)
+                if field_type in TIPOS_REFERENCIA_A_PRODUCTO:
+                    # Trae handles y hay que mandar IDs de producto. Varios de
+                    # esos productos todavia no existen en este punto de la
+                    # carga: se resuelve al final, cuando ya estan todos.
+                    referencias_a_producto.setdefault(handle, []).append(
+                        (namespace, key, field_type, _split_tags(value))
+                    )
+                    continue
+                can_write, skip_reason = _metafield_can_write_direct(column, field_type)
                 if not can_write:
                     skipped_metafields.append(skip_reason)
                     continue
                 try:
-                    api_value = _metafield_value_for_api(column, value, shopify_config)
+                    api_value = _metafield_value_for_api(column, value, shopify_config, field_type)
                 except Exception as exc:
                     metafield_errors.append(f"{namespace}.{key}: {exc}")
                     continue
@@ -9648,7 +9694,7 @@ def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=N
                         "ownerId": product_gid,
                         "namespace": namespace,
                         "key": key,
-                        "type": _metafield_type_from_column(column),
+                        "type": field_type,
                         "value": api_value,
                     }
                 )
@@ -9916,15 +9962,17 @@ def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=N
                 product_status = "PARCIAL"
                 product_messages.append(f"Error orden tallas: {exc}")
 
-            rows.append(
-                {
-                    "Handle": handle,
-                    "ID": product_id,
-                    "Resultado": product_status,
-                    "Duracion segundos": round(time.perf_counter() - product_started_at, 2),
-                    "Mensaje": ". ".join(product_messages) or "Sin cambios aplicados",
-                }
-            )
+            fila_resultado = {
+                "Handle": handle,
+                "ID": product_id,
+                "Resultado": product_status,
+                "Duracion segundos": round(time.perf_counter() - product_started_at, 2),
+                "Mensaje": ". ".join(product_messages) or "Sin cambios aplicados",
+            }
+            rows.append(fila_resultado)
+            if handle:
+                gid_por_handle[handle.lower()] = product_gid
+                fila_por_handle[handle] = fila_resultado
             if progress_callback:
                 progress_callback(position, total_products, handle, f"Finalizado {product_status}", " | ".join(product_messages[-3:]))
         except Exception as exc:
@@ -9939,7 +9987,86 @@ def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=N
             )
             if progress_callback:
                 progress_callback(position, total_products, handle, "Error", str(exc))
+
+    _escribir_referencias_a_producto(
+        shopify_config,
+        referencias_a_producto,
+        gid_por_handle,
+        fila_por_handle,
+        progress_callback=progress_callback,
+    )
     return pd.DataFrame(rows)
+
+
+def _escribir_referencias_a_producto(
+    shopify_config,
+    referencias_a_producto,
+    gid_por_handle,
+    fila_por_handle,
+    progress_callback=None,
+):
+    """Escribe los metafields que apuntan a otros productos, ya con sus IDs.
+
+    `custom.siblings` esta declarado como `list.product_reference`: espera
+    `gid://shopify/Product/...`, no handles. La carga completa le mandaba el
+    handle, Shopify lo rechazaba y el campo quedaba vacio en la ficha.
+
+    No se puede resolver dentro del bucle porque los hermanos de un producto
+    suelen crearse despues que el. Por eso esta pasada va al final, cuando ya
+    existen todos y se conoce el ID de cada handle.
+    """
+    if not referencias_a_producto:
+        return
+    total = len(referencias_a_producto)
+    for posicion, (handle, pendientes) in enumerate(referencias_a_producto.items(), start=1):
+        propietario = gid_por_handle.get(clean_value(handle).lower())
+        fila = fila_por_handle.get(handle)
+        if not propietario:
+            continue
+        if progress_callback:
+            progress_callback(posicion, total, handle, "Enlazando productos relacionados")
+        mensajes = []
+        hubo_error = False
+        for namespace, key, field_type, handles_destino in pendientes:
+            gids = []
+            sin_resolver = []
+            for destino in handles_destino:
+                gid = gid_por_handle.get(clean_value(destino).lower())
+                if gid:
+                    gids.append(gid)
+                else:
+                    sin_resolver.append(destino)
+            gids = list(dict.fromkeys(gids))
+            if not gids:
+                hubo_error = True
+                mensajes.append(f"{namespace}.{key}: ningun producto relacionado existe todavia en Shopify")
+                continue
+            valor = json.dumps(gids, ensure_ascii=False) if field_type.startswith("list.") else gids[0]
+            try:
+                metafields_set(
+                    shopify_config,
+                    [
+                        {
+                            "ownerId": propietario,
+                            "namespace": namespace,
+                            "key": key,
+                            "type": field_type,
+                            "value": valor,
+                        }
+                    ],
+                )
+                detalle = f"{namespace}.{key}: {len(gids)} productos enlazados"
+                if sin_resolver:
+                    detalle += f" ({len(sin_resolver)} sin resolver: {', '.join(sin_resolver[:3])})"
+                mensajes.append(detalle)
+            except Exception as exc:
+                hubo_error = True
+                mensajes.append(f"{namespace}.{key}: {exc}")
+        if fila is None or not mensajes:
+            continue
+        fila["Mensaje"] = ". ".join(filter(None, [fila.get("Mensaje"), " | ".join(mensajes)]))
+        if hubo_error and fila.get("Resultado") == "OK":
+            fila["Resultado"] = "PARCIAL"
 
 
 def _now_lima_text():

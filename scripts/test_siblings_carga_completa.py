@@ -44,7 +44,9 @@ def columnas_matrixify():
 def catalogo(filas):
     """Catalogo Shopify de mentira, con las columnas reales del export."""
     columnas = columnas_matrixify()
-    base = pd.DataFrame([{columna: "" for columna in columnas} for _ in filas])
+    # Con `filas` vacio hay que fijar las columnas a mano: un DataFrame de una
+    # lista vacia no tiene ninguna, y el generador necesita el juego completo.
+    base = pd.DataFrame([{columna: "" for columna in columnas} for _ in filas], columns=columnas)
     for indice, fila in enumerate(filas):
         for columna, valor in fila.items():
             base.loc[indice, columna] = valor
@@ -235,6 +237,54 @@ class TestDescripcionParaCentry(unittest.TestCase):
 
     def test_texto_sin_html_pasa_igual(self):
         self.assertEqual(g.texto_plano_de_body("Solo texto plano"), "Solo texto plano")
+
+
+class TestSkuYEanEnCentry(unittest.TestCase):
+    """El EAN se metia en la columna del SKU de la variante.
+
+    `variant_centry_sku = barcode or variant_sku` daba igual mientras BigQuery
+    no devolvia codigos de barra. Al configurar la tabla de EAN, el codigo de
+    barras empezo a llegar y tapaba el codigo interno del producto.
+    """
+
+    def _centry(self, con_ean):
+        entrada = pd.DataFrame([{
+            "Mod-Col": "RK202011432-645", "Marca": "Rockford", "Genero": "MUJER",
+            "Clase": "Calzado", "Tipo de prenda": "MOCASIN", "Color web/filtro": "MARRON",
+            "Nombre de Producto": "Mocasin Cuero Mujer", "Descripcion": "Texto.",
+            "Caracteristicas": "A|B", "Materiales": "CUERO", "Tecnologia": "NO APLICA",
+        }])
+        arti = pd.DataFrame([
+            {"Mod-Col": "RK202011432-645", "COD MOD COL": "RK202011432-645",
+             "CODINT_MA": "5455311", "TALNUM_MA": "350", "MARCA_MA": "ROCKFORD",
+             "Precio": "", "CodBarras": "7790000000002" if con_ean else ""},
+        ])
+        config = g.get_brand_config("rockford")
+        salida = g.build_columbia_matrixify(entrada, arti, catalogo([]), config)[0]
+        centry, _ = app.build_centry_from_matrixify(salida, config, arti_df=arti)
+        return salida, centry
+
+    def _columna(self, df, fragmento):
+        return next(c for c in df.columns if fragmento in str(c))
+
+    def test_el_ean_no_pisa_el_sku_de_la_variante(self):
+        _, centry = self._centry(con_ean=True)
+        sku = g.clean(centry.iloc[0][self._columna(centry, "SKU de la variante")])
+        ean = g.clean(centry.iloc[0][self._columna(centry, "barra variante")])
+        self.assertEqual(sku, "5455311")
+        self.assertEqual(ean, "7790000000002")
+        self.assertNotEqual(sku, ean)
+
+    def test_sin_ean_el_sku_sigue_estando(self):
+        _, centry = self._centry(con_ean=False)
+        sku = g.clean(centry.iloc[0][self._columna(centry, "SKU de la variante")])
+        self.assertEqual(sku, "5455311")
+
+    def test_el_matrixify_tambien_los_separa(self):
+        salida, _ = self._centry(con_ean=True)
+        fila = salida.iloc[0]
+        self.assertEqual(g.clean(fila["Variant SKU"]), "5455311")
+        self.assertEqual(g.clean(fila["Variant Barcode"]), "7790000000002")
 
 
 class TestTextoPlanoSinCss(unittest.TestCase):

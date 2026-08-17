@@ -199,9 +199,9 @@ ACCIONES = [
     },
     {
         "clave": "finalizar",
-        "etiqueta": "Finalizar solicitud",
+        "etiqueta": "Completar carga",
         "metodo": "record_job_result",
-        "ayuda": "Registra el resultado y cierra la solicitud.",
+        "ayuda": "Cierra la carga. Es manual: no depende de cuántos productos procesó el job.",
         "roles": {"operator", "admin"},
         "estados": {LOADING, VALIDATING},
         "principal": True,

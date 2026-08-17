@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote_plus, unquote, urlparse
 from urllib.request import Request, urlopen
 
 import pandas as pd
@@ -34,6 +34,7 @@ from engines.ticket_flow import ETIQUETAS as FLUJO_ETIQUETAS
 from engines.ticket_flow import estado_visible as flujo_estado_visible
 from engines.ticket_flow import ORDEN as FLUJO_ORDEN
 from engines.ticket_flow import acciones_disponibles as flujo_acciones
+from engines.ticket_flow import accion_principal as flujo_accion_principal
 from engines.ticket_flow import etiqueta as flujo_etiqueta
 from engines.ticket_flow import paso_actual as flujo_paso_actual
 from engines.ticket_flow import tono as flujo_tono
@@ -16535,6 +16536,37 @@ def render_ticket_styles():
         """,
         unsafe_allow_html=True,
     )
+    # Bandeja compacta: tarjeta clickeable entera, badges y acciones masivas.
+    st.markdown(
+        """
+        <style>
+        /* La tarjeta es un <a>: hay que devolverle el aspecto de bloque. */
+        a.ticket-request-card{display:block;text-decoration:none!important;color:inherit;
+          transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease;cursor:pointer}
+        a.ticket-request-card:hover{transform:translateY(-2px);border-color:#93C5FD;
+          box-shadow:0 12px 26px rgba(37,99,235,.14)}
+        a.ticket-request-card:focus-visible{outline:2px solid #2563EB;outline-offset:2px}
+        .ticket-request-foot{margin-top:9px}
+        .tb{display:inline-flex;align-items:center;min-height:22px;padding:2px 8px;border-radius:999px;
+          background:#F1F5F9;color:#475569;font-size:10px;font-weight:800;margin-right:5px}
+        .tb-red{background:#FEE2E2;color:#B91C1C}
+        .tb-amber{background:#FEF3C7;color:#92400E}
+        .tb-slate{background:#F1F5F9;color:#475569}
+        .tb-late{background:#FEE2E2;color:#B91C1C}
+        .tb-user{background:#EFF6FF;color:#1D4ED8;max-width:100%;overflow:hidden;
+          text-overflow:ellipsis;white-space:nowrap;display:inline-block}
+        .tb-user.sin{background:#F8FAFC;color:#94A3B8;font-style:italic}
+        .ticket-bulk{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;margin:0 0 8px;
+          border:1px solid #BFDBFE;border-radius:999px;background:#EFF6FF;color:#1D4ED8;
+          font-size:12px;font-weight:800}
+        .ticket-bulk b{font-size:14px}
+        /* Casilla y accion rapida pegadas a su tarjeta. */
+        .ticket-request-card+div [data-testid="stCheckbox"]{margin-top:-4px}
+        .ticket-request-card+div .stButton>button{padding:2px 8px;font-size:11px;min-height:30px}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_ticket_kpi_grid(items):
@@ -17380,25 +17412,95 @@ def _render_ticket_stepper(status):
     st.markdown(f'<div class="ticket-stepper">{"".join(rendered)}</div>', unsafe_allow_html=True)
 
 
+TICKETS_POR_PAGINA = 9
+
+# Tono del badge de prioridad. El estado ya tiene su propio color de borde.
+TONO_PRIORIDAD = {"urgent": "red", "high": "amber", "normal": "slate", "low": "slate"}
+
+
 def _ticket_card_html(ticket, selected=False):
+    """Tarjeta clickeable entera.
+
+    Es un <a> con `?ticket=CODIGO`: Streamlit lee el parametro al recargar y
+    abre el detalle. Antes habia que elegir el codigo en un selectbox aparte,
+    debajo de la rejilla, para abrir lo que ya estabas viendo.
+    """
     status = clean_value(ticket.get("status"))
     summary = ticket.get("summary") if isinstance(ticket.get("summary"), dict) else {}
     code = clean_value(ticket.get("code"))
     age = f"{ticket_age_hours(ticket):.0f} h"
-    status_label = STATE_LABELS.get(status, status)
-    priority = PRIORITY_LABELS.get(ticket.get("priority"), ticket.get("priority", "Normal"))
+    status_label = flujo_etiqueta(status)
+    priority_key = clean_value(ticket.get("priority")) or "normal"
+    priority = PRIORITY_LABELS.get(priority_key, priority_key)
     tone = _ticket_state_color(status)
     products = safe_int_value(summary.get("products"), 0)
     product_label = f"{products} modelo-color" if products == 1 else f"{products} modelo-colores"
+    responsable = clean_value(ticket.get("assignee")) or "Sin asignar"
+    clase_responsable = "tb-user" if clean_value(ticket.get("assignee")) else "tb-user sin"
+    vencida = ' <span class="tb tb-late">Vencida</span>' if ticket_is_overdue(ticket) else ""
     active_class = " selected" if selected else ""
     return (
-        f'<div class="ticket-request-card {tone}{active_class}">'
+        f'<a class="ticket-request-card {tone}{active_class}" href="?ticket={quote_plus(code)}" target="_self">'
         f'<div class="ticket-request-top"><strong class="ticket-request-code">{escape(code)}</strong>'
         f'<span class="ticket-state {tone}">{escape(status_label)}</span></div>'
         f'<div class="ticket-request-brand">{escape(clean_value(ticket.get("brand")) or "Sin marca")}</div>'
-        f'<div class="ticket-request-meta"><span>{escape(priority)}</span><span>{escape(product_label)}</span><span>{escape(age)}</span></div>'
-        f'<small class="ticket-request-requester">{escape(clean_value(ticket.get("requester")) or "Sin solicitante")}</small></div>'
+        f'<div class="ticket-request-meta">'
+        f'<span class="tb tb-{TONO_PRIORIDAD.get(priority_key, "slate")}">{escape(priority)}</span>'
+        f'<span class="tb">{escape(product_label)}</span>'
+        f'<span class="tb">{escape(age)}</span>{vencida}</div>'
+        f'<div class="ticket-request-foot"><span class="tb {clase_responsable}">{escape(responsable)}</span></div>'
+        f'</a>'
     )
+
+
+def _ejecutar_accion_ticket(service, actor, codigo, accion, comentario=""):
+    """Ejecuta una accion del flujo. Devuelve (ok, mensaje).
+
+    Un solo camino para las tres superficies que ejecutan acciones: el boton
+    rapido de la tarjeta, la accion masiva y la barra del detalle. Antes cada
+    una llamaba al servicio por su cuenta y se desincronizaban.
+    """
+    comentario = clean_value(comentario)
+    if accion.get("pide_comentario") and not comentario:
+        return False, f'"{accion["etiqueta"]}" necesita un comentario.'
+    if accion.get("requiere_archivo"):
+        return False, "Sube la versión corregida en la pestaña de archivos."
+    try:
+        metodo = getattr(service, accion["metodo"])
+        if accion["clave"] == "tomar":
+            # Tomar asigna al usuario que pulsa, siempre.
+            metodo(actor, codigo, actor.get("user"))
+        elif accion.get("destino"):
+            metodo(actor, codigo, accion["destino"], comentario)
+        elif accion["metodo"] == "record_job_result":
+            # Cierre manual: no depende de cantidades procesadas ni del
+            # resultado automatico del job.
+            metodo(actor, codigo, success=True, result={
+                "message": comentario or "Carga completada y registrada por el responsable.",
+                "closed_by": actor.get("user"),
+            })
+        elif accion.get("pide_comentario"):
+            metodo(actor, codigo, comentario)
+        else:
+            metodo(actor, codigo)
+        return True, f'{codigo}: {accion["etiqueta"]} aplicado.'
+    except TicketError as exc:
+        return False, f"{codigo}: {exc}"
+    except TypeError as exc:
+        return False, f'{codigo}: no se pudo ejecutar "{accion["etiqueta"]}" ({exc}).'
+
+
+def _accion_rapida(ticket, actor):
+    """La accion principal de un ticket, si se puede hacer de un solo click."""
+    accion = flujo_accion_principal(
+        clean_value(ticket.get("status")),
+        clean_value(actor.get("role")).casefold(),
+        ticket.get("assignee"),
+        actor.get("user"),
+    )
+    if not accion or accion.get("pide_comentario") or accion.get("requiere_archivo"):
+        return None
+    return accion
 
 
 def render_ticket_inbox(service, actor, brand_view=False):
@@ -17421,6 +17523,12 @@ def render_ticket_inbox(service, actor, brand_view=False):
     )
     if deleted_code:
         st.success(f"La solicitud {deleted_code} fue eliminada y ya no aparece en la bandeja.")
+    aviso_lote = clean_value(st.session_state.pop("_ticket_bulk_ok", ""))
+    if aviso_lote:
+        st.success(aviso_lote)
+    error_lote = clean_value(st.session_state.pop("_ticket_bulk_error", ""))
+    if error_lote:
+        st.warning(error_lote)
     try:
         all_tickets = service.list_tickets(actor)
     except TicketError as exc:
@@ -17583,36 +17691,163 @@ def render_ticket_inbox(service, actor, brand_view=False):
         st.info("No hay solicitudes que coincidan con los filtros actuales.")
         return
     ticket_codes = [clean_value(ticket.get("code")) for ticket in tickets]
+
+    # Al pulsar una tarjeta, el navegador vuelve con ?ticket=CODIGO. Se pasa a
+    # session_state y se limpia el parametro para que no quede clavado.
+    codigo_url = clean_value(st.query_params.get("ticket"))
+    if codigo_url:
+        st.session_state["selected_catalog_ticket"] = codigo_url
+        try:
+            del st.query_params["ticket"]
+        except (KeyError, TypeError):
+            pass
     selected_code = clean_value(st.session_state.get("selected_catalog_ticket"))
     if selected_code not in ticket_codes:
         selected_code = ticket_codes[0]
         st.session_state["selected_catalog_ticket"] = selected_code
+
+    pagina_key = f"ticket_pagina_{role_key}"
+    total_paginas = max(1, (len(tickets) + TICKETS_POR_PAGINA - 1) // TICKETS_POR_PAGINA)
+    pagina = min(max(1, safe_int_value(st.session_state.get(pagina_key), 1)), total_paginas)
+    st.session_state[pagina_key] = pagina
+    inicio = (pagina - 1) * TICKETS_POR_PAGINA
+    visible_cards = tickets[inicio:inicio + TICKETS_POR_PAGINA]
+
+    seleccion_key = f"ticket_seleccion_{role_key}"
+    seleccionados = [
+        codigo for codigo in st.session_state.get(seleccion_key, []) if codigo in ticket_codes
+    ]
+    st.session_state[seleccion_key] = seleccionados
+
     st.markdown(
         f'<div class="lista-head"><b>Solicitudes</b>'
         f'<span class="lista-contador">{len(tickets)}</span></div>',
         unsafe_allow_html=True,
     )
-    visible_cards = tickets[:12]
+
+    operativo = not brand_view and role_key in {ROLE_OPERATOR, ROLE_ADMIN}
+    if operativo and seleccionados:
+        _render_acciones_masivas(service, actor, tickets, seleccionados, seleccion_key)
+
+    # Rejilla de 3x3. La tarjeta es un enlace; debajo van la casilla de
+    # seleccion y la accion rapida, que son controles de Streamlit.
+    for fila_inicio in range(0, len(visible_cards), 3):
+        columnas = st.columns(3, gap="small")
+        for columna, ticket in zip(columnas, visible_cards[fila_inicio:fila_inicio + 3]):
+            codigo = clean_value(ticket.get("code"))
+            with columna:
+                st.markdown(
+                    _ticket_card_html(ticket, codigo == selected_code),
+                    unsafe_allow_html=True,
+                )
+                if not operativo:
+                    continue
+                marca_col, accion_col = st.columns([1, 2], gap="small")
+                marcado = marca_col.checkbox(
+                    "Sel.", value=codigo in seleccionados, key=f"sel_{role_key}_{codigo}"
+                )
+                if marcado and codigo not in seleccionados:
+                    seleccionados.append(codigo)
+                    st.session_state[seleccion_key] = seleccionados
+                elif not marcado and codigo in seleccionados:
+                    seleccionados.remove(codigo)
+                    st.session_state[seleccion_key] = seleccionados
+                accion = _accion_rapida(ticket, actor)
+                if accion is None:
+                    accion_col.caption("Sin acción directa")
+                    continue
+                if accion_col.button(
+                    accion["etiqueta"], key=f"quick_{role_key}_{codigo}",
+                    use_container_width=True, help=accion["ayuda"],
+                ):
+                    ok, mensaje = _ejecutar_accion_ticket(service, actor, codigo, accion)
+                    if ok:
+                        st.session_state["selected_catalog_ticket"] = codigo
+                        st.rerun()
+                    else:
+                        st.warning(mensaje)
+
+    if total_paginas > 1:
+        _render_paginacion(pagina, total_paginas, pagina_key)
+
+    render_ticket_detail(service, actor, selected_code)
+
+
+def _render_acciones_masivas(service, actor, tickets, seleccionados, seleccion_key):
+    """Aplica la accion principal a varias solicitudes de una vez."""
+    por_codigo = {clean_value(t.get("code")): t for t in tickets}
+    tomables = []
+    avanzables = []
+    for codigo in seleccionados:
+        ticket = por_codigo.get(codigo)
+        if not ticket:
+            continue
+        accion = _accion_rapida(ticket, actor)
+        if accion is None:
+            continue
+        (tomables if accion["clave"] == "tomar" else avanzables).append((codigo, accion))
+
     st.markdown(
-        f'<div class="ticket-request-grid">{"".join(_ticket_card_html(ticket, clean_value(ticket.get("code")) == selected_code) for ticket in visible_cards)}</div>',
+        f'<div class="ticket-bulk"><b>{len(seleccionados)}</b> seleccionadas</div>',
         unsafe_allow_html=True,
     )
-    if len(tickets) > len(visible_cards):
-        st.caption(f"Mostrando las primeras {len(visible_cards)} solicitudes de {len(tickets)}. Usa los filtros para acotar la bandeja.")
+    columnas = st.columns([1.4, 1.4, 1, 4], gap="small")
+    if columnas[0].button(
+        f"Tomar {len(tomables)}", key="bulk_tomar", type="primary",
+        use_container_width=True, disabled=not tomables,
+        help="Te asigna todas las seleccionadas que estén sin asignar.",
+    ):
+        _aplicar_en_lote(service, actor, tomables, seleccion_key)
+    if columnas[1].button(
+        f"Avanzar {len(avanzables)}", key="bulk_avanzar",
+        use_container_width=True, disabled=not avanzables,
+        help="Ejecuta el siguiente paso de cada una, sea el que sea.",
+    ):
+        _aplicar_en_lote(service, actor, avanzables, seleccion_key)
+    if columnas[2].button("Quitar", key="bulk_limpiar", use_container_width=True):
+        st.session_state[seleccion_key] = []
+        st.rerun()
 
-    ticket_labels = {
-        clean_value(ticket.get("code")): f"{clean_value(ticket.get('code'))} · {clean_value(ticket.get('brand')) or 'Sin marca'}"
-        for ticket in tickets
-    }
-    selected_code = st.selectbox(
-        "Abrir solicitud",
-        ticket_codes,
-        index=ticket_codes.index(selected_code),
-        format_func=lambda value: ticket_labels.get(value, value),
-        key=f"ticket_open_{role_key}",
-    )
-    st.session_state["selected_catalog_ticket"] = selected_code
-    render_ticket_detail(service, actor, selected_code)
+
+def _aplicar_en_lote(service, actor, pendientes, seleccion_key):
+    hechos, fallos = 0, []
+    for codigo, accion in pendientes:
+        ok, mensaje = _ejecutar_accion_ticket(service, actor, codigo, accion)
+        if ok:
+            hechos += 1
+        else:
+            fallos.append(mensaje)
+    if hechos:
+        st.session_state[seleccion_key] = []
+        st.session_state["_ticket_bulk_ok"] = f"{hechos} solicitud(es) actualizadas."
+    if fallos:
+        st.session_state["_ticket_bulk_error"] = " | ".join(fallos[:5])
+    st.rerun()
+
+
+def _render_paginacion(pagina, total_paginas, pagina_key):
+    """Anterior / números / siguiente."""
+    anchos = [1] + [0.55] * min(total_paginas, 7) + [1]
+    columnas = st.columns(anchos, gap="small")
+    if columnas[0].button("‹ Anterior", key=f"{pagina_key}_prev",
+                          disabled=pagina <= 1, use_container_width=True):
+        st.session_state[pagina_key] = pagina - 1
+        st.rerun()
+    # Con muchas paginas se muestra una ventana alrededor de la actual.
+    primera = max(1, min(pagina - 3, total_paginas - 6))
+    numeros = list(range(primera, min(primera + 7, total_paginas + 1)))
+    for columna, numero in zip(columnas[1:-1], numeros):
+        if columna.button(
+            str(numero), key=f"{pagina_key}_p{numero}",
+            type="primary" if numero == pagina else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state[pagina_key] = numero
+            st.rerun()
+    if columnas[-1].button("Siguiente ›", key=f"{pagina_key}_next",
+                           disabled=pagina >= total_paginas, use_container_width=True):
+        st.session_state[pagina_key] = pagina + 1
+        st.rerun()
 
 
 def _barra_pasos_html(status):
@@ -17787,73 +18022,71 @@ def render_barra_acciones(service, actor, ticket):
         st.caption("No hay acciones disponibles para esta solicitud en su estado actual.")
         return
 
-    # Barra de 4 pasos. Se omite cuando la solicitud ya entro en carga: ahi el
-    # seguimiento de 6 etapas ya dice lo mismo con mas detalle, y apilar las dos
-    # llenaba la pantalla de barras repetidas.
-    if flujo_seguimiento(estado)["indice_actual"] < 0:
-        paso = flujo_paso_actual(estado)
-        pasos_html = []
-        for indice, clave in enumerate(FLUJO_ORDEN, start=1):
-            clase = "hecho" if indice < paso else ("actual" if indice == paso else "")
-            pasos_html.append(
-                f'<div class="flujo-paso {clase}"><b>{indice}. {escape(FLUJO_ETIQUETAS[clave])}</b></div>'
-            )
-        st.markdown(f'<div class="flujo-barra">{"".join(pasos_html)}</div>', unsafe_allow_html=True)
-
+    # Sin barra de pasos aqui: el detalle ya dibuja una arriba. Antes se
+    # apilaban dos (y tres si la solicitud estaba en carga) diciendo lo mismo.
     principal = next((a for a in acciones if a.get("principal")), None)
+    directas = [a for a in acciones if not a.get("pide_comentario") and not a.get("requiere_archivo")]
+    con_comentario = [a for a in acciones if a.get("pide_comentario")]
+
     if principal:
         st.markdown(
             f'<div class="accion-hint"><b>Siguiente paso:</b> {escape(principal["ayuda"])}</div>',
             unsafe_allow_html=True,
         )
 
-    necesita_comentario = any(a.get("pide_comentario") for a in acciones)
-    comentario = ""
-    if necesita_comentario:
-        comentario = st.text_area(
-            "Comentario",
-            key=f"accion_comentario_{codigo}",
-            placeholder="Obligatorio para observar, reabrir o cancelar.",
-            height=70,
-        )
+    # Un click. Las destructivas y las que piden comentario van aparte, abajo.
+    if directas:
+        columnas = st.columns(len(directas))
+        for columna, accion in zip(columnas, directas):
+            if not columna.button(
+                accion["etiqueta"], key=f"accion_{accion['clave']}_{codigo}",
+                type="primary" if accion.get("principal") else "secondary",
+                use_container_width=True, help=accion["ayuda"],
+            ):
+                continue
+            ok, mensaje = _ejecutar_accion_ticket(service, actor, codigo, accion)
+            if ok:
+                st.rerun()
+            st.warning(mensaje)
 
-    columnas = st.columns(len(acciones))
-    for columna, accion in zip(columnas, acciones):
-        etiqueta = accion["etiqueta"]
-        destacado = "primary" if accion.get("principal") else "secondary"
-        if not columna.button(etiqueta, key=f"accion_{accion['clave']}_{codigo}",
-                              type=destacado, use_container_width=True,
-                              help=accion["ayuda"]):
-            continue
-        if accion.get("pide_comentario") and not clean_value(comentario):
-            st.warning(f'"{etiqueta}" necesita un comentario.')
-            continue
-        if accion.get("requiere_archivo"):
-            st.info("Sube la versión corregida en la sección de archivos.")
-            continue
-        try:
-            metodo = getattr(service, accion["metodo"])
-            if accion["clave"] == "tomar":
-                metodo(actor, codigo, actor.get("user"))
-            elif accion.get("destino"):
-                # "reabrir" y "publicar_shopify": van a un estado concreto.
-                metodo(actor, codigo, accion["destino"], clean_value(comentario))
-            elif accion["metodo"] == "record_job_result":
-                # success es obligatorio y va por nombre; sin esto el boton
-                # "Finalizar solicitud" reventaba con TypeError.
-                metodo(actor, codigo, success=True, result={
-                    "message": clean_value(comentario) or "Solicitud cerrada desde la barra de acciones.",
-                    "closed_by": actor.get("user"),
-                })
-            elif accion.get("pide_comentario"):
-                metodo(actor, codigo, clean_value(comentario))
-            else:
-                metodo(actor, codigo)
-            st.rerun()
-        except TicketError as exc:
-            _mostrar_error_ticket(exc, codigo)
-        except TypeError as exc:
-            st.error(f'No se pudo ejecutar "{etiqueta}": {exc}')
+    if con_comentario:
+        etiquetas = ", ".join(a["etiqueta"] for a in con_comentario)
+        with st.expander(f"Otras acciones ({etiquetas})", expanded=False):
+            comentario = st.text_area(
+                "Comentario", key=f"accion_comentario_{codigo}",
+                placeholder="Obligatorio para observar, reabrir o cancelar.", height=70,
+            )
+            observaciones = []
+            if any(a["clave"] == "observar" for a in con_comentario):
+                detalle = st.columns(2)
+                producto = detalle[0].text_input("Producto / Mod-Col", key=f"observed_product_{codigo}")
+                campo = detalle[1].text_input("Campo", key=f"observed_field_{codigo}")
+                encontrado = detalle[0].text_input("Valor encontrado", key=f"observed_found_{codigo}")
+                sugerido = detalle[1].text_input("Corrección recomendada", key=f"observed_recommendation_{codigo}")
+                if any(clean_value(v) for v in (producto, campo, encontrado, sugerido)):
+                    observaciones.append({
+                        "Producto": clean_value(producto), "Campo": clean_value(campo),
+                        "Valor encontrado": clean_value(encontrado),
+                        "Corrección recomendada": clean_value(sugerido),
+                    })
+            columnas = st.columns(len(con_comentario))
+            for columna, accion in zip(columnas, con_comentario):
+                if not columna.button(
+                    accion["etiqueta"], key=f"accion_{accion['clave']}_{codigo}",
+                    use_container_width=True, help=accion["ayuda"],
+                ):
+                    continue
+                if accion["clave"] == "observar" and observaciones:
+                    try:
+                        service.request_correction(actor, codigo, clean_value(comentario), observaciones)
+                        st.rerun()
+                    except TicketError as exc:
+                        _mostrar_error_ticket(exc, codigo)
+                    continue
+                ok, mensaje = _ejecutar_accion_ticket(service, actor, codigo, accion, comentario)
+                if ok:
+                    st.rerun()
+                st.warning(mensaje)
 
 
 def render_ticket_detail(service, actor, code):
@@ -17992,169 +18225,49 @@ def render_ticket_detail(service, actor, code):
                     _mostrar_error_ticket(exc, code)
     if role in {ROLE_OPERATOR, ROLE_ADMIN}:
         render_barra_acciones(service, actor, ticket)
-        st.markdown(
-            '<div class="ticket-section"><p class="ticket-section-label">Gestión interna</p>'
-            '<h3>Gestionar solicitud</h3></div>',
-            unsafe_allow_html=True,
-        )
-        current_priority = ticket.get("priority", "normal")
-        priority_options = list(PRIORITIES)
-        priority_col, priority_action = st.columns([2, 1])
-        selected_priority = priority_col.selectbox(
-            "Prioridad y SLA",
-            priority_options,
-            index=priority_options.index(current_priority) if current_priority in priority_options else 1,
-            format_func=lambda value: PRIORITY_LABELS.get(value, value),
-            key=f"ticket_priority_{code}",
-        )
-        if priority_action.button("Actualizar prioridad", key=f"save_ticket_priority_{code}"):
-            try:
-                service.set_priority(actor, code, selected_priority)
-                st.rerun()
-            except TicketError as exc:
-                _mostrar_error_ticket(exc, code)
-        if status in {STATE_PENDING, STATE_ASSIGNED, STATE_REVIEW, STATE_OBSERVED, STATE_CORRECTED, STATE_APPROVED, STATE_FAILED}:
-            assign_cols = st.columns([2, 1])
-            operator_options = ticket_operator_users()
-            current_assignee = _normalize_auth_username(ticket.get("assignee"))
-            assignee_index = operator_options.index(current_assignee) if current_assignee in operator_options else 0
-            assignee = assign_cols[0].selectbox(
-                "Responsable de carga",
-                operator_options,
-                index=assignee_index,
-                format_func=ticket_operator_display_name,
-                key=f"assign_user_{code}",
-            )
-            if assign_cols[1].button("Guardar responsable", key=f"assign_other_{code}"):
-                try:
-                    service.assign(actor, code, assignee)
-                    st.rerun()
-                except TicketError as exc:
-                    _mostrar_error_ticket(exc, code)
-        if status in {STATE_PENDING, STATE_ASSIGNED, STATE_CORRECTED}:
-            if st.button("Iniciar revisión", key=f"review_{code}"):
-                try:
-                    service.start_review(actor, code)
-                    st.rerun()
-                except TicketError as exc:
-                    _mostrar_error_ticket(exc, code)
-        if status in {STATE_REVIEW, STATE_CORRECTED}:
-            review_comment = st.text_area("Observación o decisión", key=f"review_comment_{code}")
-            with st.expander("Agregar observación por producto o campo"):
-                observation_cols = st.columns(2)
-                observed_product = observation_cols[0].text_input("Producto / Mod-Col", key=f"observed_product_{code}")
-                observed_field = observation_cols[1].text_input("Campo", key=f"observed_field_{code}")
-                found_value = observation_cols[0].text_input("Valor encontrado", key=f"observed_found_{code}")
-                recommendation = observation_cols[1].text_input("Corrección recomendada", key=f"observed_recommendation_{code}")
-            structured_observations = []
-            if any(clean_value(value) for value in [observed_product, observed_field, found_value, recommendation]):
-                structured_observations.append(
-                    {
-                        "Producto": clean_value(observed_product),
-                        "Campo": clean_value(observed_field),
-                        "Valor encontrado": clean_value(found_value),
-                        "Corrección recomendada": clean_value(recommendation),
-                    }
+        # Ajustes secundarios. Las transiciones de estado viven SOLO en la barra
+        # de acciones de arriba: antes se repetian aqui abajo (Iniciar revision,
+        # Aprobar, Rechazar, Validar, Registrar carga, Finalizar...), de modo
+        # que el mismo cambio se ofrecia en dos sitios con reglas distintas.
+        with st.expander("Ajustes de la solicitud", expanded=False):
+            ajuste_prioridad, ajuste_responsable = st.columns(2, gap="medium")
+            with ajuste_prioridad:
+                current_priority = ticket.get("priority", "normal")
+                priority_options = list(PRIORITIES)
+                selected_priority = st.selectbox(
+                    "Prioridad",
+                    priority_options,
+                    index=priority_options.index(current_priority) if current_priority in priority_options else 1,
+                    format_func=lambda value: PRIORITY_LABELS.get(value, value),
+                    key=f"ticket_priority_{code}",
                 )
-            action_cols = st.columns(3)
-            if action_cols[0].button("Solicitar corrección", key=f"observe_{code}"):
-                try:
-                    service.request_correction(actor, code, review_comment, structured_observations)
-                    st.rerun()
-                except TicketError as exc:
-                    _mostrar_error_ticket(exc, code)
-            if action_cols[1].button("Aprobar", type="primary", key=f"approve_{code}"):
-                try:
-                    service.approve(actor, code, review_comment)
-                    st.rerun()
-                except TicketError as exc:
-                    _mostrar_error_ticket(exc, code)
-            if action_cols[2].button("Rechazar", key=f"reject_{code}"):
-                try:
-                    service.reject(actor, code, review_comment)
-                    st.rerun()
-                except TicketError as exc:
-                    _mostrar_error_ticket(exc, code)
-        if status == STATE_APPROVED:
-            run_cols = st.columns(2)
-            if run_cols[0].button("Validar solicitud", key=f"dry_run_{code}"):
-                try:
-                    service.run_dry_run(actor, code)
-                    st.rerun()
-                except TicketError as exc:
-                    _mostrar_error_ticket(exc, code)
-            if ticket.get("dry_run", {}).get("status") == "completed" and run_cols[1].button("Registrar carga iniciada", type="primary", key=f"start_load_{code}"):
-                try:
-                    service.start_load(actor, code)
-                    st.rerun()
-                except TicketError as exc:
-                    _mostrar_error_ticket(exc, code)
-        if status == STATE_FAILED:
-            if st.button("Reintentar carga", type="primary", key=f"retry_load_{code}"):
-                try:
-                    service.start_load(actor, code)
-                    st.rerun()
-                except TicketError as exc:
-                    _mostrar_error_ticket(exc, code)
-        if status in {STATE_LOADING, STATE_VALIDATING}:
-            st.markdown(
-                '<div class="ticket-section"><p class="ticket-section-label">Cierre operativo</p>'
-                '<h3>Finalizar carga</h3>'
-                '<p>Cuando verifiques la carga en Shopify, registra aquí el resultado final.</p></div>',
-                unsafe_allow_html=True,
-            )
-            close_cols = st.columns([1, 2])
-            close_outcome = close_cols[0].selectbox(
-                "Resultado",
-                ["Completada", "Completada con incidencias"],
-                key=f"close_ticket_outcome_{code}",
-            )
-            close_note = close_cols[1].text_area(
-                "Comentario de cierre",
-                key=f"close_ticket_note_{code}",
-                placeholder="Resumen breve de la carga y de cualquier incidencia.",
-            )
-            close_confirmed = st.checkbox(
-                "Confirmo que revisé la carga en Shopify y puedo cerrar la solicitud.",
-                key=f"close_ticket_confirmed_{code}",
-            )
-            has_incidents = close_outcome == "Completada con incidencias"
-            # El cierre solo se habilita cuando el proceso dejó evidencia real.
-            # El total solicitado no cuenta como un resultado verificable.
-            processed_count = safe_int_value(job.get("processed"), 0)
-            has_verifiable_result = bool(saved_result) or processed_count > 0
-            close_result = {
-                "processed": processed_count,
-                "errors": 0,
-                "warnings": 1 if has_incidents else 0,
-                "successful": processed_count,
-                "message": clean_value(close_note) or "Carga finalizada y registrada.",
-                "detail": clean_value(close_note),
-                "closed_by": actor.get("user"),
-                "filename": latest_version.get("filename") or ticket.get("filename"),
-                "file_version": latest_version.get("number", 1),
-                "file_hash": latest_version.get("hash") or ticket.get("file_hash"),
-            }
-            final_label = "Finalizar con incidencias" if has_incidents else "Finalizar solicitud de carga"
-            if not has_verifiable_result:
-                st.caption("El cierre se habilitará cuando la carga registre al menos un producto procesado o un resultado final.")
-            if st.button(
-                final_label,
-                type="primary",
-                key=f"complete_load_{code}",
-                disabled=not (close_confirmed and has_verifiable_result),
-            ):
-                try:
-                    service.record_job_result(
-                        actor,
-                        code,
-                        success=True,
-                        observations=has_incidents,
-                        result=close_result,
-                    )
-                    st.rerun()
-                except TicketError as exc:
-                    _mostrar_error_ticket(exc, code)
+                if selected_priority != current_priority and st.button(
+                    "Guardar prioridad", key=f"save_ticket_priority_{code}", use_container_width=True
+                ):
+                    try:
+                        service.set_priority(actor, code, selected_priority)
+                        st.rerun()
+                    except TicketError as exc:
+                        _mostrar_error_ticket(exc, code)
+            with ajuste_responsable:
+                operator_options = ticket_operator_users()
+                current_assignee = _normalize_auth_username(ticket.get("assignee"))
+                assignee_index = operator_options.index(current_assignee) if current_assignee in operator_options else 0
+                assignee = st.selectbox(
+                    "Responsable de carga",
+                    operator_options,
+                    index=assignee_index,
+                    format_func=ticket_operator_display_name,
+                    key=f"assign_user_{code}",
+                )
+                if assignee != current_assignee and st.button(
+                    "Reasignar", key=f"assign_other_{code}", use_container_width=True
+                ):
+                    try:
+                        service.assign(actor, code, assignee)
+                        st.rerun()
+                    except TicketError as exc:
+                        _mostrar_error_ticket(exc, code)
         if is_ticket_operator_user(actor.get("user")):
             with st.expander("Eliminar solicitud", expanded=False):
                 delete_reason = st.text_area("Motivo de eliminación", key=f"delete_ticket_reason_{code}")

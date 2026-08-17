@@ -16540,12 +16540,17 @@ def render_ticket_styles():
     st.markdown(
         """
         <style>
-        /* La tarjeta es un <a>: hay que devolverle el aspecto de bloque. */
-        a.ticket-request-card{display:block;text-decoration:none!important;color:inherit;
-          transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease;cursor:pointer}
-        a.ticket-request-card:hover{transform:translateY(-2px);border-color:#93C5FD;
+        /* Enlace estirado: cubre la tarjeta sin envolver su contenido. */
+        .ticket-request-card{cursor:pointer;
+          transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease}
+        .ticket-request-card:hover{transform:translateY(-2px);border-color:#93C5FD;
           box-shadow:0 12px 26px rgba(37,99,235,.14)}
-        a.ticket-request-card:focus-visible{outline:2px solid #2563EB;outline-offset:2px}
+        .ticket-card-hit{position:absolute;inset:0;z-index:2;display:block;
+          border-radius:11px;text-decoration:none!important}
+        .ticket-card-hit:focus-visible{outline:2px solid #2563EB;outline-offset:2px}
+        /* El contenido va por encima del :before del borde de color. */
+        .ticket-request-top,.ticket-request-brand,.ticket-request-meta,
+        .ticket-request-foot{position:relative;z-index:1}
         .ticket-request-foot{margin-top:9px}
         .tb{display:inline-flex;align-items:center;min-height:22px;padding:2px 8px;border-radius:999px;
           background:#F1F5F9;color:#475569;font-size:10px;font-weight:800;margin-right:5px}
@@ -17421,9 +17426,11 @@ TONO_PRIORIDAD = {"urgent": "red", "high": "amber", "normal": "slate", "low": "s
 def _ticket_card_html(ticket, selected=False):
     """Tarjeta clickeable entera.
 
-    Es un <a> con `?ticket=CODIGO`: Streamlit lee el parametro al recargar y
-    abre el detalle. Antes habia que elegir el codigo en un selectbox aparte,
-    debajo de la rejilla, para abrir lo que ya estabas viendo.
+    El enlace es un <a> VACIO estirado sobre la tarjeta, no un <a> que envuelva
+    el contenido: el renderizador de Markdown de Streamlit cierra los elementos
+    en linea antes del primer bloque, asi que envolver los <div> en un <a>
+    partia la tarjeta en cajas sueltas. Con el enlace vacio, el HTML de la
+    tarjeta queda igual que siempre y toda su superficie sigue siendo pulsable.
     """
     status = clean_value(ticket.get("status"))
     summary = ticket.get("summary") if isinstance(ticket.get("summary"), dict) else {}
@@ -17440,7 +17447,9 @@ def _ticket_card_html(ticket, selected=False):
     vencida = ' <span class="tb tb-late">Vencida</span>' if ticket_is_overdue(ticket) else ""
     active_class = " selected" if selected else ""
     return (
-        f'<a class="ticket-request-card {tone}{active_class}" href="?ticket={quote_plus(code)}" target="_self">'
+        f'<div class="ticket-request-card {tone}{active_class}">'
+        f'<a class="ticket-card-hit" href="?ticket={quote_plus(code)}" target="_self" '
+        f'title="Abrir {escape(code)}" aria-label="Abrir {escape(code)}"></a>'
         f'<div class="ticket-request-top"><strong class="ticket-request-code">{escape(code)}</strong>'
         f'<span class="ticket-state {tone}">{escape(status_label)}</span></div>'
         f'<div class="ticket-request-brand">{escape(clean_value(ticket.get("brand")) or "Sin marca")}</div>'
@@ -17449,7 +17458,7 @@ def _ticket_card_html(ticket, selected=False):
         f'<span class="tb">{escape(product_label)}</span>'
         f'<span class="tb">{escape(age)}</span>{vencida}</div>'
         f'<div class="ticket-request-foot"><span class="tb {clase_responsable}">{escape(responsable)}</span></div>'
-        f'</a>'
+        f'</div>'
     )
 
 

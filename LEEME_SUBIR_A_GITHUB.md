@@ -83,12 +83,28 @@ Ahora es **un botón**, sin depender de cantidades ni del resultado automático
 del job, y el `result` que se guarda ya no lleva `processed` ni `successful`.
 La acción se llama **"Completar carga"**.
 
+## Corrección de la primera versión
+
+La primera entrega rompió la tarjeta: salía partida en cajas sueltas apiladas.
+Causa: envolví los `<div>` de la tarjeta dentro de un `<a>`. El renderizador de
+Markdown de Streamlit **cierra los elementos en línea antes del primer bloque**,
+así que cada `<div>` se emitía como una caja aparte.
+
+Corregido con *stretched link*: la tarjeta vuelve a ser un `<div>` (la
+estructura que siempre funcionó) y el enlace es un `<a>` **vacío** estirado por
+CSS sobre toda su superficie. Hay una prueba dedicada que falla si alguien
+vuelve a meter un bloque dentro del enlace.
+
 ## Comprobado
 
+- **Renderizado real, en navegador**: 6 tarjetas enteras, 3 por fila, sin scroll
+  horizontal; el enlace mide 357x154 sobre una tarjeta de 359x156 y
+  `elementFromPoint` devuelve el enlace en el centro, sobre el texto y en la
+  esquina. Un clic en la tercera tarjeta llevó a `?ticket=CAT-2026-000029`.
 - **La app levanta**: arranque headless real, `HTTP 200`, sin trazas en el log.
 - Suite completa: **23 en verde**. Siguen fallando `test_auth_accesos` y
   `test_brand_commercial_input`, preexistentes y ya conocidos. Cero regresiones.
-- `scripts/test_bandeja_solicitudes.py`: 16 pruebas nuevas — tarjeta como enlace,
+- `scripts/test_bandeja_solicitudes.py`: 17 pruebas nuevas — tarjeta como enlace,
   escapado del código en la URL, badges, la cadena de 5 pasos, que *Tomar* asigna
   a quien pulsa, que *Completar carga* no manda cantidades, que lo que pide
   comentario no se ofrece como atajo, y el reparto de 9 por página.

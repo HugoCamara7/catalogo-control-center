@@ -12,6 +12,7 @@ Nunca registra ni devuelve el token.
 
 import base64
 import json
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -22,9 +23,31 @@ AVISO = "aviso"
 
 API = "https://api.github.com"
 
+# Codigos que no dicen nada del token ni de la configuracion: es GitHub que en
+# ese instante no atendio. El 503 llega con el texto "No server is currently
+# available to service your request". Se reintenta antes de dar por caido el
+# almacenamiento, porque un unico hipo dejaba la app entera en rojo.
+CODIGOS_TRANSITORIOS = (0, 429, 500, 502, 503, 504)
+REINTENTOS = 3
 
-def _peticion(metodo, url, token, payload=None, timeout=15):
-    """Devuelve (codigo, datos). Nunca lanza por HTTP."""
+
+def _peticion(metodo, url, token, payload=None, timeout=15, reintentos=REINTENTOS):
+    """Devuelve (codigo, datos). Nunca lanza por HTTP.
+
+    Reintenta los codigos transitorios con espera creciente. Un 401 o un 404 se
+    devuelven de inmediato: reintentar un token invalido solo pierde tiempo.
+    """
+    codigo, datos = 0, {}
+    for intento in range(1, max(1, reintentos) + 1):
+        codigo, datos = _peticion_una_vez(metodo, url, token, payload, timeout)
+        if codigo not in CODIGOS_TRANSITORIOS:
+            return codigo, datos
+        if intento < reintentos:
+            time.sleep(min(2 ** (intento - 1), 4))
+    return codigo, datos
+
+
+def _peticion_una_vez(metodo, url, token, payload=None, timeout=15):
     cuerpo = json.dumps(payload).encode("utf-8") if payload is not None else None
     peticion = Request(url, data=cuerpo, method=metodo, headers={
         "Accept": "application/vnd.github+json",
@@ -76,6 +99,18 @@ def check_github_store(owner, repo, token, branch="catalog-tickets",
     elif codigo == 401:
         pasos.append(_paso("Token", FALLA, "GitHub lo rechaza (401).",
                            "El token expiro o esta mal copiado. Genera uno nuevo y pegalo en Secrets."))
+        return {"pasos": pasos, "persistente": False}
+    elif codigo in CODIGOS_TRANSITORIOS:
+        # Ni el token ni la configuracion tienen la culpa: GitHub no atendio.
+        # Mandarlo a revisar Secrets lo hace perder el tiempo buscando donde no es.
+        pasos.append(_paso(
+            "Token", AVISO,
+            f"GitHub no respondio ({codigo}): {datos.get('message', '')[:160]}. "
+            f"Se reintento {REINTENTOS} veces.",
+            "No es el token: es GitHub que no atendio. Mira githubstatus.com y "
+            "vuelve a pulsar 'Probar escritura real' en un minuto. Mientras tanto "
+            "no se puede confirmar si las solicitudes se estan guardando.",
+        ))
         return {"pasos": pasos, "persistente": False}
     else:
         pasos.append(_paso("Token", FALLA, f"Respuesta {codigo}: {datos.get('message', '')}",

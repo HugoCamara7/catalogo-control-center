@@ -190,6 +190,53 @@ class TestPropagacionAlGrupo(unittest.TestCase):
         self.assertIn("fantasma", filas["nuevo-wsa"]["Mensaje"])
 
 
+class TestDescripcionParaCentry(unittest.TestCase):
+    """Centry publicaba 'Caracteristicas Cinturon ajustable para...'.
+
+    Los <h3> del Body HTML son rotulos de seccion, no contenido: al aplanar el
+    HTML se quedaban pegados delante del texto.
+    """
+
+    def setUp(self):
+        self.cuerpo = g.build_body_html({
+            "Descripcion": "El mocasin Auckland es la eleccion perfecta.",
+            "Caracteristicas": "Capellada: 100% Cuero|Forro: 100% Cuero",
+            "Materiales": "CUERO",
+            "Cuidados": "",
+        })
+
+    def test_no_empieza_con_el_rotulo(self):
+        texto = g.texto_plano_de_body(self.cuerpo)
+        self.assertTrue(texto.startswith("El mocasin Auckland"), texto[:60])
+
+    def test_no_menciona_ningun_rotulo(self):
+        texto = g.texto_plano_de_body(self.cuerpo)
+        for rotulo in ("Descripción", "Descripcion", "Características", "Caracteristicas", "Materiales"):
+            self.assertNotIn(rotulo, texto)
+
+    def test_los_bullets_no_se_pegan(self):
+        # Antes salia "Capellada: 100% Cuero Forro: 100% Cuero".
+        texto = g.texto_plano_de_body(self.cuerpo)
+        self.assertIn("Capellada: 100% Cuero. Forro: 100% Cuero", texto)
+
+    def test_conserva_todo_el_contenido(self):
+        texto = g.texto_plano_de_body(self.cuerpo)
+        self.assertIn("El mocasin Auckland es la eleccion perfecta", texto)
+        self.assertIn("Cuero", texto)
+
+    def test_no_deja_puntos_repetidos(self):
+        texto = g.texto_plano_de_body(self.cuerpo)
+        self.assertNotIn("..", texto)
+        self.assertNotIn(" .", texto)
+
+    def test_vacio(self):
+        self.assertEqual(g.texto_plano_de_body(""), "")
+        self.assertEqual(g.texto_plano_de_body(None), "")
+
+    def test_texto_sin_html_pasa_igual(self):
+        self.assertEqual(g.texto_plano_de_body("Solo texto plano"), "Solo texto plano")
+
+
 class TestTextoPlanoSinCss(unittest.TestCase):
     def test_el_css_no_se_cuela_como_texto(self):
         cuerpo = '<div><style>.p{margin:0;padding:2px}</style><p>Zapatilla de cuero.</p></div>'

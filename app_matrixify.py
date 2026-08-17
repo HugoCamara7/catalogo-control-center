@@ -4033,7 +4033,12 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         )
         barcode = first_non_empty(arti_item.get("barcode"), row.get("Variant Barcode"))
         tal_value = first_non_empty(arti_item.get("raw_size"), raw_size)
-        variant_centry_sku = barcode or variant_sku
+        # El SKU de la variante es el SKU, no el EAN. El EAN tiene su propia
+        # columna. Antes esto era `barcode or variant_sku`: mientras BigQuery no
+        # devolvia codigos de barra daba igual, pero al empezar a llegar el EAN
+        # se metia en la columna del SKU y el codigo interno desaparecia.
+        # El barcode queda solo como respaldo para la variante que no traiga SKU.
+        variant_centry_sku = variant_sku or barcode
         class_name = category_record.get("class") or ("Calzado" if is_footwear else "Vestuario")
         material = centry_material_from_row(row)
         composition = centry_composition_from_row(row)

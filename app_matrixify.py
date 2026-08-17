@@ -143,6 +143,7 @@ from generate_columbia_matrixify import (
     split_model_color,
     split_pipe_items,
     strip_html,
+    texto_plano_de_body,
     is_zero_size,
     read_arti_source,
 )
@@ -4053,7 +4054,7 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             {
                 "Nombre del Producto": title,
                 "Marca": vendor,
-                "Descripcion": strip_html(row.get("Body HTML")),
+                "Descripcion": texto_plano_de_body(row.get("Body HTML")),
                 "Listado de caracterÃ­sticas": characteristics,
                 "GarantÃ­a": "3 meses, GarantÃ­a del vendedor",
                 "Alto del paquete": first_non_empty(dimensions.get("height"), fallback_package["height"]),
@@ -4211,7 +4212,7 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
                 "Tal": tal_value,
                 "Product Name ": centry_value(row.get("Title")) or mod_col,
                 "Product Bullets": centry_bullets(row, vendor, product_type, color, gender),
-                "Product Description": strip_html(row.get("Body HTML")),
+                "Product Description": texto_plano_de_body(row.get("Body HTML")),
                 "Image URL": image,
                 "Product Weight": first_non_empty(package.get("weight"), fallback_package["weight"]),
                 "Product Length": first_non_empty(package.get("length"), fallback_package["length"]),

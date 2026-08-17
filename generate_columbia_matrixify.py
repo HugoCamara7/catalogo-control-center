@@ -876,6 +876,35 @@ def strip_html(value):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def texto_plano_de_body(value):
+    """Texto plano del Body HTML para Centry y Sial, sin los rotulos de seccion.
+
+    Los <h3> del cuerpo son rotulos ("Descripcion", "Caracteristicas",
+    "Materiales", "Cuidados"), no contenido. Al aplanar el HTML con strip_html
+    se quedaban pegados delante del texto y Centry terminaba publicando
+    "Caracteristicas Cinturon ajustable para un ajuste perfecto...". Se
+    descartan enteros, rotulo y etiqueta.
+
+    Ademas, el cierre de cada bloque pasa a punto: sin eso los bullets se
+    pegaban unos con otros en una sola tira de palabras. Antes los rotulos
+    hacian de separador por accidente; al quitarlos hay que poner uno de verdad.
+    """
+    texto = clean(value)
+    if not texto:
+        return ""
+    texto = re.sub(
+        r"<\s*h[1-6][^>]*>.*?<\s*/\s*h[1-6]\s*>", " ", texto, flags=re.IGNORECASE | re.DOTALL
+    )
+    texto = re.sub(
+        r"<\s*/\s*(p|li|div|section|ul|ol|tr)\s*>", ". ", texto, flags=re.IGNORECASE
+    )
+    texto = strip_html(texto)
+    # El reemplazo deja ".." donde el texto ya terminaba en punto.
+    texto = re.sub(r"\s*\.(?:\s*\.)+", ".", texto)
+    texto = re.sub(r"\s+([.,;:])", r"\1", texto)
+    return re.sub(r"\s+", " ", texto).strip().strip(".").strip()
+
+
 def first_non_empty(*values):
     for value in values:
         text = clean(value)

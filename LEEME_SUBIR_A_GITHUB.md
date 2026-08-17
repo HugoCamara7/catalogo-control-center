@@ -124,7 +124,33 @@ Corregido: ahora descarta `<style>` y `<script>` enteros. Si algún producto de
 Hush Puppies tiene un body heredado con CSS, esto es parte de por qué se veía
 raro.
 
-## 6. "Almacenamiento sin persistir" por un 503 de GitHub
+## 6. Centry repetía "Descripción" y "Características" en el texto
+
+En la carga parcial de Centry, la columna `Descripcion` salía así:
+
+```
+Características Cinturón ajustable para un ajuste perfecto Se guarda en el bolsillo...
+Descripción Bastones de Trekking de Aluminio Azules Columbia. Equípate para...
+```
+
+Los `<h3>` del Body HTML son **rótulos de sección**, no contenido. `strip_html()`
+quitaba las etiquetas pero dejaba el texto del rótulo, y se pegaba delante de la
+descripción.
+
+`texto_plano_de_body()` los descarta enteros. Y de paso arregla algo que el
+rótulo tapaba por accidente: los bullets se pegaban unos con otros. Ahora cada
+bloque cierra con punto.
+
+| | |
+|---|---|
+| Antes | `Descripción El mocasín Auckland… Características Capellada: 100% Cuero Forro: 100% Cuero Suela:…` |
+| Ahora | `El mocasín Auckland… Capellada: 100% Cuero. Forro: 100% Cuero. Suela:…` |
+
+Se aplica en las dos salidas que nacen del Body HTML: `Descripcion` de Centry y
+`Product Description` de Carga Sial. Regenerado con tu input: **0 de 450 filas
+empiezan por un rótulo** (antes, las 450).
+
+## 7. "Almacenamiento sin persistir" por un 503 de GitHub
 
 El diagnóstico decía "Respuesta 503: No server is currently available… Revisa el
 token en Secrets". El token no tenía nada que ver: un rechazo de token es **401**.

@@ -109,12 +109,28 @@ class _ServicioFalso:
 
 
 class TestTarjetaClickeable(unittest.TestCase):
-    def test_la_tarjeta_entera_es_un_enlace(self):
+    def test_la_tarjeta_entera_es_clickeable(self):
         html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT))
-        self.assertIn('<a class="ticket-request-card', html)
+        self.assertIn('<a class="ticket-card-hit"', html)
         self.assertIn('href="?ticket=CAT-2026-000031"', html)
         self.assertIn('target="_self"', html)
-        self.assertTrue(html.rstrip().endswith("</a>"))
+
+    def test_el_enlace_va_vacio_y_la_raiz_es_un_div(self):
+        """Regresión: la tarjeta se rompió en cajas sueltas.
+
+        El renderizador de Markdown de Streamlit cierra los elementos en línea
+        antes del primer bloque. Con los <div> envueltos en un <a>, cada bloque
+        salía como una caja aparte, apilada. El enlace tiene que ir vacío y
+        estirado por CSS sobre una tarjeta que sigue siendo un <div>.
+        """
+        html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT))
+        self.assertTrue(html.startswith('<div class="ticket-request-card'), html[:60])
+        self.assertTrue(html.rstrip().endswith("</div>"))
+        self.assertIn("></a>", html, "el <a> debe cerrarse vacío, sin contenido dentro")
+        # Ningún <div> puede quedar entre la apertura y el cierre del enlace.
+        entre = html[html.index("<a class="):html.index("</a>")]
+        self.assertNotIn("<div", entre)
+        self.assertNotIn("<span", entre)
 
     def test_trae_los_badges_de_estado_prioridad_y_responsable(self):
         html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT, asignada="hugo.camara@forus.pe"))

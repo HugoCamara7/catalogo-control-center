@@ -862,7 +862,17 @@ def valid_price(value):
 
 
 def strip_html(value):
-    text = re.sub(r"<[^>]+>", " ", clean(value))
+    """Texto plano de un HTML.
+
+    El contenido de <style> y <script> se descarta ENTERO, no solo sus
+    etiquetas. Quitando solo las etiquetas, el CSS de un body heredado se
+    colaba como texto: iba a parar a la descripcion corta, al bullet de Sial y
+    a la columna Descripcion de Centry, que salen de aqui.
+    """
+    text = re.sub(
+        r"<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>", " ", clean(value), flags=re.IGNORECASE | re.DOTALL
+    )
+    text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -2537,6 +2547,78 @@ def prepare_matrixify_context(matrixify_source, brand_config=None):
     return matrixify_columns, matrixify_df
 
 
+def handles_de_siblings(value):
+    """Lee una lista de siblings del catalogo y devuelve solo handles.
+
+    El valor puede venir de tres formas: lista JSON (los metafields de tipo
+    list.* se exportan asi), texto separado por comas, o IDs de producto
+    (`gid://shopify/Product/123`) cuando el metafield es list.product_reference.
+    Los IDs se descartan: aqui se trabaja con handles, y el ID se resuelve
+    despues, al sincronizar.
+    """
+    texto = clean(value)
+    if not texto:
+        return []
+    items = []
+    if texto.startswith("["):
+        try:
+            cargado = json.loads(texto)
+            items = [clean(item) for item in cargado] if isinstance(cargado, list) else []
+        except (ValueError, TypeError):
+            items = []
+    if not items:
+        items = [clean(item) for item in split_pipe_items(texto)]
+    return [item for item in items if item and not item.lower().startswith("gid://")]
+
+
+def siblings_ya_publicados(matrixify_df):
+    """Handles que ya viven en Shopify, agrupados por codigo de modelo.
+
+    El input de una carga trae **solo los colores de ese dia**. Si los siblings
+    se calcularan unicamente con eso, un modelo con tres colores publicados que
+    hoy recibe uno nuevo terminaria con la relacion reducida al color nuevo: se
+    borrarian relaciones validas que ya existian.
+
+    Se agrupa por el codigo de modelo del metafield codigo_modelo_color y,
+    ademas, se recoge lo que cada producto ya tenga en su propia lista de
+    siblings. Eso segundo cubre a los productos cuyo codigo_modelo_color esta
+    vacio en Shopify, que de otro modo quedarian sueltos.
+    """
+    por_modelo = {}
+    if matrixify_df is None or matrixify_df.empty or "Handle" not in matrixify_df.columns:
+        return por_modelo
+
+    columnas_siblings = [
+        columna
+        for columna in (SIBLINGS_COLUMN, CUSTOM_SIBLINGS_COLUMN)
+        if columna in matrixify_df.columns
+    ]
+    tiene_clave = PRODUCT_KEY_COLUMN in matrixify_df.columns
+    modelo_por_handle = {}
+    siblings_por_handle = {}
+
+    for _, fila in matrixify_df.iterrows():
+        handle = clean(fila.get("Handle"))
+        if not handle:
+            continue
+        if tiene_clave and handle not in modelo_por_handle:
+            modelo = model_code(clean(fila.get(PRODUCT_KEY_COLUMN)).upper())
+            if modelo:
+                modelo_por_handle[handle] = modelo
+        for columna in columnas_siblings:
+            relacionados = handles_de_siblings(fila.get(columna))
+            if relacionados:
+                siblings_por_handle.setdefault(handle, []).extend(relacionados)
+
+    for handle, modelo in modelo_por_handle.items():
+        por_modelo.setdefault(modelo, []).append(handle)
+        # Lo que ese producto ya declaraba como hermano tambien pertenece al grupo.
+        for relacionado in siblings_por_handle.get(handle, []):
+            por_modelo[modelo].append(relacionado)
+
+    return {modelo: list(dict.fromkeys(handles)) for modelo, handles in por_modelo.items()}
+
+
 def build_existing_lookup(matrixify_df):
     product_by_key = {}
     product_by_handle = {}
@@ -3382,11 +3464,20 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         or normalize_handle(row.get("Handle Input") or row.get("Handle"), row.get("Mod-Col")),
         axis=1,
     )
-    siblings_by_model = (
+    # Los siblings se recalculan en CADA carga completa, uniendo los colores que
+    # trae el input con los que ya estan publicados para el mismo modelo. Nunca
+    # se reemplaza la relacion por lo que traiga el input del dia: eso borraria
+    # los colores cargados antes.
+    siblings_publicados = siblings_ya_publicados(matrixify_df)
+    siblings_del_input = (
         input_df.groupby("__MODEL")["__HANDLE"]
-        .apply(lambda values: ", ".join(dict.fromkeys(clean(value) for value in values if clean(value))))
+        .apply(lambda values: [clean(value) for value in values if clean(value)])
         .to_dict()
     )
+    siblings_by_model = {}
+    for modelo in set(siblings_del_input) | set(siblings_publicados):
+        handles = list(siblings_del_input.get(modelo, [])) + list(siblings_publicados.get(modelo, []))
+        siblings_by_model[modelo] = ", ".join(dict.fromkeys(handle for handle in handles if handle))
     brand_column = detect_brand_column(input_df)
     image_lookup = build_image_lookup_by_brand(input_df, brand_column, brand_config)
     wanted_keys = set(input_df["__KEY"])

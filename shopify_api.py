@@ -1348,6 +1348,40 @@ def inventory_activate(config, inventory_item_id, location_id, available=None):
     return payload.get("inventoryLevel") or {}
 
 
+def fetch_product_id_by_handle(config, handle):
+    """ID del producto a partir de su handle. Devuelve "" si no existe.
+
+    Se usa para enlazar productos relacionados (siblings): el metacampo pide
+    `gid://shopify/Product/...` y el generador solo conoce el handle. Va por
+    `products(query:)` y no por `productByHandle`, que esta deprecado.
+    """
+    shop_domain, api_version, token = _client(config)
+    handle = clean(handle)
+    if not handle:
+        return ""
+    query = """
+    query ProductIdByHandleForMatrixify($query: String!) {
+      products(first: 1, query: $query) {
+        nodes {
+          id
+          handle
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        query,
+        {"query": f"handle:{handle}"},
+        api_version=api_version,
+    )
+    for node in (data.get("products") or {}).get("nodes") or []:
+        if clean(node.get("handle")).lower() == handle.lower():
+            return clean(node.get("id"))
+    return ""
+
+
 def fetch_product_options_and_variants(config, product_id):
     shop_domain, api_version, token = _client(config)
     query = """

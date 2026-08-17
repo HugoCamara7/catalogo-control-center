@@ -238,6 +238,7 @@ wait_file_statuses = _shopify_attr("wait_file_statuses")
 wait_media_statuses = _shopify_attr("wait_media_statuses")
 fetch_metaobjects_for_definition = _shopify_attr("fetch_metaobjects_for_definition", None)
 fetch_metafield_definition = _shopify_attr("fetch_metafield_definition", None)
+fetch_product_id_by_handle = _shopify_attr("fetch_product_id_by_handle", None)
 
 try:
     from centry_static_masters import (
@@ -7842,6 +7843,64 @@ def _metafield_can_write_direct(column, field_type=None):
 # que resolverlo a `gid://shopify/Product/...` primero.
 TIPOS_REFERENCIA_A_PRODUCTO = ("product_reference", "list.product_reference")
 
+# La clave de los metacampos de productos relacionados. La relacion es del grupo
+# entero: cuando entra un color nuevo hay que reescribirla en todos sus hermanos,
+# no solo en el que se esta cargando.
+ES_LISTA_DE_SIBLINGS = "siblings"
+
+
+def _valor_de_siblings_para_api(field_type, valores):
+    """Formatea la lista de hermanos segun el tipo del metacampo."""
+    if field_type in TIPOS_REFERENCIA_A_PRODUCTO or field_type.startswith("list."):
+        if field_type.startswith("list."):
+            return json.dumps(valores, ensure_ascii=False)
+        return valores[0] if valores else ""
+    return ", ".join(valores)
+
+
+def _recordar_gid_de_handle(handle, gid):
+    """Guarda el ID de un producto recien creado o actualizado.
+
+    La sincronizacion procesa **un producto por llamada** (`_sync_job_run_one_product`
+    filtra el snapshot a un solo handle), asi que dentro de una llamada solo se
+    conoce el ID de ese producto. La cache vive en la sesion y va acumulando los
+    de toda la corrida.
+    """
+    handle = clean_value(handle).lower()
+    gid = clean_value(gid)
+    if not handle or not gid:
+        return
+    st.session_state.setdefault("gid_por_handle_shopify", {})[handle] = gid
+
+
+def _gid_de_producto_por_handle(shopify_config, handle, conocidos=None):
+    """ID del producto para un handle: primero la tanda, luego la cache, luego Shopify.
+
+    Los hermanos de un producto suelen ser otros productos de la misma carga que
+    ya se crearon en llamadas anteriores. Preguntarle a Shopify es lo que hace
+    que el enlace funcione tambien procesando de a uno.
+
+    Solo se cachean los aciertos: un hermano que todavia no existe debe poder
+    resolverse mas adelante, cuando se cree.
+    """
+    handle = clean_value(handle).lower()
+    if not handle:
+        return ""
+    if conocidos and conocidos.get(handle):
+        return conocidos[handle]
+    cache = st.session_state.setdefault("gid_por_handle_shopify", {})
+    if cache.get(handle):
+        return cache[handle]
+    if fetch_product_id_by_handle is None:
+        return ""
+    try:
+        gid = clean_value(fetch_product_id_by_handle(shopify_config, handle))
+    except Exception:
+        return ""
+    if gid:
+        cache[handle] = gid
+    return gid
+
 
 def _tipo_metafield_de_la_tienda(shopify_config, namespace, key):
     """Tipo REAL de la definicion del metacampo, leido de la tienda.
@@ -9672,10 +9731,12 @@ def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=N
                 # Manda la definicion de la tienda. La cabecera de Matrixify y la
                 # tabla interna son solo el respaldo.
                 field_type = _tipo_metafield_de_la_tienda(shopify_config, namespace, key) or _metafield_type_from_column(column)
-                if field_type in TIPOS_REFERENCIA_A_PRODUCTO:
-                    # Trae handles y hay que mandar IDs de producto. Varios de
-                    # esos productos todavia no existen en este punto de la
-                    # carga: se resuelve al final, cuando ya estan todos.
+                if field_type in TIPOS_REFERENCIA_A_PRODUCTO or key == ES_LISTA_DE_SIBLINGS:
+                    # Dos motivos para dejarlo al final:
+                    #   - las referencias traen handles y hay que mandar IDs, y
+                    #     varios de esos productos aun no existen aqui;
+                    #   - la relacion es del GRUPO: al cargar un color nuevo hay
+                    #     que actualizar tambien a los colores ya publicados.
                     referencias_a_producto.setdefault(handle, []).append(
                         (namespace, key, field_type, _split_tags(value))
                     )
@@ -9973,6 +10034,9 @@ def apply_full_product_updates(shopify_config, matrixify_df, progress_callback=N
             if handle:
                 gid_por_handle[handle.lower()] = product_gid
                 fila_por_handle[handle] = fila_resultado
+                # Queda en la cache de la sesion para que los productos que se
+                # sincronicen despues puedan enlazarlo sin volver a preguntar.
+                _recordar_gid_de_handle(handle, product_gid)
             if progress_callback:
                 progress_callback(position, total_products, handle, f"Finalizado {product_status}", " | ".join(product_messages[-3:]))
         except Exception as exc:
@@ -10019,7 +10083,7 @@ def _escribir_referencias_a_producto(
         return
     total = len(referencias_a_producto)
     for posicion, (handle, pendientes) in enumerate(referencias_a_producto.items(), start=1):
-        propietario = gid_por_handle.get(clean_value(handle).lower())
+        propietario = _gid_de_producto_por_handle(shopify_config, handle, gid_por_handle)
         fila = fila_por_handle.get(handle)
         if not propietario:
             continue
@@ -10028,40 +10092,52 @@ def _escribir_referencias_a_producto(
         mensajes = []
         hubo_error = False
         for namespace, key, field_type, handles_destino in pendientes:
-            gids = []
+            gid_por_destino = {}
             sin_resolver = []
             for destino in handles_destino:
-                gid = gid_por_handle.get(clean_value(destino).lower())
+                gid = _gid_de_producto_por_handle(shopify_config, destino, gid_por_handle)
                 if gid:
-                    gids.append(gid)
+                    gid_por_destino[clean_value(destino).lower()] = gid
                 else:
                     sin_resolver.append(destino)
-            gids = list(dict.fromkeys(gids))
-            if not gids:
+            if not gid_por_destino:
                 hubo_error = True
                 mensajes.append(f"{namespace}.{key}: ningun producto relacionado existe todavia en Shopify")
                 continue
-            valor = json.dumps(gids, ensure_ascii=False) if field_type.startswith("list.") else gids[0]
-            try:
-                metafields_set(
-                    shopify_config,
-                    [
-                        {
-                            "ownerId": propietario,
-                            "namespace": namespace,
-                            "key": key,
-                            "type": field_type,
-                            "value": valor,
-                        }
-                    ],
-                )
-                detalle = f"{namespace}.{key}: {len(gids)} productos enlazados"
+
+            gids = list(dict.fromkeys(gid_por_destino.values()))
+            handles_vivos = [h for h in handles_destino if clean_value(h).lower() in gid_por_destino]
+            es_referencia = field_type in TIPOS_REFERENCIA_A_PRODUCTO
+            valor = _valor_de_siblings_para_api(field_type, gids if es_referencia else handles_vivos)
+
+            # La relacion es del grupo: se escribe la MISMA lista en todos sus
+            # miembros. Asi, al entrar un color nuevo, los que ya estaban
+            # publicados quedan apuntando tambien al nuevo.
+            destinatarios = list(dict.fromkeys([propietario] + gids)) if key == ES_LISTA_DE_SIBLINGS else [propietario]
+            escritos = 0
+            for destinatario in destinatarios:
+                try:
+                    metafields_set(
+                        shopify_config,
+                        [
+                            {
+                                "ownerId": destinatario,
+                                "namespace": namespace,
+                                "key": key,
+                                "type": field_type,
+                                "value": valor,
+                            }
+                        ],
+                    )
+                    escritos += 1
+                except Exception as exc:
+                    hubo_error = True
+                    mensajes.append(f"{namespace}.{key} en {destinatario}: {exc}")
+            if escritos:
+                detalle = f"{namespace}.{key}: {len(gids)} relacionados, escrito en {escritos} producto(s)"
                 if sin_resolver:
                     detalle += f" ({len(sin_resolver)} sin resolver: {', '.join(sin_resolver[:3])})"
                 mensajes.append(detalle)
-            except Exception as exc:
-                hubo_error = True
-                mensajes.append(f"{namespace}.{key}: {exc}")
         if fila is None or not mensajes:
             continue
         fila["Mensaje"] = ". ".join(filter(None, [fila.get("Mensaje"), " | ".join(mensajes)]))

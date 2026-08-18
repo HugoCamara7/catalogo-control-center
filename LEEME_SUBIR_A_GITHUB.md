@@ -43,6 +43,33 @@ valores, reemplazas el Excel y no se toca Python.
   duplicados como `Tipo de cuello - Tipo de cuello -`). Se respetan tal cual
   porque Centry espera ese nombre exacto.
 
+## Columnas: 98 → 90, sin duplicados ni basura
+
+La primera versión añadía las columnas nuevas **encima** de la lista vieja en
+vez de reemplazarla. Y la lista vieja estaba **con mojibake**: `CategorÃ­a`,
+`GarantÃ­a`, `PerÃº`. Como esos nombres no coinciden con los de la plantilla,
+cada columna salía **dos veces**: la rota y la buena. Más `cccc`,
+`INFORMACIÓN ADICIONAL` y `Unnamed: 52`..`Unnamed: 56`.
+
+Dos cambios:
+
+1. **`CENTRY_COLUMNS` sale ahora de la plantilla**, no de listas escritas a mano
+   (`_centry_columns_desde_plantilla`). Si no se puede leer el Excel, vuelve a
+   las listas de antes para que la app siga funcionando.
+2. **Se reparó el mojibake del archivo**: 170 líneas, 13 secuencias
+   (`Ã³`→`ó`, `Ã­`→`í`, `Ãº`→`ú`…). Se respetaron los alias de **doble**
+   codificación, que son intencionales para leer datos ya corruptos.
+
+| | antes | ahora |
+|---|---|---|
+| Columnas Centry | 98 | **90** |
+| Basura / duplicadas | 7 | **0** |
+
+Comprobado que no se perdió dato al limpiar los nombres: `Nombre`, `Marca`,
+`Descripcion`, `Listado de características`, `Garantía`, `Categoría`, `Talla`,
+`Género`, `Estado` e `URL imagen principal` siguen en 450/450, y `Color` en 67,
+igual que antes.
+
 ## Corrección del NameError
 
 La primera versión reventaba la carga parcial:

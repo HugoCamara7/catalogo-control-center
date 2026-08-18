@@ -139,6 +139,61 @@ class TestCategoria(unittest.TestCase):
         self.assertIn("no reconocido", aviso)
 
 
+class TestCategoriaDeducida(unittest.TestCase):
+    """Cuando el tipo no esta para ese genero, se deduce en vez de dejarlo vacio."""
+
+    def test_deduce_del_mismo_tipo_en_otro_genero(self):
+        # "Polos / Mujer" no esta; "Polos / Hombre" si.
+        categoria, aviso = cm.resolver_categoria("Rockford", "Polos", "Mujer")
+        self.assertEqual(categoria, "Vestuario / Ropa Femenina / Poleras Manga Corta")
+        self.assertIn("deducida", aviso)
+
+    def test_traduce_el_segmento_de_genero(self):
+        self.assertEqual(
+            cm._traducir_categoria("Vestuario / Ropa Masculina / Blusas", "Mujer"),
+            "Vestuario / Ropa Femenina / Blusas",
+        )
+        self.assertEqual(
+            cm._traducir_categoria("Calzados / Calzados Masculinos / Botines", "Mujer"),
+            "Calzados / Calzados Femeninos / Botines",
+        )
+
+    def test_una_categoria_sin_genero_vale_para_todos(self):
+        base = "Accesorios / Bolsos, Carteras y Mochilas / Mochilas"
+        self.assertEqual(cm._traducir_categoria(base, "Mujer"), base)
+
+    def test_no_deduce_cruzando_adulto_e_infantil(self):
+        """Deducir Mujer desde Niñas daba "Vestuario / Infantil / Ropa Femenina"."""
+        self.assertNotIn("Niñ", cm._generos_cercanos("Mujer"))
+        self.assertNotIn("Mujer", cm._generos_cercanos("Niñas"))
+        categoria, _ = cm.resolver_categoria("Rockford", "Cortavientos", "Mujer")
+        self.assertNotIn("Infantil", categoria)
+
+    def test_la_generica_sale_de_contar_la_tabla(self):
+        self.assertEqual(cm.categoria_generica(cm.SUPERIOR, "Mujer"), "Vestuario / Ropa Femenina")
+        self.assertEqual(cm.categoria_generica(cm.CALZADO, "Hombre"), "Calzados / Calzados Masculinos")
+        self.assertEqual(cm.categoria_generica(cm.ACCESORIOS, "Mujer"), "Accesorios / Femeninos")
+
+    def test_siempre_hay_categoria_para_los_casos_reales(self):
+        """La lista de fallos que reportó la carga real: ninguno puede quedar vacío."""
+        casos = [
+            ("Bastones", "Mujer"), ("Blusas", "Mujer"), ("Maletines", "Mujer"),
+            ("Botines", "Hombre"), ("Chullos", "Mujer"), ("Casacas", "Niños"),
+            ("Cortavientos", "Mujer"), ("Enterizos", "Mujer"), ("Guantes", "Mujer"),
+            ("Polos", "Niños"), ("Sombreros", "Mujer"), ("Mochilas", "Mujer"),
+            ("Cuchillas", "Mujer"), ("Impermeables", "Hombre"), ("Tazas", "Unisex Adultos"),
+            ("Ropa De Baño", "Mujer"), ("Interior Térmico", "Hombre"),
+        ]
+        sin_categoria = [
+            f"{t}/{g}" for t, g in casos if not cm.resolver_categoria("Rockford", t, g)[0]
+        ]
+        self.assertEqual(sin_categoria, [], f"quedaron sin categoría: {sin_categoria}")
+
+    def test_la_deducida_siempre_avisa(self):
+        _, aviso = cm.resolver_categoria("Rockford", "Blusas", "Mujer")
+        self.assertTrue(aviso, "una categoría no exacta tiene que avisar")
+
+
 class TestValores(unittest.TestCase):
     def test_devuelve_la_ortografia_de_la_plantilla(self):
         valor, ok = cm.valor_valido("Tipo de caña - Calzado (Falabella GSC Perú)", "BAJA")

@@ -152,6 +152,35 @@ class TestTarjetaClickeable(unittest.TestCase):
         self.assertIn("href=\"?ticket=CAT+2026%2F01\"", html)
 
 
+class TestControlesEnLaTarjeta(unittest.TestCase):
+    """La casilla y la accion rapida van dentro de la tarjeta, abajo."""
+
+    def test_reserva_la_franja_cuando_hay_controles(self):
+        html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT), con_controles=True)
+        self.assertIn("con-controles", html)
+
+    def test_sin_controles_no_reserva_nada(self):
+        html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT))
+        self.assertNotIn("con-controles", html)
+
+
+class TestOrdenDelLote(unittest.TestCase):
+    def test_las_etapas_salen_en_el_orden_del_recorrido(self):
+        self.assertEqual(
+            app.ORDEN_ACCIONES_LOTE[:5],
+            ["tomar", "revisar", "aprobar", "ejecutar", "finalizar"],
+        )
+
+    def test_toda_accion_rapida_tiene_su_lugar(self):
+        # Si se agrega una accion principal nueva al flujo y no se ordena aqui,
+        # el boton de lote saldria al final sin criterio.
+        principales = {
+            a["clave"] for a in flujo.ACCIONES
+            if a.get("principal") and not a.get("pide_comentario") and not a.get("requiere_archivo")
+        }
+        self.assertTrue(principales <= set(app.ORDEN_ACCIONES_LOTE), principales - set(app.ORDEN_ACCIONES_LOTE))
+
+
 class TestAccionRapida(unittest.TestCase):
     def test_una_sin_asignar_ofrece_tomar(self):
         accion = app._accion_rapida(ticket(flujo.PENDING_ASSIGNMENT), OPERADOR)

@@ -96,6 +96,7 @@ TERMINOS_FAMILIA = [
         # Tipos del diccionario de la app que no estaban cubiertos.
         "chullo", "pasamontana", "cuellera", "cooler", "funda para lata",
         "cuchilla", "maletin", "cantimplora", "silbato", "brujula", "linterna",
+        "taza", "vaso", "jarro", "mug",
     )),
     (INFERIOR, (
         "pantalon", "short", "bermuda", "jogger", "falda", "legging", "calza",
@@ -106,6 +107,7 @@ TERMINOS_FAMILIA = [
         "abrigo", "sweater", "chompa", "poleron", "hoodie", "canguro superior",
         "cortavientos", "parka", "blusa", "top", "bividi", "musculosa", "vestido",
         "enterizo", "buzo", "primera capa", "polar", "hoody", "hoodie",
+        "impermeable", "rompeviento", "anorak",
     )),
 ]
 
@@ -326,7 +328,7 @@ def _categoria_mas_general(opciones):
     return min(opciones, key=lambda texto: (texto.count("/"), len(texto)))
 
 
-def resolver_categoria(marca="", tipo="", genero="", ruta=None):
+def resolver_categoria(marca="", tipo="", genero="", familia="", ruta=None):
     """(categoria, aviso). categoria vacia = no se encontro y queda pendiente.
 
     La marca concreta gana sobre "Todos". Si la clave trae varias categorias se
@@ -365,6 +367,37 @@ def resolver_categoria(marca="", tipo="", genero="", ruta=None):
             f'se eligio la categoria general{origen}; revisar si corresponde '
             f'{" o ".join(descartadas)}'
         )
+    # 2) No esta en la tabla: se deduce del mismo tipo en otro genero.
+    deducida, origen = deducir_categoria(marca, tipo, genero, ruta)
+    if deducida:
+        return deducida, f"categoría deducida: {origen}. Revisar."
+
+    # 3) Ultima red: la categoria base de su familia y genero, para que el
+    #    producto no se quede sin categoria y Centry lo acepte igual.
+    if not familia:
+        # La CLASE del diccionario entra aqui tambien: "Slip Ons" no coincide
+        # con ningun termino, pero el diccionario dice que es Calzado.
+        _, clase_tipo, _ = resolver_tipo(tipo)
+        familia = detectar_familia(tipo, clase_tipo)[0]
+        if not familia and "vestuario" in normalizar(clase_tipo):
+            # Superior e inferior comparten la misma base de categoria
+            # ("Vestuario / Ropa Femenina"), asi que para la generica da igual.
+            familia = SUPERIOR
+    if familia:
+        generica = categoria_generica(familia, genero_normalizado, ruta)
+        if not generica:
+            # Ese genero no tiene datos para esa familia: se traduce el de otro
+            # genero del mismo bloque.
+            for otro in _generos_cercanos(genero_normalizado):
+                base = categoria_generica(familia, otro, ruta)
+                if base:
+                    generica = _traducir_categoria(base, genero_normalizado)
+                    break
+        if generica:
+            return generica, (
+                f'categoría genérica de {ETIQUETA_FAMILIA.get(familia, familia)} / '
+                f'{genero_normalizado}: no hay regla para "{_texto(tipo)}". Revisar.'
+            )
     return "", (
         f'no hay categoria para tipo "{_texto(tipo)}" y genero {genero_normalizado}'
     )
@@ -498,3 +531,145 @@ def resumen_plantilla(ruta=None):
         })
     filas.append({"Hoja": HOJA_CATEGORIAS, "Columnas": len(plantilla["categorias"]), "Con diccionario": ""})
     return filas
+
+
+# --- categoria deducida ---------------------------------------------------
+# Segmentos que cambian con el genero. Cada fila son equivalentes entre si, en
+# el orden de GENEROS_EQUIVALENTES. Salen de la propia tabla de la plantilla.
+GENEROS_EQUIVALENTES = ("Hombre", "Mujer", "Niños", "Niñas", "Unisex Adultos", "Unisex Niños")
+
+SEGMENTOS_EQUIVALENTES = [
+    ("Ropa Masculina", "Ropa Femenina", "Niños", "Niña", "Ropa Masculina", "Niños"),
+    ("Calzados Masculinos", "Calzados Femeninos", "Calzado de Niño", "Calzado de Niña",
+     "Calzados Masculinos", "Calzado de Niño"),
+    ("Deporte Masculino", "Deporte Femenino", "Deporte Masculino", "Deporte Femenino",
+     "Deporte Masculino", "Deporte Masculino"),
+    ("Masculinos", "Femeninos", "Infantiles", "Infantiles", "Masculinos", "Infantiles"),
+]
+
+_INDICE_SEGMENTO = {}
+for _fila in SEGMENTOS_EQUIVALENTES:
+    for _pos, _segmento in enumerate(_fila):
+        _INDICE_SEGMENTO.setdefault(normalizar(_segmento), {})[GENEROS_EQUIVALENTES[_pos]] = _fila
+
+
+def _traducir_categoria(categoria, genero_destino):
+    """Cambia el segmento de genero de una categoria. "" si no se puede.
+
+    "Vestuario / Ropa Masculina / Blusas" con destino Mujer da
+    "Vestuario / Ropa Femenina / Blusas". Si la categoria no lleva ningun
+    segmento de genero (Accesorios / Bolsos... / Mochilas) vale para cualquiera
+    y se devuelve igual.
+    """
+    if genero_destino not in GENEROS_EQUIVALENTES:
+        return ""
+    destino = GENEROS_EQUIVALENTES.index(genero_destino)
+    partes = [parte.strip() for parte in _texto(categoria).split("/")]
+    if not partes:
+        return ""
+    cambiadas = 0
+    salida = []
+    for parte in partes:
+        fila = None
+        for candidata in SEGMENTOS_EQUIVALENTES:
+            if any(normalizar(seg) == normalizar(parte) for seg in candidata):
+                fila = candidata
+                break
+        if fila is None:
+            salida.append(parte)
+            continue
+        salida.append(fila[destino])
+        cambiadas += 1
+    if cambiadas:
+        return " / ".join(salida)
+    # Sin segmento de genero: la misma categoria sirve para todos.
+    return " / ".join(salida)
+
+
+def deducir_categoria(marca, tipo, genero, ruta=None):
+    """Categoria para un (tipo, genero) que no esta en la tabla.
+
+    Busca el MISMO tipo bajo otro genero y traduce el segmento de genero. Es lo
+    que haria una persona: si "Blusas / Hombre" es "Vestuario / Ropa Masculina /
+    Blusas", entonces "Blusas / Mujer" es "Vestuario / Ropa Femenina / Blusas".
+
+    Devuelve (categoria, origen). origen dice de donde se dedujo, para que la
+    advertencia lo diga y se pueda revisar.
+    """
+    plantilla = cargar_plantilla(ruta)
+    tabla = plantilla["categorias"]
+    genero_destino = normalizar_genero(genero)
+    clave_tipo = _singular(tipo)
+    if not genero_destino or not clave_tipo:
+        return "", ""
+
+    # Primero la misma marca, luego Todos, y dentro de cada una el genero mas
+    # parecido: del mismo "bloque" (adulto o infantil) antes que del otro.
+    orden_generos = _generos_cercanos(genero_destino)
+    for marca_clave in (normalizar(marca), "todos"):
+        if not marca_clave:
+            continue
+        for genero_origen in orden_generos:
+            opciones = tabla.get((marca_clave, clave_tipo, normalizar(genero_origen)))
+            if not opciones:
+                continue
+            base = _categoria_mas_general(opciones)
+            traducida = _traducir_categoria(base, genero_destino)
+            if traducida:
+                marca_txt = "la misma marca" if marca_clave != "todos" else "Todos"
+                return traducida, f'deducida de "{tipo}" / {genero_origen} ({marca_txt})'
+    return "", ""
+
+
+def _generos_cercanos(genero):
+    """Los otros generos del MISMO bloque (adulto o infantil).
+
+    No se cruza entre bloques a proposito: deducir "Cortavientos / Mujer" desde
+    "Niñas" daba "Vestuario / Infantil / Ropa Femenina / Cortavientos", que es
+    una categoria que no existe. Sin fuente del mismo bloque se deja pendiente.
+    """
+    adultos = ["Hombre", "Mujer", "Unisex Adultos"]
+    ninos = ["Niños", "Niñas", "Unisex Niños"]
+    bloque = adultos if genero in adultos else ninos
+    return [g for g in bloque if g != genero]
+
+
+# --- red final: categoria por familia + genero ---------------------------
+_GENERICAS = {}
+
+
+def categoria_generica(familia, genero, ruta=None):
+    """La categoria base mas usada para esa familia y ese genero.
+
+    Es la ultima red: cuando el tipo no esta en la tabla ni se puede deducir de
+    otro genero, el producto igual necesita una categoria para que Centry lo
+    acepte. Se calcula CONTANDO la propia tabla de la plantilla (no es una lista
+    escrita a mano): para cada entrada se mira a que familia pertenece su tipo y
+    se guarda el prefijo de dos niveles de su categoria; gana el mas repetido.
+
+    Siempre queda marcado en la advertencia como categoria generica.
+    """
+    global _GENERICAS
+    plantilla = cargar_plantilla(ruta)
+    clave_cache = plantilla["__clave__"]
+    if _GENERICAS.get("__clave__") != clave_cache:
+        conteo = {}
+        for (_marca, tipo, gen), categorias in plantilla["categorias"].items():
+            fam, _ = detectar_familia(tipo)
+            if not fam:
+                continue
+            for categoria in categorias:
+                partes = [p.strip() for p in categoria.split("/") if p.strip()]
+                if len(partes) < 2:
+                    continue
+                prefijo = " / ".join(partes[:2])
+                conteo.setdefault((fam, gen), {}).setdefault(prefijo, 0)
+                conteo[(fam, gen)][prefijo] += 1
+        _GENERICAS = {"__clave__": clave_cache}
+        for clave, opciones in conteo.items():
+            _GENERICAS[clave] = max(opciones.items(), key=lambda par: (par[1], -len(par[0])))[0]
+
+    genero_normalizado = normalizar_genero(genero)
+    if not familia or not genero_normalizado:
+        return ""
+    return _GENERICAS.get((familia, normalizar(genero_normalizado)), "")

@@ -1,7 +1,5 @@
 # Qué subir — bandeja de solicitudes + SKU/EAN
 
-## Archivos
-
 | Archivo | Ruta | |
 |---|---|---|
 | `app_matrixify.py` | raíz | modificado |
@@ -11,107 +9,80 @@
 
 ---
 
-## 1. Bandeja: menos clicks
+## 1. La tarjeta
 
-**Tarjeta clickeable entera.** Cada tarjeta es un `<a href="?ticket=CODIGO">`;
-Streamlit lee el parámetro y abre el detalle. **Se eliminó el selector "Abrir
-solicitud"** que había debajo de la rejilla: obligaba a volver a elegir en una
-lista el ticket que ya estabas viendo.
+**Clickeable entera.** Enlace estirado (`<a>` vacío en posición absoluta) sobre
+la tarjeta. Se eliminó el selector "Abrir solicitud" que había debajo de la
+rejilla.
 
-**9 por página + paginación.** Antes se cortaba en 12 con el aviso "usa los
-filtros para acotar". Ahora hay `‹ Anterior · 1 2 3 · Siguiente ›`, con ventana
-de 7 números cuando hay muchas páginas.
+**Casilla en la esquina inferior derecha.** La tarjeta reserva una franja de
+46px abajo y el enlace deja de cubrirla, así que la casilla y la acción rápida
+viven dentro de la tarjeta sin que el enlace les robe el click. Medido en el
+navegador: casilla a **13px del borde derecho y 13px del inferior**.
 
-**Selección múltiple y acción masiva.** Casilla en cada tarjeta y una barra que
-aparece al seleccionar: **Tomar N** (asigna todas las que estén libres) y
-**Avanzar N** (ejecuta el siguiente paso de cada una, sea el que sea). El
-resultado sale resumido: cuántas avanzaron y cuáles fallaron y por qué.
+**9 por página** con `‹ Anterior · 1 2 3 · Siguiente ›`.
 
-**Acción rápida por tarjeta.** Debajo de cada una, un botón con su siguiente
-paso. Un click, sin abrir el detalle. Solo aparece cuando la acción se puede
-hacer sin escribir nada; observar o cancelar siguen pidiendo comentario.
+**Badges:** estado, prioridad (rojo urgente, ámbar alta), productos,
+antigüedad, `Vencida`, y responsable en gris cursiva si está sin asignar.
 
-**Badges claros:** estado (con el color del borde), prioridad (rojo urgente,
-ámbar alta), productos, antigüedad, `Vencida` si pasó el SLA, y responsable
-(en gris cursiva si está sin asignar).
+## 2. Selección múltiple: un botón por etapa
 
-## 2. Estados: se acabó la duplicación
-
-El detalle tenía **dos** juegos de controles para lo mismo: la barra de acciones
-y, debajo, un bloque "Gestión interna" con *Iniciar revisión*, *Solicitar
-corrección*, *Aprobar*, *Rechazar*, *Validar solicitud*, *Registrar carga
-iniciada*, *Reintentar carga* y *Finalizar carga*. El mismo cambio de estado se
-ofrecía en dos sitios, con reglas distintas.
-
-**Ahora las transiciones viven solo en la barra de acciones**, que sale de
-`engines/ticket_flow`. Un click por acción. Lo que exige comentario (observar,
-reabrir, cancelar) queda plegado en "Otras acciones".
-
-De "Gestión interna" solo sobrevive lo que no es una transición: prioridad y
-reasignar, dentro de "Ajustes de la solicitud", y el botón de guardar aparece
-solo si cambiaste el valor.
-
-También se quitó la barra de 4 pasos que `render_barra_acciones` dibujaba: el
-detalle ya pinta una arriba. Se apilaban dos, y tres cuando la carga estaba en
-marcha.
-
-## 3. El flujo que pediste
+Al marcar varias sale una barra con **un botón por cada etapa alcanzable** y
+cuántas seleccionadas pueden ir:
 
 ```
-Tomar solicitud → Iniciar revisión → Aprobar para carga → Ejecutar carga → Completar carga
+3 seleccionadas · 1 sin acción
+[ Iniciar revisión (2) ]  [ Ejecutar carga (1) ]  [ Quitar ]
 ```
 
-Un click cada uno, desde la tarjeta o desde el detalle. **Tomar asigna siempre
-al usuario que pulsa.**
+Cada botón aplica solo a las suyas. Los botones salen en el orden del recorrido,
+incluida la cadena larga de cierre (SIAL → precios → validación → cierre).
 
-No se tocó la máquina de estados: los 19 estados internos y sus permisos siguen
-igual, en `ticket_system`. Lo que cambió es cuántos clicks cuesta recorrerla.
+## 3. Detalle simplificado
 
-## 4. Completar carga: manual de verdad
+Tenía **tres desplegables seguidos** (*Otras acciones*, *Ajustes de la
+solicitud*, *Eliminar solicitud*), la línea "Siguiente paso" y un aviso que
+repetía el estado con otras palabras ("Asignada / La carga aún no se ha
+ejecutado").
 
-Estaba deshabilitado salvo que el job registrara productos procesados:
+Ahora: **botón principal + un único desplegable "Más opciones"** con las
+acciones que piden comentario, los ajustes de prioridad y responsable, y
+eliminar. La línea "Siguiente paso" desapareció (el botón ya lo dice, y lleva el
+mismo texto en su tooltip) y el aviso solo aparece cuando dice algo que la
+insignia de estado y la barra de etapas no digan ya.
 
-```python
-has_verifiable_result = bool(saved_result) or processed_count > 0
-disabled=not (close_confirmed and has_verifiable_result)
-```
+Antes de esto ya se había quitado el bloque "Gestión interna", que duplicaba
+todas las transiciones (*Iniciar revisión*, *Aprobar*, *Rechazar*, *Validar*,
+*Registrar carga*, *Finalizar*) con reglas distintas a las de la barra.
 
-Además pedía elegir resultado, escribir comentario y marcar una casilla: cuatro
-interacciones para cerrar.
+## 4. Completar carga: manual
 
-Ahora es **un botón**, sin depender de cantidades ni del resultado automático
-del job, y el `result` que se guarda ya no lleva `processed` ni `successful`.
-La acción se llama **"Completar carga"**.
+Estaba deshabilitado salvo que el job registrara productos procesados, y pedía
+elegir resultado + comentario + casilla de confirmación. Ahora es un botón, y el
+resultado guardado ya no lleva `processed` ni `successful`.
 
-## Corrección de la primera versión
+## Comprobado en el navegador
 
-La primera entrega rompió la tarjeta: salía partida en cajas sueltas apiladas.
-Causa: envolví los `<div>` de la tarjeta dentro de un `<a>`. El renderizador de
-Markdown de Streamlit **cierra los elementos en línea antes del primer bloque**,
-así que cada `<div>` se emitía como una caja aparte.
+No solo con pruebas: levanté la rejilla y la medí en el DOM.
 
-Corregido con *stretched link*: la tarjeta vuelve a ser un `<div>` (la
-estructura que siempre funcionó) y el enlace es un `<a>` **vacío** estirado por
-CSS sobre toda su superficie. Hay una prueba dedicada que falla si alguien
-vuelve a meter un bloque dentro del enlace.
+| | |
+|---|---|
+| Tarjetas enteras, 3 por fila | sí, sin scroll horizontal |
+| Casilla dentro de la tarjeta | sí, a 13px de las dos esquinas |
+| Click en el cuerpo | `A.ticket-card-hit` → abre el ticket |
+| Click en la casilla | la recibe la casilla, el enlace **no** la tapa |
+| Click en el botón | lo recibe el botón, el enlace **no** lo tapa |
+| Navegación | clic en la 3ª tarjeta → `?ticket=CAT-2026-000029` |
 
-## Comprobado
-
-- **Renderizado real, en navegador**: 6 tarjetas enteras, 3 por fila, sin scroll
-  horizontal; el enlace mide 357x154 sobre una tarjeta de 359x156 y
-  `elementFromPoint` devuelve el enlace en el centro, sobre el texto y en la
-  esquina. Un clic en la tercera tarjeta llevó a `?ticket=CAT-2026-000029`.
-- **La app levanta**: arranque headless real, `HTTP 200`, sin trazas en el log.
-- Suite completa: **23 en verde**. Siguen fallando `test_auth_accesos` y
-  `test_brand_commercial_input`, preexistentes y ya conocidos. Cero regresiones.
-- `scripts/test_bandeja_solicitudes.py`: 17 pruebas nuevas — tarjeta como enlace,
-  escapado del código en la URL, badges, la cadena de 5 pasos, que *Tomar* asigna
-  a quien pulsa, que *Completar carga* no manda cantidades, que lo que pide
-  comentario no se ofrece como atajo, y el reparto de 9 por página.
-- Sin funciones huérfanas nuevas (las mismas 19 de antes).
+- **La app levanta**: arranque headless, `HTTP 200`, cero trazas.
+- Suite: **23 en verde**; siguen fallando `test_auth_accesos` y
+  `test_brand_commercial_input`, preexistentes. Cero regresiones.
+- `scripts/test_bandeja_solicitudes.py`: **21 pruebas**. Una de ellas detectó
+  que faltaban dos acciones de la cadena de precios en el orden del lote.
+- Sin funciones huérfanas nuevas.
 
 ## Lo que NO se tocó
 
-- La máquina de estados de `ticket_system` ni los permisos por rol.
-- La vista de marca: sigue con su barra compacta y sin controles de operación.
-- El cierre desde "Carga de catálogo", que ya era manual.
+La máquina de estados de `ticket_system`, los permisos por rol y la vista de
+marca. De `ticket_flow` solo cambió la etiqueta de una acción a "Completar
+carga".

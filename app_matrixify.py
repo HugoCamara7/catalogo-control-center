@@ -16547,6 +16547,29 @@ def render_ticket_styles():
           box-shadow:0 12px 26px rgba(37,99,235,.14)}
         .ticket-card-hit{position:absolute;inset:0;z-index:2;display:block;
           border-radius:11px;text-decoration:none!important}
+        /* Franja inferior reservada: ahi viven la casilla y la accion rapida,
+           y el enlace no llega para no robarles el click. */
+        .ticket-request-card.con-controles{padding-bottom:46px;min-height:150px}
+        .ticket-request-card.con-controles .ticket-card-hit{bottom:44px}
+        /* En Streamlit 1.60 las columnas cuelgan de stLayoutWrapper; se deja
+           tambien stHorizontalBlock por si cambia en otra version. */
+        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stLayoutWrapper"],
+        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stHorizontalBlock"]{
+          margin-top:-44px!important;position:relative;z-index:6;padding:0 13px}
+        /* La casilla se pega a la esquina: su columna alinea al final y el
+           contenedor del widget deja de encogerse a su ancho natural. */
+        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stLayoutWrapper"]
+          [data-testid="stColumn"]:last-child [data-testid="stVerticalBlock"],
+        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stHorizontalBlock"]
+          [data-testid="stColumn"]:last-child [data-testid="stVerticalBlock"]{align-items:flex-end}
+        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stLayoutWrapper"]
+          [data-testid="stCheckbox"],
+        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stHorizontalBlock"]
+          [data-testid="stCheckbox"]{display:flex;justify-content:flex-end}
+        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stLayoutWrapper"]
+          .stButton>button,
+        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stHorizontalBlock"]
+          .stButton>button{min-height:28px;padding:0 10px;font-size:11px;font-weight:800}
         .ticket-card-hit:focus-visible{outline:2px solid #2563EB;outline-offset:2px}
         /* El contenido va por encima del :before del borde de color. */
         .ticket-request-top,.ticket-request-brand,.ticket-request-meta,
@@ -17423,7 +17446,7 @@ TICKETS_POR_PAGINA = 9
 TONO_PRIORIDAD = {"urgent": "red", "high": "amber", "normal": "slate", "low": "slate"}
 
 
-def _ticket_card_html(ticket, selected=False):
+def _ticket_card_html(ticket, selected=False, con_controles=False):
     """Tarjeta clickeable entera.
 
     El enlace es un <a> VACIO estirado sobre la tarjeta, no un <a> que envuelva
@@ -17446,8 +17469,11 @@ def _ticket_card_html(ticket, selected=False):
     clase_responsable = "tb-user" if clean_value(ticket.get("assignee")) else "tb-user sin"
     vencida = ' <span class="tb tb-late">Vencida</span>' if ticket_is_overdue(ticket) else ""
     active_class = " selected" if selected else ""
+    # Con controles, la tarjeta reserva una franja abajo para la casilla y el
+    # boton, y el enlace deja de cubrirla para no comerse esos clicks.
+    clase_controles = " con-controles" if con_controles else ""
     return (
-        f'<div class="ticket-request-card {tone}{active_class}">'
+        f'<div class="ticket-request-card {tone}{active_class}{clase_controles}">'
         f'<a class="ticket-card-hit" href="?ticket={quote_plus(code)}" target="_self" '
         f'title="Abrir {escape(code)}" aria-label="Abrir {escape(code)}"></a>'
         f'<div class="ticket-request-top"><strong class="ticket-request-code">{escape(code)}</strong>'
@@ -17746,12 +17772,15 @@ def render_ticket_inbox(service, actor, brand_view=False):
             codigo = clean_value(ticket.get("code"))
             with columna:
                 st.markdown(
-                    _ticket_card_html(ticket, codigo == selected_code),
+                    _ticket_card_html(ticket, codigo == selected_code, con_controles=operativo),
                     unsafe_allow_html=True,
                 )
                 if not operativo:
                     continue
-                marca_col, accion_col = st.columns([1, 2], gap="small")
+                # La accion va a la izquierda y la casilla a la derecha: el CSS
+                # sube esta fila a la franja que la tarjeta reserva abajo, de
+                # modo que la casilla cae en su esquina inferior derecha.
+                accion_col, marca_col = st.columns([2, 1], gap="small")
                 marcado = marca_col.checkbox(
                     "Sel.", value=codigo in seleccionados, key=f"sel_{role_key}_{codigo}"
                 )
@@ -17782,11 +17811,24 @@ def render_ticket_inbox(service, actor, brand_view=False):
     render_ticket_detail(service, actor, selected_code)
 
 
+# Orden del recorrido, para que los botones de lote salgan como avanza la etapa.
+# Incluye la cadena larga de cierre (SIAL -> precios -> validacion -> cierre);
+# si se agrega una accion principal nueva al flujo hay que ordenarla aqui, y hay
+# una prueba que lo comprueba.
+ORDEN_ACCIONES_LOTE = [
+    "tomar", "revisar", "aprobar", "ejecutar", "finalizar",
+    "solicitar_precios", "validar_precio_stock", "finalizar_solicitud",
+]
+
+
 def _render_acciones_masivas(service, actor, tickets, seleccionados, seleccion_key):
-    """Aplica la accion principal a varias solicitudes de una vez."""
+    """Un boton por etapa alcanzable, con cuantas seleccionadas pueden ir.
+
+    Antes eran dos botones genericos ("Tomar" y "Avanzar"). Con esto se ve de
+    frente a que etapa va cada grupo y se aplica solo a las que pueden.
+    """
     por_codigo = {clean_value(t.get("code")): t for t in tickets}
-    tomables = []
-    avanzables = []
+    por_accion = {}
     for codigo in seleccionados:
         ticket = por_codigo.get(codigo)
         if not ticket:
@@ -17794,26 +17836,35 @@ def _render_acciones_masivas(service, actor, tickets, seleccionados, seleccion_k
         accion = _accion_rapida(ticket, actor)
         if accion is None:
             continue
-        (tomables if accion["clave"] == "tomar" else avanzables).append((codigo, accion))
+        por_accion.setdefault(accion["clave"], (accion, []))[1].append(codigo)
 
+    claves = sorted(
+        por_accion,
+        key=lambda c: ORDEN_ACCIONES_LOTE.index(c) if c in ORDEN_ACCIONES_LOTE else 99,
+    )
+    sin_accion = len(seleccionados) - sum(len(por_accion[c][1]) for c in claves)
+    detalle = f" · {sin_accion} sin acción" if sin_accion else ""
     st.markdown(
-        f'<div class="ticket-bulk"><b>{len(seleccionados)}</b> seleccionadas</div>',
+        f'<div class="ticket-bulk"><b>{len(seleccionados)}</b> seleccionadas{escape(detalle)}</div>',
         unsafe_allow_html=True,
     )
-    columnas = st.columns([1.4, 1.4, 1, 4], gap="small")
-    if columnas[0].button(
-        f"Tomar {len(tomables)}", key="bulk_tomar", type="primary",
-        use_container_width=True, disabled=not tomables,
-        help="Te asigna todas las seleccionadas que estén sin asignar.",
-    ):
-        _aplicar_en_lote(service, actor, tomables, seleccion_key)
-    if columnas[1].button(
-        f"Avanzar {len(avanzables)}", key="bulk_avanzar",
-        use_container_width=True, disabled=not avanzables,
-        help="Ejecuta el siguiente paso de cada una, sea el que sea.",
-    ):
-        _aplicar_en_lote(service, actor, avanzables, seleccion_key)
-    if columnas[2].button("Quitar", key="bulk_limpiar", use_container_width=True):
+    if not claves:
+        if st.button("Quitar selección", key="bulk_limpiar", use_container_width=False):
+            st.session_state[seleccion_key] = []
+            st.rerun()
+        return
+
+    anchos = [1.6] * len(claves) + [1, max(0.1, 5 - len(claves))]
+    columnas = st.columns(anchos, gap="small")
+    for columna, clave in zip(columnas, claves):
+        accion, codigos = por_accion[clave]
+        if columna.button(
+            f'{accion["etiqueta"]} ({len(codigos)})',
+            key=f"bulk_{clave}", type="primary" if clave == claves[0] else "secondary",
+            use_container_width=True, help=accion["ayuda"],
+        ):
+            _aplicar_en_lote(service, actor, [(c, accion) for c in codigos], seleccion_key)
+    if columnas[len(claves)].button("Quitar", key="bulk_limpiar", use_container_width=True):
         st.session_state[seleccion_key] = []
         st.rerun()
 
@@ -18029,19 +18080,13 @@ def render_barra_acciones(service, actor, ticket):
     acciones = flujo_acciones(estado, rol, ticket.get("assignee"), actor.get("user"))
     if not acciones:
         st.caption("No hay acciones disponibles para esta solicitud en su estado actual.")
-        return
+        return []
 
     # Sin barra de pasos aqui: el detalle ya dibuja una arriba. Antes se
     # apilaban dos (y tres si la solicitud estaba en carga) diciendo lo mismo.
     principal = next((a for a in acciones if a.get("principal")), None)
     directas = [a for a in acciones if not a.get("pide_comentario") and not a.get("requiere_archivo")]
     con_comentario = [a for a in acciones if a.get("pide_comentario")]
-
-    if principal:
-        st.markdown(
-            f'<div class="accion-hint"><b>Siguiente paso:</b> {escape(principal["ayuda"])}</div>',
-            unsafe_allow_html=True,
-        )
 
     # Un click. Las destructivas y las que piden comentario van aparte, abajo.
     if directas:
@@ -18058,9 +18103,14 @@ def render_barra_acciones(service, actor, ticket):
                 st.rerun()
             st.warning(mensaje)
 
+    return con_comentario
+
+
+def render_acciones_con_comentario(service, actor, ticket, con_comentario):
+    """Observar, reabrir y cancelar: exigen texto, no pueden ser de un click."""
+    codigo = clean_value(ticket.get("code"))
     if con_comentario:
-        etiquetas = ", ".join(a["etiqueta"] for a in con_comentario)
-        with st.expander(f"Otras acciones ({etiquetas})", expanded=False):
+        with st.container():
             comentario = st.text_area(
                 "Comentario", key=f"accion_comentario_{codigo}",
                 placeholder="Obligatorio para observar, reabrir o cancelar.", height=70,
@@ -18146,10 +18196,12 @@ def render_ticket_detail(service, actor, code):
         render_seguimiento_carga(ticket)
     else:
         _render_ticket_stepper(status)
+    # Solo se avisa cuando hay algo que la insignia de estado y la barra de
+    # etapas no digan ya. Antes salia siempre, repitiendo el estado con otras
+    # palabras ("Asignada / La carga aun no se ha ejecutado").
     alert_message = clean_value(job.get("message")) or clean_value(ticket.get("public_result", {}).get("message"))
-    if not alert_message:
-        alert_message = "Solicitud lista para gestión operativa." if status in {STATE_PENDING, STATE_ASSIGNED, STATE_REVIEW} else status_label
-    st.markdown(f'<div class="ticket-compact-alert">{escape(alert_message)}</div>', unsafe_allow_html=True)
+    if alert_message and alert_message != status_label:
+        st.markdown(f'<div class="ticket-compact-alert">{escape(alert_message)}</div>', unsafe_allow_html=True)
     tab_summary, tab_products, tab_files, tab_activity = st.tabs(["Resumen", "Productos", "Archivo y validación", "Actividad"])
     with tab_products:
         preview_cols = st.columns(3)
@@ -18233,12 +18285,18 @@ def render_ticket_detail(service, actor, code):
                 except TicketError as exc:
                     _mostrar_error_ticket(exc, code)
     if role in {ROLE_OPERATOR, ROLE_ADMIN}:
-        render_barra_acciones(service, actor, ticket)
-        # Ajustes secundarios. Las transiciones de estado viven SOLO en la barra
-        # de acciones de arriba: antes se repetian aqui abajo (Iniciar revision,
-        # Aprobar, Rechazar, Validar, Registrar carga, Finalizar...), de modo
-        # que el mismo cambio se ofrecia en dos sitios con reglas distintas.
-        with st.expander("Ajustes de la solicitud", expanded=False):
+        con_comentario = render_barra_acciones(service, actor, ticket)
+        # Un unico desplegable. Antes eran tres seguidos ("Otras acciones",
+        # "Ajustes de la solicitud" y "Eliminar solicitud"), que llenaban la
+        # pantalla de cajas plegadas.
+        with st.expander("Más opciones", expanded=False):
+            if con_comentario:
+                render_acciones_con_comentario(service, actor, ticket, con_comentario)
+                st.divider()
+            # Ajustes. Las transiciones de estado viven SOLO en la barra de
+            # arriba: antes se repetian aqui abajo (Iniciar revision, Aprobar,
+            # Rechazar, Validar, Registrar carga, Finalizar...), de modo que el
+            # mismo cambio se ofrecia en dos sitios con reglas distintas.
             ajuste_prioridad, ajuste_responsable = st.columns(2, gap="medium")
             with ajuste_prioridad:
                 current_priority = ticket.get("priority", "normal")
@@ -18277,8 +18335,8 @@ def render_ticket_detail(service, actor, code):
                         st.rerun()
                     except TicketError as exc:
                         _mostrar_error_ticket(exc, code)
-        if is_ticket_operator_user(actor.get("user")):
-            with st.expander("Eliminar solicitud", expanded=False):
+            if is_ticket_operator_user(actor.get("user")):
+                st.divider()
                 delete_reason = st.text_area("Motivo de eliminación", key=f"delete_ticket_reason_{code}")
                 delete_confirm = st.checkbox("Confirmo que deseo eliminar esta solicitud", key=f"delete_ticket_confirm_{code}")
                 if st.button("Eliminar solicitud", key=f"delete_ticket_{code}", disabled=not delete_confirm):

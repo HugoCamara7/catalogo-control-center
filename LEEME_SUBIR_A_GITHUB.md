@@ -27,6 +27,44 @@ valores, reemplazas el Excel y no se toca Python.
 5. **Valores** contra el diccionario de cada columna, devolviendo la ortografía
    de la plantilla (`BAJA` → `Baja`).
 
+## Categoría inteligente: siempre sale una
+
+La tabla `Categorias` no cubre todas las combinaciones, y 124 filas salían sin
+categoría. Ahora se resuelve en **cuatro pasos**, siempre avisando cuando no es
+una coincidencia exacta:
+
+1. **Exacta**: `Marca|Tipo|Género`, con la marca concreta por delante de `Todos`.
+2. **Deducida del mismo tipo en otro género**: si `Polos / Hombre` es
+   "Vestuario / Ropa Masculina / Poleras Manga Corta", entonces `Polos / Mujer`
+   es "Vestuario / Ropa **Femenina** / Poleras Manga Corta". Traduce el segmento
+   de género (`Calzados Masculinos` ↔ `Calzados Femeninos`, etc.). Una categoría
+   sin segmento de género (Accesorios / Bolsos…) vale igual para todos.
+3. **Genérica de su familia y género**, calculada **contando la propia tabla**,
+   no escrita a mano: superior/Mujer → "Vestuario / Ropa Femenina",
+   calzado/Hombre → "Calzados / Calzados Masculinos".
+4. Si aun así no hay, queda pendiente con el motivo.
+
+**No se cruza entre adulto e infantil.** Deducir `Cortavientos / Mujer` desde
+`Niñas` daba "Vestuario / **Infantil** / Ropa Femenina", que no existe.
+
+La **clase del diccionario** también entra: "Slip Ons" no coincide con ningún
+término, pero el diccionario dice que es Calzado, y con eso ya resuelve.
+
+| | antes | ahora |
+|---|---|---|
+| Filas sin categoría | 124 | **0** |
+| Categoría llena | 450/450 | 450/450 |
+
+De las 124 advertencias: 77 categorías deducidas y 47 genéricas. **Todas llevan
+categoría**; la advertencia dice de dónde salió para poder revisarla.
+
+## Shopify → BigQuery: ya funcionaba
+
+Comprobado con un producto que **no está en Shopify**: la carga parcial lo arma
+igual desde BigQuery/ARTI y avisa *"No existe en Shopify; se completó Centry con
+BigQuery/ARTI"*. Si no está en ninguno, dice *"Código no encontrado en
+BigQuery/ARTI"*. No hizo falta tocar nada.
+
 ## Inconsistencias encontradas en la plantilla
 
 - **`SIEMPRE` no trae diccionarios: trae 2 productos de ejemplo.** Tomarlas como

@@ -43,6 +43,28 @@ valores, reemplazas el Excel y no se toca Python.
   duplicados como `Tipo de cuello - Tipo de cuello -`). Se respetan tal cual
   porque Centry espera ese nombre exacto.
 
+## Corrección del NameError
+
+La primera versión reventaba la carga parcial:
+
+```
+NameError: name 'modelo_centry' is not defined
+  build_centry_sial_from_matrixify, línea 4257
+```
+
+Al añadir las columnas clave, el reemplazo tocó **dos** funciones y las
+variables solo se calculaban en una. Además esas cuatro columnas **no existen en
+la hoja Sial**, que identifica con `Mod`/`Col`/`Tal`: sobraban ahí. Se quitaron
+de `build_centry_sial_from_matrixify` y quedan solo en la hoja Centry.
+
+Verificado ejecutando las tres rutas, no solo compilando:
+
+| Función | |
+|---|---|
+| `build_centry_from_matrixify` (parcial, `only_codes`) | OK — 6 filas, 98 columnas |
+| `build_centry_sial_from_matrixify` | OK — 450 filas, 48 columnas |
+| `build_centry_from_matrixify` (completa) | OK — 450 filas, 98 columnas |
+
 ## Comprobado con tu carga real
 
 450 filas Centry: `COD MOD`, `COD COL` y `TALLA` llenas en **450/450**, y 124

@@ -4252,12 +4252,8 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
                 "Mod": model,
                 "Col": color_code,
                 "Tal": tal_value,
-                # Claves de cruce contra el maestro y aviso de lo que falta.
-                # El producto sale igual aunque no se reconozca el tipo.
-                "COD MOD": modelo_centry,
-                "COD COL": color_centry,
-                "TALLA": first_non_empty(tal_value, size),
-                "Advertencias": advertencia_centry,
+                # La hoja Sial ya identifica con Mod/Col/Tal: no lleva las
+                # columnas COD MOD/COD COL/TALLA, que son de la hoja Centry.
                 "Product Name ": centry_value(row.get("Title")) or mod_col,
                 "Product Bullets": centry_bullets(row, vendor, product_type, color, gender),
                 "Product Description": texto_plano_de_body(row.get("Body HTML")),

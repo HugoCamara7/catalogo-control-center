@@ -27,6 +27,28 @@ valores, reemplazas el Excel y no se toca Python.
 5. **Valores** contra el diccionario de cada columna, devolviendo la ortografía
    de la plantilla (`BAJA` → `Baja`).
 
+## Regresión corregida: volvieron las columnas operativas
+
+Al pasar las columnas a la plantilla se perdieron **7 columnas propias de la
+app** que no vienen en el Excel de Centry: `Clase`, **`Guía de tallas`**,
+`Base de categoría`, `Cod Mod Col Talla`, `Mod`, `Col`, `Tal`. Restauradas.
+
+**97 columnas** = 26 de SIEMPRE + las de familia + estas 7 + `COD MOD`,
+`COD COL`, `TALLA`, `Advertencias`. Sin duplicados ni `Unnamed`.
+
+## Atributos desde las características del producto
+
+Los pares "Forro: 100% Cuero", "Forma De La Punta: Redonda" viven en la sección
+**Características del Body HTML**. Ahora se extraen y se llevan a su columna de
+Centry, **validando contra el diccionario**: si el valor no está permitido no se
+escribe y sale en `Advertencias`. Un `Ajuste: Solapa` no ensucia el archivo
+porque la columna solo acepta Cordones/Cierre/Hebilla/Velcro.
+
+Con tu carga Rockford se llenan **7 columnas que antes salían vacías**:
+`Material de la suela`, `Material del forro`, `Material principal`,
+`Composición` (Falabella y MercadoLibre), `Forma de la punta` (las dos) y
+`Tipo de ajuste`.
+
 ## Categoría inteligente: siempre sale una
 
 La tabla `Categorias` no cubre todas las combinaciones, y 124 filas salían sin

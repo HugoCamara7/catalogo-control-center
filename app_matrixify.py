@@ -3423,6 +3423,10 @@ def _centry_columns_desde_plantilla():
     for familia in (centry_plantilla.SUPERIOR, centry_plantilla.INFERIOR,
                     centry_plantilla.CALZADO, centry_plantilla.ACCESORIOS):
         columnas.extend(plantilla["familias"].get(familia, []))
+    # Columnas operativas de la app: NO vienen en la plantilla de Centry pero
+    # la operacion las usa (guia de tallas, clase, y las claves de cruce).
+    # Al pasar la lista a la plantilla se habian perdido.
+    columnas.extend(CENTRY_TAIL_COLUMNS)
     columnas.extend(centry_plantilla.COLUMNAS_CLAVE)
     columnas.append(centry_plantilla.COLUMNA_ADVERTENCIA)
     return list(dict.fromkeys(columnas))
@@ -4110,6 +4114,18 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             avisos_centry.append(aviso_categoria)
         if not modelo_centry:
             avisos_centry.append("COD MOD vacío: revisar el Mod-Col")
+        # Atributos que ya vienen en las caracteristicas ("Forro: 100% Cuero").
+        # Solo se escriben si el valor esta permitido en esa columna.
+        # Los pares salen del Body HTML, no del listado de Sial: ese trae
+        # Tipo De Producto/Genero/Color/Marca, no atributos de ficha.
+        atributos_centry, ignorados_centry = centry_plantilla.atributos_desde_caracteristicas(
+            centry_plantilla.caracteristicas_del_body(row.get("Body HTML")) or characteristics,
+            familia_centry,
+        )
+        if ignorados_centry:
+            avisos_centry.append(
+                "atributos no aplicados: " + " | ".join(ignorados_centry[:5])
+            )
         advertencia_centry = " | ".join(a for a in avisos_centry if a)
 
         centry_row = {column: "" for column in CENTRY_COLUMNS}
@@ -4162,6 +4178,7 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                 "COD COL": color_centry,
                 "TALLA": first_non_empty(tal_value, size),
                 "Advertencias": advertencia_centry,
+                **atributos_centry,
                 "Cod Mod Col Talla": f"{current_mod_col}-{size}" if current_mod_col and size else current_mod_col,
                 "Clase": class_name,
                 "Guía de tallas": centry_size_guide(gender, class_name, vendor),

@@ -33,6 +33,7 @@ from engines.ticket_flow import FINALIZADA as FLUJO_FINALIZADA
 from engines.ticket_flow import ETIQUETAS as FLUJO_ETIQUETAS
 from engines.ticket_flow import estado_visible as flujo_estado_visible
 from engines.ticket_flow import ORDEN as FLUJO_ORDEN
+from engines import centry_map as centry_plantilla
 from engines.ticket_flow import acciones_disponibles as flujo_acciones
 from engines.ticket_flow import accion_principal as flujo_accion_principal
 from engines.ticket_flow import etiqueta as flujo_etiqueta
@@ -3392,7 +3393,14 @@ CENTRY_MARKETPLACE_EXTRA_COLUMNS = [
     "Unnamed: 55",
     "Unnamed: 56",
 ]
-CENTRY_TAIL_COLUMNS = ["Clase", "GuÃ­a de tallas", "Base de categorÃ­a", "Cod Mod Col Talla", "Mod", "Col", "Tal"]
+# COD MOD, COD COL y TALLA cierran el archivo: son las claves con las que se
+# cruza contra el maestro. No vienen en la plantilla de Centry, las agrega la
+# app. "Advertencias" dice por que un producto salio incompleto.
+CENTRY_TAIL_COLUMNS = [
+    "Clase", "GuÃ­a de tallas", "Base de categorÃ­a", "Cod Mod Col Talla",
+    "Mod", "Col", "Tal",
+    "COD MOD", "COD COL", "TALLA", "Advertencias",
+]
 CENTRY_COLUMNS = list(dict.fromkeys(CENTRY_BASE_COLUMNS + CENTRY_MARKETPLACE_EXTRA_COLUMNS + CENTRY_FOOTWEAR_COLUMNS + CENTRY_APPAREL_COLUMNS + CENTRY_TAIL_COLUMNS))
 CENTRY_SIAL_COLUMNS = [
     "Mod", "Col", "Tal", "Product Name ", "Product Bullets", "Product Description", "Image URL",
@@ -4055,6 +4063,28 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             composition,
             footwear_cane,
         )
+        # Motor de plantilla: familia, categoria oficial y advertencias.
+        modelo_centry, color_centry = centry_plantilla._partir_mod_col(current_mod_col)
+        avisos_centry = []
+        # El tipo pasa PRIMERO por el diccionario de tipos de prenda. Si no
+        # esta, se acepta igual y queda la advertencia.
+        tipo_centry, clase_centry, aviso_tipo = centry_plantilla.resolver_tipo(product_type)
+        if aviso_tipo:
+            avisos_centry.append(aviso_tipo)
+        familia_centry, motivo_familia = centry_plantilla.detectar_familia(
+            tipo_centry, clase_centry or class_name, category_record.get("category") or ""
+        )
+        if not familia_centry:
+            avisos_centry.append(motivo_familia)
+        categoria_oficial, aviso_categoria = centry_plantilla.resolver_categoria(
+            vendor, tipo_centry, gender
+        )
+        if aviso_categoria:
+            avisos_centry.append(aviso_categoria)
+        if not modelo_centry:
+            avisos_centry.append("COD MOD vacío: revisar el Mod-Col")
+        advertencia_centry = " | ".join(a for a in avisos_centry if a)
+
         centry_row = {column: "" for column in CENTRY_COLUMNS}
         centry_row.update(
             {
@@ -4099,6 +4129,12 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                 "Mod": model,
                 "Col": color_code,
                 "Tal": tal_value,
+                # Claves de cruce contra el maestro y aviso de lo que falta.
+                # El producto sale igual aunque no se reconozca el tipo.
+                "COD MOD": modelo_centry,
+                "COD COL": color_centry,
+                "TALLA": first_non_empty(tal_value, size),
+                "Advertencias": advertencia_centry,
                 "Cod Mod Col Talla": f"{current_mod_col}-{size}" if current_mod_col and size else current_mod_col,
                 "Clase": class_name,
                 "GuÃ­a de tallas": centry_size_guide(gender, class_name, vendor),
@@ -4216,6 +4252,12 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
                 "Mod": model,
                 "Col": color_code,
                 "Tal": tal_value,
+                # Claves de cruce contra el maestro y aviso de lo que falta.
+                # El producto sale igual aunque no se reconozca el tipo.
+                "COD MOD": modelo_centry,
+                "COD COL": color_centry,
+                "TALLA": first_non_empty(tal_value, size),
+                "Advertencias": advertencia_centry,
                 "Product Name ": centry_value(row.get("Title")) or mod_col,
                 "Product Bullets": centry_bullets(row, vendor, product_type, color, gender),
                 "Product Description": texto_plano_de_body(row.get("Body HTML")),

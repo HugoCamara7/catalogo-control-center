@@ -1,88 +1,54 @@
-# Qué subir — bandeja de solicitudes + SKU/EAN
+# Qué subir — motor Centry por plantilla
 
 | Archivo | Ruta | |
 |---|---|---|
+| `engines/centry_map.py` | `engines/` | **nuevo** |
+| `data/plantilla_centry_productos.xlsx` | `data/` | **nuevo** |
+| `scripts/test_centry_map.py` | `scripts/` | **nuevo** |
 | `app_matrixify.py` | raíz | modificado |
-| `engines/ticket_flow.py` | `engines/` | modificado |
-| `scripts/test_bandeja_solicitudes.py` | `scripts/` | **nuevo** |
+| `engines/ticket_flow.py` | `engines/` | modificado (bandeja) |
+| `scripts/test_bandeja_solicitudes.py` | `scripts/` | **nuevo** (bandeja) |
 | `scripts/test_siblings_carga_completa.py` | `scripts/` | modificado |
 
----
+La plantilla va al repo: es la **fuente de verdad**. Si Centry cambia columnas o
+valores, reemplazas el Excel y no se toca Python.
 
-## 1. La tarjeta
+## Nueva lógica
 
-**Clickeable entera.** Enlace estirado (`<a>` vacío en posición absoluta) sobre
-la tarjeta. Se eliminó el selector "Abrir solicitud" que había debajo de la
-rejilla.
+1. **El tipo pasa primero por el diccionario** (`engines/garment_types.py`).
+   Si está, se usa el canónico y su clase. Si no está, **se acepta tal cual** y
+   queda la advertencia. El producto nunca se descarta.
+2. **Familia** por término dentro del tipo (calzado antes que vestuario, para
+   que "zapatilla de running" no caiga en superior). La clase del diccionario es
+   el respaldo.
+3. **Columnas** = SIEMPRE + las de la familia + `COD MOD`, `COD COL`, `TALLA`,
+   `Advertencias`. Sin familia salen solo SIEMPRE + la cola.
+4. **Categoría** con `Marca|Tipo|Genero`; la marca concreta gana sobre `Todos`.
+5. **Valores** contra el diccionario de cada columna, devolviendo la ortografía
+   de la plantilla (`BAJA` → `Baja`).
 
-**Casilla en la esquina inferior derecha.** La tarjeta reserva una franja de
-46px abajo y el enlace deja de cubrirla, así que la casilla y la acción rápida
-viven dentro de la tarjeta sin que el enlace les robe el click. Medido en el
-navegador: casilla a **13px del borde derecho y 13px del inferior**.
+## Inconsistencias encontradas en la plantilla
 
-**9 por página** con `‹ Anterior · 1 2 3 · Siguiente ›`.
+- **`SIEMPRE` no trae diccionarios: trae 2 productos de ejemplo.** Tomarlas como
+  valores permitidos habría rechazado todos los productos reales. Sus columnas
+  son texto libre.
+- **`Forma de la punta` está dos veces en Calzado**: la primera vacía. Se
+  conserva la que trae el diccionario.
+- **28 claves `(Marca, Tipo, Género)` con dos categorías.** Cuando una es más
+  general se elige esa y se avisa; cuando están al mismo nivel (Guantes /
+  Unisex Adultos, que duda entre Deporte Masculino y Femenino) **no se elige**.
+- **29 combinaciones existen solo para Columbia o Bsoul y no tienen respaldo en
+  `Todos`**: si otra marca trae ese tipo, queda sin categoría.
+- Nombres inconsistentes entre hojas (`Genero` sin tilde en Accesorios, prefijos
+  duplicados como `Tipo de cuello - Tipo de cuello -`). Se respetan tal cual
+  porque Centry espera ese nombre exacto.
 
-**Badges:** estado, prioridad (rojo urgente, ámbar alta), productos,
-antigüedad, `Vencida`, y responsable en gris cursiva si está sin asignar.
+## Comprobado con tu carga real
 
-## 2. Selección múltiple: un botón por etapa
+450 filas Centry: `COD MOD`, `COD COL` y `TALLA` llenas en **450/450**, y 124
+filas con advertencia explicando qué falta (la mayoría, tipos sin categoría en la
+plantilla: Slip Ons, Zapatos, Zapatillas para Rockford).
 
-Al marcar varias sale una barra con **un botón por cada etapa alcanzable** y
-cuántas seleccionadas pueden ir:
-
-```
-3 seleccionadas · 1 sin acción
-[ Iniciar revisión (2) ]  [ Ejecutar carga (1) ]  [ Quitar ]
-```
-
-Cada botón aplica solo a las suyas. Los botones salen en el orden del recorrido,
-incluida la cadena larga de cierre (SIAL → precios → validación → cierre).
-
-## 3. Detalle simplificado
-
-Tenía **tres desplegables seguidos** (*Otras acciones*, *Ajustes de la
-solicitud*, *Eliminar solicitud*), la línea "Siguiente paso" y un aviso que
-repetía el estado con otras palabras ("Asignada / La carga aún no se ha
-ejecutado").
-
-Ahora: **botón principal + un único desplegable "Más opciones"** con las
-acciones que piden comentario, los ajustes de prioridad y responsable, y
-eliminar. La línea "Siguiente paso" desapareció (el botón ya lo dice, y lleva el
-mismo texto en su tooltip) y el aviso solo aparece cuando dice algo que la
-insignia de estado y la barra de etapas no digan ya.
-
-Antes de esto ya se había quitado el bloque "Gestión interna", que duplicaba
-todas las transiciones (*Iniciar revisión*, *Aprobar*, *Rechazar*, *Validar*,
-*Registrar carga*, *Finalizar*) con reglas distintas a las de la barra.
-
-## 4. Completar carga: manual
-
-Estaba deshabilitado salvo que el job registrara productos procesados, y pedía
-elegir resultado + comentario + casilla de confirmación. Ahora es un botón, y el
-resultado guardado ya no lleva `processed` ni `successful`.
-
-## Comprobado en el navegador
-
-No solo con pruebas: levanté la rejilla y la medí en el DOM.
-
-| | |
-|---|---|
-| Tarjetas enteras, 3 por fila | sí, sin scroll horizontal |
-| Casilla dentro de la tarjeta | sí, a 13px de las dos esquinas |
-| Click en el cuerpo | `A.ticket-card-hit` → abre el ticket |
-| Click en la casilla | la recibe la casilla, el enlace **no** la tapa |
-| Click en el botón | lo recibe el botón, el enlace **no** lo tapa |
-| Navegación | clic en la 3ª tarjeta → `?ticket=CAT-2026-000029` |
-
-- **La app levanta**: arranque headless, `HTTP 200`, cero trazas.
-- Suite: **23 en verde**; siguen fallando `test_auth_accesos` y
-  `test_brand_commercial_input`, preexistentes. Cero regresiones.
-- `scripts/test_bandeja_solicitudes.py`: **21 pruebas**. Una de ellas detectó
-  que faltaban dos acciones de la cadena de precios en el orden del lote.
-- Sin funciones huérfanas nuevas.
-
-## Lo que NO se tocó
-
-La máquina de estados de `ticket_system`, los permisos por rol y la vista de
-marca. De `ticket_flow` solo cambió la etiqueta de una acción a "Completar
-carga".
+- Suite: **24 en verde**; los 2 preexistentes de siempre. Cero regresiones.
+- `scripts/test_centry_map.py`: 38 pruebas.
+- App levanta headless con `HTTP 200`, cero trazas.

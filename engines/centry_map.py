@@ -673,3 +673,116 @@ def categoria_generica(familia, genero, ruta=None):
     if not familia or not genero_normalizado:
         return ""
     return _GENERICAS.get((familia, normalizar(genero_normalizado)), "")
+
+
+# --- atributos desde las caracteristicas ---------------------------------
+# El input comercial trae las caracteristicas como "Etiqueta : Valor" separadas
+# por |. Ahi viven muchos atributos que Centry pide en columnas propias. Se
+# mapea la etiqueta a su columna y el valor se valida contra el diccionario de
+# esa columna: si no esta permitido, no se escribe y queda el aviso.
+ETIQUETAS_A_COLUMNA = {
+    "forro": ("Material del forro - Calzado (Falabella GSC Perú)",
+              "Materiales del interior(MercadoLibre Perú)"),
+    "suela": ("Material de la suela - Calzado (Falabella GSC Perú)",
+              "Material de la suela (MercadoLibre Perú)"),
+    "capellada": ("Material principal - Calzado (Falabella GSC Perú)",
+                  "Material del calzado (MercadoLibre Perú)"),
+    "plantilla": ("Material de la plantilla - Calzado (Falabella GSC Perú)",),
+    "ajuste": ("Tipo de ajuste - Tipo de ajuste - Calzado (Falabella GSC Perú)",),
+    "altura de cana": ("Tipo de caña - Calzado (Falabella GSC Perú)",
+                       "Tipo de caña MPE68c (MercadoLibre Perú)"),
+    "tipo de cana": ("Tipo de caña - Calzado (Falabella GSC Perú)",
+                     "Tipo de caña MPE68c (MercadoLibre Perú)"),
+    "forma de la punta": ("Forma de la punta - Calzado (Falabella GSC Perú)",
+                          "Forma de la punta MPE6a3 (MercadoLibre Perú)"),
+    "altura plataforma": ("Altura de la plataforma - Calzado (Falabella GSC Perú)",),
+    "altura de plataforma": ("Altura de la plataforma - Calzado (Falabella GSC Perú)",),
+    "horma": ("Horma - Calzado (Falabella GSC Perú)",),
+    "material": ("Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+                 "Material del accesorio - Ropa y accesorios (Falabella GSC Perú)",
+                 "Material principal (MercadoLibre Perú)"),
+    "materialidad": ("Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+                     "Material principal (MercadoLibre Perú)"),
+    "composicion": ("Composición - Ropa y accesorios (Falabella GSC Perú)",
+                    "Composición (MercadoLibre Perú)"),
+    "tipo de cierre": ("Tipo de cierre - Ropa y accesorios (Falabella GSC Perú)",),
+    "cierre": ("Tipo de cierre - Ropa y accesorios (Falabella GSC Perú)",),
+    "largo de manga": ("Largo de mangas - Ropa y accesorios (Falabella GSC Perú)",
+                       "Tipo de manga (MercadoLibre Perú)"),
+    "manga": ("Largo de mangas - Ropa y accesorios (Falabella GSC Perú)",
+              "Tipo de manga (MercadoLibre Perú)"),
+    "cuello": ("Tipo de cuello - Tipo de cuello - Ropa y accesorios (Falabella GSC Perú)",),
+    "fit": ("Fit - Ropa y accesorios (Falabella GSC Perú)",
+            "Fit prenda superior - Ropa y accesorios (Falabella GSC)",
+            "Fit prenda inferior - Ropa y accesorios (Falabella GSC)"),
+    "tiro": ("Tiro para prendas - Ropa y accesorios (Falabella GSC Perú)",
+             "Tiro del pantalón (MercadoLibre Perú)"),
+    "largo de la prenda": ("Largo de la prenda - Ropa y accesorios (Falabella GSC Perú)",),
+    "disciplina": ("Disciplina - Ropa y accesorios (Falabella GSC Perú)",
+                   "Disciplina zapatillas - Calzado (Falabella GSC Perú)"),
+}
+
+
+def pares_de_caracteristicas(texto):
+    """Extrae los pares "Etiqueta : Valor" de un listado separado por |."""
+    pares = []
+    for trozo in re.split(r"[|\n]+", _texto(texto)):
+        if ":" not in trozo:
+            continue
+        etiqueta, _, valor = trozo.partition(":")
+        etiqueta, valor = _texto(etiqueta), _texto(valor)
+        if etiqueta and valor:
+            pares.append((etiqueta, valor))
+    return pares
+
+
+def atributos_desde_caracteristicas(texto, familia, ruta=None):
+    """{columna: valor} para las columnas de esa familia. Y los no aplicados.
+
+    Solo escribe cuando el valor esta en el diccionario de la columna. Un
+    "Altura De Taco: No Aplica" no ensucia el archivo: se ignora y se informa.
+    """
+    columnas_familia = set(columnas_de(familia, ruta)) if familia else set()
+    aplicados = {}
+    ignorados = []
+    for etiqueta, valor in pares_de_caracteristicas(texto):
+        destinos = ETIQUETAS_A_COLUMNA.get(normalizar(etiqueta))
+        if not destinos:
+            continue
+        colocado = False
+        for columna in destinos:
+            if columna not in columnas_familia or aplicados.get(columna):
+                continue
+            limpio, ok = valor_valido(columna, valor, ruta)
+            if ok and limpio:
+                aplicados[columna] = limpio
+                colocado = True
+        if not colocado:
+            ignorados.append(f"{etiqueta}: {valor}")
+    return aplicados, ignorados
+
+
+def caracteristicas_del_body(body_html):
+    """Los bullets de la seccion Caracteristicas del Body HTML.
+
+    Ahi viven los pares "Forro: 100% Cuero" que Centry pide en columnas
+    propias. El listado de Sial no sirve: ese trae otra cosa (Tipo De Producto,
+    Genero, Color, Marca).
+    """
+    texto = _texto(body_html)
+    if not texto:
+        return ""
+    bloque = re.search(
+        r'nweb__Caracteristicas.*?<ul>(.*?)</ul>', texto, flags=re.IGNORECASE | re.DOTALL
+    )
+    if not bloque:
+        return ""
+    items = re.findall(r"<li[^>]*>(.*?)</li>", bloque.group(1), flags=re.IGNORECASE | re.DOTALL)
+    limpios = [_sin_etiquetas(item) for item in items]
+    return "|".join(item for item in limpios if item)
+
+
+def _sin_etiquetas(html):
+    """Texto plano de un fragmento, sin depender del modulo del generador."""
+    texto = re.sub(r"<[^>]+>", " ", _texto(html))
+    return re.sub(r"\s+", " ", texto).strip()

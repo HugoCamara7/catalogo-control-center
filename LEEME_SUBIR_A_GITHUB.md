@@ -1,4 +1,4 @@
-# SUBE ASI: primero engines/, luego data/, y app_matrixify.py AL FINAL
+# SUBE ASI: engines/ primero, data/ después, app_matrixify.py AL FINAL
 
 ```
 1º  engines/centry_map.py
@@ -6,8 +6,52 @@
 3º  app_matrixify.py
 ```
 
-Subir solo la app deja llamadas a funciones que el motor aún no tiene. Ya está
-blindado (`_centry_motor`): si pasa, la carga **degrada** en vez de caerse.
+---
+
+# Género, Tipo de prenda y panel de advertencias
+
+## 1. El Género no llegaba aunque BigQuery lo tuviera
+
+**Causa real:** `centry_gender()` **no leía el género: lo adivinaba** del texto
+de Title/Tags/Body/Type. Tu "Canguro Empacable **Uniex** Lightweight" —con el
+typo— no contiene "unisex", así que devolvía vacío **aunque el ARTI trajera
+`GENERO_MA = UNISEX`**. Nunca miraba el campo.
+
+**Ahora:** manda el dato (`Metafield: custom.genero`, `Genero`, `GENERO_MA`) y la
+heurística de texto queda como último recurso. Además el metafield de género
+**se arrastra a las filas de variante**: antes solo existía en la primera fila de
+cada producto y las demás lo perdían.
+
+```
+Canguro Uniex + GENERO_MA=UNISEX  ->  'Unisex'   (antes: vacío)
+```
+
+## 2. El Tipo de prenda llegaba a la categoría pero no a su columna
+
+**Causa:** se comparaba sin normalizar el plural. El catálogo dice `Canguro` y
+la plantilla `Canguros`: no cruzaban. Ahora se comparan **ambos lados en
+singular** y el tipo se escribe en todas las columnas de tipo donde el
+diccionario lo acepta.
+
+```
+Canguro   -> Tipo de bolso/mochila/funda = Canguros
+             Tipo de prenda (MercadoLibre) = Canguros
+Blusa     -> Tipo de prenda parte superior = Blusas
+             Tipo de camisa/blusa/polo = Blusas
+```
+
+Las columnas de tipo se detectan **desde la plantilla** (las que empiezan por
+"Tipo" y traen diccionario), no con una lista fija.
+
+## 3. El panel rojo con 443 "observaciones"
+
+Dos cosas mal:
+
+- Contaba como observación lo que es **informativo**: "se eliminaron N filas con
+  talla 0", el diagnóstico de EAN, "Género completado desde BigQuery". Eso no
+  son problemas del producto. Ahora **no cuentan**.
+- Salía en **rojo con una X**, como si fuera un error. Ahora es **ámbar con `!`**
+  y se llama **Advertencias**.
 
 ---
 

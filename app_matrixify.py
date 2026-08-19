@@ -3488,6 +3488,29 @@ def centry_is_footwear(row):
 
 
 def centry_gender(row):
+    """Genero del producto. Primero el DATO, y solo despues el texto.
+
+    Antes solo adivinaba leyendo Title/Tags/Body/Type. Un "Canguro Empacable
+    Uniex Lightweight" (con el typo) no contiene "unisex", asi que devolvia
+    vacio aunque BigQuery/ARTI trajera GENERO_MA = UNISEX. Ahora manda el campo
+    real y la heuristica de texto queda como ultimo recurso.
+    """
+    declarado = first_non_empty(
+        row.get("Metafield: custom.genero [single_line_text_field]"),
+        row.get("Genero"),
+        row.get("GENERO_MA"),
+        row.get("Género"),
+    )
+    declarado_normalizado = centry_value(declarado).lower()
+    if declarado_normalizado:
+        if "unisex" in declarado_normalizado:
+            return "Unisex"
+        if "mujer" in declarado_normalizado or "femenino" in declarado_normalizado or "dama" in declarado_normalizado:
+            return "Femenino"
+        if "hombre" in declarado_normalizado or "masculino" in declarado_normalizado or "varon" in declarado_normalizado:
+            return "Masculino"
+        if "nino" in declarado_normalizado or "niño" in declarado_normalizado or "nina" in declarado_normalizado or "niña" in declarado_normalizado or "kids" in declarado_normalizado or "infantil" in declarado_normalizado:
+            return "Niños"
     text = " ".join(centry_value(row.get(column)).lower() for column in ("Title", "Tags", "Body HTML", "Type"))
     if "unisex" in text:
         return "Unisex"
@@ -4052,6 +4075,9 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
     product_fields = [
         "Title", "Body HTML", "Vendor", "Type", "Tags", "Status", "Published", "Image Src",
         "Metafield: custom.codigo_modelo_color [id]", "Metafield: custom.estilo [single_line_text_field]",
+        # Sin esto el genero solo existia en la primera fila de cada producto y
+        # las variantes lo perdian.
+        "Metafield: custom.genero [single_line_text_field]",
         "Metafield: custom.color [single_line_text_field]",
         "Metafield: custom.materialidad [single_line_text_field]",
         "Metafield: custom.tecnologia [list.single_line_text_field]",
@@ -4148,6 +4174,11 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         # Solo se escriben si el valor esta permitido en esa columna.
         # Los pares salen del Body HTML, no del listado de Sial: ese trae
         # Tipo De Producto/Genero/Color/Marca, no atributos de ficha.
+        # El tipo de prenda tambien va a SUS columnas de marketplace, no solo
+        # a la categoria. Se escribe donde el diccionario lo acepta.
+        tipos_centry, _ = _centry_motor(
+            "tipo_para_columnas", ({}, []), tipo_centry, familia_centry
+        )
         atributos_centry, ignorados_centry = _centry_motor(
             "atributos_desde_caracteristicas", ({}, []),
             _centry_motor("caracteristicas_del_body", "", row.get("Body HTML")) or characteristics,
@@ -4209,6 +4240,8 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                 "COD COL": color_centry,
                 "TALLA": first_non_empty(tal_value, size),
                 "Advertencias": advertencia_centry,
+                # El tipo de prenda, en las columnas de marketplace donde encaja.
+                **tipos_centry,
                 **atributos_centry,
                 "Cod Mod Col Talla": f"{current_mod_col}-{size}" if current_mod_col and size else current_mod_col,
                 "Clase": class_name,
@@ -4399,7 +4432,19 @@ def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"
     no_barcode = safe_int_value((df.get("Código de barra variante (EAN/UPC/ISBN)", pd.Series(dtype=object)).map(clean_value) == "").sum())
     no_image = safe_int_value((df.get("URL imagen principal", pd.Series(dtype=object)).map(clean_value) == "").sum())
     no_price = safe_int_value((df.get("Precio", pd.Series(dtype=object)).map(clean_value) == "").sum())
-    issue_count = 0 if issues_df is None or issues_df.empty else len(issues_df)
+    # Lo meramente informativo no cuenta como observacion: "se eliminaron N
+    # filas con talla 0" o el diagnostico de EAN no son problemas del producto,
+    # y hacian que el panel marcara 443 errores en rojo cuando no habia ninguno.
+    issue_count = 0
+    if issues_df is not None and not issues_df.empty and "Problema" in issues_df.columns:
+        informativos = ("se eliminaron", "se descartaron", "columnas ean detectadas",
+                        "diagnostico", "completado desde bigquery")
+        issue_count = safe_int_value(sum(
+            1 for texto in issues_df["Problema"].map(clean_value)
+            if not any(marca in texto.lower() for marca in informativos)
+        ))
+    elif issues_df is not None and not issues_df.empty:
+        issue_count = len(issues_df)
     render_html(
         f"""
         <div class="combo-card">
@@ -4415,7 +4460,7 @@ def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"
                 <div class="commercial-summary-tile {'ok' if no_barcode == 0 else 'bad'}"><span>EAN faltante</span><b>{'&#10003;' if no_barcode == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_barcode)}</strong></div>
                 <div class="commercial-summary-tile {'ok' if no_image == 0 else 'bad'}"><span>Imagen faltante</span><b>{'&#10003;' if no_image == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_image)}</strong></div>
                 <div class="commercial-summary-tile {'ok' if no_price == 0 else 'bad'}"><span>Precio faltante</span><b>{'&#10003;' if no_price == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_price)}</strong></div>
-                <div class="commercial-summary-tile {'ok' if issue_count == 0 else 'bad'}"><span>Observaciones</span><b>{'&#10003;' if issue_count == 0 else '&#10005;'}</b><strong>{format_kpi_number(issue_count)}</strong></div>
+                <div class="commercial-summary-tile {'ok' if issue_count == 0 else 'warn'}"><span>Advertencias</span><b>{'&#10003;' if issue_count == 0 else '!'}</b><strong>{format_kpi_number(issue_count)}</strong></div>
             </div>
         </div>
         """
@@ -12758,6 +12803,11 @@ def inject_custom_css(config):
             border-color:#FECACA;
         }}
         .commercial-summary-tile.bad b {{ background:#DC2626; }}
+        .commercial-summary-tile.warn {{
+            background:#FFFBEB;
+            border-color:#FDE68A;
+        }}
+        .commercial-summary-tile.warn b {{ background:#D97706; }}
         .commercial-summary-tile.ready {{
             background:linear-gradient(135deg,#ECFDF5 0%,#EFF6FF 100%);
             border-color:#86EFAC;

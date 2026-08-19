@@ -1,22 +1,76 @@
-# SUBE LOS 3 ARCHIVOS JUNTOS, EN ESTE ORDEN
-
-**Primero `engines/centry_map.py`, después `data/plantilla_centry_productos.xlsx`,
-y al final `app_matrixify.py`.**
-
-Si subes solo `app_matrixify.py`, la app llama a funciones que el motor todavía
-no tiene. Eso es lo que provocó:
+# SUBE ASI: primero engines/, luego data/, y app_matrixify.py AL FINAL
 
 ```
-AttributeError: module 'engines.centry_map' has no attribute
-'atributos_desde_caracteristicas'
+1º  engines/centry_map.py
+2º  data/plantilla_centry_productos.xlsx
+3º  app_matrixify.py
 ```
 
-## Y además: ya no puede volver a pasar
+Subir solo la app deja llamadas a funciones que el motor aún no tiene. Ya está
+blindado (`_centry_motor`): si pasa, la carga **degrada** en vez de caerse.
 
-Se blindaron las 7 llamadas al motor (`_centry_motor`). Si el módulo desplegado
-es más viejo que la app, la carga **degrada** —completa menos columnas— en vez
-de caerse. Comprobado borrando a mano las funciones nuevas del módulo: la carga
-parcial siguió dando sus 6 filas y 97 columnas sin reventar.
+---
+
+# Género, Tipo de prenda y talla 0
+
+## 1. El Género salía vacío
+
+**Causa:** la carga parcial (`build_centry_matrixify_from_master`) solo miraba
+Shopify. Si el producto no estaba ahí, o no tenía el metafield, no completaba
+nada — aunque BigQuery/ARTI **sí trae** `Genero` y `TipoProducto`
+(ya estaban en `ARTI_OPTIONAL_COLUMNS`, simplemente no se leían).
+
+**Ahora:** Shopify manda; si no tiene el dato, se completa desde SIAL/BigQuery y
+queda constancia en la revisión (*"Genero completado desde BigQuery/ARTI:
+MUJER"*). Si no está en **ninguna** de las dos fuentes, se avisa explícitamente
+en vez de dejarlo en blanco sin explicación.
+
+Lo mismo para el Tipo de prenda.
+
+## 2. Se creaba talla `0` junto a tallas reales
+
+**Causa:** la carga completa ya filtraba esto con `final_variant_filter`, pero la
+**parcial armaba su Matrixify por su cuenta y nunca pasaba por ese filtro**. Por
+eso salían `S, M, L, XL` **y además** un `0`, que terminaba publicado en Shopify.
+
+**Ahora:** la parcial pasa por **el mismo filtro central**. No se reescribió la
+regla: se reutiliza la de `generate_columbia_matrixify`, que ya tiene pruebas.
+Eso cubre también talla interna K y SKU duplicado, y deja el conteo de lo
+descartado en la hoja de revisión.
+
+| Tallas en el maestro | Resultado |
+|---|---|
+| `0, S, M, L, XL` | `S, M, L, XL` |
+| `0, XS…XXL` | `XS, S, M, L, XL, XXL` |
+| `0, 36, 37, 38, 39` | `36, 37, 38, 39` |
+| `S, M, L, 0` (el 0 al final) | `S, M, L` |
+| `0` solo | **`0`** — talla única legítima, se conserva |
+
+## 3. Columnas duplicadas al final
+
+`Mod`/`Col`/`Tal` y `COD MOD`/`COD COL`/`TALLA` eran **lo mismo** y salían las
+seis. Al restaurar las operativas no vi que duplicaban las tuyas. Se quitan las
+cortas de la hoja Centry; **la hoja Carga Sial las conserva**, que allí son su
+identificación.
+
+**94 columnas**, terminando en `Cod Mod Col Talla · COD MOD · COD COL · TALLA ·
+Advertencias`.
+
+## Comprobado
+
+Con tu carga real (450 filas):
+
+```
+Género       450/450        Categoría   450/450
+COD MOD      450/450        Tallas 0    0
+Columnas 94 · sin duplicados · sin Unnamed
+```
+
+- `scripts/test_genero_tipo_tallas.py`: **11 pruebas nuevas**, incluidas las
+  cinco combinaciones de tallas de arriba y la prioridad Shopify → BigQuery.
+- Suite completa: **25 en verde**; siguen los 2 preexistentes
+  (`test_auth_accesos`, `test_brand_commercial_input`). Cero regresiones.
+- App headless `HTTP 200`, cero trazas.
 
 ---
 

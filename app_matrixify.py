@@ -146,6 +146,7 @@ from generate_columbia_matrixify import (
     split_pipe_items,
     strip_html,
     texto_plano_de_body,
+    final_variant_filter,
     is_zero_size,
     read_arti_source,
 )
@@ -3441,9 +3442,16 @@ def _centry_columns_desde_plantilla():
                     centry_plantilla.CALZADO, centry_plantilla.ACCESORIOS):
         columnas.extend(plantilla["familias"].get(familia, []))
     # Columnas operativas de la app: NO vienen en la plantilla de Centry pero
-    # la operacion las usa (guia de tallas, clase, y las claves de cruce).
-    # Al pasar la lista a la plantilla se habian perdido.
-    columnas.extend(CENTRY_TAIL_COLUMNS)
+    # la operacion las usa (guia de tallas, clase...). Al pasar la lista a la
+    # plantilla se habian perdido.
+    #
+    # Se excluyen "Mod", "Col" y "Tal": son EXACTAMENTE lo mismo que COD MOD,
+    # COD COL y TALLA, y salian las seis, duplicadas, al final del archivo. Las
+    # que manda son las tres con nombre largo. La hoja Carga Sial conserva las
+    # cortas: alli son su identificacion y tiene su propia lista de columnas.
+    columnas.extend(
+        columna for columna in CENTRY_TAIL_COLUMNS if columna not in ("Mod", "Col", "Tal")
+    )
     columnas.extend(centry_plantilla.COLUMNAS_CLAVE)
     columnas.append(centry_plantilla.COLUMNA_ADVERTENCIA)
     return list(dict.fromkeys(columnas))
@@ -4569,7 +4577,25 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         image_urls = image_candidates(key, image_config)
         title = first_non_empty(product_row.get("Title") if product_row is not None else "", key)
         body_html = first_non_empty(product_row.get("Body HTML") if product_row is not None else "", "")
-        product_type = first_non_empty(product_row.get("Type") if product_row is not None else "", "")
+        # Genero y Tipo NUNCA pueden quedar vacios: manda Shopify y, si no
+        # tiene el dato, se completa desde SIAL/BigQuery (el ARTI ya trae
+        # "TipoProducto" y "Genero" en ARTI_OPTIONAL_COLUMNS).
+        product_type = first_non_empty(
+            product_row.get("Type") if product_row is not None else "",
+            variants.iloc[0].get("TipoProducto"),
+        )
+        gender_master = first_non_empty(
+            product_row.get("Metafield: custom.genero [single_line_text_field]") if product_row is not None else "",
+            variants.iloc[0].get("Genero"),
+        )
+        if not clean_value(product_type):
+            issues.append({"Mod-Col": key, "Problema": "Sin tipo de prenda en Shopify ni en BigQuery/ARTI"})
+        if not clean_value(gender_master):
+            issues.append({"Mod-Col": key, "Problema": "Sin genero en Shopify ni en BigQuery/ARTI"})
+        elif product_row is None or not clean_value(
+            product_row.get("Metafield: custom.genero [single_line_text_field]")
+        ):
+            issues.append({"Mod-Col": key, "Problema": f"Genero completado desde BigQuery/ARTI: {clean_value(gender_master)}"})
         tags = first_non_empty(product_row.get("Tags") if product_row is not None else "", vendor)
         materiality = first_non_empty(product_row.get("Metafield: custom.materialidad [single_line_text_field]") if product_row is not None else "", "")
         technology = first_non_empty(product_row.get("Metafield: custom.tecnologia [list.single_line_text_field]") if product_row is not None else "", "")
@@ -4598,6 +4624,7 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                     "Variant Price": clean_value(variant.get("Precio")),
                     "Metafield: custom.codigo_modelo_color [id]": key,
                     "Metafield: custom.marca [single_line_text_field]": vendor,
+                    "Metafield: custom.genero [single_line_text_field]": gender_master,
                     "Metafield: custom.color [single_line_text_field]": color,
                     "Metafield: custom.materialidad [single_line_text_field]": materiality,
                     "Metafield: custom.tecnologia [list.single_line_text_field]": technology,
@@ -4611,6 +4638,24 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
     for column in MATRIXIFY_COLUMNS:
         if column not in matrixify_like.columns:
             matrixify_like[column] = ""
+
+    # MISMO filtro central que usa la carga completa. Sin esto, la carga
+    # parcial creaba una variante de talla 0 junto a las tallas reales
+    # (S/M/L/XL) y esa variante terminaba publicada en Shopify. La regla no se
+    # reescribe aqui: se reutiliza `final_variant_filter` de
+    # generate_columbia_matrixify, que ya tiene pruebas.
+    if not matrixify_like.empty:
+        antes = len(matrixify_like)
+        matrixify_like, _, filtro_issues = final_variant_filter(
+            matrixify_like, pd.DataFrame(), pd.DataFrame(issues)
+        )
+        issues = filtro_issues.to_dict("records") if not filtro_issues.empty else issues
+        quitadas = antes - len(matrixify_like)
+        if quitadas:
+            issues.append({
+                "Mod-Col": "Filtro de tallas",
+                "Problema": f"Se descartaron {quitadas:,} variantes (talla 0 con tallas reales, talla interna K o SKU duplicado)",
+            })
     return matrixify_like, pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
 
 

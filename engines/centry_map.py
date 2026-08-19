@@ -340,7 +340,9 @@ def resolver_categoria(marca="", tipo="", genero="", familia="", ruta=None):
     tabla = plantilla["categorias"]
     genero_normalizado = normalizar_genero(genero)
     if not genero_normalizado:
-        return "", f'genero "{_texto(genero)}" no reconocido'
+        if not _texto(genero):
+            return "", "el producto no trae género (ni en Shopify ni en BigQuery/ARTI)"
+        return "", f'género "{_texto(genero)}" no reconocido'
     clave_tipo = _singular(tipo)
     if not clave_tipo:
         return "", "el producto no trae tipo de prenda"

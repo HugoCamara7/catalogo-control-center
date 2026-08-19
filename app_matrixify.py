@@ -3401,6 +3401,23 @@ CENTRY_TAIL_COLUMNS = [
     "Mod", "Col", "Tal",
     "COD MOD", "COD COL", "TALLA", "Advertencias",
 ]
+def _centry_motor(nombre, respaldo, *args, **kwargs):
+    """Llama a una funcion de engines/centry_map sin romper si no existe.
+
+    Los archivos se suben a mano y de uno en uno: si `app_matrixify.py` sube
+    antes que `engines/centry_map.py`, la app llamaba a una funcion que aun no
+    estaba y la carga entera reventaba con AttributeError. Con esto, una subida
+    a medias degrada (menos columnas completadas) en vez de caerse.
+    """
+    funcion = getattr(centry_plantilla, nombre, None)
+    if funcion is None:
+        return respaldo
+    try:
+        return funcion(*args, **kwargs)
+    except Exception:
+        return respaldo
+
+
 def _centry_columns_desde_plantilla():
     """Las columnas salen de la plantilla oficial, no de listas escritas a mano.
 
@@ -4095,20 +4112,25 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             footwear_cane,
         )
         # Motor de plantilla: familia, categoria oficial y advertencias.
-        modelo_centry, color_centry = centry_plantilla._partir_mod_col(current_mod_col)
+        modelo_centry, color_centry = _centry_motor(
+            "_partir_mod_col", (clean_value(current_mod_col).upper(), ""), current_mod_col
+        )
         avisos_centry = []
         # El tipo pasa PRIMERO por el diccionario de tipos de prenda. Si no
         # esta, se acepta igual y queda la advertencia.
-        tipo_centry, clase_centry, aviso_tipo = centry_plantilla.resolver_tipo(product_type)
+        tipo_centry, clase_centry, aviso_tipo = _centry_motor(
+            "resolver_tipo", (product_type, "", ""), product_type
+        )
         if aviso_tipo:
             avisos_centry.append(aviso_tipo)
-        familia_centry, motivo_familia = centry_plantilla.detectar_familia(
+        familia_centry, motivo_familia = _centry_motor(
+            "detectar_familia", ("", ""),
             tipo_centry, clase_centry or class_name, category_record.get("category") or ""
         )
         if not familia_centry:
             avisos_centry.append(motivo_familia)
-        categoria_oficial, aviso_categoria = centry_plantilla.resolver_categoria(
-            vendor, tipo_centry, gender
+        categoria_oficial, aviso_categoria = _centry_motor(
+            "resolver_categoria", ("", ""), vendor, tipo_centry, gender
         )
         if aviso_categoria:
             avisos_centry.append(aviso_categoria)
@@ -4118,8 +4140,9 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         # Solo se escriben si el valor esta permitido en esa columna.
         # Los pares salen del Body HTML, no del listado de Sial: ese trae
         # Tipo De Producto/Genero/Color/Marca, no atributos de ficha.
-        atributos_centry, ignorados_centry = centry_plantilla.atributos_desde_caracteristicas(
-            centry_plantilla.caracteristicas_del_body(row.get("Body HTML")) or characteristics,
+        atributos_centry, ignorados_centry = _centry_motor(
+            "atributos_desde_caracteristicas", ({}, []),
+            _centry_motor("caracteristicas_del_body", "", row.get("Body HTML")) or characteristics,
             familia_centry,
         )
         if ignorados_centry:

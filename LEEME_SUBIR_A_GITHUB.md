@@ -1,3 +1,25 @@
+# SUBE LOS 3 ARCHIVOS JUNTOS, EN ESTE ORDEN
+
+**Primero `engines/centry_map.py`, después `data/plantilla_centry_productos.xlsx`,
+y al final `app_matrixify.py`.**
+
+Si subes solo `app_matrixify.py`, la app llama a funciones que el motor todavía
+no tiene. Eso es lo que provocó:
+
+```
+AttributeError: module 'engines.centry_map' has no attribute
+'atributos_desde_caracteristicas'
+```
+
+## Y además: ya no puede volver a pasar
+
+Se blindaron las 7 llamadas al motor (`_centry_motor`). Si el módulo desplegado
+es más viejo que la app, la carga **degrada** —completa menos columnas— en vez
+de caerse. Comprobado borrando a mano las funciones nuevas del módulo: la carga
+parcial siguió dando sus 6 filas y 97 columnas sin reventar.
+
+---
+
 # Qué subir — motor Centry por plantilla
 
 | Archivo | Ruta | |

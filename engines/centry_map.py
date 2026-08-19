@@ -788,3 +788,49 @@ def _sin_etiquetas(html):
     """Texto plano de un fragmento, sin depender del modulo del generador."""
     texto = re.sub(r"<[^>]+>", " ", _texto(html))
     return re.sub(r"\s+", " ", texto).strip()
+
+
+def columnas_de_tipo(familia, ruta=None):
+    """Columnas de la familia que piden el TIPO de prenda/calzado.
+
+    Son las que empiezan por "Tipo" y traen diccionario cerrado: "Tipo -
+    Calzado", "Tipo de prenda para la parte superior", "Tipo de prenda
+    (MercadoLibre)"... Se detectan por la plantilla, no por una lista fija.
+    """
+    salida = []
+    for columna in columnas_de(familia, ruta):
+        if not normalizar(columna).startswith("tipo"):
+            continue
+        if valores_permitidos(columna, ruta):
+            salida.append(columna)
+    return salida
+
+
+def tipo_para_columnas(tipo, familia, ruta=None):
+    """{columna: valor} escribiendo el tipo en las columnas donde SI encaja.
+
+    El tipo del catalogo ("Casacas") se compara contra el diccionario de cada
+    columna de tipo. Solo se escribe donde el valor esta permitido: asi "Tipo de
+    prenda para la parte superior" recibe "Casacas" y "Tipo de chaqueta/chaleco"
+    no recibe nada si ese valor no esta en su lista.
+
+    Devuelve tambien las columnas de tipo que quedaron sin poder completarse.
+    """
+    aplicados = {}
+    sin_valor = []
+    clave = _singular(tipo)
+    if not clave:
+        return aplicados, columnas_de_tipo(familia, ruta)
+    for columna in columnas_de_tipo(familia, ruta):
+        # Se comparan las dos partes en singular: el catalogo dice "Canguro" y
+        # la plantilla "Canguros". Sin esto no cruzaba ninguno de los dos.
+        encontrado = ""
+        for permitido in valores_permitidos(columna, ruta):
+            if _singular(permitido) == clave:
+                encontrado = permitido
+                break
+        if encontrado:
+            aplicados[columna] = encontrado
+        else:
+            sin_valor.append(columna)
+    return aplicados, sin_valor

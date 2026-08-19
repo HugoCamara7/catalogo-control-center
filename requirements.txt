@@ -1,7 +1,8 @@
-pandas
-openpyxl
-streamlit
-google-cloud-bigquery
-google-auth
-db-dtypes
-xlsxwriter
+streamlit>=1.50
+pandas>=2.0
+openpyxl>=3.1
+xlrd>=2.0.1
+google-cloud-bigquery>=3.20
+google-auth>=2.29
+db-dtypes>=1.2
+pyarrow>=14.0

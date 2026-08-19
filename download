@@ -1,13 +1,29 @@
+# Secretos: nunca subir credenciales de BigQuery
+.streamlit/secrets.toml
+*.json
+!package.json
+
+# Datos operativos
+data/*.xls
+data/*.xlsx
+data/*.csv
+outputs/
+*.zip
+
+# Configuracion real de prioridad: es operativa y cambia seguido.
+# En el repo se versiona solo el ejemplo (prioridad_tiendas.ejemplo.xlsx).
+config/prioridad_tiendas.xlsx
+
+# Python
 __pycache__/
 *.py[cod]
-.streamlit/secrets.toml
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
 
-# Archivos generados por la app
-outputs/
-
-# Bases pesadas originales. La app prioriza data/arti.zip.
-data/arti.xlsx
-data/arti.csv
-
-# Temporales de Excel
-~$*.xlsx
+# Sistema
+.DS_Store
+Thumbs.db
+~$*

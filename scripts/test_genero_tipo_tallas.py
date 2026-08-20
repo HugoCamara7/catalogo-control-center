@@ -164,6 +164,50 @@ class TestGeneroYTipoNuncaVacios(unittest.TestCase):
         self.assertIn("Sin tipo de prenda en Shopify ni en BigQuery/ARTI", texto)
 
 
+class TestTallaCeroEnLaHojaCentry(unittest.TestCase):
+    """La misma regla, en la hoja que se le manda a Centry.
+
+    `filter_centry_size_rows` borraba TODA fila con talla 0 en vestuario y
+    calzado, sin mirar si el producto tenía otras tallas. Un producto cuya
+    única talla era 0 desaparecía entero del archivo.
+    """
+
+    def _centry(self, tallas, tipo="Camisas"):
+        filas = []
+        for indice, talla in enumerate(tallas, start=1):
+            valores = {columna: "" for columna in app.MATRIXIFY_COLUMNS}
+            valores.update({
+                "Handle": "producto-x",
+                "Variant SKU": f"SKU{indice}",
+                "Option1 Value": talla,
+                "Variant Price": "199",
+                "Image Src": "https://ejemplo/1.jpg",
+                "Metafield: custom.codigo_modelo_color [id]": "RK900000-001",
+                "Metafield: custom.genero [single_line_text_field]": "HOMBRE",
+            })
+            if indice == 1:
+                valores.update({"Title": "Producto X", "Vendor": "Rockford", "Type": tipo, "Tags": "Rockford"})
+            filas.append(valores)
+        salida, _ = app.build_centry_from_matrixify(pd.DataFrame(filas), {"label": "Rockford"})
+        return [str(valor) for valor in salida["Talla"]] if len(salida) else []
+
+    def test_con_tallas_de_letra_no_sale_la_cero(self):
+        self.assertEqual(self._centry(["0", "S", "M", "L"]), ["S", "M", "L"])
+
+    def test_con_tallas_numericas_tampoco(self):
+        self.assertEqual(self._centry(["0", "38", "39"], tipo="Zapatillas"), ["38", "39"])
+
+    def test_la_talla_unica_de_verdad_se_conserva(self):
+        """Sin otras tallas, el 0 ES la talla única y el producto no se pierde."""
+        self.assertEqual(self._centry(["0"]), ["0"])
+        self.assertEqual(self._centry(["0"], tipo="Zapatillas"), ["0"])
+
+    def test_el_producto_no_desaparece_nunca(self):
+        for tallas in (["0"], ["0", "S"], ["O/S"], ["XS", "S", "M", "L", "XL", "XXL"]):
+            with self.subTest(tallas=tallas):
+                self.assertTrue(self._centry(tallas), f"{tallas} dejó el archivo vacío")
+
+
 class TestReglaCentral(unittest.TestCase):
     """La regla vive en el motor, no en un parche de Centry."""
 

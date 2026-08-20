@@ -164,9 +164,14 @@ CAMPOS = [
     ("color_forus", "custom.color_forus", TEXTO,
      ["Color Forus", "Color web/filtro", "Color Web", "Color web", "Color", "Color Comercial"], None, "nombre_propio"),
     ("grupo_color", "custom.grupo_color", TEXTO, ["Grupo Color", "Grupo de Color"], None, "nombre_propio"),
-    ("nombre_corto", "custom.nombre_corto", TEXTO, ["Nombre Corto", "Nombre corto"], None, "texto"),
+    # Hush Puppies los envia en el input y se muestran en PLP/PDP. Los alias
+    # cubren las cuatro formas que llegan en la practica; `clave_columna` ya
+    # ignora tildes, mayusculas y signos, asi que basta con una de cada familia.
+    ("nombre_corto", "custom.nombre_corto", TEXTO,
+     ["Nombre Corto", "Nombre corto", "Nombre breve", "Short name"], None, "texto"),
     ("descripcion_corta", "custom.descripcion_corta", TEXTO,
-     ["Descripcion Corta", "Descripción Corta"], None, "texto"),
+     ["Descripcion Corta", "Descripción Corta", "Descripcion corta", "Descripción corta",
+      "Short description"], None, "texto"),
     ("materialidad", "custom.materialidad", TEXTO,
      ["Materialidad", "Material Principal", "Materiales"], None, "texto"),
     # UN metafield, UN tipo. Antes habia dos entradas para custom.tecnologia

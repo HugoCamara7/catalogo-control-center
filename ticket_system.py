@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -351,6 +352,28 @@ def can_view_ticket(actor, ticket):
     return False
 
 
+# Cache de la bandeja, compartida por todo el proceso.
+#
+# El servicio de solicitudes se construye de nuevo en cada rerun de Streamlit,
+# asi que guardar la lista dentro de la instancia no servia de nada. Esta cache
+# vive en el modulo, con la clave del repositorio y rama, y la invalida
+# cualquier escritura (crear, actualizar o borrar). El TTL es el techo para el
+# caso en que otra maquina escriba: nadie ve datos mas viejos que eso.
+_BANDEJA_CACHE = {}
+_BANDEJA_CACHE_LOCK = threading.Lock()
+BANDEJA_CACHE_SEGUNDOS = 25
+# Cuantos archivos de solicitud se bajan a la vez. GitHub no da la lista con
+# contenido: hay que pedir un archivo por solicitud. En serie eran 30+ viajes
+# encadenados por cada clic.
+BANDEJA_DESCARGAS_PARALELAS = 8
+
+
+def limpiar_cache_bandeja():
+    """Vacia la cache entera. Util en pruebas y al cambiar de backend."""
+    with _BANDEJA_CACHE_LOCK:
+        _BANDEJA_CACHE.clear()
+
+
 class LocalTicketStore:
     """Atomic filesystem persistence for tests and controlled local installs."""
 
@@ -373,7 +396,11 @@ class LocalTicketStore:
             self._atomic_json(counter_path, data)
         return f"CAT-{year}-{next_value:06d}"
 
-    def list_tickets(self):
+    def invalidate_cache(self):
+        """El backend local lee del disco: no hay nada que invalidar."""
+        return None
+
+    def list_tickets(self, force_refresh=False):
         tickets = []
         for path in sorted(self.ticket_dir.glob("CAT-*.json"), reverse=True):
             ticket = self._read_json(path, None)
@@ -478,7 +505,8 @@ class LocalTicketStore:
 class GitHubTicketStore:
     """GitHub Contents persistence with SHA-based optimistic concurrency."""
 
-    def __init__(self, owner, repo, token, branch="catalog-tickets", prefix="catalog_tickets", timeout=30):
+    def __init__(self, owner, repo, token, branch="catalog-tickets", prefix="catalog_tickets", timeout=30,
+                 cache_seconds=None, max_workers=None):
         if not all([owner, repo, token, branch]):
             raise TicketValidationError("Configuración GitHub incompleta para tickets.")
         self.owner = owner
@@ -488,6 +516,38 @@ class GitHubTicketStore:
         self.prefix = prefix.strip("/")
         self.timeout = int(timeout)
         self.base = f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/contents"
+        self.cache_seconds = (
+            BANDEJA_CACHE_SEGUNDOS if cache_seconds is None else max(0, int(cache_seconds))
+        )
+        self.max_workers = max(1, int(max_workers or BANDEJA_DESCARGAS_PARALELAS))
+
+    def _clave_cache(self):
+        return (self.owner, self.repo, self.branch, self.prefix)
+
+    def _cache_leer(self):
+        if self.cache_seconds <= 0:
+            return None
+        with _BANDEJA_CACHE_LOCK:
+            entrada = _BANDEJA_CACHE.get(self._clave_cache())
+        if not entrada:
+            return None
+        guardado, tickets = entrada
+        if time.monotonic() - guardado > self.cache_seconds:
+            return None
+        # Copia: quien la reciba puede ordenarla o modificarla sin ensuciar la
+        # cache de los demas.
+        return deepcopy(tickets)
+
+    def _cache_guardar(self, tickets):
+        if self.cache_seconds <= 0:
+            return
+        with _BANDEJA_CACHE_LOCK:
+            _BANDEJA_CACHE[self._clave_cache()] = (time.monotonic(), deepcopy(tickets))
+
+    def invalidate_cache(self):
+        """Tira la lista guardada. La llama toda escritura sobre un ticket."""
+        with _BANDEJA_CACHE_LOCK:
+            _BANDEJA_CACHE.pop(self._clave_cache(), None)
 
     def _request(self, method, path, payload=None, ref=True):
         url = f"{self.base}/{quote(path, safe='/')}"
@@ -550,23 +610,46 @@ class GitHubTicketStore:
                 time.sleep(0.15 * (attempt + 1))
         raise TicketConflictError("No se pudo reservar un código de ticket único.")
 
-    def list_tickets(self):
+    def list_tickets(self, force_refresh=False):
+        """La bandeja completa. Descarga los archivos en paralelo y la guarda.
+
+        La API de contenidos de GitHub no devuelve el contenido al listar un
+        directorio: hay que pedir un archivo por solicitud. Encadenados eran 30
+        y pico de viajes por cada rerun de Streamlit, y la bandeja llama a esto
+        mas de una vez por pantalla. Con el pool y la cache de modulo, un clic
+        pasa de decenas de peticiones en serie a una tanda corta, o a ninguna.
+
+        La cache solo cubre la lista. `get_ticket` sigue yendo a GitHub siempre,
+        porque de ahi sale el `_revision` con el que se guarda: servirlo de una
+        copia vieja haria fallar cada guardado con "cambio en otra sesion".
+        """
+        if not force_refresh:
+            guardada = self._cache_leer()
+            if guardada is not None:
+                return guardada
         data = self._request("GET", f"{self.prefix}/tickets")
         if not isinstance(data, list):
             return []
+        rutas = [
+            item["path"]
+            for item in data
+            if item.get("type") == "file" and item.get("name", "").endswith(".json")
+        ]
         tickets = []
-        for item in data:
-            if item.get("type") != "file" or not item.get("name", "").endswith(".json"):
-                continue
-            raw, sha = self._get_file(item["path"])
-            try:
-                ticket = json.loads(raw.decode("utf-8"))
-            except (AttributeError, json.JSONDecodeError):
-                continue
-            ticket = upgrade_ticket(ticket)
-            ticket["_revision"] = sha
-            tickets.append(ticket)
-        return sorted(tickets, key=lambda item: item.get("created_at", ""), reverse=True)
+        if rutas:
+            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(rutas))) as pool:
+                descargas = list(pool.map(self._get_file, rutas))
+            for raw, sha in descargas:
+                try:
+                    ticket = json.loads(raw.decode("utf-8"))
+                except (AttributeError, json.JSONDecodeError):
+                    continue
+                ticket = upgrade_ticket(ticket)
+                ticket["_revision"] = sha
+                tickets.append(ticket)
+        tickets.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        self._cache_guardar(tickets)
+        return tickets
 
     def get_ticket(self, code):
         path = f"{self.prefix}/tickets/{_safe_name(code)}.json"
@@ -586,6 +669,7 @@ class GitHubTicketStore:
         saved.pop("_revision", None)
         revision = self._put_file(path, json.dumps(saved, ensure_ascii=False, indent=2).encode("utf-8"), f"catalog: create {ticket['code']}")
         saved["_revision"] = revision
+        self.invalidate_cache()
         return saved
 
     def update_ticket(self, ticket, expected_revision):
@@ -599,6 +683,7 @@ class GitHubTicketStore:
         saved.pop("_revision", None)
         revision = self._put_file(path, json.dumps(saved, ensure_ascii=False, indent=2).encode("utf-8"), f"catalog: update {ticket['code']}", sha)
         saved["_revision"] = revision
+        self.invalidate_cache()
         return saved
 
     def delete_ticket(self, code, expected_revision):
@@ -618,6 +703,7 @@ class GitHubTicketStore:
             },
             ref=False,
         )
+        self.invalidate_cache()
         return True
 
     def put_artifact(self, code, version, kind, filename, payload):
@@ -711,11 +797,11 @@ class TicketService:
     def actor(user, role, brands=None):
         return _actor(user, role, brands)
 
-    def list_tickets(self, actor, filters=None, search=""):
+    def list_tickets(self, actor, filters=None, search="", force_refresh=False):
         filters = filters or {}
         search_key = normalize_key(search)
         result = []
-        for ticket in self.store.list_tickets():
+        for ticket in self.store.list_tickets(force_refresh=force_refresh):
             # Canceled records from older releases are tombstones. They must
             # never return to the operational inbox or brand history.
             if internal_state(ticket.get("status")) == STATE_CANCELED:
@@ -793,8 +879,11 @@ class TicketService:
         digest = file_sha256(input_bytes)
         duplicate_key = file_sha256(f"{normalize_key(brand)}|{template_version}|{digest}".encode("utf-8"))
         nuevos_mod_col = {normalize_key(v) for v in (model_colors or []) if normalize_key(v)}
+        # Recarga forzada a proposito: el control de duplicados no puede mirar
+        # una lista guardada. Bastarian dos envios seguidos dentro del TTL para
+        # que el segundo no viera al primero y volviera el duplicado.
         abiertos = [
-            t for t in self.store.list_tickets()
+            t for t in self.store.list_tickets(force_refresh=True)
             if internal_state(t.get("status")) not in {STATE_REJECTED, STATE_CANCELED}
         ]
         for existing in abiertos:

@@ -1371,10 +1371,15 @@ def strip_body_heading_prefix(value, headings):
     return text.strip(" :-")
 
 
+# El nombre corto va al final a proposito: es un metafield de PLP/PDP, no el
+# titulo del producto. Se deja como ultimo recurso para no romper inputs
+# antiguos que solo traian esa columna, pero cualquier nombre de producto real
+# le gana.
 TITLE_COLUMNS = [
     "Title", "Product Title", "Product Name", "Nombre del Producto", "Nombre Producto",
     "Nombre de Producto", "Nombre de producto",
-    "Nombre", "Titulo", "Título", "Producto", "Nombre Web", "Nombre Corto", "Nombre corto",
+    "Nombre", "Titulo", "Título", "Producto", "Nombre Web",
+    "Nombre Corto", "Nombre corto",
     "Metafield: custom.nombre_corto [single_line_text_field]",
 ]
 
@@ -1394,12 +1399,51 @@ DESCRIPTION_COLUMNS = [
     "Descripcion Web", "Descripcion del Producto", "Descripción del Producto", "Product Long Description",
 ]
 
+# custom.descripcion_corta NO entra aqui: es un metafield propio que la PLP y
+# la PDP muestran aparte. Mientras estuvo en la lista, la descripcion corta se
+# publicaba como bullets del Body HTML y se pisaba con las caracteristicas.
 FEATURE_COLUMNS = [
     "Caracteristicas", "Características", "Caracteristicas ", "Características ", "Product Bullets",
     "Bullets", "Features", "Feature", "Beneficios", "Descripcion Caracteristicas",
     "Descripción Características", "Listado de características", "Listado de caracteristicas",
-    "Metafield: custom.descripcion_corta [single_line_text_field]",
 ]
+
+# Los dos metafields de texto corto de Hush Puppies. Se declaran aparte porque
+# tienen una regla propia: si el input TRAE la columna, manda ella aunque venga
+# vacia. Con `row_first_existing` a secas, una descripcion corta vacia caia a la
+# descripcion larga y la PLP terminaba mostrando el parrafo entero.
+SHORT_NAME_COLUMNS = [
+    "Metafield: custom.nombre_corto [single_line_text_field]",
+    "Nombre corto", "Nombre Corto", "Nombre breve", "Short name",
+]
+SHORT_DESCRIPTION_COLUMNS = [
+    "Metafield: custom.descripcion_corta [single_line_text_field]",
+    "Descripcion corta", "Descripción corta", "Descripcion Corta", "Descripción Corta",
+    "Short description",
+]
+
+
+def short_text_metafield(product, columnas_propias, columnas_derivadas):
+    """Valor de un metafield de texto corto.
+
+    Si el input declara alguna de `columnas_propias`, manda ese valor tal cual,
+    aunque este vacio: la marca es la duena del dato y un vacio no puede
+    rellenarse con otra cosa. Solo cuando la columna no existe se deriva de
+    `columnas_derivadas`, que es como venia funcionando para las marcas que no
+    envian estos campos.
+    """
+    indice = tuple(getattr(product, "index", []))
+    propias = {clave_columna_corta(nombre) for nombre in columnas_propias}
+    for columna in indice:
+        if clave_columna_corta(columna) in propias:
+            return clean(product.get(columna))
+    return row_first_existing(product, columnas_derivadas)
+
+
+def clave_columna_corta(valor):
+    """Nombre de columna comparable: sin tildes, sin signos y en minuscula."""
+    return normalize_header_key(valor)
+
 
 MATERIAL_COLUMNS = [
     "Material", "Materiales", "Materialidad", "Tipo de Material", "Composicion", "Composición",
@@ -3865,24 +3909,18 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                             product,
                             ["Metafield: custom.tipo [single_line_text_field]", "Tipo de prenda", "Tipo"],
                         ),
-                        "Metafield: custom.descripcion_corta [single_line_text_field]": row_first_existing(
-                            product,
-                            [
-                                "Metafield: custom.descripcion_corta [single_line_text_field]",
-                                "Descripcion corta",
-                                "Descripción corta",
-                                "Descripcion",
-                            ],
-                        ),
-                        "Metafield: custom.nombre_corto [single_line_text_field]": row_first_existing(
-                            product,
-                            [
-                                "Metafield: custom.nombre_corto [single_line_text_field]",
-                                "Nombre corto",
-                                "Nombre de Producto",
-                                "Nombre",
-                            ],
-                        ),
+                        "Metafield: custom.descripcion_corta [single_line_text_field]":
+                            short_text_metafield(
+                                product,
+                                SHORT_DESCRIPTION_COLUMNS,
+                                ["Descripcion", "Descripción"],
+                            ),
+                        "Metafield: custom.nombre_corto [single_line_text_field]":
+                            short_text_metafield(
+                                product,
+                                SHORT_NAME_COLUMNS,
+                                ["Nombre de Producto", "Nombre"],
+                            ),
                         "Metafield: custom.codigo_modelo_color [id]": clean(
                             product.get("Metafield: custom.codigo_modelo_color [id]")
                         )

@@ -1,684 +1,167 @@
-# SUBE ASI: engines/ primero, data/ y scripts/ después, app_matrixify.py AL FINAL
+# Qué subir y por qué
 
-```
-1º   engines/enrich.py                        (NUEVO)
-2º   engines/centry_map.py
-3º   engines/ticket_flow.py
-4º   data/plantilla_centry_productos.xlsx
-5º   scripts/test_enriquecimiento.py          (NUEVO)
-6º   scripts/test_fotos_png.py                (NUEVO)
-7º   scripts/test_centry_contaminacion.py     (NUEVO)
-8º   scripts/test_centry_map.py
-9º   scripts/test_genero_tipo_tallas.py
-10º  scripts/test_bandeja_solicitudes.py
-11º  scripts/test_siblings_carga_completa.py
-12º  app_matrixify.py                          (SIEMPRE AL FINAL)
-```
+Paquete armado sobre `main` en `bbf59b1` (20/08/2026 13:35 UTC).
+Sube los archivos respetando las carpetas. **`app_matrixify.py` va al final.**
 
-`engines/enrich.py` va **antes** que `app_matrixify.py` porque la app lo
-importa. Si se sube al revés la app sigue funcionando —el import está
-protegido y cada campo se queda con su respaldo de siempre— pero los campos
-nuevos salen vacíos hasta que subas el motor.
-
-Este paquete **acumula** todo lo pendiente: Género/Tipo del 18/08, la
-corrección de las alpargatas del 19/08 y lo de hoy. Con subir este, quedas al
-día.
+| Archivo | Estado |
+| --- | --- |
+| `app_matrixify.py` | modificado |
+| `ticket_system.py` | modificado |
+| `catalog_rules.py` | modificado |
+| `generate_columbia_matrixify.py` | modificado |
+| `engines/catalog_map.py` | modificado |
+| `scripts/test_bandeja_solicitudes.py` | modificado |
+| `scripts/test_bandeja_rendimiento.py` | nuevo |
+| `scripts/test_centry_ean.py` | nuevo |
+| `scripts/test_hush_nombre_descripcion_corta.py` | nuevo |
+| `scripts/test_fotos_png_masivo.py` | nuevo |
 
 ---
 
-# 1. Por qué quedaban vacíos Materiales, Composición, Cuidados, Género y Tipo
+## 1. Bandeja de solicitudes: se cerraba la sesión al pulsar una tarjeta
 
-Tres causas distintas, ninguna era falta de datos.
+**Causa.** La tarjeta era un enlace de verdad:
+`<a href="?ticket=CAT-2026-000031" target="_self">`. Eso no es un rerun de
+Streamlit: el navegador **recarga la página entera**, Streamlit abre una sesión
+nueva, `st.session_state` queda vacío y `require_login()` devuelve al login,
+porque la autenticación vive solo en `session_state`.
 
-## a) El Body HTML tiene cuatro secciones y la app leía una
+**Corrección.** Lo que se pulsa ahora es un `st.button` real, invisible y
+estirado sobre la tarjeta. Dispara un rerun normal y la sesión sigue viva. En
+el HTML de la tarjeta ya no queda ningún enlace, y hay una prueba que lo vigila.
 
-Cuando la app arma un producto escribe el Body en cuatro bloques rotulados:
+## 2. Bandeja: lentitud
 
-```
-nweb__Descripcion · nweb__Caracteristicas · nweb__Materiales · nweb__Cuidados
-```
+**Causa.** `GitHubTicketStore.list_tickets()` bajaba el índice del directorio y
+después **un archivo por solicitud, uno detrás de otro**. Con 31 solicitudes son
+32 viajes HTTP encadenados. La pantalla llama a `list_tickets` **dos veces** por
+rerun (una sin filtros para los KPIs, otra filtrada) más un `get_ticket` para el
+detalle: **unas 65 peticiones en serie por cada clic**, incluso al marcar una
+casilla.
 
-`caracteristicas_del_body` iba a buscar **solo `nweb__Caracteristicas`**. Los
-materiales y los cuidados estaban escritos en el producto desde siempre, en su
-propia sección, y **nadie los recogía**. Por eso salían vacíos en Centry
-aunque en Shopify se vieran perfectamente.
+**Corrección.**
 
-Ahora hay `seccion_del_body(body, seccion)` y se leen las cuatro.
+- Las descargas van **en paralelo** (8 a la vez).
+- La lista se **guarda 25 segundos** en una caché de módulo, y la invalida
+  cualquier escritura (crear, actualizar o borrar). Vive en el módulo y no en la
+  instancia porque el servicio se construye de nuevo en cada rerun.
+- Botón **Actualizar** en la bandeja para forzar la lectura desde GitHub.
+- `get_ticket` **nunca** sale de la caché: de ahí viene el `_revision` con el que
+  se guarda, y servirlo viejo haría fallar cada guardado con "cambió en otra
+  sesión".
+- El control de duplicados al crear una solicitud **fuerza lectura fresca**, para
+  no reabrir el problema que se corrigió en agosto.
 
-## b) El maestro solo se usaba para el género
+## 3. Bandeja: se veía descuadrada
 
-`build_centry_matrixify_from_master` completaba materialidad y tecnología
-**únicamente desde Shopify**:
+El marco de la tarjeta lo dibujaba el HTML y la casilla con la acción rápida se
+subían a su sitio con `margin-top:-44px` y selectores que adivinaban la
+estructura interna de Streamlit. En cuanto una tarjeta era más alta que otra, la
+fila se descuadraba.
 
-```python
-materiality = first_non_empty(product_row.get("Metafield: custom.materialidad..."), "")
-```
+Ahora el marco lo dibuja un contenedor con clave (`tkcard-`), y el contenido, la
+zona pulsable y la franja de abajo son hijos suyos por flujo normal. Sin
+márgenes negativos. Medido en la app: las nueve tarjetas de la página quedan
+todas en 197 px de alto. Además, marcar una casilla ya muestra la barra de lote
+**al primer clic** (antes hacía falta un segundo clic).
 
-Un producto que no está en Shopify salía sin materialidad, sin tecnología, sin
-composición, sin cuidados y sin descripción — aunque BigQuery/ARTI los trae en
-`Material`, `Cuidado`, `Caracteristicas` y `DescripcionWeb`, que ya estaban
-mapeados en `ARTI_COLUMN_ALIASES_APP` y nadie leía.
+## 4. Hush Puppies: `Nombre corto` y `Descripción corta`
 
-## c) Cada camino tenía su propia lista de columnas
+Los dos metafields ya existían en el registro, pero lo que escribía la marca no
+llegaba a Shopify por tres motivos:
 
-Centry buscaba en unas columnas, la hoja Sial en otras y la carga completa en
-otras. El mismo producto salía completo en una carga y vacío en otra.
+1. **Las columnas no estaban en el input de Hush Puppies.** El validador arma la
+   fila normalizada solo con `commercial_input_columns_for_brand`, así que una
+   columna que no esté ahí no se lee, no se valida y no se ve en la vista previa.
+2. **"Descripción corta" era alias de Características.** Estaba en la lista
+   `features` de `catalog_rules.py` y en `FEATURE_COLUMNS` del motor: la frase de
+   la PLP se publicaba como bullets del Body HTML y el metafield salía vacío.
+3. **Una columna vacía se rellenaba con la descripción larga.** Se resolvía con
+   `row_first_existing`, que devuelve el primer valor no vacío, y la lista
+   terminaba en `Descripcion`. La PLP mostraba el párrafo entero.
 
----
+**Corrección.** Las dos columnas entran al perfil de Hush Puppies, Hush Puppies
+Kids y Accesorios HP: aparecen en la plantilla, en la guía, en el diccionario,
+en la validación y en la vista previa. `Descripción corta` deja de ser alias de
+Características. Y cuando el input **trae** la columna manda ella, aunque venga
+vacía: un vacío no borra Shopify, pero tampoco se rellena con otra cosa. Las
+marcas que no envían estos campos siguen derivándolos como antes.
 
-# 2. Cómo quedó el enriquecimiento
+Ruta completa comprobada: input → validación → vista previa → Matrixify →
+metafields por API directa.
 
-Un módulo nuevo, `engines/enrich.py`, con **una sola cadena de prioridades**
-que usan la Carga Completa, la Carga Parcial y Centry:
+## 5. Centry: EAN que no llegaba
 
-| Atributo | Orden de búsqueda |
-|---|---|
-| **Género** | metafield de Shopify → `Género`/`GENERO_MA` del input o el maestro |
-| **Tipo de prenda** | `Type` de Shopify → `TipoProducto`/`Tipo de Prenda` → subcategoría del maestro |
-| **Materiales** | metafield `materialidad` → `Materiales`/`Material` → sección `nweb__Materiales` → etiqueta `Capellada:` |
-| **Composición** | `Composición` → `Materiales` → metafield → etiqueta `Composición:`/`Capellada:` |
-| **Cuidados** | `Cuidados`/`Care`/`Lavado` → sección `nweb__Cuidados` |
-| **Tecnología** | metafield `tecnologia` → `Tecnologias` del maestro |
+Cuatro causas, ninguna visible en el resultado:
 
-Reglas que se cumplen y están escritas en el módulo, no repartidas por el
-código:
+1. **El maestro guardaba la fila equivocada.** `build_centry_arti_lookup` usaba
+   `setdefault`. Como el maestro trae varias filas por SKU (una por bodega), si
+   la primera venía sin `CodBarras` el SKU se quedaba sin EAN aunque otra fila
+   del mismo SKU sí lo tuviera.
+2. **El SKU no emparejaba por formato.** El maestro devuelve `12345` donde
+   Shopify tiene `0012345`, o `12345.0` cuando Excel lo leyó como número. La
+   comparación era por cadena exacta.
+3. **El EAN llegaba roto y pasaba el control.** Excel guarda el código como
+   número y lo devuelve como `7.79871E+12` o `7798712345678.0`. No es vacío, así
+   que se colaba hasta Centry convertido en basura.
+4. **Solo se miraban dos fuentes.** Era
+   `first_non_empty(maestro, Variant Barcode)`: el EAN que venía en el propio
+   input no se leía.
 
-- **Una columna gana siempre a una etiqueta.** Una columna es un dato; una
-  etiqueta es texto que hubo que interpretar.
-- **No se inventa nada.** Si ninguna fuente lo trae, queda vacío y sale la
-  advertencia. `enrich.faltantes()` dice cuáles quedaron sin llenar.
-- **`No Aplica` no es un valor.** Antes un `-` o un `No Aplica` daba el campo
-  por resuelto y cortaba la búsqueda. Ahora la cadena sigue a la fuente
-  siguiente.
-- **Mapeos por marca:** `ALIAS_POR_MARCA` deja que una marca use otro nombre de
-  columna sin tocar la cadena general. El nombre del *tipo* por sitio **no** se
-  duplicó ahí: eso ya vive en `engines/garment_types.tipo_para_sitio`.
+**Corrección.** Un resolutor por SKU/variante que recorre las fuentes en el orden
+pedido —input → Variant Barcode de Shopify → maestro SIAL/BigQuery por SKU →
+maestro por Mod-Col + talla— y normaliza el código venga de donde venga. Si no
+aparece en ninguna, la variante queda marcada como **PENDIENTE** en la hoja
+*Revisión Centry*, con el detalle de qué SKUs son. Y se agrega una línea de
+resumen con **de dónde salió cada EAN**, que es lo que permite ver la causa: si
+todos dicen PENDIENTE el maestro no llegó; si el maestro resuelve pocos, el
+problema es el emparejamiento por SKU.
 
-Como Centry no tiene columna de cuidados, los cuidados entran al **Listado de
-características**, junto a Material y Composición:
+## 6. Mantenedor Fotos PNG: proceso masivo por Excel
 
-```
-Tipo De Producto : Alpargatas |Género : Masculino |Material : 100% Cuero
-|Composición : 100% Cuero |Cuidados : Limpiar con paño húmedo, Secar a la sombra
-```
+En *Carga parcial → Mantenedor Fotos PNG* hay un selector nuevo: **Un código** o
+**Excel con varios códigos**. Con Excel, la herramienta lee la columna
+`Código Modelo Color` (acepta los alias habituales), quita vacíos y repetidos,
+valida el formato **antes de tocar la red**, y busca las vistas de todos los
+modelos con una barra de avance.
 
-## Rendimiento: medido, no prometido
+Muestra por modelo: vistas encontradas, cargadas, ya existentes, sin PNG,
+duplicadas y errores; avisa de los códigos que no existen en Shopify; pide
+confirmación antes de cargar; y deja descargar un Excel con tres hojas —
+*Resumen por modelo*, *Detalle por vista* y *Descartados*.
 
-Resolver tres campos más cuesta trabajo, así que lo medí contra la versión
-anterior en la misma máquina:
-
-| | antes | ahora |
-|---|---|---|
-| Bloque de atributos, aislado | ~180 µs/fila | ~255 µs/fila |
-| **Centry completo, 2.000 filas** | **32,0 s** | **29,5 s** (mediana de 3) |
-
-El bloque de atributos hace más cosas y cuesta +75 µs por fila, pero es una
-parte mínima del total: **de punta a punta no se pierde tiempo**. Tres cosas lo
-sostienen:
-
-- Las secciones del Body se parsean **una vez por producto**, no una por talla.
-  Antes se re-parseaba en cada fila sin caché.
-- `Resolutor` fija las columnas del archivo una sola vez, así la fila deja de
-  recibir ~30 consultas por columnas que no existen.
-- `normalizar` va con caché: los valores se repiten muchísimo entre variantes.
-
-> Un detalle que casi se me pasa: la primera versión del `Resolutor` hacía
-> `tuple(columnas or ())` y con un Index de pandas ese `or` lanza *"truth value
-> of an Index is ambiguous"*. El `except` se lo tragaba y **todo volvía a la
-> ruta lenta sin que nada lo dijera**. Solo lo vi al medir. Hay una prueba
-> específica para que no vuelva.
-
----
-
-# 3. Tallas: la regla, y un hueco que encontré
-
-La regla se mantiene: **con tallas reales (XS…XXL o numéricas) nunca se crea
-talla 0**.
-
-Pero al revisarla encontré el otro lado, que estaba mal:
-`filter_centry_size_rows` borraba **toda** fila con talla 0 en vestuario y
-calzado, sin mirar si el producto tenía otras tallas. Un producto cuya única
-talla era 0 **desaparecía entero del archivo**.
-
-```
-0 + S/M/L      ->  S, M, L      (igual que antes)
-0 + 38/39      ->  38, 39       (igual que antes)
-solo 0         ->  0            ANTES: el producto desaparecía
-```
-
-Ahora la talla 0 solo se borra si el producto **además** tiene tallas reales,
-que es exactamente la regla. Es la misma lógica que ya aplicaba
-`final_variant_filter` en la carga completa; aquí estaba escrita a medias.
+**Sigue siendo un mantenedor independiente.** Reutiliza tal cual las piezas del
+modo de un solo código, así que el tope de **10 vistas**, el orden, el alt text
+(el handle) y el control de fotos repetidas son los mismos. **No se agregó PNG
+al motor normal de imágenes**, que continúa buscando solo JPG/JPEG; hay una
+prueba que lo comprueba.
 
 ---
 
-# 4. El motor normal de fotos: intacto
+## Pruebas
 
-**No lo toqué.** La carga completa y la carga parcial "Fotos 10 vistas" siguen
-buscando **solo `.jpg`**, con las mismas peticiones y el mismo tiempo. Hay
-cuatro pruebas que lo vigilan:
+Batería completa: **32 archivos, todos OK**, salvo los dos que ya fallaban en
+`main` antes de este paquete (`test_auth_accesos.py` y
+`test_brand_commercial_input.py`; comprobado sobre `main` limpio).
 
-- `image_candidates` devuelve 10 URLs y todas terminan en `.jpg`.
-- Ninguna función de fotos del generador menciona PNG.
-- `build_matrixify_updates` tampoco.
-- El mantenedor PNG **no llama** a `image_candidates`, la del camino rápido.
+Nuevos:
 
-Si alguien intenta enseñarle PNG al motor normal, la suite se pone roja.
-
----
-
-# 5. Mantenedor Fotos PNG
-
-**Carga parcial → Mantenedor Fotos PNG.** Manual, aparte, para los casos en que
-la foto solo existe en PNG (Hush Puppies).
-
-## Cómo funciona
-
-1. Escribes **un Código Modelo Color**. Nada más.
-2. Eliges si las PNG se **agregan** a las fotos actuales o las **reemplazan**.
-3. Aprietas **Buscar vistas PNG**. Recién ahí se busca: arma las 10 URLs
-   `MODELO_COLOR_1.png` … `_10.png` y pregunta por cada una.
-4. Ves el resultado vista por vista, más las miniaturas en el orden en que se
-   van a cargar.
-5. Confirmas y aprietas **Cargar PNG en Shopify**.
-
-## Estado de cada vista
-
-| Estado | Qué significa |
-|---|---|
-| **Encontrada** | El PNG existe y el producto todavía no lo tiene. Se sube. |
-| **Ya existente** | El PNG existe y el producto ya lo tiene. **No** se vuelve a subir. |
-| **No existe** | No hay PNG en esa vista. |
-| **Error** | No se pudo comprobar (red, permisos). |
-| **Cargada** | Ya subida a Shopify. |
-
-Al terminar, el resumen se puede descargar en Excel.
-
-## Detalles que importan
-
-- **Orden.** Se suben ordenadas por número de vista, 1 → 10. Si falta la 2, la
-  3 no se corre de puesto: se sube como vista 3.
-- **Sin duplicados.** Se compara por nombre de archivo, aceptando el sufijo que
-  Shopify agrega al subir (`_a1b2c3`). Y la vista 1 **no** se confunde con la
-  10: se compara el nombre entero, no con `startswith`, que es el error clásico.
-- **Nombres y alt text.** Los de siempre: misma convención `MODELO_COLOR_n` y
-  el mismo alt text que usa la carga de fotos por API (el handle).
-- **Reutiliza lo que ya existe:** `_sync_product_photos_direct` (la misma subida
-  por staged upload con respaldo a URL directa), `url_is_image` y
-  `brand_image_config`. Lo único propio es la lista de candidatas `.png`, y es
-  propia **a propósito**.
-- Solo funciona con Shopify API: necesita leer las fotos actuales y subir.
-- Si el código no existe en Shopify, lo dice y no hace nada.
-
----
-
-# 6. Archivos tocados
-
-| Archivo | |
-|---|---|
-| `engines/enrich.py` | **nuevo** — la cadena de prioridades |
-| `engines/centry_map.py` | `seccion_del_body` para las cuatro secciones |
-| `app_matrixify.py` | enriquecimiento, regla de talla 0, mantenedor PNG |
-| `scripts/test_enriquecimiento.py` | **nuevo** — 22 pruebas |
-| `scripts/test_fotos_png.py` | **nuevo** — 19 pruebas |
-| `scripts/test_genero_tipo_tallas.py` | 4 pruebas más, de talla 0 en la hoja Centry |
-
----
-
-# 7. Comprobado
-
-| | |
-|---|---|
-| `test_enriquecimiento.py` | 22 pruebas, verde |
-| `test_fotos_png.py` | 19 pruebas, verde |
-| `test_genero_tipo_tallas.py` | 15 pruebas, verde |
-| `test_centry_contaminacion.py` | 13 pruebas, verde |
-| Suite completa | 30 archivos. Siguen fallando `test_auth_accesos` y `test_brand_commercial_input`, **preexistentes**. Cero regresiones. |
-| La app levanta | headless, `HTTP 200`, cero trazas, pantalla de login correcta |
-| Rendimiento | medido antes/después, 3 corridas de cada uno (ver arriba) |
-
----
-
-# El Centry de Rockford: "Vestuario" y "Alpargatas" salidos de la nada
-
-Lo que viste en `centry_rockford.xlsx`:
-
-```
-RK110021743-5ZV   Nombre = RK110021743-5ZV
-                  Categoría = Vestuario / Ropa Masculina / Alpargatas
-                  Clase = Vestuario
-                  Guía de tallas = HombrevestuarioRockford
-                  Descripción = "Alpargata Española Adra con aparado y forro..."
+```bash
+python scripts/test_bandeja_rendimiento.py
 ```
 
-Tenías razón: **en Shopify ese producto no existe**. La descripción y el tipo
-**no eran suyos, eran del producto de la fila de arriba**. Son tres fallos
-encadenados.
-
-## 1. Un producto heredaba los datos del producto ANTERIOR
-
-Matrixify (y la exportación de la API de Shopify) escriben el bloque de
-producto —Title, Body HTML, Type, Tags, metafields— **una sola vez, en la
-primera fila de cada producto**. Las filas de variante van vacías. Para
-copiarlo hacia abajo, la app hacía:
-
-```python
-df[column] = df[column].replace("", pd.NA).ffill().fillna("")
+```bash
+python scripts/test_centry_ean.py
 ```
 
-Un `ffill()` **sobre todo el archivo, sin agrupar por producto**. Mientras
-todos los productos traigan sus datos no se nota. Pero RK110021743 no está en
-Shopify y BigQuery/ARTI no trae su `TipoProducto`: llegó con el tipo y la
-descripción vacíos, y el `ffill` los rellenó **con los del producto anterior**,
-RK21101121-085, la *Alpargata Algodón Orgánico Mujer*.
-
-De ahí salieron el tipo "Alpargatas" y esa descripción. Byte por byte la misma:
-
-```
-fila 106  RK21101121-085   "Alpargata Española Adra con aparado y forro..."
-fila 107  RK110021743-5ZV  "Alpargata Española Adra con aparado y forro..."   <- heredada
+```bash
+python scripts/test_hush_nombre_descripcion_corta.py
 ```
 
-**Ahora** el arrastre se hace **dentro de cada producto**, agrupando por
-Handle / código modelo-color (`forward_fill_product_block`). Lo que falta se
-queda vacío y se avisa. Nunca se copia del vecino.
-
-Esto afectaba a las tres hojas: Centry, Carga Sial y el armado desde el maestro.
-
-## 2. Una alpargata no era "calzado" para la app
-
-```python
-return any(word in haystack for word in
-           ("calzado", "zapatilla", "zapato", "botin", "bota", "sandalia"))
+```bash
+python scripts/test_fotos_png_masivo.py
 ```
 
-Seis palabras buscadas dentro de Type/Tags/Title. **"Alpargata" no está.**
-Tampoco mocasín, sueco, slip on, náutico ni ballerina. Esos productos solo
-salían como calzado **de rebote**, porque Shopify les había puesto el tag
-"Calzado". El que no está en Shopify no tiene tags → se iba a Vestuario, con la
-guía de tallas de vestuario y **200 gr de peso en vez de 900**.
-
-**Ahora manda el diccionario de tipos** (`engines/garment_types.py`), que ya
-sabe que Alpargatas, Mocasines, Suecos, Slip Ons y Sandalias son Calzado. La
-búsqueda por texto queda de último recurso, y con la lista completa.
-
-```
-Type = "Alpargatas", sin tag "Calzado"
-   antes:  Clase Vestuario · Vestuario / Ropa Masculina / Alpargatas · Hombrevestuario
-   ahora:  Clase Calzado   · Calzados / Calzados Masculinos / Alpargatas · Hombrecalzado
-```
-
-## 3. Y si aun así no hay tipo: se busca, y si no, se avisa
-
-Antes de rendirse, la app mira la **subcategoría del maestro** — pero solo la
-acepta **si el diccionario la reconoce como tipo de prenda**. No se inventa un
-tipo a partir de un texto libre. Si no lo reconoce, el producto **sale igual**
-con la advertencia escrita, en vez de salir disfrazado:
-
-```
-Sin tipo de prenda en Shopify ni en BigQuery/ARTI
-Sin nombre de producto: sale el codigo modelo-color
-```
-
----
-
-# Lo otro que encontré en tu archivo
-
-## Los 1.121 precios están en 0 y el panel decía "Precio faltante: 0" en verde
-
-Es el fallo más grave del archivo, y estaba pasando en silencio. El panel solo
-miraba si la celda estaba **vacía**; un `0` le parecía un precio válido.
-
-```
-Precio: 0     en las 1.121 filas, los 222 productos
-```
-
-**Ahora** un precio 0 cuenta como precio que falta, el panel se pone en rojo y
-queda una observación por producto:
-
-```
-Sin precio (0 o vacio) en 6 variantes
-```
-
-**Esto no lo arregla la app**: el maestro está devolviendo 0. Hay que revisar de
-dónde sale el precio en el query de BigQuery antes de mandar nada a Centry.
-
-## Los 80 EAN que faltan son de 17 productos, no de 80
-
-El maestro no tiene código de barras para estos:
-
-```
-RK10902165 (3 colores)   RK110021743 (2)   RK110021749   RK110021752 (8 colores)
-RK110021758   RK1110211784   RK1110211785
-```
-
-Son productos **nuevos, sin EAN asignado todavía**. Hay que pedirlos; la app no
-puede inventarlos. Lo que sí cambió: la hoja *Revisión Centry* ponía **una línea
-por SKU** (80 líneas) y tapaba las cuatro que de verdad había que mirar. Ahora
-es **una línea por producto**, con los SKU listados.
-
-## Las observaciones: 314 no eran 314
-
-El aviso decía "Centry tiene 314 observaciones" contando las informativas,
-mientras el panel de al lado decía 88. Ahora el texto usa el mismo número que el
-panel:
-
-```
-Centry tiene 88 observaciones a revisar (226 informativas).
-```
-
-## Cuatro productos no existen en Shopify
-
-```
-RK110021743-5ZV   RK110021743-JUB   RK110021758-JUB   RK1110211785-O89
-```
-
-Salen con el código como nombre. **Antes de subir a Centry hay que crearlos en
-Shopify o sacarlos del archivo** — ahora al menos el archivo lo dice en vez de
-disfrazarlos con los datos del vecino.
-
-## Nombres con la palabra repetida (no lo toqué)
-
-19 de los 112 nombres traen el género dos veces, porque el Estilo del maestro
-es literalmente "Hombre":
-
-```
-Alpargata Cuero Hombre Hombre Rockford
-Sandalia Cuero Mujer Mujer Rockford
-```
-
-Eso viene del nombre que ya está en Shopify, no del Centry. Dime si lo
-corregimos y en qué sentido (quitar el repetido, o corregir el Estilo en el
-maestro) y lo hago.
-
----
-
-# Comprobado
-
-| | |
-|---|---|
-| `scripts/test_centry_contaminacion.py` | **13 pruebas nuevas**, en verde |
-| Las mismas pruebas contra el código viejo | **fallan** (reproducen tu caso) |
-| Suite completa | 28 archivos; siguen fallando `test_auth_accesos` y `test_brand_commercial_input`, **preexistentes**. Cero regresiones. |
-| La app levanta | arranque headless, `HTTP 200`, cero trazas |
-
-La prueba que importa: `test_el_producto_completo_si_conserva_su_bloque`. El
-arrastre **dentro** del mismo producto tiene que seguir vivo — si no, se pierde
-el Body HTML y los metafields, que es justo el problema del bloque en la
-primera fila. Esa pasa antes y después.
-
----
-
-# Género, Tipo de prenda y panel de advertencias
-
-## 1. El Género no llegaba aunque BigQuery lo tuviera
-
-**Causa real:** `centry_gender()` **no leía el género: lo adivinaba** del texto
-de Title/Tags/Body/Type. Tu "Canguro Empacable **Uniex** Lightweight" —con el
-typo— no contiene "unisex", así que devolvía vacío **aunque el ARTI trajera
-`GENERO_MA = UNISEX`**. Nunca miraba el campo.
-
-**Ahora:** manda el dato (`Metafield: custom.genero`, `Genero`, `GENERO_MA`) y la
-heurística de texto queda como último recurso. Además el metafield de género
-**se arrastra a las filas de variante**: antes solo existía en la primera fila de
-cada producto y las demás lo perdían.
-
-```
-Canguro Uniex + GENERO_MA=UNISEX  ->  'Unisex'   (antes: vacío)
-```
-
-## 2. El Tipo de prenda llegaba a la categoría pero no a su columna
-
-**Causa:** se comparaba sin normalizar el plural. El catálogo dice `Canguro` y
-la plantilla `Canguros`: no cruzaban. Ahora se comparan **ambos lados en
-singular** y el tipo se escribe en todas las columnas de tipo donde el
-diccionario lo acepta.
-
-```
-Canguro   -> Tipo de bolso/mochila/funda = Canguros
-             Tipo de prenda (MercadoLibre) = Canguros
-Blusa     -> Tipo de prenda parte superior = Blusas
-             Tipo de camisa/blusa/polo = Blusas
-```
-
-Las columnas de tipo se detectan **desde la plantilla** (las que empiezan por
-"Tipo" y traen diccionario), no con una lista fija.
-
-## 3. El panel rojo con 443 "observaciones"
-
-Dos cosas mal:
-
-- Contaba como observación lo que es **informativo**: "se eliminaron N filas con
-  talla 0", el diagnóstico de EAN, "Género completado desde BigQuery". Eso no
-  son problemas del producto. Ahora **no cuentan**.
-- Salía en **rojo con una X**, como si fuera un error. Ahora es **ámbar con `!`**
-  y se llama **Advertencias**.
-
----
-
-# Género, Tipo de prenda y talla 0
-
-## 1. El Género salía vacío
-
-**Causa:** la carga parcial (`build_centry_matrixify_from_master`) solo miraba
-Shopify. Si el producto no estaba ahí, o no tenía el metafield, no completaba
-nada — aunque BigQuery/ARTI **sí trae** `Genero` y `TipoProducto`
-(ya estaban en `ARTI_OPTIONAL_COLUMNS`, simplemente no se leían).
-
-**Ahora:** Shopify manda; si no tiene el dato, se completa desde SIAL/BigQuery y
-queda constancia en la revisión (*"Genero completado desde BigQuery/ARTI:
-MUJER"*). Si no está en **ninguna** de las dos fuentes, se avisa explícitamente
-en vez de dejarlo en blanco sin explicación.
-
-Lo mismo para el Tipo de prenda.
-
-## 2. Se creaba talla `0` junto a tallas reales
-
-**Causa:** la carga completa ya filtraba esto con `final_variant_filter`, pero la
-**parcial armaba su Matrixify por su cuenta y nunca pasaba por ese filtro**. Por
-eso salían `S, M, L, XL` **y además** un `0`, que terminaba publicado en Shopify.
-
-**Ahora:** la parcial pasa por **el mismo filtro central**. No se reescribió la
-regla: se reutiliza la de `generate_columbia_matrixify`, que ya tiene pruebas.
-Eso cubre también talla interna K y SKU duplicado, y deja el conteo de lo
-descartado en la hoja de revisión.
-
-| Tallas en el maestro | Resultado |
-|---|---|
-| `0, S, M, L, XL` | `S, M, L, XL` |
-| `0, XS…XXL` | `XS, S, M, L, XL, XXL` |
-| `0, 36, 37, 38, 39` | `36, 37, 38, 39` |
-| `S, M, L, 0` (el 0 al final) | `S, M, L` |
-| `0` solo | **`0`** — talla única legítima, se conserva |
-
-## 3. Columnas duplicadas al final
-
-`Mod`/`Col`/`Tal` y `COD MOD`/`COD COL`/`TALLA` eran **lo mismo** y salían las
-seis. Al restaurar las operativas no vi que duplicaban las tuyas. Se quitan las
-cortas de la hoja Centry; **la hoja Carga Sial las conserva**, que allí son su
-identificación.
-
-**94 columnas**, terminando en `Cod Mod Col Talla · COD MOD · COD COL · TALLA ·
-Advertencias`.
-
-## Comprobado
-
-Con tu carga real (450 filas):
-
-```
-Género       450/450        Categoría   450/450
-COD MOD      450/450        Tallas 0    0
-Columnas 94 · sin duplicados · sin Unnamed
-```
-
-- `scripts/test_genero_tipo_tallas.py`: **11 pruebas nuevas**, incluidas las
-  cinco combinaciones de tallas de arriba y la prioridad Shopify → BigQuery.
-- Suite completa: **25 en verde**; siguen los 2 preexistentes
-  (`test_auth_accesos`, `test_brand_commercial_input`). Cero regresiones.
-- App headless `HTTP 200`, cero trazas.
-
----
-
-# Qué subir — motor Centry por plantilla
-
-| Archivo | Ruta | |
-|---|---|---|
-| `engines/centry_map.py` | `engines/` | **nuevo** |
-| `data/plantilla_centry_productos.xlsx` | `data/` | **nuevo** |
-| `scripts/test_centry_map.py` | `scripts/` | **nuevo** |
-| `app_matrixify.py` | raíz | modificado |
-| `engines/ticket_flow.py` | `engines/` | modificado (bandeja) |
-| `scripts/test_bandeja_solicitudes.py` | `scripts/` | **nuevo** (bandeja) |
-| `scripts/test_siblings_carga_completa.py` | `scripts/` | modificado |
-
-La plantilla va al repo: es la **fuente de verdad**. Si Centry cambia columnas o
-valores, reemplazas el Excel y no se toca Python.
-
-## Nueva lógica
-
-1. **El tipo pasa primero por el diccionario** (`engines/garment_types.py`).
-   Si está, se usa el canónico y su clase. Si no está, **se acepta tal cual** y
-   queda la advertencia. El producto nunca se descarta.
-2. **Familia** por término dentro del tipo (calzado antes que vestuario, para
-   que "zapatilla de running" no caiga en superior). La clase del diccionario es
-   el respaldo.
-3. **Columnas** = SIEMPRE + las de la familia + `COD MOD`, `COD COL`, `TALLA`,
-   `Advertencias`. Sin familia salen solo SIEMPRE + la cola.
-4. **Categoría** con `Marca|Tipo|Genero`; la marca concreta gana sobre `Todos`.
-5. **Valores** contra el diccionario de cada columna, devolviendo la ortografía
-   de la plantilla (`BAJA` → `Baja`).
-
-## Regresión corregida: volvieron las columnas operativas
-
-Al pasar las columnas a la plantilla se perdieron **7 columnas propias de la
-app** que no vienen en el Excel de Centry: `Clase`, **`Guía de tallas`**,
-`Base de categoría`, `Cod Mod Col Talla`, `Mod`, `Col`, `Tal`. Restauradas.
-
-**97 columnas** = 26 de SIEMPRE + las de familia + estas 7 + `COD MOD`,
-`COD COL`, `TALLA`, `Advertencias`. Sin duplicados ni `Unnamed`.
-
-## Atributos desde las características del producto
-
-Los pares "Forro: 100% Cuero", "Forma De La Punta: Redonda" viven en la sección
-**Características del Body HTML**. Ahora se extraen y se llevan a su columna de
-Centry, **validando contra el diccionario**: si el valor no está permitido no se
-escribe y sale en `Advertencias`. Un `Ajuste: Solapa` no ensucia el archivo
-porque la columna solo acepta Cordones/Cierre/Hebilla/Velcro.
-
-Con tu carga Rockford se llenan **7 columnas que antes salían vacías**:
-`Material de la suela`, `Material del forro`, `Material principal`,
-`Composición` (Falabella y MercadoLibre), `Forma de la punta` (las dos) y
-`Tipo de ajuste`.
-
-## Categoría inteligente: siempre sale una
-
-La tabla `Categorias` no cubre todas las combinaciones, y 124 filas salían sin
-categoría. Ahora se resuelve en **cuatro pasos**, siempre avisando cuando no es
-una coincidencia exacta:
-
-1. **Exacta**: `Marca|Tipo|Género`, con la marca concreta por delante de `Todos`.
-2. **Deducida del mismo tipo en otro género**: si `Polos / Hombre` es
-   "Vestuario / Ropa Masculina / Poleras Manga Corta", entonces `Polos / Mujer`
-   es "Vestuario / Ropa **Femenina** / Poleras Manga Corta". Traduce el segmento
-   de género (`Calzados Masculinos` ↔ `Calzados Femeninos`, etc.). Una categoría
-   sin segmento de género (Accesorios / Bolsos…) vale igual para todos.
-3. **Genérica de su familia y género**, calculada **contando la propia tabla**,
-   no escrita a mano: superior/Mujer → "Vestuario / Ropa Femenina",
-   calzado/Hombre → "Calzados / Calzados Masculinos".
-4. Si aun así no hay, queda pendiente con el motivo.
-
-**No se cruza entre adulto e infantil.** Deducir `Cortavientos / Mujer` desde
-`Niñas` daba "Vestuario / **Infantil** / Ropa Femenina", que no existe.
-
-La **clase del diccionario** también entra: "Slip Ons" no coincide con ningún
-término, pero el diccionario dice que es Calzado, y con eso ya resuelve.
-
-| | antes | ahora |
-|---|---|---|
-| Filas sin categoría | 124 | **0** |
-| Categoría llena | 450/450 | 450/450 |
-
-De las 124 advertencias: 77 categorías deducidas y 47 genéricas. **Todas llevan
-categoría**; la advertencia dice de dónde salió para poder revisarla.
-
-## Shopify → BigQuery: ya funcionaba
-
-Comprobado con un producto que **no está en Shopify**: la carga parcial lo arma
-igual desde BigQuery/ARTI y avisa *"No existe en Shopify; se completó Centry con
-BigQuery/ARTI"*. Si no está en ninguno, dice *"Código no encontrado en
-BigQuery/ARTI"*. No hizo falta tocar nada.
-
-## Inconsistencias encontradas en la plantilla
-
-- **`SIEMPRE` no trae diccionarios: trae 2 productos de ejemplo.** Tomarlas como
-  valores permitidos habría rechazado todos los productos reales. Sus columnas
-  son texto libre.
-- **`Forma de la punta` está dos veces en Calzado**: la primera vacía. Se
-  conserva la que trae el diccionario.
-- **28 claves `(Marca, Tipo, Género)` con dos categorías.** Cuando una es más
-  general se elige esa y se avisa; cuando están al mismo nivel (Guantes /
-  Unisex Adultos, que duda entre Deporte Masculino y Femenino) **no se elige**.
-- **29 combinaciones existen solo para Columbia o Bsoul y no tienen respaldo en
-  `Todos`**: si otra marca trae ese tipo, queda sin categoría.
-- Nombres inconsistentes entre hojas (`Genero` sin tilde en Accesorios, prefijos
-  duplicados como `Tipo de cuello - Tipo de cuello -`). Se respetan tal cual
-  porque Centry espera ese nombre exacto.
-
-## Columnas: 98 → 90, sin duplicados ni basura
-
-La primera versión añadía las columnas nuevas **encima** de la lista vieja en
-vez de reemplazarla. Y la lista vieja estaba **con mojibake**: `CategorÃ­a`,
-`GarantÃ­a`, `PerÃº`. Como esos nombres no coinciden con los de la plantilla,
-cada columna salía **dos veces**: la rota y la buena. Más `cccc`,
-`INFORMACIÓN ADICIONAL` y `Unnamed: 52`..`Unnamed: 56`.
-
-Dos cambios:
-
-1. **`CENTRY_COLUMNS` sale ahora de la plantilla**, no de listas escritas a mano
-   (`_centry_columns_desde_plantilla`). Si no se puede leer el Excel, vuelve a
-   las listas de antes para que la app siga funcionando.
-2. **Se reparó el mojibake del archivo**: 170 líneas, 13 secuencias
-   (`Ã³`→`ó`, `Ã­`→`í`, `Ãº`→`ú`…). Se respetaron los alias de **doble**
-   codificación, que son intencionales para leer datos ya corruptos.
-
-| | antes | ahora |
-|---|---|---|
-| Columnas Centry | 98 | **90** |
-| Basura / duplicadas | 7 | **0** |
-
-Comprobado que no se perdió dato al limpiar los nombres: `Nombre`, `Marca`,
-`Descripcion`, `Listado de características`, `Garantía`, `Categoría`, `Talla`,
-`Género`, `Estado` e `URL imagen principal` siguen en 450/450, y `Color` en 67,
-igual que antes.
-
-## Corrección del NameError
-
-La primera versión reventaba la carga parcial:
-
-```
-NameError: name 'modelo_centry' is not defined
-  build_centry_sial_from_matrixify, línea 4257
-```
-
-Al añadir las columnas clave, el reemplazo tocó **dos** funciones y las
-variables solo se calculaban en una. Además esas cuatro columnas **no existen en
-la hoja Sial**, que identifica con `Mod`/`Col`/`Tal`: sobraban ahí. Se quitaron
-de `build_centry_sial_from_matrixify` y quedan solo en la hoja Centry.
-
-Verificado ejecutando las tres rutas, no solo compilando:
-
-| Función | |
-|---|---|
-| `build_centry_from_matrixify` (parcial, `only_codes`) | OK — 6 filas, 98 columnas |
-| `build_centry_sial_from_matrixify` | OK — 450 filas, 48 columnas |
-| `build_centry_from_matrixify` (completa) | OK — 450 filas, 98 columnas |
-
-## Comprobado con tu carga real
-
-450 filas Centry: `COD MOD`, `COD COL` y `TALLA` llenas en **450/450**, y 124
-filas con advertencia explicando qué falta (la mayoría, tipos sin categoría en la
-plantilla: Slip Ons, Zapatos, Zapatillas para Rockford).
-
-- Suite: **24 en verde**; los 2 preexistentes de siempre. Cero regresiones.
-- `scripts/test_centry_map.py`: 38 pruebas.
-- App levanta headless con `HTTP 200`, cero trazas.
+Además se levantó la app en local con solicitudes de prueba: pulsar una tarjeta
+cambia el detalle **sin volver al login**, y el Mantenedor Fotos PNG abre sus dos
+modos sin excepciones.

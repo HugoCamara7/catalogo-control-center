@@ -13,8 +13,9 @@ import threading
 import time
 import unicodedata
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from html import escape
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -1620,6 +1621,13 @@ COMMERCIAL_INPUT_TEXT_LIST_COLUMNS = [
     "Tecnologia",
     "Tags adicionales",
 ]
+# Columnas del input que son metafields de texto y se muestran en la vista
+# previa con el nombre del metafield al que van. Solo salen si la marca las
+# declara en su perfil.
+COMMERCIAL_INPUT_PREVIEW_METAFIELDS = [
+    ("Nombre corto", "custom.nombre_corto"),
+    ("Descripcion corta", "custom.descripcion_corta"),
+]
 COMMERCIAL_INPUT_INVALID_TEXTS = {
     "",
     "-",
@@ -1687,19 +1695,22 @@ COMMERCIAL_BRAND_INPUT_PROFILES = {
     },
     "HUSH PUPPIES": {
         "site_profile": "HushPuppies.pe",
-        "extra_columns": ["Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion"],
+        "extra_columns": ["Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion",
+                          "Nombre corto", "Descripcion corta"],
         "technology_type": "single_line_text_field",
         "technology_example": "Bounce Plus",
     },
     "HUSH PUPPIES KIDS": {
         "site_profile": "HushPuppies.pe",
-        "extra_columns": ["Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion"],
+        "extra_columns": ["Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion",
+                          "Nombre corto", "Descripcion corta"],
         "technology_type": "single_line_text_field",
         "technology_example": "Bounce Plus",
     },
     "ACCESORIOS HP": {
         "site_profile": "HushPuppies.pe",
-        "extra_columns": ["Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion"],
+        "extra_columns": ["Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion",
+                          "Nombre corto", "Descripcion corta"],
         "technology_type": "single_line_text_field",
         "technology_example": "Tecnologia comercial si aplica",
     },
@@ -1883,8 +1894,25 @@ def commercial_input_metafields_for_brand(brand_name):
         metafield_row("Guia de tallas", "guia_de_tallas", "page_reference", rule="La app la asigna por marca, clase, genero y tipo; Brand no la llena."),
         metafield_row("Categoria", "categoria", rule="La app la deriva de Clase y del diccionario por sitio."),
         metafield_row("Sub Categoria", "sub_categoria", rule="La app la deriva del tipo de prenda normalizado."),
-        metafield_row("Nombre corto", "nombre_corto", rule="La app lo deriva de Nombre de Producto."),
-        metafield_row("Descripcion corta", "descripcion_corta", rule="La app la deriva de Descripcion."),
+        # Cuando la marca trae las columnas en el input, mandan ellas. Antes
+        # decia siempre "la app los deriva", que era justo el motivo por el que
+        # el valor escrito por la marca se perdia por el camino.
+        metafield_row(
+            "Nombre corto", "nombre_corto",
+            appears="SI" if "Nombre corto" in profile.get("extra_columns", []) else "NO",
+            rule=("Se toma de la columna Nombre corto del input tal cual. Vacio no borra el valor de Shopify."
+                  if "Nombre corto" in profile.get("extra_columns", [])
+                  else "La app lo deriva de Nombre de Producto."),
+            owner=("Brand" if "Nombre corto" in profile.get("extra_columns", []) else "Catalog Control Center"),
+        ),
+        metafield_row(
+            "Descripcion corta", "descripcion_corta",
+            appears="SI" if "Descripcion corta" in profile.get("extra_columns", []) else "NO",
+            rule=("Se toma de la columna Descripcion corta del input tal cual. No se mezcla con Caracteristicas."
+                  if "Descripcion corta" in profile.get("extra_columns", [])
+                  else "La app la deriva de Descripcion."),
+            owner=("Brand" if "Descripcion corta" in profile.get("extra_columns", []) else "Catalog Control Center"),
+        ),
         metafield_row("Genero", "genero", rule="La app normaliza el Genero informado y ARTI."),
         metafield_row("Grupo Color", "grupo_color", rule="La app lo obtiene del color web/filtro y sus equivalencias."),
         metafield_row("Color Forus", "color_forus", rule="La app lo obtiene del color web/filtro; no usa el codigo de color."),
@@ -2034,6 +2062,8 @@ def _commercial_dictionary_rows(brand_name):
         "Categoria de Tecnologia": "Clasificacion comercial de la tecnologia Hush Puppies. Informar un solo valor si aplica.",
         "Estilo": "Estilo comercial Hush Puppies si aplica. Vacio no borra el valor actual de Shopify.",
         "Pais de fabricacion": "Pais de fabricacion si la marca dispone del dato. Vacio no borra Shopify.",
+        "Nombre corto": "Nombre breve para PLP/PDP. Se carga tal cual en custom.nombre_corto; no reemplaza al Nombre de Producto ni al Title.",
+        "Descripcion corta": "Frase corta para PLP/PDP. Se carga tal cual en custom.descripcion_corta; NO va al listado de caracteristicas.",
         "Codigo de referencia": "Codigo o referencia comercial Vans si existe. Vacio no borra Shopify.",
         "Tags adicionales": f"Solo tags comerciales adicionales separados por |. {auto_tags_note}",
         "Fecha publicacion": "Fecha sugerida si aplica. Puede quedar vacia.",
@@ -2055,6 +2085,8 @@ def _commercial_dictionary_rows(brand_name):
         "Categoria de Tecnologia": "Confort",
         "Estilo": "Urbano",
         "Pais de fabricacion": "Vietnam",
+        "Nombre corto": "Zapatilla Urbana Mujer",
+        "Descripcion corta": "Suela flexible y plantilla acolchada para uso diario.",
         "Codigo de referencia": "VN000Y7HBKA",
         "Tags adicionales": "Outdoor|Uso diario|Nueva temporada",
         "Fecha publicacion": "2026-08-01 09:00",
@@ -2097,8 +2129,10 @@ def _commercial_dictionary_rows(brand_name):
                     "Pais de fabricacion": "custom.pais_de_fabricacion",
                     "Codigo de referencia": "custom.codigo_de_referencia",
                     "Tipo de prenda": "Product.productType/custom.tipo",
+                    "Nombre corto": "custom.nombre_corto",
+                    "Descripcion corta": "custom.descripcion_corta",
                 }.get(column, "Publication" if is_site else "Auxiliar"),
-                "Namespace": "custom" if column in {"Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion", "Codigo de referencia", "Tipo de prenda", "Materiales"} else "",
+                "Namespace": "custom" if column in {"Tecnologia", "Categoria de Tecnologia", "Estilo", "Pais de fabricacion", "Codigo de referencia", "Tipo de prenda", "Materiales", "Nombre corto", "Descripcion corta"} else "",
                 "Key": {
                     "Tecnologia": "tecnologia/logo",
                     "Categoria de Tecnologia": "categoria_de_tecnologia",
@@ -2107,6 +2141,8 @@ def _commercial_dictionary_rows(brand_name):
                     "Codigo de referencia": "codigo_de_referencia",
                     "Tipo de prenda": "tipo",
                     "Materiales": "materialidad",
+                    "Nombre corto": "nombre_corto",
+                    "Descripcion corta": "descripcion_corta",
                 }.get(column, ""),
                 "Comportamiento si esta vacio": "Bloquea" if required else "No actualiza ni borra informacion existente.",
                 "Nivel de error": "Bloqueo" if required else "Advertencia",
@@ -2149,6 +2185,11 @@ def _commercial_examples_df(brand_name):
                 "Categoria de Tecnologia": "Confort" if profile.get("site_profile") == "HushPuppies.pe" else "",
                 "Estilo": "Urbano" if profile.get("site_profile") == "HushPuppies.pe" else "",
                 "Pais de fabricacion": "Vietnam",
+                "Nombre corto": "Zapatilla Urbana Mujer" if profile.get("site_profile") == "HushPuppies.pe" else "",
+                "Descripcion corta": (
+                    "Suela flexible y plantilla acolchada para uso diario."
+                    if profile.get("site_profile") == "HushPuppies.pe" else ""
+                ),
                 "Codigo de referencia": "VN000Y7HBKA" if profile.get("site_profile") == "Vans.pe" else "",
                 "Tags adicionales": example.get("Tags", ""),
                 "Fecha publicacion": "",
@@ -2811,6 +2852,14 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
         "Tags adicionales": ["Tags adicionales", "Tags sugeridos", "Tags extra", "Tags"],
         "Color Comercial": ["Color Comercial", "Color comercial", "Color Comercial ", "Color"],
         "Color web/filtro": ["Color web/filtro", "Color Web", "Color Forus", "Color visible", "Color filtro"],
+        # Metafields de Hush Puppies. Con alias propios para que NO caigan en
+        # Caracteristicas ni en el Title: son campos aparte que la PLP y la PDP
+        # muestran tal cual los escribe la marca.
+        "Nombre corto": ["Nombre corto", "Nombre Corto", "Nombre breve", "Short name",
+                         "Metafield: custom.nombre_corto [single_line_text_field]"],
+        "Descripcion corta": ["Descripcion corta", "Descripción corta", "Descripcion Corta",
+                              "Descripción Corta", "Short description",
+                              "Metafield: custom.descripcion_corta [single_line_text_field]"],
     }
     col_map = {column: _commercial_find_column(df, column_aliases.get(column, [column])) for column in expected_columns}
     for required in COMMERCIAL_INPUT_REQUIRED_COLUMNS + site_columns:
@@ -2927,19 +2976,24 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
             mod_col=mod_col,
         )
         body_html = build_body_html_from_commercial_row(normalized)
-        preview_rows.append(
-            {
-                "Fila": excel_row,
-                "Mod-Col": mod_col,
-                "Marca": normalized.get("Marca"),
-                "Title propuesto": normalized.get("Nombre de Producto"),
-                "Handle sugerido": handle,
-                "Body HTML generado": body_html,
-                "Sitios SI": ", ".join(column for column in site_columns if normalized.get(column).upper() == "SI"),
-                "Estado": row_status,
-                "Mensaje": " | ".join(row_messages),
-            }
-        )
+        fila_preview = {
+            "Fila": excel_row,
+            "Mod-Col": mod_col,
+            "Marca": normalized.get("Marca"),
+            "Title propuesto": normalized.get("Nombre de Producto"),
+            "Handle sugerido": handle,
+            "Body HTML generado": body_html,
+            "Sitios SI": ", ".join(column for column in site_columns if normalized.get(column).upper() == "SI"),
+            "Estado": row_status,
+            "Mensaje": " | ".join(row_messages),
+        }
+        # Los metafields de texto que declara la marca se muestran en la vista
+        # previa. Si no se ven aqui no hay forma de notar que llegaron vacios
+        # antes de cargar, que es como se perdian.
+        for columna_metafield, etiqueta in COMMERCIAL_INPUT_PREVIEW_METAFIELDS:
+            if columna_metafield in expected_columns:
+                fila_preview[etiqueta] = normalized.get(columna_metafield)
+        preview_rows.append(fila_preview)
         if row_issues:
             for observacion in row_issues:
                 report_rows.append(
@@ -3812,6 +3866,103 @@ def centry_display_size(value, force_one_size=False):
     return first_non_empty(normalize_master_size(value), centry_value(value))
 
 
+# --- Codigo de barras de Centry -----------------------------------------
+#
+# Todo SKU deberia tener EAN. Los que llegaban vacios lo hacian por cuatro
+# motivos distintos, y ninguno se veia en el resultado:
+#
+# 1. El maestro trae varias filas por SKU (una por bodega). `setdefault`
+#    guardaba la PRIMERA, y si esa venia sin CodBarras el SKU se quedaba sin
+#    EAN aunque otra fila del mismo SKU si lo tuviera.
+# 2. El SKU no empareja por formato: "0012345" contra "12345", o "12345.0"
+#    porque Excel lo leyo como numero. Se comparaba la cadena tal cual.
+# 3. Excel guarda el EAN como numero y lo devuelve en notacion cientifica
+#    ("7.79871E+12"). Eso no es vacio, asi que pasaba el control y llegaba a
+#    Centry convertido en basura.
+# 4. Solo se miraban dos fuentes (maestro y Variant Barcode). El EAN que venia
+#    en el propio input no se leia.
+#
+# Aqui se resuelve el EAN a nivel SKU/variante recorriendo todas las fuentes en
+# el orden que pidio el negocio, y se devuelve tambien DE DONDE salio, para que
+# la hoja de revision diga que paso con cada uno.
+
+# Columnas de las que puede salir el EAN en la fila que recibe el motor: el
+# input de la marca o el export de Shopify.
+CENTRY_EAN_ROW_COLUMNS = (
+    "Código de barra variante (EAN/UPC/ISBN)",
+    "Codigo de barra variante (EAN/UPC/ISBN)",
+    "EAN", "Ean", "ean",
+    "CodBarras", "Cod Barras", "Codigo de barras", "Código de barras",
+    "Codigo de barra", "Código de barra", "Codigo Barra", "COD_BAR_MA",
+    "Barcode", "Variant Barcode", "UPC", "GTIN", "EAN13",
+)
+
+CENTRY_EAN_SIN_RESOLVER = "PENDIENTE"
+
+
+def centry_normalizar_ean(valor):
+    """Deja el codigo de barras como una cadena de digitos, o vacio.
+
+    Cubre los tres formatos rotos que llegan de Excel y BigQuery:
+    "7.79871E+12" (notacion cientifica), "7798712345678.0" (float) y
+    "7798712345678" (correcto). Un valor que se queda en ceros se trata como
+    vacio: es relleno, no un codigo.
+    """
+    texto = clean_value(valor)
+    if not texto:
+        return ""
+    if re.fullmatch(r"[-+]?\d+(\.\d+)?[eE][-+]?\d+", texto):
+        try:
+            texto = format(Decimal(texto), "f")
+        except (InvalidOperation, ValueError):
+            return ""
+    if "." in texto:
+        entero, _, decimales = texto.partition(".")
+        # Solo se descarta la parte decimal si es de relleno: "123.0" es el
+        # mismo codigo, "123.45" es otra cosa y no se toca a ciegas.
+        if decimales.strip("0") == "":
+            texto = entero
+    digitos = re.sub(r"\D", "", texto)
+    if not digitos or digitos.strip("0") == "":
+        return ""
+    return digitos
+
+
+def centry_clave_sku(valor):
+    """Clave de comparacion de SKU: sin signos, sin espacios y en mayuscula."""
+    texto = clean_value(valor).upper()
+    if texto.endswith(".0"):
+        texto = texto[:-2]
+    return re.sub(r"[^A-Z0-9]+", "", texto)
+
+
+def centry_clave_sku_sin_ceros(valor):
+    """La misma clave sin ceros a la izquierda, para el maestro numerico."""
+    clave = centry_clave_sku(valor)
+    return clave.lstrip("0") or clave
+
+
+def _centry_guardar_en_indice(indice, clave, item):
+    """Guarda respetando una regla: una entrada CON EAN nunca se pisa.
+
+    Antes era `setdefault`. Con varias filas por SKU en el maestro (una por
+    bodega), si la primera venia sin CodBarras el SKU se quedaba sin EAN para
+    siempre, aunque otra fila del mismo SKU si lo trajera.
+    """
+    if not clave:
+        return
+    actual = indice.get(clave)
+    if actual is None:
+        indice[clave] = item
+        return
+    if not actual.get("barcode") and item.get("barcode"):
+        # Se conserva talla y color de la entrada que ya estaba: lo unico que
+        # faltaba era el codigo.
+        fusionado = dict(actual)
+        fusionado["barcode"] = item["barcode"]
+        indice[clave] = fusionado
+
+
 def build_centry_arti_lookup(arti_df):
     lookup = {"by_sku": {}, "by_mod_size": {}}
     if arti_df is None or arti_df.empty:
@@ -3825,19 +3976,77 @@ def build_centry_arti_lookup(arti_df):
         mod_col = first_non_empty(row.get("COD MOD COL"), row.get("Mod-Col"))
         raw_size = clean_value(row.get("TALNUM_MA"))
         display_size = normalize_master_size(raw_size)
-        barcode = clean_value(row.get("CodBarras"))
+        barcode = centry_normalizar_ean(row.get("CodBarras"))
         color_name = clean_value(row.get("ColorNombre"))
         if not barcode and not raw_size:
             continue
         item = {"barcode": barcode, "raw_size": raw_size, "display_size": display_size, "color_name": color_name}
-        if sku:
-            lookup["by_sku"].setdefault(sku.upper(), item)
+        # Dos claves por SKU: la normalizada y la misma sin ceros a la
+        # izquierda. El maestro devuelve "12345" donde Shopify tiene "0012345",
+        # y esa sola diferencia dejaba la variante sin EAN.
+        for clave in {centry_clave_sku(sku), centry_clave_sku_sin_ceros(sku)}:
+            _centry_guardar_en_indice(lookup["by_sku"], clave, item)
         if mod_col:
             for size_key in {raw_size, display_size}:
                 size_key = clean_value(size_key)
                 if size_key:
-                    lookup["by_mod_size"].setdefault((mod_col.upper(), size_key.upper()), item)
+                    _centry_guardar_en_indice(
+                        lookup["by_mod_size"], (mod_col.upper(), size_key.upper()), item
+                    )
     return lookup
+
+
+def centry_ean_de_la_fila(row):
+    """EAN escrito en la propia fila: input de la marca o export de Shopify."""
+    # `set(...)` directo: un Index de pandas no admite `or []`, lanza
+    # "The truth value of a Index is ambiguous".
+    indice = set(getattr(row, "index", []))
+    for columna in CENTRY_EAN_ROW_COLUMNS:
+        if columna not in indice:
+            continue
+        valor = centry_normalizar_ean(row.get(columna))
+        if valor:
+            return valor, columna
+    return "", ""
+
+
+def centry_resolver_ean(row, arti_item, arti_lookup, mod_col, raw_size):
+    """Resuelve el EAN de UNA variante. Devuelve (ean, fuente).
+
+    Orden pedido por negocio: input -> Variant Barcode de Shopify -> maestro
+    SIAL/BigQuery por SKU -> maestro por Mod-Col + talla. Se recorre entero
+    antes de darlo por perdido; solo entonces la fuente es "PENDIENTE".
+    """
+    valor, columna = centry_ean_de_la_fila(row)
+    if valor:
+        fuente = "Shopify (Variant Barcode)" if columna == "Variant Barcode" else f"Input ({columna})"
+        return valor, fuente
+
+    del_maestro = centry_normalizar_ean((arti_item or {}).get("barcode"))
+    if del_maestro:
+        return del_maestro, "Maestro SIAL/BigQuery (SKU)"
+
+    # Segunda pasada por el maestro con las claves normalizadas del SKU. El
+    # emparejamiento de `centry_arti_item_for_row` es por cadena exacta y se le
+    # escapan los SKU con ceros a la izquierda o leidos como numero.
+    por_sku = (arti_lookup or {}).get("by_sku", {})
+    for clave in (centry_clave_sku(row.get("Variant SKU")),
+                  centry_clave_sku_sin_ceros(row.get("Variant SKU"))):
+        candidato = centry_normalizar_ean(por_sku.get(clave, {}).get("barcode"))
+        if candidato:
+            return candidato, "Maestro SIAL/BigQuery (SKU normalizado)"
+
+    por_mod_talla = (arti_lookup or {}).get("by_mod_size", {})
+    clave_mod = clean_value(mod_col).upper()
+    for talla in (raw_size, normalize_master_size(raw_size), row.get("Option1 Value")):
+        talla = clean_value(talla).upper()
+        if not clave_mod or not talla:
+            continue
+        candidato = centry_normalizar_ean(por_mod_talla.get((clave_mod, talla), {}).get("barcode"))
+        if candidato:
+            return candidato, "Maestro SIAL/BigQuery (Mod-Col + talla)"
+
+    return "", CENTRY_EAN_SIN_RESOLVER
 
 
 def centry_arti_item_for_row(row, arti_lookup, current_mod_col, raw_size):
@@ -4279,6 +4488,11 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
     resolutor = centry_resolutor(df)
     rows = []
     issues = []
+    # De donde salio el EAN de cada variante y cuales quedaron sin resolver.
+    # Sin esto no habia forma de saber por que faltaban: el resultado solo
+    # mostraba la columna vacia.
+    origenes_ean = {}
+    pendientes_ean = []
     normalized_arti_df = normalize_arti_columns_for_app(arti_df) if arti_df is not None else arti_df
     if normalized_arti_df is not None and not normalized_arti_df.empty and normalized_arti_df["CodBarras"].map(clean_value).eq("").all():
         issues.append({"Mod-Col": "BigQuery/ARTI", "Problema": "La fuente maestra no trajo CodBarras/EAN/barcode reconocible"})
@@ -4313,7 +4527,12 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             raw_size,
             centry_output_is_accessory(category_probe) and (is_one_size(raw_size) or is_zero_size(raw_size)),
         )
-        barcode = first_non_empty(arti_item.get("barcode"), row.get("Variant Barcode"))
+        barcode, ean_fuente = centry_resolver_ean(
+            row, arti_item, arti_lookup, current_mod_col, raw_size
+        )
+        origenes_ean[ean_fuente] = origenes_ean.get(ean_fuente, 0) + 1
+        if not barcode:
+            pendientes_ean.append({"mod_col": current_mod_col, "sku": variant_sku})
         tal_value = first_non_empty(arti_item.get("raw_size"), raw_size)
         # El SKU de la variante es el SKU, no el EAN. El EAN tiene su propia
         # columna. Antes esto era `barcode or variant_sku`: mientras BigQuery no
@@ -4504,9 +4723,33 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                 issues.append(
                     {
                         "Mod-Col": mod_col or "Centry",
-                        "Problema": f"Sin codigo de barras en {len(grupo):,} variantes: {listado}",
+                        "Problema": (
+                            f"EAN {CENTRY_EAN_SIN_RESOLVER}: no se encontro en input, "
+                            f"Variant Barcode ni maestro SIAL/BigQuery para {len(grupo):,} "
+                            f"variantes: {listado}"
+                        ),
                     }
                 )
+        # Resumen de donde salio cada EAN. Es lo que permite ver la causa: si
+        # todos dicen PENDIENTE, el maestro no llego; si el maestro resuelve
+        # pocos, el problema es el emparejamiento por SKU.
+        resueltos = sum(cantidad for fuente, cantidad in origenes_ean.items()
+                        if fuente != CENTRY_EAN_SIN_RESOLVER)
+        total_variantes = resueltos + len(pendientes_ean)
+        if total_variantes:
+            detalle = " | ".join(
+                f"{fuente}: {cantidad:,}"
+                for fuente, cantidad in sorted(origenes_ean.items(), key=lambda par: -par[1])
+            )
+            issues.append(
+                {
+                    "Mod-Col": "Centry (resumen EAN)",
+                    "Problema": (
+                        f"EAN resueltos {resueltos:,} de {total_variantes:,} variantes. "
+                        f"Origen -> {detalle}"
+                    ),
+                }
+            )
         sin_precio = centry_df[centry_df["Precio"].map(centry_price_is_missing)].copy()
         if not sin_precio.empty:
             claves_precio = sin_precio["SKU del producto"].map(clean_value)
@@ -9007,6 +9250,279 @@ def png_find_product(products, mod_col):
         if clean_value(product.get("Mod-Col")).upper() == clave:
             return product
     return None
+
+
+# --- Carga masiva por Excel ---------------------------------------------
+#
+# Mismo mantenedor, misma busqueda y el mismo tope de 10 vistas por
+# modelo-color: lo unico que cambia es de donde salen los codigos. Sigue siendo
+# manual y sigue buscando SOLO .png; el motor normal de imagenes no se entera.
+PNG_COLUMNAS_CODIGO = UPDATE_KEY_COLUMNS
+PNG_ESTADO_CARGADA = "Cargada"
+PNG_ESTADO_ERROR_CARGA = "Error de carga"
+
+
+def png_codigos_desde_excel(df):
+    """Codigos modelo-color de un Excel. Devuelve (codigos, descartados).
+
+    Sin vacios, sin repetidos y en el orden del archivo. Cada descarte se
+    explica en `descartados`: si no se listaran, un Excel con 200 filas y 40
+    duplicados diria "160 procesados" sin decir que paso con los otros 40.
+    """
+    if df is None or getattr(df, "empty", True):
+        return [], [{"Fila": "", "Código Modelo Color": "",
+                     "Motivo": "El Excel no tiene filas."}]
+    columna = first_existing_column(df, PNG_COLUMNAS_CODIGO)
+    if columna is None:
+        # Sin cabecera reconocible se acepta la primera columna cuyo contenido
+        # se parta de verdad en modelo y color. `looks_like_mod_col` a secas no
+        # basta aqui: acepta cualquier cosa con un espacio en medio, asi que una
+        # columna "Comentario" con texto libre pasaba por columna de codigos.
+        from generate_columbia_matrixify import split_model_color
+
+        def _es_columna_de_codigos(serie):
+            return any(all(split_model_color(clean_value(valor).upper()))
+                       for valor in serie.tolist() if clean_value(valor))
+
+        for candidata in df.columns:
+            if _es_columna_de_codigos(df[candidata]):
+                columna = candidata
+                break
+    if columna is None:
+        return [], [{"Fila": "", "Código Modelo Color": "",
+                     "Motivo": "El Excel no tiene una columna 'Código Modelo Color'."}]
+    codigos = []
+    descartados = []
+    vistos = set()
+    for posicion, valor in enumerate(df[columna].tolist(), start=2):
+        codigo = clean_value(valor).upper()
+        if not codigo:
+            continue
+        if codigo in vistos:
+            descartados.append({"Fila": posicion, "Código Modelo Color": codigo,
+                                "Motivo": "Duplicado en el Excel"})
+            continue
+        vistos.add(codigo)
+        codigos.append(codigo)
+    if not codigos:
+        descartados.append({"Fila": "", "Código Modelo Color": "",
+                            "Motivo": f"La columna '{columna}' no trae ningun codigo."})
+    return codigos, descartados
+
+
+def png_validar_codigos(codigos):
+    """Separa lo que se puede buscar de lo que no. Devuelve (validos, invalidos).
+
+    Un codigo sirve si se parte en modelo y color, que es lo que necesita
+    `png_image_candidates` para armar la URL. Los demas se descartan ANTES de
+    tocar la red: no tiene sentido gastar 10 peticiones en un codigo mal
+    escrito.
+    """
+    from generate_columbia_matrixify import split_model_color
+
+    validos = []
+    invalidos = []
+    for codigo in codigos or []:
+        modelo, color = split_model_color(codigo)
+        if modelo and color:
+            validos.append(codigo)
+        else:
+            invalidos.append({
+                "Código Modelo Color": codigo,
+                "Motivo": "No se puede separar en modelo y color; se espera MODELO-COLOR.",
+            })
+    return validos, invalidos
+
+
+def png_resumen_modelo(mod_col, filas, producto=None, estado="", detalle=""):
+    """Una linea de resumen por modelo-color, con el conteo de cada estado."""
+    conteo = Counter(clean_value(fila.get("Estado")) for fila in filas or [])
+    cargadas = conteo.get(PNG_ESTADO_CARGADA, 0)
+    errores_carga = conteo.get(PNG_ESTADO_ERROR_CARGA, 0)
+    # "Encontradas" es cuantas vistas habia para cargar, antes de intentarlo:
+    # las que siguen pendientes mas las que ya se cargaron o fallaron.
+    encontradas = conteo.get("Encontrada", 0) + cargadas + errores_carga
+    return {
+        "Código Modelo Color": clean_value(mod_col),
+        "En Shopify": "SI" if producto else "NO",
+        "Vistas encontradas": encontradas,
+        "Cargadas": cargadas,
+        "Ya existentes": conteo.get("Ya existente", 0),
+        "Sin PNG": conteo.get("No existe", 0),
+        "Duplicadas": conteo.get("Duplicada", 0),
+        "Errores": conteo.get("Error", 0) + errores_carga,
+        "Estado": clean_value(estado),
+        "Detalle": clean_value(detalle),
+    }
+
+
+def png_marcar_resultado_carga(filas, estado, detalle):
+    """Pasa las vistas 'Encontrada' al estado final tras intentar cargarlas."""
+    return [
+        {**fila, "Estado": estado, "Detalle": detalle}
+        if clean_value(fila.get("Estado")) == "Encontrada"
+        else fila
+        for fila in filas or []
+    ]
+
+
+def png_detalle_por_modelo(resultados):
+    """Todas las vistas de todos los modelos, para la hoja de detalle."""
+    filas = []
+    for item in resultados or []:
+        codigo = clean_value(item.get("mod_col"))
+        for fila in item.get("filas") or []:
+            filas.append({"Código Modelo Color": codigo, **fila})
+    return filas
+
+
+def render_png_maintainer_lote(update_df, brand_config, shopify_config, image_mode):
+    """Mantenedor PNG con un Excel de codigos, en dos tiempos.
+
+    Primero se analiza TODO el archivo sin tocar Shopify: se leen los codigos,
+    se quitan vacios y repetidos, se valida el formato y se buscan las vistas
+    en el bucket. Solo despues, y con confirmacion, se cargan.
+
+    Reutiliza tal cual las piezas del modo de un solo codigo (png_probe_views,
+    png_views_to_upload, png_find_product y _sync_product_photos_direct), asi
+    que el tope de 10 vistas, el orden, el alt text y el control de fotos
+    repetidas son exactamente los mismos.
+    """
+    from generate_columbia_matrixify import brand_image_config
+
+    if update_df is None:
+        st.info("Sube el Excel con la columna **Código Modelo Color** para empezar.")
+        return
+
+    codigos, descartados = png_codigos_desde_excel(update_df)
+    validos, invalidos = png_validar_codigos(codigos)
+    descartes = list(descartados) + list(invalidos)
+    duplicados = len([item for item in descartados if item.get("Fila")])
+
+    columnas = st.columns(3)
+    columnas[0].metric("Códigos únicos", len(codigos))
+    columnas[1].metric("Listos para buscar", len(validos))
+    columnas[2].metric("Descartados", len(descartes))
+    if duplicados:
+        st.caption(f"Se quitaron {duplicados} filas repetidas del Excel.")
+    if descartes:
+        with st.expander(f"Ver los {len(descartes)} descartados y por qué", expanded=not validos):
+            st.dataframe(pd.DataFrame(descartes), use_container_width=True, hide_index=True)
+    if not validos:
+        st.error("No quedó ningún código válido que buscar. Revisa la columna Código Modelo Color.")
+        return
+
+    if st.button(f"Buscar vistas PNG de {len(validos)} modelo-colores", type="primary"):
+        st.session_state.pop("png_lote_resultados", None)
+        productos_shopify = session_shopify_products(brand_config["site_key"], shopify_config)
+        resultados = []
+        barra = st.progress(0.0, text="Buscando vistas PNG...")
+        for indice, codigo in enumerate(validos, start=1):
+            producto = png_find_product(productos_shopify, codigo)
+            config_imagenes = brand_image_config(
+                (producto or {}).get("Vendor") or brand_config.get("label"),
+                brand_config,
+            )
+            fotos_actuales = _split_semicolon_values((producto or {}).get("Image Src"))
+            filas = png_probe_views(codigo, config_imagenes, fotos_actuales)
+            resultados.append({
+                "mod_col": codigo,
+                "filas": filas,
+                "producto": producto,
+                "estado": "Analizado" if producto else "No existe en Shopify",
+                "detalle": "" if producto else "Créalo en Shopify antes de cargarle fotos.",
+            })
+            barra.progress(indice / len(validos), text=f"{indice}/{len(validos)} · {codigo}")
+        barra.empty()
+        st.session_state["png_lote_resultados"] = resultados
+        st.session_state["png_lote_descartes"] = descartes
+
+    resultados = st.session_state.get("png_lote_resultados")
+    if not resultados:
+        return
+
+    resumen_df = pd.DataFrame([
+        png_resumen_modelo(item["mod_col"], item["filas"], item["producto"],
+                           item["estado"], item["detalle"])
+        for item in resultados
+    ])
+    por_cargar = {
+        item["mod_col"]: png_views_to_upload(item["filas"])
+        for item in resultados
+        if item["producto"] is not None
+    }
+    total_por_cargar = sum(len(urls) for urls in por_cargar.values())
+    modelos_con_carga = sum(1 for urls in por_cargar.values() if urls)
+
+    totales = st.columns(5)
+    totales[0].metric("Modelo-colores", len(resumen_df))
+    totales[1].metric("Vistas encontradas", safe_int_value(resumen_df["Vistas encontradas"].sum()))
+    totales[2].metric("Ya existentes", safe_int_value(resumen_df["Ya existentes"].sum()))
+    totales[3].metric("Sin PNG", safe_int_value(resumen_df["Sin PNG"].sum()))
+    totales[4].metric("Errores", safe_int_value(resumen_df["Errores"].sum()))
+    st.dataframe(resumen_df, use_container_width=True, height=380, hide_index=True)
+
+    sin_producto = [item["mod_col"] for item in resultados if item["producto"] is None]
+    if sin_producto:
+        listado = ", ".join(sin_producto[:10]) + (" ..." if len(sin_producto) > 10 else "")
+        st.warning(
+            f"{len(sin_producto)} códigos no existen en Shopify para "
+            f"{brand_config['site_label']} y se van a saltar: {listado}"
+        )
+
+    if total_por_cargar:
+        confirmar = st.checkbox(
+            f"Confirmo cargar {total_por_cargar} vistas PNG en {modelos_con_carga} modelo-colores",
+            key=f"png_lote_confirm_{brand_config['site_key']}",
+        )
+        if confirmar and st.button("Cargar PNG en Shopify"):
+            pendientes = [item for item in resultados if por_cargar.get(item["mod_col"])]
+            barra = st.progress(0.0, text="Subiendo las vistas PNG...")
+            for indice, item in enumerate(pendientes, start=1):
+                producto = item["producto"]
+                try:
+                    mensaje = _sync_product_photos_direct(
+                        shopify_config,
+                        clean_value(producto.get("Product ID")),
+                        por_cargar[item["mod_col"]],
+                        existing_media_ids=_split_semicolon_values(producto.get("Media IDs")),
+                        image_mode=image_mode,
+                        # Mismo alt text que el modo de un solo codigo.
+                        alt_text=clean_value(producto.get("Handle")) or item["mod_col"],
+                    )
+                    estado_final, detalle = PNG_ESTADO_CARGADA, mensaje
+                except Exception as exc:
+                    estado_final, detalle = PNG_ESTADO_ERROR_CARGA, clean_value(exc)[:300]
+                item["filas"] = png_marcar_resultado_carga(item["filas"], estado_final, detalle)
+                item["estado"] = estado_final
+                item["detalle"] = detalle
+                barra.progress(indice / len(pendientes), text=f"{indice}/{len(pendientes)} · {item['mod_col']}")
+            barra.empty()
+            st.session_state["png_lote_resultados"] = resultados
+            clear_shopify_products_cache(brand_config["site_key"])
+            st.rerun()
+    else:
+        st.info("No hay ninguna vista PNG nueva para cargar con este archivo.")
+
+    cargadas = safe_int_value(resumen_df["Cargadas"].sum())
+    if cargadas:
+        modelos = safe_int_value(resumen_df["Cargadas"].gt(0).sum())
+        st.success(f"{cargadas} vistas PNG cargadas en {modelos} modelo-colores.")
+
+    hojas = {
+        "Resumen por modelo": resumen_df,
+        "Detalle por vista": pd.DataFrame(png_detalle_por_modelo(resultados)),
+    }
+    if descartes:
+        hojas["Descartados"] = pd.DataFrame(descartes)
+    st.download_button(
+        "Descargar resumen del procesamiento",
+        data=dataframe_to_excel_bytes(hojas),
+        file_name=f"fotos_png_lote_{brand_config['site_key']}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"download_png_lote_{brand_config['site_key']}",
+        on_click=log_descarga, args=("Descargar resumen PNG masivo", "main"),
+    )
 
 
 def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existing_media_ids=None, image_mode="replace", alt_text=""):
@@ -17167,37 +17683,74 @@ def render_ticket_styles():
     st.markdown(
         """
         <style>
-        /* Enlace estirado: cubre la tarjeta sin envolver su contenido. */
-        .ticket-request-card{cursor:pointer;
+        /* --- Tarjeta de solicitud ---------------------------------------
+           El marco lo dibuja el contenedor con clave `tkcard-`, no el HTML de
+           dentro. Asi la casilla y la accion rapida caen DENTRO del marco por
+           flujo normal. Antes se subian con `margin-top:-44px` y selectores
+           que adivinaban la estructura interna de Streamlit; en cuanto una
+           tarjeta era mas alta que otra, la fila se descuadraba. */
+        div[class*="st-key-tkcard-"]{position:relative;display:flex;flex-direction:column;
+          min-height:186px;padding:13px 14px;border:1px solid #D9E2EF;border-radius:11px;
+          background:#fff;box-shadow:0 8px 20px rgba(15,23,42,.035);overflow:hidden;
           transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease}
-        .ticket-request-card:hover{transform:translateY(-2px);border-color:#93C5FD;
+        /* Segun la version, Streamlit mete un envoltorio entre la clave y los
+           hijos. Se hace columna flexible tambien, y el ultimo hijo se pega al
+           pie en cualquiera de las dos formas. */
+        div[class*="st-key-tkcard-"] > div{display:flex;flex-direction:column;flex:1 1 auto}
+        div[class*="st-key-tkcard-"] > *:last-child,
+        div[class*="st-key-tkcard-"] > div > *:last-child{margin-top:auto}
+        div[class*="st-key-tkcard-"]:before{content:'';position:absolute;top:0;left:0;
+          width:4px;height:100%;background:#94A3B8;z-index:1}
+        div[class*="st-key-tkcard-blue-"]:before{background:#2563EB}
+        div[class*="st-key-tkcard-yellow-"]:before{background:#D97706}
+        div[class*="st-key-tkcard-green-"]:before{background:#16A34A}
+        div[class*="st-key-tkcard-red-"]:before{background:#DC2626}
+        div[class*="st-key-tkcard-"]:hover{transform:translateY(-2px);border-color:#93C5FD;
           box-shadow:0 12px 26px rgba(37,99,235,.14)}
-        .ticket-card-hit{position:absolute;inset:0;z-index:2;display:block;
-          border-radius:11px;text-decoration:none!important}
-        /* Franja inferior reservada: ahi viven la casilla y la accion rapida,
-           y el enlace no llega para no robarles el click. */
-        .ticket-request-card.con-controles{padding-bottom:46px;min-height:150px}
-        .ticket-request-card.con-controles .ticket-card-hit{bottom:44px}
-        /* En Streamlit 1.60 las columnas cuelgan de stLayoutWrapper; se deja
-           tambien stHorizontalBlock por si cambia en otra version. */
-        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stLayoutWrapper"],
-        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stHorizontalBlock"]{
-          margin-top:-44px!important;position:relative;z-index:6;padding:0 13px}
-        /* La casilla se pega a la esquina: su columna alinea al final y el
-           contenedor del widget deja de encogerse a su ancho natural. */
-        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stLayoutWrapper"]
-          [data-testid="stColumn"]:last-child [data-testid="stVerticalBlock"],
-        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stHorizontalBlock"]
-          [data-testid="stColumn"]:last-child [data-testid="stVerticalBlock"]{align-items:flex-end}
-        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stLayoutWrapper"]
-          [data-testid="stCheckbox"],
-        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stHorizontalBlock"]
-          [data-testid="stCheckbox"]{display:flex;justify-content:flex-end}
-        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stLayoutWrapper"]
-          .stButton>button,
-        [data-testid="stElementContainer"]:has(.con-controles)+[data-testid="stHorizontalBlock"]
-          .stButton>button{min-height:28px;padding:0 10px;font-size:11px;font-weight:800}
-        .ticket-card-hit:focus-visible{outline:2px solid #2563EB;outline-offset:2px}
+        div[class*="st-key-tkcard-"][class*="-on-"]{border-color:#60A5FA;background:#F8FBFF;
+          box-shadow:0 0 0 1px #60A5FA,0 10px 22px rgba(37,99,235,.08)}
+        /* El HTML interior ya no pinta caja: solo aporta el contenido. */
+        div[class*="st-key-tkcard-"] .ticket-request-card{border:0;background:transparent;
+          box-shadow:none;padding:0;min-height:0;overflow:visible;position:relative;z-index:2}
+        div[class*="st-key-tkcard-"] .ticket-request-card:before{display:none}
+        div[class*="st-key-tkcard-"] .ticket-request-card:hover{transform:none;box-shadow:none}
+
+        /* Zona pulsable: un st.button de verdad, estirado e invisible sobre el
+           contenido. Es un rerun normal, no una recarga del navegador. */
+        div[class*="st-key-tkhit-"]{position:relative;flex:1 1 auto}
+        div[class*="st-key-tkhit-"] [data-testid="stElementContainer"]:has(.stButton),
+        div[class*="st-key-tkhit-"] .stButton{position:absolute;inset:0;margin:0;z-index:4}
+        div[class*="st-key-tkhit-"] .stButton button{width:100%!important;height:100%!important;
+          min-height:100%!important;padding:0!important;border:0!important;
+          background:transparent!important;box-shadow:none!important;cursor:pointer;
+          color:transparent!important;font-size:0!important;overflow:hidden}
+        div[class*="st-key-tkhit-"] .stButton button *{color:transparent!important;
+          font-size:0!important}
+        div[class*="st-key-tkhit-"] .stButton button:hover,
+        div[class*="st-key-tkhit-"] .stButton button:active,
+        div[class*="st-key-tkhit-"] .stButton button:focus{background:transparent!important;
+          border:0!important;box-shadow:none!important}
+        div[class*="st-key-tkhit-"] .stButton button:focus-visible{outline:2px solid #2563EB;
+          outline-offset:-3px;border-radius:9px}
+
+        /* Franja de abajo: accion rapida a la izquierda, casilla a la derecha.
+           Selector de descendencia y no `>`: cuando el boton lleva ayuda,
+           Streamlit mete tres envoltorios de tooltip entre `.stButton` y el
+           <button>, y la regla no llegaba a aplicarse. */
+        div[class*="st-key-tkctl-"]{position:relative;z-index:6;padding-top:9px}
+        div[class*="st-key-tkctl-"] .stButton button{height:32px!important;
+          min-height:32px!important;padding:0 10px!important;font-size:11px!important;
+          font-weight:800!important}
+        /* El texto "Sin acción directa" ocupa lo mismo que el boton: sin esto
+           las tarjetas de una misma fila quedaban 10 px desparejas. */
+        div[class*="st-key-tkctl-"] [data-testid="stCaptionContainer"]{display:flex;
+          align-items:center;min-height:32px;margin:0;font-size:11px;color:#94A3B8}
+        div[class*="st-key-tkctl-"] [data-testid="stCaptionContainer"] p{margin:0;
+          font-size:11px;color:#94A3B8}
+        div[class*="st-key-tkctl-"] [data-testid="stColumn"]:last-child
+          [data-testid="stVerticalBlock"]{align-items:flex-end}
+        div[class*="st-key-tkctl-"] [data-testid="stCheckbox"]{display:flex;
+          justify-content:flex-end}
         /* El contenido va por encima del :before del borde de color. */
         .ticket-request-top,.ticket-request-brand,.ticket-request-meta,
         .ticket-request-foot{position:relative;z-index:1}
@@ -17215,9 +17768,6 @@ def render_ticket_styles():
           border:1px solid #BFDBFE;border-radius:999px;background:#EFF6FF;color:#1D4ED8;
           font-size:12px;font-weight:800}
         .ticket-bulk b{font-size:14px}
-        /* Casilla y accion rapida pegadas a su tarjeta. */
-        .ticket-request-card+div [data-testid="stCheckbox"]{margin-top:-4px}
-        .ticket-request-card+div .stButton>button{padding:2px 8px;font-size:11px;min-height:30px}
         </style>
         """,
         unsafe_allow_html=True,
@@ -18074,13 +18624,16 @@ TONO_PRIORIDAD = {"urgent": "red", "high": "amber", "normal": "slate", "low": "s
 
 
 def _ticket_card_html(ticket, selected=False, con_controles=False):
-    """Tarjeta clickeable entera.
+    """Solo el contenido de la tarjeta. Lo que se pulsa NO esta aqui.
 
-    El enlace es un <a> VACIO estirado sobre la tarjeta, no un <a> que envuelva
-    el contenido: el renderizador de Markdown de Streamlit cierra los elementos
-    en linea antes del primer bloque, asi que envolver los <div> en un <a>
-    partia la tarjeta en cajas sueltas. Con el enlace vacio, el HTML de la
-    tarjeta queda igual que siempre y toda su superficie sigue siendo pulsable.
+    Antes la tarjeta llevaba dentro un <a href="?ticket=CODIGO"> estirado por
+    CSS. Eso no era un rerun: el navegador cargaba la pagina de cero, Streamlit
+    abria una sesion nueva, `st.session_state` quedaba vacio y `require_login`
+    devolvia al login. Es decir, pulsar una solicitud cerraba la sesion.
+
+    Ahora lo que se pulsa es un `st.button` de verdad, invisible y estirado
+    sobre la tarjeta desde `_render_tarjeta_ticket`. El HTML se queda con lo que
+    se ve, sin enlaces ni navegacion.
     """
     status = clean_value(ticket.get("status"))
     summary = ticket.get("summary") if isinstance(ticket.get("summary"), dict) else {}
@@ -18096,13 +18649,11 @@ def _ticket_card_html(ticket, selected=False, con_controles=False):
     clase_responsable = "tb-user" if clean_value(ticket.get("assignee")) else "tb-user sin"
     vencida = ' <span class="tb tb-late">Vencida</span>' if ticket_is_overdue(ticket) else ""
     active_class = " selected" if selected else ""
-    # Con controles, la tarjeta reserva una franja abajo para la casilla y el
-    # boton, y el enlace deja de cubrirla para no comerse esos clicks.
+    # La franja de controles ya no se reserva con padding: la casilla y la
+    # accion rapida son hermanas de este bloque dentro del mismo contenedor.
     clase_controles = " con-controles" if con_controles else ""
     return (
         f'<div class="ticket-request-card {tone}{active_class}{clase_controles}">'
-        f'<a class="ticket-card-hit" href="?ticket={quote_plus(code)}" target="_self" '
-        f'title="Abrir {escape(code)}" aria-label="Abrir {escape(code)}"></a>'
         f'<div class="ticket-request-top"><strong class="ticket-request-code">{escape(code)}</strong>'
         f'<span class="ticket-state {tone}">{escape(status_label)}</span></div>'
         f'<div class="ticket-request-brand">{escape(clean_value(ticket.get("brand")) or "Sin marca")}</div>'
@@ -18163,6 +18714,90 @@ def _accion_rapida(ticket, actor):
     if not accion or accion.get("pide_comentario") or accion.get("requiere_archivo"):
         return None
     return accion
+
+
+def _clave_css(valor):
+    """Clave apta para la clase que genera Streamlit (`st-key-<clave>`).
+
+    Un codigo con espacios o barras rompe el selector de CSS, asi que todo lo
+    que no sea letra, digito, guion o guion bajo se sustituye.
+    """
+    limpio = re.sub(r"[^A-Za-z0-9_-]+", "-", clean_value(valor)).strip("-")
+    return limpio or "sin-codigo"
+
+
+def _refrescar_bandeja(service):
+    """Tira la lista guardada para que la proxima lectura vaya a GitHub."""
+    try:
+        service.store.invalidate_cache()
+    except AttributeError:
+        # Backend local o un doble de pruebas: no hay nada que invalidar.
+        pass
+
+
+def _render_tarjeta_ticket(service, actor, ticket, seleccionado, operativo, role_key,
+                           seleccionados, seleccion_key):
+    """Una celda de la rejilla: tarjeta pulsable + casilla + accion rapida.
+
+    Tres contenedores anidados, cada uno con su clave, y el CSS trabaja solo
+    sobre esas claves. No hay margenes negativos ni selectores que adivinen la
+    estructura interna de Streamlit, que era lo que descuadraba las tarjetas:
+
+      tkcard-  el marco (borde, franja de color, alto minimo, columna flex)
+      tkhit-   el contenido, con el boton invisible estirado encima
+      tkctl-   la franja de abajo, pegada al pie por `margin-top:auto`
+    """
+    codigo = clean_value(ticket.get("code"))
+    clave = _clave_css(codigo)
+    tono = _ticket_state_color(clean_value(ticket.get("status"))) or "gray"
+    estado_sel = "on" if seleccionado else "off"
+    with st.container(key=f"tkcard-{tono}-{estado_sel}-{role_key}-{clave}"):
+        with st.container(key=f"tkhit-{role_key}-{clave}"):
+            st.markdown(
+                _ticket_card_html(ticket, seleccionado, con_controles=operativo),
+                unsafe_allow_html=True,
+            )
+            # Boton de verdad: dispara un rerun y la sesion sigue viva. Con el
+            # enlace anterior el navegador recargaba la pagina y deslogueaba.
+            #
+            # Sin `help`: la ayuda mete tres envoltorios de tooltip entre
+            # `.stButton` y el <button>, y ninguno hereda el alto, asi que la
+            # zona pulsable se quedaba en 42 px en vez de cubrir la tarjeta.
+            # El texto del boton lo oculta el CSS, pero sigue siendo el nombre
+            # que lee un lector de pantalla.
+            if st.button(
+                f"Abrir {codigo}", key=f"tkopen_{role_key}_{clave}",
+                use_container_width=True,
+            ):
+                st.session_state["selected_catalog_ticket"] = codigo
+                st.rerun()
+        if not operativo:
+            return
+        with st.container(key=f"tkctl-{role_key}-{clave}"):
+            accion_col, marca_col = st.columns([2, 1], gap="small")
+            marcado = marca_col.checkbox(
+                "Sel.", value=codigo in seleccionados, key=f"sel_{role_key}_{codigo}"
+            )
+            if marcado and codigo not in seleccionados:
+                seleccionados.append(codigo)
+                st.session_state[seleccion_key] = seleccionados
+            elif not marcado and codigo in seleccionados:
+                seleccionados.remove(codigo)
+                st.session_state[seleccion_key] = seleccionados
+            accion = _accion_rapida(ticket, actor)
+            if accion is None:
+                accion_col.caption("Sin acción directa")
+                return
+            if accion_col.button(
+                accion["etiqueta"], key=f"quick_{role_key}_{codigo}",
+                use_container_width=True, help=accion["ayuda"],
+            ):
+                ok, mensaje = _ejecutar_accion_ticket(service, actor, codigo, accion)
+                if ok:
+                    st.session_state["selected_catalog_ticket"] = codigo
+                    st.rerun()
+                else:
+                    st.warning(mensaje)
 
 
 def render_ticket_inbox(service, actor, brand_view=False):
@@ -18248,7 +18883,14 @@ def render_ticket_inbox(service, actor, brand_view=False):
         f"{filter_prefix}_type", f"{filter_prefix}_from", f"{filter_prefix}_to",
         f"{quick_key}_selector",
     ]
-    filter_head, clear_head = st.columns([8, 1])
+    filter_head, refresh_head, clear_head = st.columns([7, 1, 1])
+    with refresh_head:
+        # La lista se guarda unos segundos para no bajar un archivo por
+        # solicitud en cada clic. Esto la tira y vuelve a leer de GitHub.
+        if st.button("Actualizar", key=f"{filter_prefix}_refresh", use_container_width=True,
+                     help="Vuelve a leer la bandeja desde GitHub, sin usar la copia guardada."):
+            _refrescar_bandeja(service)
+            st.rerun()
     with clear_head:
         if st.button("Limpiar", key=f"{filter_prefix}_clear", use_container_width=True):
             for key in clear_keys:
@@ -18379,6 +19021,19 @@ def render_ticket_inbox(service, actor, brand_view=False):
     seleccionados = [
         codigo for codigo in st.session_state.get(seleccion_key, []) if codigo in ticket_codes
     ]
+    # Las casillas se dibujan DESPUES de la barra de lote, asi que marcar una
+    # no se veia hasta el siguiente clic. Streamlit ya guarda el valor de cada
+    # casilla bajo su propia clave: se lee aqui, antes de dibujar nada, y la
+    # barra sale en el mismo momento en que se marca.
+    #
+    # La lista sigue mandando para las solicitudes de otras paginas: sus
+    # casillas no se dibujaron en esta pasada y Streamlit ya borro su valor.
+    for codigo in ticket_codes:
+        marcada = st.session_state.get(f"sel_{role_key}_{codigo}")
+        if marcada is True and codigo not in seleccionados:
+            seleccionados.append(codigo)
+        elif marcada is False and codigo in seleccionados:
+            seleccionados.remove(codigo)
     st.session_state[seleccion_key] = seleccionados
 
     st.markdown(
@@ -18391,46 +19046,18 @@ def render_ticket_inbox(service, actor, brand_view=False):
     if operativo and seleccionados:
         _render_acciones_masivas(service, actor, tickets, seleccionados, seleccion_key)
 
-    # Rejilla de 3x3. La tarjeta es un enlace; debajo van la casilla de
-    # seleccion y la accion rapida, que son controles de Streamlit.
+    # Rejilla de 3x3. Cada celda es un contenedor con clave: el CSS dibuja ahi
+    # el marco de la tarjeta y estira encima el boton invisible que la abre.
     for fila_inicio in range(0, len(visible_cards), 3):
         columnas = st.columns(3, gap="small")
         for columna, ticket in zip(columnas, visible_cards[fila_inicio:fila_inicio + 3]):
-            codigo = clean_value(ticket.get("code"))
             with columna:
-                st.markdown(
-                    _ticket_card_html(ticket, codigo == selected_code, con_controles=operativo),
-                    unsafe_allow_html=True,
+                _render_tarjeta_ticket(
+                    service, actor, ticket,
+                    seleccionado=clean_value(ticket.get("code")) == selected_code,
+                    operativo=operativo, role_key=role_key,
+                    seleccionados=seleccionados, seleccion_key=seleccion_key,
                 )
-                if not operativo:
-                    continue
-                # La accion va a la izquierda y la casilla a la derecha: el CSS
-                # sube esta fila a la franja que la tarjeta reserva abajo, de
-                # modo que la casilla cae en su esquina inferior derecha.
-                accion_col, marca_col = st.columns([2, 1], gap="small")
-                marcado = marca_col.checkbox(
-                    "Sel.", value=codigo in seleccionados, key=f"sel_{role_key}_{codigo}"
-                )
-                if marcado and codigo not in seleccionados:
-                    seleccionados.append(codigo)
-                    st.session_state[seleccion_key] = seleccionados
-                elif not marcado and codigo in seleccionados:
-                    seleccionados.remove(codigo)
-                    st.session_state[seleccion_key] = seleccionados
-                accion = _accion_rapida(ticket, actor)
-                if accion is None:
-                    accion_col.caption("Sin acción directa")
-                    continue
-                if accion_col.button(
-                    accion["etiqueta"], key=f"quick_{role_key}_{codigo}",
-                    use_container_width=True, help=accion["ayuda"],
-                ):
-                    ok, mensaje = _ejecutar_accion_ticket(service, actor, codigo, accion)
-                    if ok:
-                        st.session_state["selected_catalog_ticket"] = codigo
-                        st.rerun()
-                    else:
-                        st.warning(mensaje)
 
     if total_paginas > 1:
         _render_paginacion(pagina, total_paginas, pagina_key)
@@ -19221,6 +19848,7 @@ api_version = "{DEFAULT_API_VERSION}"
         body_mode = "from_input"
         png_mod_col = ""
         png_image_mode = "merge"
+        png_origen = "Un código"
 
         if update_operation == "centry":
             update_file = st.file_uploader(
@@ -19243,12 +19871,26 @@ api_version = "{DEFAULT_API_VERSION}"
             update_file = st.file_uploader("2. Opcional: subir lista con Mod-Col a corregir", type=["xlsx", "xls"], key="update_photos")
             st.caption("Si no subes lista, revisa el catálogo completo. Siempre genera 10 URLs por producto, solo JPG.")
         elif update_operation == "photos_png":
-            png_mod_col = st.text_input(
-                "2. Código Modelo Color",
-                key=f"png_mod_col_{brand_config['site_key']}",
-                placeholder="HP1234567-001",
-                help="Un solo código. La herramienta busca sus vistas PNG y las carga cuando tú lo pidas.",
-            ).strip().upper()
+            png_origen = st.radio(
+                "2. De dónde salen los códigos",
+                ["Un código", "Excel con varios códigos"],
+                horizontal=True,
+                key=f"png_origen_{brand_config['site_key']}",
+            )
+            if png_origen == "Un código":
+                png_mod_col = st.text_input(
+                    "Código Modelo Color",
+                    key=f"png_mod_col_{brand_config['site_key']}",
+                    placeholder="HP1234567-001",
+                    help="Un solo código. La herramienta busca sus vistas PNG y las carga cuando tú lo pidas.",
+                ).strip().upper()
+            else:
+                update_file = st.file_uploader(
+                    "Excel con la columna Código Modelo Color",
+                    type=["xlsx", "xls"],
+                    key=f"png_excel_{brand_config['site_key']}",
+                    help="Una columna con los códigos. La app quita vacíos y repetidos, y valida el formato antes de buscar nada.",
+                )
             png_image_mode = st.radio(
                 "Comando de fotos",
                 ["merge", "replace"],
@@ -19256,7 +19898,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 key=f"png_mode_{brand_config['site_key']}",
             )
             st.caption(
-                "Busca **solo .png**, hasta 10 vistas, y solo cuando aprietas el botón. "
+                "Busca **solo .png**, hasta 10 vistas por modelo-color, y solo cuando aprietas el botón. "
                 "La carga normal no cambia: sigue buscando solo JPG."
             )
         elif update_operation == "siblings":
@@ -19350,7 +19992,8 @@ api_version = "{DEFAULT_API_VERSION}"
         update_ready = (
             update_file
             or update_operation in ("photos", "siblings", "technologies", "size_guides", "inventory_locations")
-            # El mantenedor PNG no necesita archivo: le basta el codigo escrito.
+            # El mantenedor PNG no necesita archivo cuando va con un solo
+            # codigo: le basta el escrito. Con Excel entra por `update_file`.
             or (update_operation == "photos_png" and bool(png_mod_col))
             or body_mode == "fix_catalog"
             or (update_operation == "body" and update_source == "Respaldo Excel" and template_file)
@@ -19367,6 +20010,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 clean_value(only_missing_images),
                 clean_value(png_mod_col),
                 clean_value(png_image_mode),
+                clean_value(png_origen),
                 uploaded_file_fingerprint(update_file),
                 uploaded_file_fingerprint(template_file),
             ]
@@ -19392,6 +20036,8 @@ api_version = "{DEFAULT_API_VERSION}"
                 "png_maintainer_rows",
                 "png_maintainer_product",
                 "png_maintainer_result",
+                "png_lote_resultados",
+                "png_lote_descartes",
                 f"shopify_preview_excel_{brand_config['site_key']}_{update_operation}",
             ):
                 st.session_state.pop(state_key, None)
@@ -19530,6 +20176,12 @@ api_version = "{DEFAULT_API_VERSION}"
                                     f"Faltan {missing_ean_count:,} EAN. "
                                     "Revisa la hoja Revision Centry para ver columnas EAN detectadas desde BigQuery."
                                 )
+                    return
+
+                if update_operation == "photos_png" and png_origen != "Un código":
+                    render_png_maintainer_lote(
+                        update_df, brand_config, shopify_config, png_image_mode
+                    )
                     return
 
                 if update_operation == "photos_png":

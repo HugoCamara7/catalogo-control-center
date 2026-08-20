@@ -100,10 +100,18 @@ CATALOG_FIELD_ALIASES = {
         "Description", "Descripcion", "Descripción", "Descripcion Comercial",
         "Descripción Comercial", "Descripcion larga", "Descripción larga",
     ],
+    # OJO: "Descripcion corta" NO va aqui. Es el metafield custom.descripcion_corta
+    # y tiene su propia entrada. Mientras estuvo como alias de features, una
+    # columna "Descripcion corta" en el input se consumia como bullets del Body
+    # HTML y el metafield llegaba vacio a Shopify.
     "features": [
         "Caracteristicas", "Características", "Features", "Beneficios", "Bullets",
-        "Listado de características", "Listado de caracteristicas", "Descripcion corta",
-        "Descripción corta",
+        "Listado de características", "Listado de caracteristicas",
+    ],
+    "short_name": ["Nombre corto", "Nombre Corto", "Nombre breve", "Short name"],
+    "short_description": [
+        "Descripcion corta", "Descripción corta", "Descripcion Corta", "Descripción Corta",
+        "Short description",
     ],
     "material": [
         "Material", "Materiales", "Materialidad", "Composicion", "Composición", "Composition",

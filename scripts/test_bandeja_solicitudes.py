@@ -109,28 +109,35 @@ class _ServicioFalso:
 
 
 class TestTarjetaClickeable(unittest.TestCase):
-    def test_la_tarjeta_entera_es_clickeable(self):
-        html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT))
-        self.assertIn('<a class="ticket-card-hit"', html)
-        self.assertIn('href="?ticket=CAT-2026-000031"', html)
-        self.assertIn('target="_self"', html)
+    def test_la_tarjeta_no_lleva_enlaces(self):
+        """Regresión: pulsar una solicitud cerraba la sesión.
 
-    def test_el_enlace_va_vacio_y_la_raiz_es_un_div(self):
-        """Regresión: la tarjeta se rompió en cajas sueltas.
-
-        El renderizador de Markdown de Streamlit cierra los elementos en línea
-        antes del primer bloque. Con los <div> envueltos en un <a>, cada bloque
-        salía como una caja aparte, apilada. El enlace tiene que ir vacío y
-        estirado por CSS sobre una tarjeta que sigue siendo un <div>.
+        La tarjeta llevaba dentro un <a href="?ticket=CODIGO"> estirado por
+        CSS. Eso no es un rerun: el navegador carga la página de cero,
+        Streamlit abre una sesión nueva, `st.session_state` queda vacío y
+        `require_login` devuelve al login. Lo que se pulsa tiene que ser un
+        `st.button`, no un enlace, así que en el HTML no puede quedar ninguno.
         """
+        html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT))
+        self.assertNotIn("<a ", html)
+        self.assertNotIn("href=", html)
+        self.assertNotIn("?ticket=", html)
+        self.assertNotIn("ticket-card-hit", html)
+
+    def test_la_raiz_es_un_div(self):
+        """El renderizador de Markdown de Streamlit cierra los elementos en
+        línea antes del primer bloque: la tarjeta tiene que ser un <div> de
+        principio a fin o sale rota en cajas sueltas."""
         html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT))
         self.assertTrue(html.startswith('<div class="ticket-request-card'), html[:60])
         self.assertTrue(html.rstrip().endswith("</div>"))
-        self.assertIn("></a>", html, "el <a> debe cerrarse vacío, sin contenido dentro")
-        # Ningún <div> puede quedar entre la apertura y el cierre del enlace.
-        entre = html[html.index("<a class="):html.index("</a>")]
-        self.assertNotIn("<div", entre)
-        self.assertNotIn("<span", entre)
+
+    def test_la_clave_css_soporta_codigos_con_simbolos(self):
+        """La clave del contenedor acaba en un nombre de clase (`st-key-...`),
+        así que no puede llevar espacios ni barras."""
+        self.assertEqual(app._clave_css("CAT-2026-000031"), "CAT-2026-000031")
+        self.assertEqual(app._clave_css("CAT 2026/01"), "CAT-2026-01")
+        self.assertEqual(app._clave_css(""), "sin-codigo")
 
     def test_trae_los_badges_de_estado_prioridad_y_responsable(self):
         html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT, asignada="hugo.camara@forus.pe"))
@@ -147,9 +154,10 @@ class TestTarjetaClickeable(unittest.TestCase):
         self.assertIn("selected", app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT), selected=True))
         self.assertNotIn("selected", app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT)))
 
-    def test_el_codigo_va_escapado_en_la_url(self):
-        html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT, codigo="CAT 2026/01"))
-        self.assertIn("href=\"?ticket=CAT+2026%2F01\"", html)
+    def test_el_codigo_va_escapado_en_el_html(self):
+        html = app._ticket_card_html(ticket(flujo.PENDING_ASSIGNMENT, codigo="CAT <2026>"))
+        self.assertIn("CAT &lt;2026&gt;", html)
+        self.assertNotIn("CAT <2026>", html)
 
 
 class TestControlesEnLaTarjeta(unittest.TestCase):

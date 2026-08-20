@@ -459,7 +459,11 @@ def construir_producto(datos, marca="", tipo="", genero="", clase="", mod_col=""
             })
 
     if not _texto(fila.get("Categoría")):
-        categoria, aviso = resolver_categoria(marca, tipo, genero, ruta)
+        # Con nombre: `ruta` caia en el hueco de `familia` y la familia ya
+        # detectada se perdia, obligando a recalcularla.
+        categoria, aviso = resolver_categoria(
+            marca=marca, tipo=tipo, genero=genero, familia=familia, ruta=ruta
+        )
         fila["Categoría"] = categoria
         if aviso:
             pendientes.append({"campo": "Categoría", "problema": aviso})
@@ -764,6 +768,39 @@ def atributos_desde_caracteristicas(texto, familia, ruta=None):
     return aplicados, ignorados
 
 
+# El Body HTML que arma la app trae CUATRO bloques rotulados con su clase:
+# nweb__Descripcion, nweb__Caracteristicas, nweb__Materiales y nweb__Cuidados.
+# Hasta ahora solo se leia el de Caracteristicas, asi que los materiales y los
+# cuidados estaban escritos en el producto y nadie los recogia para Centry.
+SECCIONES_BODY = ("Descripcion", "Caracteristicas", "Materiales", "Cuidados")
+
+
+def seccion_del_body(body_html, seccion):
+    """Los bullets de una seccion del Body HTML, unidos con |.
+
+    Devuelve "" si esa seccion no existe. No se inventa contenido: si el
+    producto no trae Materiales, no hay Materiales.
+    """
+    texto = _texto(body_html)
+    nombre = _texto(seccion)
+    if not texto or not nombre:
+        return ""
+    bloque = re.search(
+        rf"nweb__{re.escape(nombre)}[^a-zA-Z0-9](.*?)</div>",
+        texto,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not bloque:
+        return ""
+    cuerpo = bloque.group(1)
+    items = re.findall(r"<li[^>]*>(.*?)</li>", cuerpo, flags=re.IGNORECASE | re.DOTALL)
+    if not items:
+        # La Descripcion es prosa: sale como <p>, no como lista.
+        items = re.findall(r"<p[^>]*>(.*?)</p>", cuerpo, flags=re.IGNORECASE | re.DOTALL)
+    limpios = [_sin_etiquetas(item) for item in items]
+    return "|".join(item for item in limpios if item)
+
+
 def caracteristicas_del_body(body_html):
     """Los bullets de la seccion Caracteristicas del Body HTML.
 
@@ -771,17 +808,7 @@ def caracteristicas_del_body(body_html):
     propias. El listado de Sial no sirve: ese trae otra cosa (Tipo De Producto,
     Genero, Color, Marca).
     """
-    texto = _texto(body_html)
-    if not texto:
-        return ""
-    bloque = re.search(
-        r'nweb__Caracteristicas.*?<ul>(.*?)</ul>', texto, flags=re.IGNORECASE | re.DOTALL
-    )
-    if not bloque:
-        return ""
-    items = re.findall(r"<li[^>]*>(.*?)</li>", bloque.group(1), flags=re.IGNORECASE | re.DOTALL)
-    limpios = [_sin_etiquetas(item) for item in items]
-    return "|".join(item for item in limpios if item)
+    return seccion_del_body(body_html, "Caracteristicas")
 
 
 def _sin_etiquetas(html):

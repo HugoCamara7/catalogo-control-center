@@ -34,6 +34,11 @@ from engines.ticket_flow import ETIQUETAS as FLUJO_ETIQUETAS
 from engines.ticket_flow import estado_visible as flujo_estado_visible
 from engines.ticket_flow import ORDEN as FLUJO_ORDEN
 from engines import centry_map as centry_plantilla
+
+try:
+    from engines import enrich as enriquecimiento
+except ImportError:  # engines/enrich.py todavia no subido
+    enriquecimiento = None
 from engines.ticket_flow import acciones_disponibles as flujo_acciones
 from engines.ticket_flow import accion_principal as flujo_accion_principal
 from engines.ticket_flow import etiqueta as flujo_etiqueta
@@ -3479,12 +3484,39 @@ def centry_value(value, fallback=""):
     return text
 
 
+def centry_garment_class(product_type):
+    """Vestuario / Calzado / Accesorios segun el diccionario de tipos.
+
+    Devuelve "" cuando el diccionario no conoce ese tipo; ahi decide el texto.
+    """
+    tipo = centry_value(product_type)
+    if not tipo:
+        return ""
+    _, clase, _ = _centry_motor("resolver_tipo", ("", "", ""), tipo)
+    return clean_value(clase)
+
+
 def centry_is_footwear(row):
+    """Calzado segun el DICCIONARIO de tipos. El texto es el ultimo recurso.
+
+    Antes se buscaban seis palabras sueltas dentro de Type/Tags/Title. Una
+    alpargata, un mocasin, un sueco o un slip on no traen ninguna de esas
+    palabras: el producto solo salia como calzado si Shopify le habia puesto el
+    tag "Calzado". Los que no estan en Shopify se iban a Vestuario, con la guia
+    de tallas y el peso de una prenda.
+    """
+    clase = centry_garment_class(row.get("Type"))
+    if clase:
+        return clase.lower() == "calzado"
     haystack = " ".join(
         centry_value(row.get(column)).lower()
         for column in ("Type", "Tags", "Title", "Categoría", "Categoria ")
     )
-    return any(word in haystack for word in ("calzado", "zapatilla", "zapato", "botin", "bota", "sandalia"))
+    return any(word in haystack for word in (
+        "calzado", "zapatilla", "zapato", "botin", "bota", "bototo", "sandalia",
+        "alpargata", "mocasin", "slip on", "sueco", "zueco", "nautico",
+        "ballerina", "pantufla", "chala", "ojota", "hojota", "slipper",
+    ))
 
 
 def centry_gender(row):
@@ -3855,20 +3887,112 @@ def centry_tag_value(row, *labels):
     return ""
 
 
-def centry_material_from_row(row):
+def _enriquecer(atributo, fuentes, textos=(), marca="", resolutor=None):
+    """Valor del atributo por la cadena central de `engines/enrich.py`.
+
+    Devuelve "" si ninguna fuente lo trae: es una respuesta valida, no un
+    error. Si el motor todavia no esta subido, cada llamador se queda con su
+    respaldo de siempre y la app no se cae por una subida a medias.
+
+    `resolutor` es el de `enrich.Resolutor(df.columns)`: al fijar las columnas
+    del archivo una sola vez, la fila deja de recibir decenas de consultas por
+    columnas que no existen. Sin el funciona igual, solo que mas lento.
+    """
+    if enriquecimiento is None:
+        return ""
+    try:
+        if resolutor is not None:
+            return resolutor.resolver(atributo, fuentes, textos, marca)[0]
+        return enriquecimiento.resolver(atributo, fuentes, textos, marca)[0]
+    except Exception:
+        return ""
+
+
+def centry_resolutor(df):
+    """El resolutor de atributos para ese archivo. None si no hay motor."""
+    if enriquecimiento is None or df is None:
+        return None
+    try:
+        return enriquecimiento.Resolutor(df.columns)
+    except Exception:
+        return None
+
+
+def centry_body_sections(body_html):
+    """(caracteristicas, materiales, cuidados) del Body HTML del producto.
+
+    Se calcula UNA vez por Body: todas las variantes de un producto comparten
+    el mismo, y sin cache se repetiria el mismo regex por cada talla. Antes se
+    parseaba la seccion Caracteristicas en cada fila, sin cache; esto es mas
+    rapido que lo que habia, no mas lento.
+    """
+    clave = clean_value(body_html)
+    if not clave:
+        return ("", "", "")
+    cacheado = _CENTRY_BODY_CACHE.get(clave)
+    if cacheado is None:
+        cacheado = (
+            _centry_motor("caracteristicas_del_body", "", clave),
+            _centry_motor("seccion_del_body", "", clave, "Materiales"),
+            _centry_motor("seccion_del_body", "", clave, "Cuidados"),
+        )
+        if len(_CENTRY_BODY_CACHE) > 4000:
+            _CENTRY_BODY_CACHE.clear()
+        _CENTRY_BODY_CACHE[clave] = cacheado
+    return cacheado
+
+
+_CENTRY_BODY_CACHE = {}
+
+
+def centry_seccion_como_valor(texto):
+    """El contenido de una seccion del Body, cuando ES el valor.
+
+    En `nweb__Cuidados` el rotulo es la seccion misma: sus bullets no dicen
+    "Cuidados: ...", dicen "Limpiar con paño húmedo". Si en cambio los bullets
+    vienen rotulados ("Composición: 100% Cuero") no sirven como valor suelto y
+    se devuelve vacio: de eso ya se encarga la busqueda por etiqueta.
+    """
+    limpio = clean_value(texto)
+    if not limpio or ":" in limpio:
+        return ""
+    return ", ".join(parte.strip() for parte in limpio.split("|") if parte.strip())
+
+
+def centry_material_from_row(row, textos=(), marca="", seccion="", resolutor=None):
+    """Materialidad. Shopify → input → maestro → etiquetas del Body/tags."""
     return first_non_empty(
+        _enriquecer("material", [row], textos, marca, resolutor),
         centry_tag_value(row, "Material principal", "Material"),
         row.get("Metafield: custom.materialidad [single_line_text_field]"),
         row.get("Material"),
         row.get("Composición"),
+        centry_seccion_como_valor(seccion),
     )
 
 
-def centry_composition_from_row(row):
+def centry_composition_from_row(row, textos=(), marca="", seccion="", resolutor=None):
+    """Composicion. Misma cadena; la capellada vale para el calzado."""
     return first_non_empty(
+        _enriquecer("composicion", [row], textos, marca, resolutor),
         centry_tag_value(row, "Composición", "Composicion"),
         row.get("Metafield: custom.materialidad [single_line_text_field]"),
         row.get("Composición"),
+        centry_seccion_como_valor(seccion),
+    )
+
+
+def centry_care_from_row(row, textos=(), marca="", seccion="", resolutor=None):
+    """Cuidados. La plantilla Centry no tiene columna propia: van al listado.
+
+    Estaban escritos en la seccion `nweb__Cuidados` del Body HTML desde
+    siempre, pero la app solo leia la seccion de Caracteristicas.
+    """
+    return first_non_empty(
+        _enriquecer("cuidados", [row], textos, marca, resolutor),
+        centry_tag_value(row, "Cuidados", "Cuidado", "Lavado"),
+        row.get("Cuidados"),
+        centry_seccion_como_valor(seccion),
     )
 
 
@@ -3896,7 +4020,7 @@ def centry_tag_or_column_value(row, *labels):
     return first_non_empty(*candidates)
 
 
-def centry_labeled_characteristics(row, vendor, product_type, color, gender, material, composition, footwear_cane):
+def centry_labeled_characteristics(row, vendor, product_type, color, gender, material, composition, footwear_cane, care=""):
     items = [
         ("Tipo De Producto", product_type),
         ("Género", gender),
@@ -3907,6 +4031,8 @@ def centry_labeled_characteristics(row, vendor, product_type, color, gender, mat
         ("Material", material),
         ("Composición", composition),
         ("Altura De Taco", footwear_cane),
+        # Centry no tiene columna de cuidados: su sitio es el listado.
+        ("Cuidados", care),
     ]
     return " |".join(
         f"{label} : {centry_value(value).strip()}"
@@ -4030,7 +4156,23 @@ def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_la
         result = result[~k_mask].copy()
         key_values = key_values.loc[result.index]
 
-    zero_block_mask = result.apply(lambda row: is_zero_size(row.get(size_column)) and centry_output_blocks_zero_size(row), axis=1)
+    # La talla 0 se borra SOLO si el producto tiene ademas tallas reales. Si el
+    # 0 es su unica talla, es la talla unica de verdad y el producto se queda:
+    # antes se borraba igual y el producto entero desaparecia del archivo sin
+    # que nada lo dijera. Es la misma regla que ya aplica `final_variant_filter`
+    # en la carga completa; aqui estaba escrita a medias.
+    zero_block_mask = result.apply(
+        lambda row: is_zero_size(row.get(size_column)) and centry_output_blocks_zero_size(row),
+        axis=1,
+    )
+    if zero_block_mask.any():
+        tiene_talla_real = (
+            result[size_column].map(clean_value).ne("")
+            & ~result[size_column].map(is_zero_size)
+            & ~result[size_column].map(is_internal_k_size)
+        )
+        productos_con_talla_real = set(key_values[tiene_talla_real])
+        zero_block_mask &= key_values.isin(productos_con_talla_real)
     if zero_block_mask.any():
         issues.append({"Mod-Col": output_label, "Problema": f"Se eliminaron {safe_int_value(zero_block_mask.sum())} filas con talla 0/000 en vestuario/calzado"})
         result = result[~zero_block_mask].copy()
@@ -4064,6 +4206,55 @@ def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_la
     return result, issues
 
 
+def centry_product_block_key(df):
+    """Clave del bloque de producto, para arrastrar SOLO dentro del producto.
+
+    Matrixify (y la exportacion de la API de Shopify) escriben Title, Body
+    HTML, Type, Tags y los metafields UNA sola vez, en la primera fila de cada
+    producto. Para copiarlos a sus variantes hay que saber donde empieza y
+    termina cada bloque.
+
+    Sin esa frontera, un producto que llega SIN tipo -porque no existe en
+    Shopify y BigQuery/ARTI tampoco lo trae- heredaba el tipo, la descripcion y
+    la materialidad del producto ANTERIOR de la lista. Asi RK110021743, una
+    alpargata sin ficha, salio como "Vestuario / Ropa Masculina / Alpargatas"
+    con la descripcion de otro modelo.
+    """
+    if df is None or df.empty:
+        return pd.Series(dtype=object)
+    clave = (
+        df["Handle"].map(clean_value)
+        if "Handle" in df.columns
+        else pd.Series("", index=df.index, dtype=object)
+    )
+    for columna in ("Metafield: custom.codigo_modelo_color [id]", "Mod-Col", "COD MOD COL"):
+        if columna in df.columns:
+            clave = clave.where(clave != "", df[columna].map(clean_value))
+    if "Variant SKU" in df.columns:
+        desde_sku = df["Variant SKU"].map(
+            lambda valor: clean_value(valor).rsplit("-", 1)[0] if "-" in clean_value(valor) else ""
+        )
+        clave = clave.where(clave != "", desde_sku)
+    clave = clave.map(lambda valor: clean_value(valor).upper()).replace("", pd.NA).ffill()
+    # Una fila sin ninguna clave es su propio bloque: es preferible perder el
+    # arrastre a heredar los datos del producto anterior.
+    sueltas = pd.Series([f"__FILA_{indice}" for indice in range(len(df))], index=df.index)
+    return clave.fillna(sueltas)
+
+
+def forward_fill_product_block(df, columns):
+    """Arrastra los campos de producto hacia abajo SIN cruzar de producto."""
+    if df is None or df.empty:
+        return df
+    clave = centry_product_block_key(df)
+    for column in columns:
+        if column not in df.columns:
+            df[column] = ""
+        valores = df[column].map(clean_value).replace("", pd.NA)
+        df[column] = valores.groupby(clave).ffill().fillna("")
+    return df
+
+
 def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None, arti_df=None):
     if matrixify_df is None or matrixify_df.empty:
         return pd.DataFrame(columns=CENTRY_COLUMNS), pd.DataFrame(columns=["Mod-Col", "Problema"])
@@ -4082,10 +4273,10 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         "Metafield: custom.materialidad [single_line_text_field]",
         "Metafield: custom.tecnologia [list.single_line_text_field]",
     ]
-    for column in product_fields:
-        if column in df.columns:
-            df[column] = df[column].replace("", pd.NA).ffill().fillna("")
+    df = forward_fill_product_block(df, product_fields)
     only_codes_set = {clean_value(code).upper() for code in (only_codes or []) if clean_value(code)}
+    # Una sola vez por archivo: fija que columnas de atributos existen aqui.
+    resolutor = centry_resolutor(df)
     rows = []
     issues = []
     normalized_arti_df = normalize_arti_columns_for_app(arti_df) if arti_df is not None else arti_df
@@ -4130,9 +4321,20 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         # se metia en la columna del SKU y el codigo interno desaparecia.
         # El barcode queda solo como respaldo para la variante que no traiga SKU.
         variant_centry_sku = variant_sku or barcode
-        class_name = category_record.get("class") or ("Calzado" if is_footwear else "Vestuario")
-        material = centry_material_from_row(row)
-        composition = centry_composition_from_row(row)
+        # La clase la manda el maestro; si no la trae, el diccionario de
+        # tipos; y solo al final la heuristica de texto.
+        class_name = (
+            category_record.get("class")
+            or centry_garment_class(product_type)
+            or ("Calzado" if is_footwear else "Vestuario")
+        )
+        # Las tres secciones del Body son la fuente mas rica de atributos y
+        # estaban a medio usar: solo se leia Caracteristicas.
+        body_features, body_materials, body_care = centry_body_sections(row.get("Body HTML"))
+        textos_atributos = (body_materials, body_features, clean_value(row.get("Tags")))
+        material = centry_material_from_row(row, textos_atributos, vendor, body_materials, resolutor)
+        composition = centry_composition_from_row(row, textos_atributos, vendor, body_materials, resolutor)
+        care = centry_care_from_row(row, (body_care, clean_value(row.get("Tags"))), vendor, body_care, resolutor)
         age = centry_age_from_gender(gender)
         footwear_cane = centry_footwear_cane_from_row(row)
         characteristics = centry_labeled_characteristics(
@@ -4144,6 +4346,7 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             material,
             composition,
             footwear_cane,
+            care,
         )
         # Motor de plantilla: familia, categoria oficial y advertencias.
         modelo_centry, color_centry = _centry_motor(
@@ -4164,7 +4367,7 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         if not familia_centry:
             avisos_centry.append(motivo_familia)
         categoria_oficial, aviso_categoria = _centry_motor(
-            "resolver_categoria", ("", ""), vendor, tipo_centry, gender
+            "resolver_categoria", ("", ""), vendor, tipo_centry, gender, familia_centry
         )
         if aviso_categoria:
             avisos_centry.append(aviso_categoria)
@@ -4179,9 +4382,13 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         tipos_centry, _ = _centry_motor(
             "tipo_para_columnas", ({}, []), tipo_centry, familia_centry
         )
+        # Se leen las dos secciones del Body que traen pares: Caracteristicas
+        # ("Forro: 100% Cuero") y Materiales ("Composición: 100% Algodón").
+        # Ya vienen calculadas arriba, no se vuelve a parsear el HTML.
+        pares_del_body = "|".join(texto for texto in (body_features, body_materials) if texto)
         atributos_centry, ignorados_centry = _centry_motor(
             "atributos_desde_caracteristicas", ({}, []),
-            _centry_motor("caracteristicas_del_body", "", row.get("Body HTML")) or characteristics,
+            pares_del_body or characteristics,
             familia_centry,
         )
         if ignorados_centry:
@@ -4266,6 +4473,11 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             centry_apply_apparel_fields(centry_row, product_type, gender, material, composition)
         if not title:
             issues.append({"Mod-Col": current_mod_col, "Problema": "Sin nombre de producto"})
+        if not product_type:
+            issues.append({
+                "Mod-Col": current_mod_col,
+                "Problema": "Sin tipo de prenda: la clase y la categoria salen provisionales",
+            })
         if not images:
             issues.append({"Mod-Col": current_mod_col, "Problema": "Sin imagen principal"})
         rows.append(centry_row)
@@ -4281,14 +4493,30 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
     centry_df, issues = filter_centry_size_rows(centry_df, issues, "Talla", key_column="SKU del producto", output_label="Centry")
     if not centry_df.empty:
         barcode_column = "Código de barra variante (EAN/UPC/ISBN)"
+        # Una linea por PRODUCTO, no una por SKU: 80 variantes sin EAN eran 80
+        # observaciones que tapaban las cuatro que de verdad habia que mirar.
         missing_barcode = centry_df[centry_df[barcode_column].map(clean_value) == ""].copy()
-        for _, missing_row in missing_barcode.iterrows():
-            issues.append(
-                {
-                    "Mod-Col": clean_value(missing_row.get("SKU del producto")) or "Centry",
-                    "Problema": f"Sin codigo de barras en SKU {clean_value(missing_row.get('SKU de la variante'))}",
-                }
-            )
+        if not missing_barcode.empty:
+            claves = missing_barcode["SKU del producto"].map(clean_value)
+            for mod_col, grupo in missing_barcode.groupby(claves, sort=False):
+                skus = [clean_value(valor) for valor in grupo["SKU de la variante"] if clean_value(valor)]
+                listado = ", ".join(skus[:10]) + (" ..." if len(skus) > 10 else "")
+                issues.append(
+                    {
+                        "Mod-Col": mod_col or "Centry",
+                        "Problema": f"Sin codigo de barras en {len(grupo):,} variantes: {listado}",
+                    }
+                )
+        sin_precio = centry_df[centry_df["Precio"].map(centry_price_is_missing)].copy()
+        if not sin_precio.empty:
+            claves_precio = sin_precio["SKU del producto"].map(clean_value)
+            for mod_col, grupo in sin_precio.groupby(claves_precio, sort=False):
+                issues.append(
+                    {
+                        "Mod-Col": mod_col or "Centry",
+                        "Problema": f"Sin precio (0 o vacio) en {len(grupo):,} variantes",
+                    }
+                )
     return repair_mojibake_dataframe(centry_df), repair_mojibake_dataframe(
         pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
     )
@@ -4333,10 +4561,8 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
         "Metafield: custom.materialidad [single_line_text_field]",
         "Metafield: custom.tecnologia [list.single_line_text_field]",
     ]
-    for column in product_fields:
-        if column not in df.columns:
-            df[column] = ""
-        df[column] = df[column].replace("", pd.NA).ffill().fillna("")
+    df = forward_fill_product_block(df, product_fields)
+    resolutor_sial = centry_resolutor(df)
 
     rows = []
     for _, row in df.iterrows():
@@ -4355,8 +4581,22 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
         fallback_package = centry_package_values(row)
         package = centry_sial_dimension_package(row, product_type, fallback_package)
         category_record = centry_lookup_category(product_type, gender, vendor, centry_category(row))
-        category = category_record.get("class") or ("CALZADO" if centry_is_footwear(row) else ("ACCESORIOS" if "accesorio" in centry_category(row).lower() else "VESTUARIO"))
+        category = (
+            category_record.get("class")
+            or centry_garment_class(product_type)
+            or ("CALZADO" if centry_is_footwear(row) else ("ACCESORIOS" if "accesorio" in centry_category(row).lower() else "VESTUARIO"))
+        ).upper()
         category_probe = pd.Series({"Clase": category, "Categoria ": category, "Type": product_type})
+        # Misma cadena central que usa Centry: Sial no puede quedar con menos
+        # datos que la hoja de al lado a partir del mismo producto.
+        body_features_sial, body_materials_sial, body_care_sial = centry_body_sections(row.get("Body HTML"))
+        material_sial = centry_material_from_row(
+            row,
+            (body_materials_sial, body_features_sial, clean_value(row.get("Tags"))),
+            vendor,
+            body_materials_sial,
+            resolutor_sial,
+        )
         size = centry_display_size(
             raw_size,
             centry_output_is_accessory(category_probe) and (is_one_size(raw_size) or is_zero_size(raw_size)),
@@ -4393,11 +4633,20 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
                 "Modelo": model,
                 "Marca": vendor,
                 "Tecnologias ": limit_words(first_non_empty(row.get("Metafield: custom.tecnologia [list.single_line_text_field]"), ""), 45),
-                "Caracteristicas": limit_words(centry_value(row.get("Tags")).replace(",", " |"), 45),
+                # Los tags primero; si el producto no los trae, los bullets de
+                # la ficha, que es donde vive la informacion de verdad.
+                "Caracteristicas": limit_words(
+                    first_non_empty(
+                        centry_value(row.get("Tags")).replace(",", " |"),
+                        body_features_sial,
+                        body_care_sial,
+                    ),
+                    45,
+                ),
                 "Tipo de Boardshort": "",
                 "Tipo de Bikini": "",
                 "Iniciativas": "",
-                "Tipo de Material": first_non_empty(row.get("Metafield: custom.materialidad [single_line_text_field]"), ""),
+                "Tipo de Material": material_sial,
                 "1": "",
                 "Tipo de Prenda": product_type,
                 "Adicional 2 ": "",
@@ -4431,7 +4680,7 @@ def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"
     total_products = df.get("SKU del producto", pd.Series(dtype=object)).map(clean_value).nunique()
     no_barcode = safe_int_value((df.get("Código de barra variante (EAN/UPC/ISBN)", pd.Series(dtype=object)).map(clean_value) == "").sum())
     no_image = safe_int_value((df.get("URL imagen principal", pd.Series(dtype=object)).map(clean_value) == "").sum())
-    no_price = safe_int_value((df.get("Precio", pd.Series(dtype=object)).map(clean_value) == "").sum())
+    no_price = safe_int_value(df.get("Precio", pd.Series(dtype=object)).map(centry_price_is_missing).sum())
     # Lo meramente informativo no cuenta como observacion: "se eliminaron N
     # filas con talla 0" o el diagnostico de EAN no son problemas del producto,
     # y hacian que el panel marcara 443 errores en rojo cuando no habia ninguno.
@@ -4467,7 +4716,9 @@ def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"
     )
     st.dataframe(df.head(120), use_container_width=True, height=360)
     if issues_df is not None and not issues_df.empty:
-        st.warning(f"Centry tiene {len(issues_df):,} observaciones.")
+        informativas = len(issues_df) - issue_count
+        detalle = f" ({informativas:,} informativas)" if informativas > 0 else ""
+        st.warning(f"Centry tiene {issue_count:,} observaciones a revisar{detalle}.")
         st.dataframe(issues_df, use_container_width=True)
 
 
@@ -4528,6 +4779,21 @@ def centry_ean_column(df):
     return ""
 
 
+def centry_price_is_missing(value):
+    """Un precio 0 es un precio que FALTA, no un precio valido.
+
+    El panel solo miraba si la celda estaba vacia, asi que un archivo con los
+    1.121 precios en 0 salia con "Precio faltante: 0" en verde.
+    """
+    texto = clean_value(value).replace(",", ".")
+    if not texto:
+        return True
+    try:
+        return float(texto) <= 0
+    except ValueError:
+        return False
+
+
 def centry_missing_ean_count(centry_df):
     column = centry_ean_column(centry_df)
     if not column:
@@ -4548,9 +4814,11 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         for column in MATRIXIFY_COLUMNS:
             if column not in shopify_df.columns:
                 shopify_df[column] = ""
-        for column in ("Title", "Body HTML", "Vendor", "Type", "Tags", "Image Src", "Metafield: custom.codigo_modelo_color [id]"):
-            if column in shopify_df.columns:
-                shopify_df[column] = shopify_df[column].replace("", pd.NA).ffill().fillna("")
+        shopify_df = forward_fill_product_block(
+            shopify_df,
+            ["Title", "Body HTML", "Vendor", "Type", "Tags", "Image Src",
+             "Metafield: custom.codigo_modelo_color [id]"],
+        )
         shopify_df["__CENTRY_KEY"] = shopify_df.apply(centry_mod_col_from_row, axis=1)
     else:
         shopify_df["__CENTRY_KEY"] = pd.Series(dtype=object)
@@ -4621,7 +4889,15 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         image_config = brand_image_config(raw_brand, brand_config)
         image_urls = image_candidates(key, image_config)
         title = first_non_empty(product_row.get("Title") if product_row is not None else "", key)
-        body_html = first_non_empty(product_row.get("Body HTML") if product_row is not None else "", "")
+        if clean_value(title).upper() == key:
+            # El nombre no puede ser el codigo: Centry lo publicaria asi.
+            issues.append({"Mod-Col": key, "Problema": "Sin nombre de producto: sale el codigo modelo-color"})
+        # La descripcion tambien se completa desde el maestro cuando el
+        # producto no esta en Shopify: el ARTI trae `DescripcionWeb`.
+        body_html = first_non_empty(
+            product_row.get("Body HTML") if product_row is not None else "",
+            variants.iloc[0].get("DescripcionWeb"),
+        )
         # Genero y Tipo NUNCA pueden quedar vacios: manda Shopify y, si no
         # tiene el dato, se completa desde SIAL/BigQuery (el ARTI ya trae
         # "TipoProducto" y "Genero" en ARTI_OPTIONAL_COLUMNS).
@@ -4634,7 +4910,18 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             variants.iloc[0].get("Genero"),
         )
         if not clean_value(product_type):
-            issues.append({"Mod-Col": key, "Problema": "Sin tipo de prenda en Shopify ni en BigQuery/ARTI"})
+            # Ultimo intento: la subcategoria del maestro, y SOLO si el
+            # diccionario de tipos la reconoce. No se inventa un tipo a partir
+            # de un texto libre; si no lo reconoce, el producto sale avisado.
+            candidata = clean_value(variants.iloc[0].get("SubCategoria"))
+            if candidata and centry_garment_class(candidata):
+                product_type = candidata
+                issues.append({
+                    "Mod-Col": key,
+                    "Problema": f"Tipo de prenda tomado de la subcategoria del maestro: {candidata}",
+                })
+            else:
+                issues.append({"Mod-Col": key, "Problema": "Sin tipo de prenda en Shopify ni en BigQuery/ARTI"})
         if not clean_value(gender_master):
             issues.append({"Mod-Col": key, "Problema": "Sin genero en Shopify ni en BigQuery/ARTI"})
         elif product_row is None or not clean_value(
@@ -4642,8 +4929,23 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         ):
             issues.append({"Mod-Col": key, "Problema": f"Genero completado desde BigQuery/ARTI: {clean_value(gender_master)}"})
         tags = first_non_empty(product_row.get("Tags") if product_row is not None else "", vendor)
-        materiality = first_non_empty(product_row.get("Metafield: custom.materialidad [single_line_text_field]") if product_row is not None else "", "")
-        technology = first_non_empty(product_row.get("Metafield: custom.tecnologia [list.single_line_text_field]") if product_row is not None else "", "")
+        # Materialidad, composicion, cuidados y tecnologia: Shopify primero y,
+        # si no lo tiene, el maestro. Antes SOLO se miraba Shopify, asi que un
+        # producto que no esta en Shopify salia sin ninguno de los cuatro
+        # aunque BigQuery/ARTI los trajera en Material / Cuidado / Tecnologia.
+        maestro = variants.iloc[0]
+        resolutor_maestro = centry_resolutor(arti)
+        materiality = first_non_empty(
+            product_row.get("Metafield: custom.materialidad [single_line_text_field]") if product_row is not None else "",
+            _enriquecer("material", [maestro], marca=vendor, resolutor=resolutor_maestro),
+        )
+        technology = first_non_empty(
+            product_row.get("Metafield: custom.tecnologia [list.single_line_text_field]") if product_row is not None else "",
+            _enriquecer("tecnologia", [maestro], marca=vendor, resolutor=resolutor_maestro),
+        )
+        composition_master = _enriquecer("composicion", [maestro], marca=vendor, resolutor=resolutor_maestro)
+        care_master = _enriquecer("cuidados", [maestro], marca=vendor, resolutor=resolutor_maestro)
+        features_master = clean_value(maestro.get("Caracteristicas"))
         color = centry_color_name_from_row(product_row, split_model_color(key)[1]) if product_row is not None else ""
         if product_row is None:
             issues.append({"Mod-Col": key, "Problema": "No existe en Shopify; se completo Centry con BigQuery/ARTI y fotos S3"})
@@ -4676,6 +4978,12 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                     "Status": clean_value(product_row.get("Status")) if product_row is not None else "",
                     "Published": clean_value(product_row.get("Published")) if product_row is not None else "",
                     "Variant Position": position,
+                    # Lo que sabe el maestro y Shopify no. No son columnas
+                    # Matrixify: viajan solo entre esta funcion y el
+                    # constructor de Centry, que las lee por su nombre.
+                    "Composición": composition_master,
+                    "Cuidados": care_master,
+                    "Listado de características": features_master,
                 }
             )
 
@@ -8587,6 +8895,118 @@ def _product_set_files_with_fallback(shopify_config, product_gid, product_files)
                 )
             return "fileCreate CDN"
         raise ShopifyApiError(f"productSet staged fallo: {product_set_exc}; fallback sin archivos: {' | '.join(file_errors[:3])}")
+
+
+# =========================================================================
+# Mantenedor Fotos PNG
+# =========================================================================
+# SEPARADO A PROPOSITO del motor normal. La carga completa y la carga parcial
+# "Fotos 10 vistas" siguen buscando SOLO .jpg, con las mismas peticiones que
+# hoy: buscar las dos extensiones duplicaria los HEAD por producto y alargaria
+# cada carga del catalogo entero.
+#
+# Esto es una herramienta manual, para el caso en que la foto solo existe en
+# PNG (Hush Puppies). Nada de aqui se llama desde la carga normal: la unica
+# entrada es el boton del mantenedor.
+PNG_MAX_VISTAS = 10
+PNG_EXTENSIONES = ("png", "jpg", "jpeg", "webp")
+
+
+def png_image_candidates(mod_col, brand_config):
+    """Las 10 URLs .png de un modelo-color, en orden de vista.
+
+    Misma convencion de nombre que el motor JPG (`MODELO_COLOR_n`); lo unico
+    que cambia es la extension. No se reutiliza `image_candidates` a proposito:
+    esa es la del camino rapido y no debe aprender a buscar PNG.
+    """
+    from generate_columbia_matrixify import split_model_color
+
+    modelo, color = split_model_color(mod_col)
+    if not modelo or not color:
+        return []
+    base = clean_value((brand_config or {}).get("image_base_url"))
+    if not base:
+        return []
+    return [
+        f"{base}/{modelo}_{color}_{posicion}.png"
+        for posicion in range(1, PNG_MAX_VISTAS + 1)
+    ]
+
+
+def png_file_stem(url):
+    """Nombre del archivo sin extension: la huella para comparar fotos."""
+    nombre = Path(unquote(urlparse(clean_value(url)).path or "")).name
+    sin_extension = re.sub(rf"\.({'|'.join(PNG_EXTENSIONES)})$", "", nombre, flags=re.IGNORECASE)
+    return sin_extension.strip().lower()
+
+
+def png_already_uploaded(stem, existing_stems):
+    """True si el producto ya tiene esa foto.
+
+    Shopify puede haberle agregado un sufijo al subirla
+    (`duplicateResolutionMode: APPEND_UUID`), asi que se acepta el nombre
+    exacto o el nombre con un sufijo. Se compara entero para que la vista 1 no
+    se confunda con la 10.
+    """
+    if not stem:
+        return False
+    patron = re.compile(rf"^{re.escape(stem)}(_[0-9a-z]{{4,}})?$", re.IGNORECASE)
+    return any(patron.match(clean_value(existente)) for existente in existing_stems)
+
+
+def png_probe_views(mod_col, brand_config, existing_urls=(), timeout=4):
+    """Estado de cada vista PNG. NO toca Shopify: solo consulta el bucket.
+
+    Una fila por vista con Vista / URL / Estado / Detalle. Estados posibles:
+
+    - **Encontrada**: el PNG existe y el producto todavia no lo tiene.
+    - **Ya existente**: el PNG existe y el producto ya lo tiene cargado.
+    - **No existe**: no hay PNG en esa vista.
+    - **Error**: no se pudo comprobar (red, permisos).
+    """
+    from generate_columbia_matrixify import url_is_image
+
+    existentes = {png_file_stem(url) for url in (existing_urls or ()) if clean_value(url)}
+    vistos = set()
+    filas = []
+    for posicion, url in enumerate(png_image_candidates(mod_col, brand_config), start=1):
+        stem = png_file_stem(url)
+        if stem in vistos:
+            filas.append({"Vista": posicion, "URL": url, "Estado": "Duplicada", "Detalle": "Ya estaba en la lista"})
+            continue
+        vistos.add(stem)
+        try:
+            existe = url_is_image(url, timeout=timeout, brand_config=brand_config)
+        except Exception as exc:
+            filas.append({"Vista": posicion, "URL": url, "Estado": "Error", "Detalle": clean_value(exc)[:160]})
+            continue
+        if not existe:
+            filas.append({"Vista": posicion, "URL": url, "Estado": "No existe", "Detalle": "No hay PNG en esta vista"})
+        elif png_already_uploaded(stem, existentes):
+            filas.append({"Vista": posicion, "URL": url, "Estado": "Ya existente", "Detalle": "El producto ya tiene esta foto"})
+        else:
+            filas.append({"Vista": posicion, "URL": url, "Estado": "Encontrada", "Detalle": ""})
+    return filas
+
+
+def png_views_to_upload(filas):
+    """Las URLs a subir, en orden de vista y sin repetir."""
+    return [
+        clean_value(fila.get("URL"))
+        for fila in sorted(filas or [], key=lambda item: safe_int_value(item.get("Vista")))
+        if clean_value(fila.get("Estado")) == "Encontrada" and clean_value(fila.get("URL"))
+    ]
+
+
+def png_find_product(products, mod_col):
+    """El producto de Shopify con ese codigo modelo-color, o None."""
+    clave = clean_value(mod_col).upper()
+    if not clave:
+        return None
+    for product in products or []:
+        if clean_value(product.get("Mod-Col")).upper() == clave:
+            return product
+    return None
 
 
 def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existing_media_ids=None, image_mode="replace", alt_text=""):
@@ -18763,6 +19183,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Centry": "centry",
             "Tags": "tags",
             "Fotos 10 vistas": "photos",
+            "Mantenedor Fotos PNG": "photos_png",
             "Siblings": "siblings",
             "Titulo": "title",
             "Guías de talla": "size_guides",
@@ -18798,6 +19219,8 @@ api_version = "{DEFAULT_API_VERSION}"
         image_mode = "replace"
         only_missing_images = True
         body_mode = "from_input"
+        png_mod_col = ""
+        png_image_mode = "merge"
 
         if update_operation == "centry":
             update_file = st.file_uploader(
@@ -18818,7 +19241,24 @@ api_version = "{DEFAULT_API_VERSION}"
             else:
                 only_missing_images = st.checkbox("Solo productos sin foto en el catálogo", value=False)
             update_file = st.file_uploader("2. Opcional: subir lista con Mod-Col a corregir", type=["xlsx", "xls"], key="update_photos")
-            st.caption("Si no subes lista, revisa el catálogo completo. Siempre genera 10 URLs por producto.")
+            st.caption("Si no subes lista, revisa el catálogo completo. Siempre genera 10 URLs por producto, solo JPG.")
+        elif update_operation == "photos_png":
+            png_mod_col = st.text_input(
+                "2. Código Modelo Color",
+                key=f"png_mod_col_{brand_config['site_key']}",
+                placeholder="HP1234567-001",
+                help="Un solo código. La herramienta busca sus vistas PNG y las carga cuando tú lo pidas.",
+            ).strip().upper()
+            png_image_mode = st.radio(
+                "Comando de fotos",
+                ["merge", "replace"],
+                format_func=lambda v: "Agregar las PNG a las fotos actuales" if v == "merge" else "Reemplazar todas las fotos del producto",
+                key=f"png_mode_{brand_config['site_key']}",
+            )
+            st.caption(
+                "Busca **solo .png**, hasta 10 vistas, y solo cuando aprietas el botón. "
+                "La carga normal no cambia: sigue buscando solo JPG."
+            )
         elif update_operation == "siblings":
             st.caption("Recalcula siblings para todo el catálogo: todos los productos con el mismo código modelo quedan separados por comas.")
         elif update_operation == "title":
@@ -18910,6 +19350,8 @@ api_version = "{DEFAULT_API_VERSION}"
         update_ready = (
             update_file
             or update_operation in ("photos", "siblings", "technologies", "size_guides", "inventory_locations")
+            # El mantenedor PNG no necesita archivo: le basta el codigo escrito.
+            or (update_operation == "photos_png" and bool(png_mod_col))
             or body_mode == "fix_catalog"
             or (update_operation == "body" and update_source == "Respaldo Excel" and template_file)
             or (update_operation == "size_guides" and update_source == "Respaldo Excel" and template_file)
@@ -18923,6 +19365,8 @@ api_version = "{DEFAULT_API_VERSION}"
                 clean_value(image_mode),
                 clean_value(body_mode),
                 clean_value(only_missing_images),
+                clean_value(png_mod_col),
+                clean_value(png_image_mode),
                 uploaded_file_fingerprint(update_file),
                 uploaded_file_fingerprint(template_file),
             ]
@@ -18945,6 +19389,9 @@ api_version = "{DEFAULT_API_VERSION}"
                 "centry_maintainer_issues_df",
                 "centry_maintainer_codes",
                 "centry_maintainer_excel_bytes",
+                "png_maintainer_rows",
+                "png_maintainer_product",
+                "png_maintainer_result",
                 f"shopify_preview_excel_{brand_config['site_key']}_{update_operation}",
             ):
                 st.session_state.pop(state_key, None)
@@ -18971,6 +19418,11 @@ api_version = "{DEFAULT_API_VERSION}"
             update_ready = False
         if update_operation == "inventory_locations" and effective_update_source != "Shopify API":
             st.error("La activación de inventario en sucursales solo se puede ejecutar con Shopify API.")
+            update_ready = False
+        if update_operation == "photos_png" and effective_update_source != "Shopify API":
+            # Necesita leer las fotos actuales del producto y subir las nuevas:
+            # el respaldo Excel no sirve para ninguna de las dos cosas.
+            st.error("El Mantenedor Fotos PNG solo funciona con Shopify API.")
             update_ready = False
 
         if effective_update_source == "Shopify API" and update_ready:
@@ -19078,6 +19530,103 @@ api_version = "{DEFAULT_API_VERSION}"
                                     f"Faltan {missing_ean_count:,} EAN. "
                                     "Revisa la hoja Revision Centry para ver columnas EAN detectadas desde BigQuery."
                                 )
+                    return
+
+                if update_operation == "photos_png":
+                    # Mantenedor manual. Nada se busca ni se sube hasta que el
+                    # usuario aprieta el boton: la carga normal nunca entra
+                    # aqui, asi que su tiempo de proceso no cambia.
+                    if st.button("Buscar vistas PNG", type="primary"):
+                        for state_key in ("png_maintainer_rows", "png_maintainer_product", "png_maintainer_result"):
+                            st.session_state.pop(state_key, None)
+                        with st.spinner(f"Buscando hasta {PNG_MAX_VISTAS} vistas PNG de {png_mod_col}..."):
+                            from generate_columbia_matrixify import brand_image_config
+
+                            shopify_products = session_shopify_products(brand_config["site_key"], shopify_config)
+                            producto = png_find_product(shopify_products, png_mod_col)
+                            config_imagenes = brand_image_config(
+                                (producto or {}).get("Vendor") or brand_config.get("label"),
+                                brand_config,
+                            )
+                            fotos_actuales = _split_semicolon_values((producto or {}).get("Image Src"))
+                            filas_png = png_probe_views(png_mod_col, config_imagenes, fotos_actuales)
+                        st.session_state["png_maintainer_rows"] = filas_png
+                        st.session_state["png_maintainer_product"] = producto
+
+                    filas_png = st.session_state.get("png_maintainer_rows")
+                    producto = st.session_state.get("png_maintainer_product")
+                    if filas_png is not None:
+                        if producto is None:
+                            st.error(
+                                f"{png_mod_col} no existe en Shopify para {brand_config['site_label']}. "
+                                "Créalo antes de cargarle fotos."
+                            )
+                        vistas_df = pd.DataFrame(filas_png)
+                        encontradas = png_views_to_upload(filas_png)
+                        conteo = vistas_df["Estado"].value_counts().to_dict() if not vistas_df.empty else {}
+                        columnas = st.columns(4)
+                        columnas[0].metric("Encontradas", conteo.get("Encontrada", 0))
+                        columnas[1].metric("Ya existentes", conteo.get("Ya existente", 0))
+                        columnas[2].metric("Sin PNG", conteo.get("No existe", 0))
+                        columnas[3].metric("Errores", conteo.get("Error", 0))
+                        st.dataframe(vistas_df, use_container_width=True, height=380)
+
+                        vista_previa = [fila for fila in filas_png if clean_value(fila.get("Estado")) == "Encontrada"]
+                        if vista_previa:
+                            st.caption("Vista previa, en el orden en que se van a cargar:")
+                            for bloque in range(0, len(vista_previa), 5):
+                                for columna, fila in zip(st.columns(5), vista_previa[bloque:bloque + 5]):
+                                    columna.image(clean_value(fila.get("URL")), caption=f"Vista {fila.get('Vista')}")
+
+                        if producto is not None and encontradas:
+                            confirmar_png = st.checkbox(
+                                f"Confirmo cargar {len(encontradas)} vistas PNG en {png_mod_col}",
+                                key=f"png_confirm_{brand_config['site_key']}",
+                            )
+                            if confirmar_png and st.button("Cargar PNG en Shopify"):
+                                with st.spinner("Subiendo las vistas PNG..."):
+                                    try:
+                                        mensaje = _sync_product_photos_direct(
+                                            shopify_config,
+                                            clean_value(producto.get("Product ID")),
+                                            encontradas,
+                                            existing_media_ids=_split_semicolon_values(producto.get("Media IDs")),
+                                            image_mode=png_image_mode,
+                                            # Mismo alt text que usa la carga de
+                                            # fotos por API: el handle.
+                                            alt_text=clean_value(producto.get("Handle")) or png_mod_col,
+                                        )
+                                        estado_final, detalle = "Cargada", mensaje
+                                    except Exception as exc:
+                                        estado_final, detalle = "Error", clean_value(exc)[:300]
+                                resultado = [
+                                    {**fila, "Estado": estado_final, "Detalle": detalle}
+                                    if clean_value(fila.get("Estado")) == "Encontrada"
+                                    else fila
+                                    for fila in filas_png
+                                ]
+                                st.session_state["png_maintainer_result"] = resultado
+                                clear_shopify_products_cache(brand_config["site_key"])
+                        elif producto is not None:
+                            st.info("No hay ninguna vista PNG nueva para cargar en este producto.")
+
+                    resultado_png = st.session_state.get("png_maintainer_result")
+                    if resultado_png:
+                        resultado_df = pd.DataFrame(resultado_png)
+                        cargadas = safe_int_value((resultado_df["Estado"] == "Cargada").sum())
+                        if cargadas:
+                            st.success(f"{cargadas} vistas PNG cargadas en {png_mod_col}.")
+                        else:
+                            st.error(f"No se cargó ninguna vista PNG en {png_mod_col}.")
+                        st.dataframe(resultado_df, use_container_width=True, height=380)
+                        st.download_button(
+                            "Descargar resultado PNG",
+                            data=dataframe_to_excel_bytes({"Vistas PNG": resultado_df}),
+                            file_name=f"fotos_png_{png_mod_col or brand_config['site_key']}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"download_png_{brand_config['site_key']}",
+                            on_click=log_descarga, args=("Descargar resultado PNG", "main"),
+                        )
                     return
 
                 if update_operation == "inventory_locations":

@@ -1,153 +1,210 @@
 # Qué subir y por qué
 
-Paquete armado sobre `main` en `bbf59b1` (20/08/2026 13:35 UTC).
-Sube los archivos respetando las carpetas. **`app_matrixify.py` va al final.**
+Paquete armado sobre `main` en `cddaea5`. Sube los archivos respetando las
+carpetas. **`app_matrixify.py` va al final.**
 
 | Archivo | Estado |
 | --- | --- |
 | `app_matrixify.py` | modificado |
-| `ticket_system.py` | modificado |
-| `catalog_rules.py` | modificado |
-| `generate_columbia_matrixify.py` | modificado |
-| `engines/catalog_map.py` | modificado |
-| `scripts/test_bandeja_solicitudes.py` | modificado |
-| `scripts/test_bandeja_rendimiento.py` | nuevo |
-| `scripts/test_centry_ean.py` | nuevo |
-| `scripts/test_hush_nombre_descripcion_corta.py` | nuevo |
-| `scripts/test_fotos_png_masivo.py` | nuevo |
+| `scripts/test_centry_ean.py` | modificado |
+| `scripts/test_fotos_png.py` | modificado |
+| `scripts/test_fotos_png_masivo.py` | modificado |
+| `scripts/test_centry_enriquecimiento.py` | nuevo |
 
 ---
 
-## 1. Bandeja de solicitudes: se cerraba la sesión al pulsar una tarjeta
+## 1. Centry — causa raíz: el maestro se tiraba a la basura
 
-**Causa.** La tarjeta era un enlace de verdad:
-`<a href="?ticket=CAT-2026-000031" target="_self">`. Eso no es un rerun de
-Streamlit: el navegador **recarga la página entera**, Streamlit abre una sesión
-nueva, `st.session_state` queda vacío y `require_login()` devuelve al login,
-porque la autenticación vive solo en `session_state`.
+`build_centry_arti_lookup` construía el índice del maestro SIAL/BigQuery y se
+quedaba con **cuatro campos**: código de barras, talla, talla normalizada y
+color. El ARTI trae además `NombreModelo`, `DescripcionWeb`, `Caracteristicas`,
+`Material`, `Cuidado`, `TipoProducto`, `Categoria`, `SubCategoria`, `Genero`,
+`Temporada`, `Tecnologia`, `Coleccion`, `Ocasion` y `Deporte`. Todo eso se
+descartaba en el índice, así que el Centry salía con Nombre, Descripción,
+Género, Tipo, Materiales, Cuidados y Temporada vacíos **teniendo el dato a
+mano**.
 
-**Corrección.** Lo que se pulsa ahora es un `st.button` real, invisible y
-estirado sobre la tarjeta. Dispara un rerun normal y la sesión sigue viva. En
-el HTML de la tarjeta ya no queda ningún enlace, y hay una prueba que lo vigila.
+### Etapa única de enriquecimiento
 
-## 2. Bandeja: lentitud
+Se añadió `centry_enriquecer_fila`, que corre **una sola vez por variante, antes
+de que se lea ningún campo**. Rellena la fila con lo que sabe el maestro **solo
+donde Shopify no trae nada**: Shopify manda siempre, el maestro es el respaldo
+obligatorio.
 
-**Causa.** `GitHubTicketStore.list_tickets()` bajaba el índice del directorio y
-después **un archivo por solicitud, uno detrás de otro**. Con 31 solicitudes son
-32 viajes HTTP encadenados. La pantalla llama a `list_tickets` **dos veces** por
-rerun (una sin filtros para los KPIs, otra filtrada) más un `get_ticket` para el
-detalle: **unas 65 peticiones en serie por cada clic**, incluso al marcar una
-casilla.
+Lo escribe en los nombres de columna que los resolutores de Centry **ya leían**
+(`Type`, `Genero`, `Material`, `Cuidados`, `Temporada`…), así que
+`centry_gender`, `centry_material_from_row`, `centry_care_from_row` y compañía
+empiezan a encontrar el dato sin cambiar una línea. No es un parche por campo:
+es un solo punto.
 
-**Corrección.**
+### SKU y EAN
 
-- Las descargas van **en paralelo** (8 a la vez).
-- La lista se **guarda 25 segundos** en una caché de módulo, y la invalida
-  cualquier escritura (crear, actualizar o borrar). Vive en el módulo y no en la
-  instancia porque el servicio se construye de nuevo en cada rerun.
-- Botón **Actualizar** en la bandeja para forzar la lectura desde GitHub.
-- `get_ticket` **nunca** sale de la caché: de ahí viene el `_revision` con el que
-  se guarda, y servirlo viejo haría fallar cada guardado con "cambió en otra
-  sesión".
-- El control de duplicados al crear una solicitud **fuerza lectura fresca**, para
-  no reabrir el problema que se corrigió en agosto.
+**SKU.** Una variante sin `Variant SKU` se descartaba con un `continue` a secas:
+desaparecía del archivo y nadie se enteraba. Ahora se busca el `CODINT_MA` del
+maestro por Mod-Col + talla; si aparece, la variante entra; si no, se reporta con
+su talla en vez de desvanecerse.
 
-## 3. Bandeja: se veía descuadrada
+**EAN.** Sobre lo del paquete anterior (paralelo, índice que no se pisa, SKU
+normalizado, notación científica), ahora el maestro se consulta con el registro
+completo, así que el EAN también se rescata por Mod-Col + talla cuando el SKU no
+empareja. El orden es el pedido: input → Variant Barcode de Shopify → maestro por
+SKU → maestro por Mod-Col + talla. Lo que no aparece queda como **PENDIENTE**,
+nunca vacío en silencio.
 
-El marco de la tarjeta lo dibujaba el HTML y la casilla con la acción rápida se
-subían a su sitio con `margin-top:-44px` y selectores que adivinaban la
-estructura interna de Streamlit. En cuanto una tarjeta era más alta que otra, la
-fila se descuadraba.
+### El nombre ya no puede ser el código
 
-Ahora el marco lo dibuja un contenedor con clave (`tkcard-`), y el contenido, la
-zona pulsable y la franja de abajo son hijos suyos por flujo normal. Sin
-márgenes negativos. Medido en la app: las nueve tarjetas de la página quedan
-todas en 197 px de alto. Además, marcar una casilla ya muestra la barra de lote
-**al primer clic** (antes hacía falta un segundo clic).
+`title = first_non_empty(product_row.Title, key)` — el segundo argumento era el
+**código modelo-color**, y Centry lo publicaba tal cual como nombre del producto.
+`NombreModelo` estaba en el maestro y no se miraba. Ahora la cadena es Shopify →
+`custom.nombre_corto` (Hush Puppies) → `NombreModelo` del maestro; si ninguna
+fuente lo tiene, el nombre queda **vacío y avisado**, que es honesto y se puede
+corregir.
 
-## 4. Hush Puppies: `Nombre corto` y `Descripción corta`
+### Otros arreglos concretos
 
-Los dos metafields ya existían en el registro, pero lo que escribía la marca no
-llegaba a Shopify por tres motivos:
+- **Temporada**: salía `"Verano"` fijo para todo el catálogo. El maestro la trae
+  y ahora se usa.
+- **Hush Puppies**: `custom.nombre_corto` y `custom.descripcion_corta` entran a
+  la cadena de Nombre y Descripción, y viajan en la fila intermedia.
+- `Coleccion`, `Ocasion`, `Deporte`, `Categoria` y `SubCategoria` del maestro
+  también llegan.
 
-1. **Las columnas no estaban en el input de Hush Puppies.** El validador arma la
-   fila normalizada solo con `commercial_input_columns_for_brand`, así que una
-   columna que no esté ahí no se lee, no se valida y no se ve en la vista previa.
-2. **"Descripción corta" era alias de Características.** Estaba en la lista
-   `features` de `catalog_rules.py` y en `FEATURE_COLUMNS` del motor: la frase de
-   la PLP se publicaba como bullets del Body HTML y el metafield salía vacío.
-3. **Una columna vacía se rellenaba con la descripción larga.** Se resolvía con
-   `row_first_existing`, que devuelve el primer valor no vacío, y la lista
-   terminaba en `Descripcion`. La PLP mostraba el párrafo entero.
+### Validación
 
-**Corrección.** Las dos columnas entran al perfil de Hush Puppies, Hush Puppies
-Kids y Accesorios HP: aparecen en la plantilla, en la guía, en el diccionario,
-en la validación y en la vista previa. `Descripción corta` deja de ser alias de
-Características. Y cuando el input **trae** la columna manda ella, aunque venga
-vacía: un vacío no borra Shopify, pero tampoco se rellena con otra cosa. Las
-marcas que no envían estos campos siguen derivándolos como antes.
+`centry_validar_salida` revisa el **resultado**, no el proceso. Marca por
+producto (no por variante: 80 tallas sin EAN son un problema, no ochenta):
 
-Ruta completa comprobada: input → validación → vista previa → Matrixify →
-metafields por API directa.
+- SKU del producto / SKU de la variante vacíos
+- EAN vacío
+- Género, Categoría, Clase, Talla, Color, Marca vacíos
+- Nombre o Descripción vacíos, y el nombre que es el código modelo-color
+- Materiales / Composición / Cuidados sin dato en el listado
+- **Valores fuera de la plantilla**, usando `valores_permitidos` y `valor_valido`
+  de `engines/centry_map`, que ya leen la plantilla oficial. No se reescribió
+  ninguna lista.
 
-## 5. Centry: EAN que no llegaba
+Sale en pantalla con su severidad (Bloqueante / Advertencia) y como hoja
+**`Validacion Centry`** en el Excel, junto a `Centry`, `Carga Sial` y
+`Revision Centry`. La hoja de revisión trae además dos resúmenes nuevos: de dónde
+salió cada EAN y qué campos completó el maestro.
 
-Cuatro causas, ninguna visible en el resultado:
+## 2. Fotos PNG — mismo flujo que Fotos Normales
 
-1. **El maestro guardaba la fila equivocada.** `build_centry_arti_lookup` usaba
-   `setdefault`. Como el maestro trae varias filas por SKU (una por bodega), si
-   la primera venía sin `CodBarras` el SKU se quedaba sin EAN aunque otra fila
-   del mismo SKU sí lo tuviera.
-2. **El SKU no emparejaba por formato.** El maestro devuelve `12345` donde
-   Shopify tiene `0012345`, o `12345.0` cuando Excel lo leyó como número. La
-   comparación era por cadena exacta.
-3. **El EAN llegaba roto y pasaba el control.** Excel guarda el código como
-   número y lo devuelve como `7.79871E+12` o `7798712345678.0`. No es vacío, así
-   que se colaba hasta Centry convertido en basura.
-4. **Solo se miraban dos fuentes.** Era
-   `first_non_empty(maestro, Variant Barcode)`: el EAN que venía en el propio
-   input no se leía.
+**Por qué salían 310 "Sin PNG" y 0 encontradas.** La comprobación usaba
+`url_is_image`, que consulta el bucket por la URL de validación
+(`https://s3.amazonaws.com/<bucket>/...`). Ese host responde **403** a las
+consultas anónimas — comprobado, y responde 403 igual para `.jpg` que para
+`.png`. El código trataba ese 403 como "no existe". El mantenedor de fotos
+normales nunca lo notó porque **no valida**: `VALIDATE_IMAGES = False`, genera las
+URLs y deja que Shopify baje la imagen.
 
-**Corrección.** Un resolutor por SKU/variante que recorre las fuentes en el orden
-pedido —input → Variant Barcode de Shopify → maestro SIAL/BigQuery por SKU →
-maestro por Mod-Col + talla— y normaliza el código venga de donde venga. Si no
-aparece en ninguna, la variante queda marcada como **PENDIENTE** en la hoja
-*Revisión Centry*, con el detalle de qué SKUs son. Y se agrega una línea de
-resumen con **de dónde salió cada EAN**, que es lo que permite ver la causa: si
-todos dicen PENDIENTE el maestro no llegó; si el maestro resuelve pocos, el
-problema es el emparejamiento por SKU.
+**Correcciones:**
 
-## 6. Mantenedor Fotos PNG: proceso masivo por Excel
+1. `png_image_candidates` ahora llama a **`image_candidates`**, el mismo
+   generador del mantenedor normal, y solo le cambia la extensión. Host, carpeta
+   por marca, nomenclatura `MODELO_COLOR_n` y orden de vistas son los mismos por
+   construcción, no por copia. Hay una prueba que compara las dos listas.
+2. `png_comprobar_url` consulta **exactamente las URLs que usa la carga**:
+   `png_urls_a_probar` parte de `_image_url_candidates`, la misma lista que arma
+   `_download_image_bytes` justo antes de subir una foto, y añade el host
+   alterno del bucket. Prueba HEAD y GET por rango, y distingue tres respuestas:
+   existe, **404 = no existe** y **no se pudo comprobar**.
+3. **Todo en paralelo.** Las comprobaciones salían una detrás de otra: 31
+   modelos × 10 vistas × 2 extensiones son 620 viajes encadenados. El botón se
+   quedaba colgado sin dar señales — eso era el "hago clic y no funciona".
+   Medido con un bucket de 150 ms por consulta: **de 93 s a 6 s**.
+4. **Se busca `.png` y `.jpeg`** (y `.jpg` si lo marcas), con un selector en
+   pantalla. Cada vista prueba las extensiones en orden y gana la primera que
+   exista, así que un mismo modelo puede salir con la vista 1 en `.png` y la 2
+   en `.jpeg`. El nombre del archivo se compara sin extensión, así que una foto
+   que el producto ya tiene se reconoce aunque esté guardada en otro formato.
+5. **La descarga como prueba definitiva** (`_download_image_bytes`, que es
+   literalmente lo que hace la carga al subir) quedó **solo para el modo de un
+   código**, donde son 10 vistas. En una lista larga era una descarga completa
+   por vista: ahí estaba el cuelgue.
+6. Lo que aun así queda sin confirmar se ofrece igual para cargar: quien baja la
+   imagen de verdad es Shopify. Y si alguna URL no existe, `_sync_product_photos_direct`
+   **sube las que sí** y lo dice en el mensaje ("No se cargaron N de M URLs"),
+   en vez de perder el producto entero.
+7. Las vistas que el producto **ya tiene** ni se consultan: se resuelven por el
+   nombre del archivo y ahorran una petición cada una.
+8. El motor JPG **no se tocó**: sigue devolviendo solo `.jpg` y hay una prueba
+   que lo comprueba.
 
-En *Carga parcial → Mantenedor Fotos PNG* hay un selector nuevo: **Un código** o
-**Excel con varios códigos**. Con Excel, la herramienta lee la columna
-`Código Modelo Color` (acepta los alias habituales), quita vacíos y repetidos,
-valida el formato **antes de tocar la red**, y busca las vistas de todos los
-modelos con una barra de avance.
+**Flujo, en pocos pasos:** código o Excel → mismos links → hasta 10 vistas →
+`.png` / `.jpeg` → validación → preview → confirmación → inyección.
 
-Muestra por modelo: vistas encontradas, cargadas, ya existentes, sin PNG,
-duplicadas y errores; avisa de los códigos que no existen en Shopify; pide
-confirmación antes de cargar; y deja descargar un Excel con tres hojas —
-*Resumen por modelo*, *Detalle por vista* y *Descartados*.
+- **Bloques de 20 modelo-colores**, el mismo tamaño que la sincronización de la
+  carga parcial, tanto al buscar como al cargar. El resultado se guarda al cerrar
+  cada bloque.
+- **Antes de Shopify** se dice cuántos modelos y cuántas fotos se van a inyectar
+  y en qué modo, y hay que confirmar.
+- **Durante**, la barra muestra bloque actual, avance y el modelo en curso.
+- **Al terminar**, por modelo: encontradas, cargadas, ya existentes, sin PNG, sin
+  confirmar, duplicadas y errores; más un Excel con *Resumen por modelo*,
+  *Detalle por vista* y *Descartados*.
+- Un error de carga de Shopify ya no se confunde con un fallo de búsqueda.
 
-**Sigue siendo un mantenedor independiente.** Reutiliza tal cual las piezas del
-modo de un solo código, así que el tope de **10 vistas**, el orden, el alt text
-(el handle) y el control de fotos repetidas son los mismos. **No se agregó PNG
-al motor normal de imágenes**, que continúa buscando solo JPG/JPEG; hay una
-prueba que lo comprueba.
+
+## 3. Centry Rockford — el EAN vacío y las tallas que faltaban
+
+### Por qué el EAN salía vacío
+
+El EAN de Rockford **no viene en el ARTI**: viene del **Maestro de Productos**,
+que es otra tabla, y lo cruza `enrich_arti_barcodes_from_bigquery_table`. Ese
+cruce tenía tres fallos, y los tres terminaban en la misma columna en blanco:
+
+1. **Emparejaba por cadena exacta.** El ARTI trae el SKU como `5486079` y el
+   maestro puede tenerlo como `0005486079` (ceros a la izquierda) o `5486079.0`
+   (la columna leída como número). Ninguna de las tres formas coincide letra por
+   letra con las otras, así que no emparejaba **ninguna**.
+2. **El `WHERE` de BigQuery tenía el mismo problema.** Comparaba
+   `CAST(sku AS STRING) IN UNNEST(@skus)`. Si los dos lados no coincidían
+   exactamente, la consulta volvía **vacía** y no había nada que cruzar.
+3. **Cualquier error se tragaba entero.** Un `except Exception: return result, ""`
+   convertía un problema de permisos, una columna que no existe o una consulta
+   inválida en "sin EAN", sin una sola pista.
+
+**Corregido:** los SKU se normalizan con las mismas reglas en los dos lados —en
+Python con `_claves_sku_para_cruce` y en SQL con `_sql_sku_normalizado`, que
+quita decimales de relleno y ceros a la izquierda—, la consulta va **por tandas
+de 5.000** (una lista enorme en un solo parámetro hace que BigQuery la rechace),
+el código que llega se normaliza con `centry_normalizar_ean`, y **cualquier
+fallo se reporta** en vez de desaparecer.
+
+### Por qué faltaban tallas
+
+El filtro de marca corría **antes** de acotar a los códigos pedidos, y las filas
+que descartaba no dejaban rastro. Si el maestro escribe la marca distinto en
+algunas filas —`ROCKFORD PERU` en vez de `ROCKFORD`—, esas tallas se caían y el
+producto salía con menos de las que tiene, sin ningún aviso.
+
+**Corregido:** primero se acota a los códigos pedidos y **después** se filtra por
+marca, así se puede decir exactamente qué tallas de *esos* códigos se cayeron y
+con qué marca venían.
+
+### Lo que ahora se ve en `Revision Centry`
+
+- `Base maestra` — de dónde salió el ARTI y qué pasó con el cruce de EAN
+  (cuántos completó, cuántos siguen sin código, o el error exacto si falló).
+- Una línea **por modelo-color** con el recuento: `6 tallas (38, 39, 40, 41, 42,
+  43) · 4 con EAN en el maestro, 2 sin EAN`.
+- Las tallas descartadas por marca, con la marca que traían y las permitidas.
+- `Centry (resumen EAN)` — de qué fuente salió cada código.
+
+Con eso, si vuelve a salir una columna vacía, la hoja dice por qué en la primera
+línea en vez de haber que adivinar.
 
 ---
 
 ## Pruebas
 
-Batería completa: **32 archivos, todos OK**, salvo los dos que ya fallaban en
+Batería completa: **34 archivos**, todos OK salvo los dos que ya fallaban en
 `main` antes de este paquete (`test_auth_accesos.py` y
-`test_brand_commercial_input.py`; comprobado sobre `main` limpio).
-
-Nuevos:
+`test_brand_commercial_input.py`).
 
 ```bash
-python scripts/test_bandeja_rendimiento.py
+python scripts/test_centry_enriquecimiento.py
 ```
 
 ```bash
@@ -155,13 +212,14 @@ python scripts/test_centry_ean.py
 ```
 
 ```bash
-python scripts/test_hush_nombre_descripcion_corta.py
+python scripts/test_fotos_png.py
 ```
 
 ```bash
 python scripts/test_fotos_png_masivo.py
 ```
 
-Además se levantó la app en local con solicitudes de prueba: pulsar una tarjeta
-cambia el detalle **sin volver al login**, y el Mantenedor Fotos PNG abre sus dos
-modos sin excepciones.
+Además se levantó la app con `AppTest`: arranca sin excepciones y los dos
+mantenedores (Centry y Fotos PNG, en sus dos modos) abren correctamente.
+`test_fotos_png.py` pasó de 82 s a 0,03 s porque ya no sale a la red: se
+sustituye `png_comprobar_url`, que es la única puerta.

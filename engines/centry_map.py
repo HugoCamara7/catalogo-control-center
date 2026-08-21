@@ -687,8 +687,17 @@ def categoria_generica(familia, genero, ruta=None):
 # mapea la etiqueta a su columna y el valor se valida contra el diccionario de
 # esa columna: si no esta permitido, no se escribe y queda el aviso.
 ETIQUETAS_A_COLUMNA = {
+    # El forro tiene columna propia en calzado. En vestuario y accesorios no
+    # existe esa columna, asi que se aprovecha como composicion: el dato es
+    # real y antes se descartaba entero ("atributos no aplicados: Forro: ...").
     "forro": ("Material del forro - Calzado (Falabella GSC Perú)",
-              "Materiales del interior(MercadoLibre Perú)"),
+              "Materiales del interior(MercadoLibre Perú)",
+              "Composición - Ropa y accesorios (Falabella GSC Perú)",
+              "Composición (MercadoLibre Perú)"),
+    "forro interior": ("Material del forro - Calzado (Falabella GSC Perú)",
+                       "Composición - Ropa y accesorios (Falabella GSC Perú)"),
+    "interior": ("Material del forro - Calzado (Falabella GSC Perú)",
+                 "Composición - Ropa y accesorios (Falabella GSC Perú)"),
     "suela": ("Material de la suela - Calzado (Falabella GSC Perú)",
               "Material de la suela (MercadoLibre Perú)"),
     "capellada": ("Material principal - Calzado (Falabella GSC Perú)",
@@ -706,11 +715,40 @@ ETIQUETAS_A_COLUMNA = {
     "horma": ("Horma - Calzado (Falabella GSC Perú)",),
     "material": ("Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
                  "Material del accesorio - Ropa y accesorios (Falabella GSC Perú)",
+                 "Material principal - Calzado (Falabella GSC Perú)",
                  "Material principal (MercadoLibre Perú)"),
     "materialidad": ("Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+                     "Material del accesorio - Ropa y accesorios (Falabella GSC Perú)",
                      "Material principal (MercadoLibre Perú)"),
+    # "Material exterior" y sus variantes no estaban en la tabla: la etiqueta
+    # no tenia destino, asi que el valor se descartaba sin dejar ni el aviso.
+    "material exterior": ("Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+                          "Material del accesorio - Ropa y accesorios (Falabella GSC Perú)",
+                          "Material principal - Calzado (Falabella GSC Perú)",
+                          "Material principal (MercadoLibre Perú)"),
+    "exterior": ("Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+                 "Material del accesorio - Ropa y accesorios (Falabella GSC Perú)",
+                 "Material principal - Calzado (Falabella GSC Perú)",
+                 "Material principal (MercadoLibre Perú)"),
+    "material principal": ("Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+                           "Material del accesorio - Ropa y accesorios (Falabella GSC Perú)",
+                           "Material principal - Calzado (Falabella GSC Perú)",
+                           "Material principal (MercadoLibre Perú)"),
+    "materiales": ("Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+                   "Material del accesorio - Ropa y accesorios (Falabella GSC Perú)",
+                   "Material principal (MercadoLibre Perú)"),
+    "tela": ("Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+             "Material principal (MercadoLibre Perú)"),
+    "cuerpo": ("Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+               "Material principal (MercadoLibre Perú)"),
+    "relleno": ("Composición - Ropa y accesorios (Falabella GSC Perú)",
+                "Composición (MercadoLibre Perú)"),
     "composicion": ("Composición - Ropa y accesorios (Falabella GSC Perú)",
                     "Composición (MercadoLibre Perú)"),
+    "composicion textil": ("Composición - Ropa y accesorios (Falabella GSC Perú)",
+                           "Composición (MercadoLibre Perú)"),
+    "capellada exterior": ("Material principal - Calzado (Falabella GSC Perú)",
+                           "Material del calzado (MercadoLibre Perú)"),
     "tipo de cierre": ("Tipo de cierre - Ropa y accesorios (Falabella GSC Perú)",),
     "cierre": ("Tipo de cierre - Ropa y accesorios (Falabella GSC Perú)",),
     "largo de manga": ("Largo de mangas - Ropa y accesorios (Falabella GSC Perú)",
@@ -750,20 +788,41 @@ def atributos_desde_caracteristicas(texto, familia, ruta=None):
     """
     columnas_familia = set(columnas_de(familia, ruta)) if familia else set()
     aplicados = {}
-    ignorados = []
-    for etiqueta, valor in pares_de_caracteristicas(texto):
-        destinos = ETIQUETAS_A_COLUMNA.get(normalizar(etiqueta))
-        if not destinos:
-            continue
+    pares = [
+        (etiqueta, valor, ETIQUETAS_A_COLUMNA.get(normalizar(etiqueta)))
+        for etiqueta, valor in pares_de_caracteristicas(texto)
+    ]
+    pares = [(e, v, d) for e, v, d in pares if d]
+
+    def _colocar(etiqueta, valor, destinos, solo_primero):
+        """Escribe el valor en el primer destino libre de esta familia."""
+        candidatos = destinos[:1] if solo_primero else destinos
         colocado = False
-        for columna in destinos:
+        for columna in candidatos:
             if columna not in columnas_familia or aplicados.get(columna):
                 continue
             limpio, ok = valor_valido(columna, valor, ruta)
             if ok and limpio:
                 aplicados[columna] = limpio
                 colocado = True
-        if not colocado:
+        return colocado
+
+    # Primera pasada: solo el destino PRINCIPAL de cada etiqueta. Asi
+    # "Composición" se queda con la columna de composicion antes de que se la
+    # ocupe un "Forro", que la usa solo como respaldo.
+    colocados = set()
+    for indice, (etiqueta, valor, destinos) in enumerate(pares):
+        if _colocar(etiqueta, valor, destinos, solo_primero=True):
+            colocados.add(indice)
+    # Segunda pasada: los que no encontraron su columna principal en esta
+    # familia buscan un destino de respaldo. Antes esto no existia y el valor
+    # se perdia: un "Forro" en una casaca no tiene columna de forro, pero si
+    # tiene columna de composicion.
+    ignorados = []
+    for indice, (etiqueta, valor, destinos) in enumerate(pares):
+        if indice in colocados:
+            continue
+        if not _colocar(etiqueta, valor, destinos, solo_primero=False):
             ignorados.append(f"{etiqueta}: {valor}")
     return aplicados, ignorados
 

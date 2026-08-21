@@ -99,6 +99,24 @@ SIAL_TAIL_ROCKFORD = [
     "13",
 ]
 
+# Patagonia sale de Rockford.pe a su propia tienda. La cola es la de Rockford
+# -que es donde se cargaba hasta ahora- mas su propia columna de Product Id,
+# que es la que hace que el ID vuelva al sitio correcto.
+#
+# OJO: "6" y "13" son los codigos de bodega SIAL heredados de Rockford. Si
+# Patagonia opera en otra bodega hay que cambiar `sial_active_columns`; el
+# resto del sitio funciona igual.
+SIAL_TAIL_PATAGONIA = [
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Sku - Supermall.pe",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "Porduct Id - Patagonia.pe",
+    "6",
+    "13",
+]
+
 SIAL_TAIL_VANS = [
     "Nuevo o Actualizar (Columbia.pe)",
     "Sku - Supermall.pe",
@@ -151,6 +169,18 @@ SITE_CONFIGS = {
         "output_filename": "matrixify_hush_puppies_generado.xlsx",
         "sial_tail_columns": SIAL_TAIL_HUSH,
         "sial_active_columns": ["2", "13"],
+    },
+    "patagonia": {
+        "label": "Patagonia",
+        "site_label": "Patagonia.pe",
+        "allowed_arti_brands": ["PATAGONIA"],
+        "vendor": "patagoniape",
+        "legacy_vendors": ["patagoniape", "patagonia"],
+        "store_domain": "Patagonia.pe",
+        "image_folder": "PATAGONIA",
+        "output_filename": "matrixify_patagonia_generado.xlsx",
+        "sial_tail_columns": SIAL_TAIL_PATAGONIA,
+        "sial_active_columns": ["6", "13"],
     },
     "vans": {
         "label": "Vans",

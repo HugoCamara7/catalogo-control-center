@@ -1772,7 +1772,11 @@ COMMERCIAL_BRAND_INPUT_PROFILES = {
         "technology_example": "Tecnologia comercial si aplica",
     },
     "PATAGONIA": {
-        "site_profile": "Rockford.pe",
+        # Patagonia ya tiene tienda propia. Sigue apareciendo en Rockford.pe
+        # porque ese sitio la mantiene en `allowed_arti_brands`, asi que la
+        # plantilla trae las DOS columnas de publicacion y se puede decidir
+        # sitio por sitio durante la transicion.
+        "site_profile": "Patagonia.pe",
         "extra_columns": ["Tecnologia", "Pais de fabricacion"],
         "technology_type": "single_line_text_field",
         "technology_example": "Tecnologia comercial si aplica",
@@ -4501,12 +4505,48 @@ def centry_color_name_from_row(row, color_code=""):
     return color
 
 
-def centry_gender_marketplace(gender):
-    if gender == "Masculino":
-        return "Hombre"
-    if gender == "Femenino":
-        return "Mujer"
-    return centry_value(gender)
+# Lo que acepta Falabella en "Genero de vestuario" y "Genero - Calzado". Son
+# los OCHO valores de la plantilla, ni uno mas: cualquier otra cosa la rechaza.
+# Ojo: no existe "Niña"; la plantilla usa "Niño" para todo el publico infantil
+# y reserva "Bebé niña" para bebes.
+CENTRY_GENERO_MARKETPLACE = {
+    "masculino": "Hombre",
+    "hombre": "Hombre",
+    "femenino": "Mujer",
+    "mujer": "Mujer",
+    "ninos": "Niño",
+    "nino": "Niño",
+    "ninas": "Niño",
+    "nina": "Niño",
+    "kids": "Niño",
+    "infantil": "Niño",
+    "bebe": "Unisex bebé",
+    "bebe nino": "Bebé niño",
+    "bebe nina": "Bebé niña",
+    "unisex": "Unisex adulto",
+    "unisex adulto": "Unisex adulto",
+    "unisex nino": "Unisex niño",
+    "unisex bebe": "Unisex bebé",
+}
+
+
+def centry_gender_marketplace(gender, edad=""):
+    """El genero tal y como lo escribe la plantilla, o vacio.
+
+    Antes solo traducia Masculino y Femenino y devolvia el resto tal cual, asi
+    que "Niños" y "Unisex" -que son la mitad del catalogo de Columbia- llegaban
+    a Centry como valores que la plantilla no acepta. Cada uno de esos era
+    despues un hallazgo bloqueante en la validacion.
+
+    Si no hay equivalencia se devuelve vacio: mejor un campo sin llenar que un
+    valor que Centry va a rechazar.
+    """
+    clave = fold_accents(centry_value(gender)).lower().strip()
+    valor = CENTRY_GENERO_MARKETPLACE.get(clave, "")
+    # Un unisex infantil no es un unisex adulto.
+    if valor == "Unisex adulto" and fold_accents(centry_value(edad)).lower().startswith("nino"):
+        valor = "Unisex niño"
+    return valor
 
 
 def centry_product_type_lower(product_type):
@@ -4535,13 +4575,52 @@ def centry_apparel_top_bottom_column(product_type):
     return "Tipo de camisa/blusa/polo/camiseta - Ropa y accesorios (Falabella GSC Perú)"
 
 
+# Columnas de material y composicion de cada familia. Sirven para dos cosas:
+# recuperar el valor que salio de los pares del Body y no pisarlo despues.
+CENTRY_COLUMNAS_MATERIAL = (
+    "Material de vestuario - Ropa y accesorios (Falabella GSC Perú)",
+    "Material del accesorio - Ropa y accesorios (Falabella GSC Perú)",
+    "Material principal - Calzado (Falabella GSC Perú)",
+    "Material principal (MercadoLibre Perú)",
+)
+CENTRY_COLUMNAS_COMPOSICION = (
+    "Composición - Ropa y accesorios (Falabella GSC Perú)",
+    "Composición (MercadoLibre Perú)",
+)
+
+
+def centry_poner_si_vacio(centry_row, columna, valor):
+    """Escribe solo si la columna esta vacia.
+
+    Las funciones de marketplace corrian DESPUES de volcar los atributos que
+    se sacaron del Body, y los sobrescribian con `material`, que muchas veces
+    venia vacio. El motor encontraba "Forro: 100% Poliester", lo colocaba, y
+    tres lineas mas abajo lo borraba. Ese era el "lo encuentra pero no lo usa".
+    """
+    valor = clean_value(valor)
+    if not valor:
+        return
+    if clean_value(centry_row.get(columna)):
+        return
+    centry_row[columna] = valor
+
+
+def centry_material_de_atributos(atributos, columnas):
+    """El primer valor no vacio de esas columnas, ya validado por plantilla."""
+    for columna in columnas:
+        valor = clean_value((atributos or {}).get(columna))
+        if valor:
+            return valor
+    return ""
+
+
 def centry_apply_accessory_fields(centry_row, product_type, gender, material):
     text = centry_product_type_lower(product_type)
-    centry_row["Género de vestuario - Ropa y accesorios (Falabella GSC Perú)"] = centry_gender_marketplace(gender)
-    centry_row["Material del accesorio - Ropa y accesorios (Falabella GSC Perú)"] = material
-    centry_row["Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC Perú)"] = first_non_empty(material, "Otros")
-    centry_row["Composición - Ropa y accesorios (Falabella GSC Perú)"] = first_non_empty(material, "-")
-    centry_row["Composición (MercadoLibre Perú)"] = first_non_empty(material, "")
+    centry_row["Género de vestuario - Ropa y accesorios (Falabella GSC Perú)"] = centry_gender_marketplace(gender, centry_age_from_gender(gender))
+    centry_poner_si_vacio(centry_row, "Material del accesorio - Ropa y accesorios (Falabella GSC Perú)", material)
+    centry_poner_si_vacio(centry_row, "Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC Perú)", first_non_empty(material, "Otros"))
+    centry_poner_si_vacio(centry_row, "Composición - Ropa y accesorios (Falabella GSC Perú)", first_non_empty(material, "-"))
+    centry_poner_si_vacio(centry_row, "Composición (MercadoLibre Perú)", material)
     if any(word in text for word in ("gorro", "jockey", "sombrero", "beanie")):
         centry_row["Tipo de ropa para la cabeza - Ropa y accesorios (Falabella GSC Perú)"] = product_type
         centry_row["Tipo de sombrero (MercadoLibre Perú)"] = product_type
@@ -4553,7 +4632,7 @@ def centry_apply_accessory_fields(centry_row, product_type, gender, material):
         centry_row["Uso de la cartera/mochila/bolsa - Uso de la cartera mochila bolsa - Ropa y accesorios (Falabella GSC Perú)"] = "Urbano"
     if "maleta" in text:
         centry_row["Tipo de maleta - Ropa y accesorios (Falabella GSC Perú)"] = product_type
-        centry_row["Material de la maleta - Material de la maleta - Ropa y accesorios (Falabella GSC Perú)"] = first_non_empty(material, "")
+        centry_poner_si_vacio(centry_row, "Material de la maleta - Material de la maleta - Ropa y accesorios (Falabella GSC Perú)", material)
     centry_row["Contenido del paquete - Package content - Almacenamiento (Falabella GSC Perú)"] = "1"
     centry_row["Con monedero (MercadoLibre Perú)"] = "No"
     centry_row["Con cierre ajustable (MercadoLibre Perú)"] = "No"
@@ -4562,10 +4641,10 @@ def centry_apply_accessory_fields(centry_row, product_type, gender, material):
 
 
 def centry_apply_apparel_fields(centry_row, product_type, gender, material, composition):
-    centry_row["Género de vestuario - Ropa y accesorios (Falabella GSC Perú)"] = centry_gender_marketplace(gender)
-    centry_row["Material de vestuario - Ropa y accesorios (Falabella GSC Perú)"] = material
-    centry_row["Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC Perú)"] = first_non_empty(material, "Otros")
-    centry_row["Composición - Ropa y accesorios (Falabella GSC Perú)"] = first_non_empty(composition, material, "-")
+    centry_row["Género de vestuario - Ropa y accesorios (Falabella GSC Perú)"] = centry_gender_marketplace(gender, centry_age_from_gender(gender))
+    centry_poner_si_vacio(centry_row, "Material de vestuario - Ropa y accesorios (Falabella GSC Perú)", material)
+    centry_poner_si_vacio(centry_row, "Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC Perú)", first_non_empty(material, "Otros"))
+    centry_poner_si_vacio(centry_row, "Composición - Ropa y accesorios (Falabella GSC Perú)", first_non_empty(composition, material, "-"))
     target_column = centry_apparel_top_bottom_column(product_type)
     centry_row[target_column] = product_type
     centry_row["Tipo de prenda para la parte superior - Ropa y accesorios (Falabella GSC Perú)"] = product_type
@@ -4761,6 +4840,39 @@ def centry_valores_no_permitidos(fila, restringidas=None):
     return problemas
 
 
+def centry_depurar_valores_de_plantilla(centry_row, restringidas=None):
+    """Deja SOLO lo que la plantilla Centry acepta. Devuelve los descartes.
+
+    Esta es la puerta unica de salida. El motor rellenaba las columnas de
+    marketplace con el valor crudo del catalogo -el tipo de prenda tal cual, el
+    genero tal cual- y muchas de esas columnas tienen diccionario cerrado. El
+    archivo salia con valores que Centry rechaza, y la validacion los contaba
+    uno por uno: 850 hallazgos bloqueantes que en realidad eran UN problema
+    escrito 850 veces.
+
+    Ahora, si el valor no esta en el diccionario de su columna, no se escribe.
+    Y si esta pero con otra ortografia, se guarda como lo escribe la plantilla
+    ("niño" -> "Niño"), que es lo que Centry espera leer.
+
+    Las columnas sin diccionario son texto libre y no se tocan.
+    """
+    if restringidas is None:
+        restringidas = centry_columnas_con_diccionario()
+    descartes = []
+    for columna, permitidos in restringidas.items():
+        valor = clean_value(centry_row.get(columna))
+        if not valor:
+            continue
+        limpio, ok = _centry_motor("valor_valido", (valor, True), columna, valor)
+        if ok:
+            if limpio and limpio != valor:
+                centry_row[columna] = limpio
+            continue
+        centry_row[columna] = ""
+        descartes.append((columna, valor, permitidos))
+    return descartes
+
+
 def centry_validar_salida(centry_df, revisar_valores=True):
     """Revisa el Centry generado. Devuelve un DataFrame de hallazgos.
 
@@ -4816,6 +4928,29 @@ def centry_validar_salida(centry_df, revisar_valores=True):
     return pd.DataFrame(hallazgos, columns=columnas)
 
 
+def centry_estado_por_producto(centry_df, validacion_df):
+    """{mod_col: 'Bloqueado' | 'Con observaciones' | 'Listo'}.
+
+    Un producto esta bloqueado si tiene algun hallazgo bloqueante; si solo
+    tiene advertencias, se puede cargar y se revisa despues.
+    """
+    estados = {}
+    if centry_df is not None and not centry_df.empty:
+        for mod_col in centry_df.get("SKU del producto", pd.Series(dtype=object)).map(clean_value):
+            if mod_col:
+                estados[mod_col] = "Listo"
+    if validacion_df is not None and not validacion_df.empty:
+        for fila in validacion_df.to_dict("records"):
+            mod_col = clean_value(fila.get("Mod-Col"))
+            if not mod_col:
+                continue
+            if clean_value(fila.get("Severidad")) == "Bloqueante":
+                estados[mod_col] = "Bloqueado"
+            elif estados.get(mod_col) != "Bloqueado":
+                estados[mod_col] = "Con observaciones"
+    return estados
+
+
 def centry_resumen_validacion(validacion_df):
     """Una linea por campo con problema, para la hoja de revision."""
     if validacion_df is None or validacion_df.empty:
@@ -4864,6 +4999,10 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
     # el ARTI esta llegando o no, en vez de mirar columnas vacias sin saber por
     # que lo estan.
     enriquecidos = {}
+    # Diccionarios de la plantilla: se leen UNA vez, no por fila.
+    columnas_restringidas = centry_columnas_con_diccionario()
+    # Valores que la plantilla no acepta, agrupados por columna y valor.
+    descartes_plantilla = {}
     # Variantes que no se pudieron incluir por falta de SKU. Se reportan: antes
     # se caian del archivo sin que nadie se enterara.
     sin_sku = []
@@ -4944,12 +5083,13 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         if not barcode:
             pendientes_ean.append({"mod_col": current_mod_col, "sku": variant_sku})
         tal_value = first_non_empty(arti_item.get("raw_size"), raw_size)
-        # El SKU de la variante es el SKU, no el EAN. El EAN tiene su propia
-        # columna. Antes esto era `barcode or variant_sku`: mientras BigQuery no
-        # devolvia codigos de barra daba igual, pero al empezar a llegar el EAN
-        # se metia en la columna del SKU y el codigo interno desaparecia.
-        # El barcode queda solo como respaldo para la variante que no traiga SKU.
-        variant_centry_sku = variant_sku or barcode
+        # El SKU de la variante es el SKU y NADA MAS. El EAN tiene su propia
+        # columna. Esto llego a ser `barcode or variant_sku` y luego
+        # `variant_sku or barcode`: en ambos casos un codigo de barras podia
+        # acabar publicado como SKU, y buscar el EAN de ese SKU inventado no
+        # devolvia nada. Arriba ya se rescata el SKU del maestro y, si no
+        # aparece, la variante no entra: aqui nunca puede estar vacio.
+        variant_centry_sku = variant_sku
         # La clase la manda el maestro; si no la trae, el diccionario de
         # tipos; y solo al final la heuristica de texto.
         class_name = (
@@ -5024,6 +5164,21 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             avisos_centry.append(
                 "atributos no aplicados: " + " | ".join(ignorados_centry[:5])
             )
+        # Si los resolutores no encontraron material ni composicion, se usa lo
+        # que salio de los pares del Body ("Material exterior: 100% Nylon").
+        # Es el mismo dato y ya paso por el diccionario de la plantilla; sin
+        # esto se quedaba solo en las columnas de marketplace y no llegaba al
+        # listado de caracteristicas, que es donde se revisa.
+        material = first_non_empty(
+            material, centry_material_de_atributos(atributos_centry, CENTRY_COLUMNAS_MATERIAL)
+        )
+        composition = first_non_empty(
+            composition, centry_material_de_atributos(atributos_centry, CENTRY_COLUMNAS_COMPOSICION)
+        )
+        characteristics = centry_labeled_characteristics(
+            row, vendor, product_type, color, gender, material, composition,
+            footwear_cane, care,
+        )
         advertencia_centry = " | ".join(a for a in avisos_centry if a)
 
         centry_row = {column: "" for column in CENTRY_COLUMNS}
@@ -5090,13 +5245,13 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         for index, image in enumerate(images, start=1):
             centry_row["URL imagen principal" if index == 1 else f"URL imagen {index}"] = image
         if is_footwear:
-            centry_row["Género - Calzado (Falabella GSC Perú)"] = centry_gender_marketplace(gender)
+            centry_row["Género - Calzado (Falabella GSC Perú)"] = centry_gender_marketplace(gender, centry_age_from_gender(gender))
             centry_row["Tipo - Calzado (Falabella GSC Perú)"] = product_type or "Zapatillas"
             centry_row["Horma - Calzado (Falabella GSC Perú)"] = "Normal"
-            centry_row["Material principal - Calzado (Falabella GSC Perú)"] = material
+            centry_poner_si_vacio(centry_row, "Material principal - Calzado (Falabella GSC Perú)", material)
             centry_row["Tipo de calzado (MercadoLibre Perú)"] = product_type or "Zapatillas"
             centry_row["Edad (MercadoLibre Perú)"] = age
-            centry_row["Material del calzado (MercadoLibre Perú)"] = first_non_empty(composition, material)
+            centry_poner_si_vacio(centry_row, "Material del calzado (MercadoLibre Perú)", first_non_empty(composition, material))
             centry_row["Tipo de taco (MercadoLibre Perú)"] = footwear_cane
         elif centry_is_accessory_type(product_type, category_record):
             centry_apply_accessory_fields(centry_row, product_type, gender, material)
@@ -5111,6 +5266,12 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             })
         if not images:
             issues.append({"Mod-Col": current_mod_col, "Problema": "Sin imagen principal"})
+        # Puerta unica: lo que la plantilla no acepta no se escribe. Se cuenta
+        # una vez por columna, no una vez por variante.
+        for columna, valor, _permitidos in centry_depurar_valores_de_plantilla(
+            centry_row, columnas_restringidas
+        ):
+            descartes_plantilla.setdefault((columna, valor), set()).add(current_mod_col)
         rows.append(centry_row)
     # Las claves que el constructor escribe con mojibake ("Listado de
     # características") se reparan ANTES de armar el DataFrame: si no, no
@@ -5156,6 +5317,23 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                         f"ni en Shopify ni en el maestro (tallas: {', '.join(tallas[:10])})"
                     ),
                 })
+        if descartes_plantilla:
+            # Agrupado por columna: "el tipo X no esta en el diccionario" es un
+            # problema del diccionario, no de cada uno de los 40 productos.
+            por_columna = {}
+            for (columna, valor), modelos in descartes_plantilla.items():
+                por_columna.setdefault(columna, []).append((valor, len(modelos)))
+            for columna, valores in sorted(por_columna.items()):
+                valores.sort(key=lambda par: -par[1])
+                detalle = ", ".join(f"{valor} ({cantidad})" for valor, cantidad in valores[:6])
+                permitidos = ", ".join(columnas_restringidas.get(columna, [])[:8])
+                issues.append({
+                    "Mod-Col": "Centry (plantilla)",
+                    "Problema": (
+                        f"{columna}: se dejo vacia porque estos valores no estan en la "
+                        f"plantilla -> {detalle}. Permitidos: {permitidos}"
+                    ),
+                })
         if enriquecidos:
             detalle_enriquecido = " | ".join(
                 f"{campo}: {cantidad:,}"
@@ -5185,16 +5363,8 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                     ),
                 }
             )
-        sin_precio = centry_df[centry_df["Precio"].map(centry_price_is_missing)].copy()
-        if not sin_precio.empty:
-            claves_precio = sin_precio["SKU del producto"].map(clean_value)
-            for mod_col, grupo in sin_precio.groupby(claves_precio, sort=False):
-                issues.append(
-                    {
-                        "Mod-Col": mod_col or "Centry",
-                        "Problema": f"Sin precio (0 o vacio) en {len(grupo):,} variantes",
-                    }
-                )
+        # El precio NO es obligatorio para Centry: no bloquea, no es error y no
+        # genera advertencias. Se quito el aviso por producto que salia aqui.
     # Validacion del resultado. Va aqui y no en la pantalla para que cualquier
     # camino que genere Centry (mantenedor, carga completa) la traiga puesta.
     validacion_df = centry_validar_salida(centry_df)
@@ -5367,62 +5537,77 @@ def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"
     total_products = df.get("SKU del producto", pd.Series(dtype=object)).map(clean_value).nunique()
     no_barcode = safe_int_value((df.get("Código de barra variante (EAN/UPC/ISBN)", pd.Series(dtype=object)).map(clean_value) == "").sum())
     no_image = safe_int_value((df.get("URL imagen principal", pd.Series(dtype=object)).map(clean_value) == "").sum())
-    no_price = safe_int_value(df.get("Precio", pd.Series(dtype=object)).map(centry_price_is_missing).sum())
-    # Lo meramente informativo no cuenta como observacion: "se eliminaron N
-    # filas con talla 0" o el diagnostico de EAN no son problemas del producto,
-    # y hacian que el panel marcara 443 errores en rojo cuando no habia ninguno.
-    issue_count = 0
-    if issues_df is not None and not issues_df.empty and "Problema" in issues_df.columns:
-        informativos = ("se eliminaron", "se descartaron", "columnas ean detectadas",
-                        "diagnostico", "completado desde bigquery")
-        issue_count = safe_int_value(sum(
-            1 for texto in issues_df["Problema"].map(clean_value)
-            if not any(marca in texto.lower() for marca in informativos)
-        ))
-    elif issues_df is not None and not issues_df.empty:
-        issue_count = len(issues_df)
+    # El precio no es obligatorio en Centry: ya no se cuenta ni se muestra.
+    validacion_df = centry_df.attrs.get("validacion")
+    estados = centry_estado_por_producto(centry_df, validacion_df)
+    listos = sum(1 for v in estados.values() if v == "Listo")
+    con_obs = sum(1 for v in estados.values() if v == "Con observaciones")
+    bloqueados = sum(1 for v in estados.values() if v == "Bloqueado")
     render_html(
         f"""
         <div class="combo-card">
             <div class="combo-card-head">
                 <div>
                     <div class="combo-title"><span class="combo-title-icon">C</span> {title}</div>
-                    <p>Revision rapida de completitud antes de enviar el archivo al canal.</p>
+                    <p>Estado de los {format_kpi_number(total_products)} modelo-colores antes de enviar el archivo.</p>
                 </div>
                 <div class="combo-chip">{format_kpi_number(total_rows)} filas</div>
             </div>
             <div class="commercial-summary-grid">
-                <div class="commercial-summary-tile ok"><span>Productos</span><b>&#10003;</b><strong>{format_kpi_number(total_products)}</strong></div>
+                <div class="commercial-summary-tile ok"><span>Listos</span><b>&#10003;</b><strong>{format_kpi_number(listos)}</strong></div>
+                <div class="commercial-summary-tile {'ok' if con_obs == 0 else 'warn'}"><span>Con observaciones</span><b>{'&#10003;' if con_obs == 0 else '!'}</b><strong>{format_kpi_number(con_obs)}</strong></div>
+                <div class="commercial-summary-tile {'ok' if bloqueados == 0 else 'bad'}"><span>Bloqueados</span><b>{'&#10003;' if bloqueados == 0 else '&#10005;'}</b><strong>{format_kpi_number(bloqueados)}</strong></div>
                 <div class="commercial-summary-tile {'ok' if no_barcode == 0 else 'bad'}"><span>EAN faltante</span><b>{'&#10003;' if no_barcode == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_barcode)}</strong></div>
                 <div class="commercial-summary-tile {'ok' if no_image == 0 else 'bad'}"><span>Imagen faltante</span><b>{'&#10003;' if no_image == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_image)}</strong></div>
-                <div class="commercial-summary-tile {'ok' if no_price == 0 else 'bad'}"><span>Precio faltante</span><b>{'&#10003;' if no_price == 0 else '&#10005;'}</b><strong>{format_kpi_number(no_price)}</strong></div>
-                <div class="commercial-summary-tile {'ok' if issue_count == 0 else 'warn'}"><span>Advertencias</span><b>{'&#10003;' if issue_count == 0 else '!'}</b><strong>{format_kpi_number(issue_count)}</strong></div>
             </div>
         </div>
         """
     )
-    st.dataframe(df.head(120), use_container_width=True, height=360)
-    # Validacion del resultado: campo a campo y con su severidad. Es lo que
-    # dice QUE corregir; los avisos de abajo cuentan que paso al generarlo.
-    validacion_df = centry_df.attrs.get("validacion")
+
+    bloqueantes_df = pd.DataFrame()
+    advertencias_df = pd.DataFrame()
     if validacion_df is not None and not validacion_df.empty:
-        bloqueantes = safe_int_value((validacion_df["Severidad"] == "Bloqueante").sum())
-        advertencias = safe_int_value((validacion_df["Severidad"] == "Advertencia").sum())
-        if bloqueantes:
-            st.error(
-                f"Validacion Centry: {bloqueantes:,} hallazgos bloqueantes y "
-                f"{advertencias:,} advertencias. Revisa antes de enviar el archivo."
-            )
-        else:
-            st.warning(f"Validacion Centry: {advertencias:,} advertencias, ninguna bloqueante.")
-        st.dataframe(validacion_df, use_container_width=True, height=320, hide_index=True)
+        bloqueantes_df = validacion_df[validacion_df["Severidad"] == "Bloqueante"]
+        advertencias_df = validacion_df[validacion_df["Severidad"] != "Bloqueante"]
+
+    # Solo lo que impide cargar sale a la vista. Lo demas se guarda plegado:
+    # antes salian mil advertencias una debajo de otra y no se leia nada.
+    if not bloqueantes_df.empty:
+        st.error(
+            f"{len(bloqueantes_df):,} hallazgos bloqueantes en {bloqueados:,} modelo-colores. "
+            "Hay que corregirlos antes de enviar el archivo."
+        )
+        st.dataframe(
+            bloqueantes_df[["Mod-Col", "Campo", "Problema", "Variantes"]],
+            use_container_width=True, height=300, hide_index=True,
+        )
     elif validacion_df is not None:
-        st.success("Validacion Centry: sin campos vacios ni valores fuera de la plantilla.")
+        st.success("Sin hallazgos bloqueantes: el archivo se puede enviar.")
+
+    if not advertencias_df.empty:
+        with st.expander(f"{len(advertencias_df):,} observaciones no bloqueantes", expanded=False):
+            por_campo = (
+                advertencias_df.groupby("Campo")
+                .agg(**{
+                    "Modelo-colores": ("Mod-Col", "nunique"),
+                    "Variantes": ("Variantes", "sum"),
+                })
+                .reset_index()
+                .sort_values("Modelo-colores", ascending=False)
+            )
+            st.dataframe(por_campo, use_container_width=True, hide_index=True)
+            st.caption("Detalle completo:")
+            st.dataframe(
+                advertencias_df[["Mod-Col", "Campo", "Problema"]],
+                use_container_width=True, height=260, hide_index=True,
+            )
+
+    with st.expander(f"Vista previa del archivo ({format_kpi_number(total_rows)} filas)", expanded=False):
+        st.dataframe(df.head(120), use_container_width=True, height=360)
+
     if issues_df is not None and not issues_df.empty:
-        informativas = len(issues_df) - issue_count
-        detalle = f" ({informativas:,} informativas)" if informativas > 0 else ""
-        with st.expander(f"Detalle del proceso ({issue_count:,} observaciones{detalle})", expanded=False):
-            st.dataframe(issues_df, use_container_width=True)
+        with st.expander(f"Cómo se generó ({len(issues_df):,} notas del proceso)", expanded=False):
+            st.dataframe(issues_df, use_container_width=True, hide_index=True)
 
 
 def model_codes_from_text(value):

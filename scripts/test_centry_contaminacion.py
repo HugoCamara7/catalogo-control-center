@@ -207,9 +207,15 @@ class TestClaseCalzadoPorDiccionario(unittest.TestCase):
 
 
 class TestPrecioCero(unittest.TestCase):
-    """Un precio 0 es un precio que falta."""
+    """El precio NO es obligatorio en Centry.
 
-    def test_cero_y_vacio_faltan(self):
+    El helper sigue existiendo porque lo usan otras pantallas, pero el Centry
+    dejo de tratarlo como problema: no bloquea, no es error y no genera
+    advertencias. Con 2.297 variantes sin precio, ese aviso tapaba los
+    hallazgos que de verdad hay que mirar.
+    """
+
+    def test_el_helper_sigue_distinguiendo_un_precio_vacio(self):
         for valor in ("0", "0.0", "", "0,00"):
             with self.subTest(valor=valor):
                 self.assertTrue(app.centry_price_is_missing(valor))
@@ -219,10 +225,16 @@ class TestPrecioCero(unittest.TestCase):
             with self.subTest(valor=valor):
                 self.assertFalse(app.centry_price_is_missing(valor))
 
-    def test_queda_como_observacion(self):
+    def test_ya_no_genera_ninguna_observacion(self):
         _, avisos = centry()
         texto = " ".join(avisos["Problema"].astype(str))
-        self.assertIn("Sin precio", texto)
+        self.assertNotIn("Sin precio", texto)
+
+    def test_tampoco_es_un_hallazgo_de_la_validacion(self):
+        centry_df, _ = centry()
+        validacion = centry_df.attrs.get("validacion")
+        campos = set(validacion["Campo"]) if validacion is not None and not validacion.empty else set()
+        self.assertNotIn("Precio", campos)
 
 
 class TestTipoDesdeElMaestro(unittest.TestCase):

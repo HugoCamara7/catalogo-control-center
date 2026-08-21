@@ -208,6 +208,68 @@ class TestDetalleDelLote(unittest.TestCase):
         self.assertEqual(detalle[2]["Código Modelo Color"], "HP1-002")
 
 
+class TestMismasUrlsQueFotosNormales(unittest.TestCase):
+    """El PNG usa el generador del mantenedor normal y solo cambia extension."""
+
+    def test_misma_ruta_misma_carpeta_mismo_orden(self):
+        from generate_columbia_matrixify import image_candidates, brand_image_config, get_brand_config
+
+        config = brand_image_config("Hush Puppies", get_brand_config("hush_puppies"))
+        jpg = image_candidates("HP1234567-001", config)
+        png = app.png_image_candidates("HP1234567-001", config)
+        self.assertEqual([url[:-4] for url in jpg], [url[:-4] for url in png])
+        self.assertTrue(all(url.endswith(".png") for url in png))
+
+    def test_el_generador_jpg_sigue_dando_jpg(self):
+        from generate_columbia_matrixify import image_candidates, brand_image_config, get_brand_config
+
+        config = brand_image_config("Hush Puppies", get_brand_config("hush_puppies"))
+        self.assertTrue(all(url.endswith(".jpg") for url in image_candidates("HP1234567-001", config)))
+
+
+class TestBloques(unittest.TestCase):
+    """Se procesa por bloques, igual que la carga parcial."""
+
+    def test_parte_en_bloques_del_tamano_pedido(self):
+        bloques = app.png_bloques(list(range(45)), tamano=20)
+        self.assertEqual([len(b) for b in bloques], [20, 20, 5])
+
+    def test_no_pierde_ni_repite_ningun_codigo(self):
+        codigos = [f"HP{i}-A" for i in range(37)]
+        plano = [c for bloque in app.png_bloques(codigos, 10) for c in bloque]
+        self.assertEqual(plano, codigos)
+
+    def test_una_lista_vacia_no_da_bloques(self):
+        self.assertEqual(app.png_bloques([]), [])
+
+    def test_usa_el_tamano_por_defecto(self):
+        self.assertEqual(len(app.png_bloques(list(range(41)))[0]), app.PNG_MODELOS_POR_BLOQUE)
+
+
+class TestPlanDeCarga(unittest.TestCase):
+    """Lo que se confirma antes de tocar Shopify: modelos y fotos."""
+
+    def test_cuenta_modelos_y_fotos(self):
+        resultados = [
+            {"mod_col": "A-1", "producto": {"Product ID": "1"}, "filas": [
+                {"Vista": 1, "URL": "u1", "Estado": app.PNG_ESTADO_ENCONTRADA},
+                {"Vista": 2, "URL": "u2", "Estado": app.PNG_ESTADO_SIN_CONFIRMAR},
+                {"Vista": 3, "URL": "u3", "Estado": app.PNG_ESTADO_YA_EXISTE},
+            ]},
+            {"mod_col": "B-1", "producto": {"Product ID": "2"}, "filas": [
+                {"Vista": 1, "URL": "v1", "Estado": app.PNG_ESTADO_NO_EXISTE},
+            ]},
+            {"mod_col": "C-1", "producto": None, "filas": [
+                {"Vista": 1, "URL": "w1", "Estado": app.PNG_ESTADO_ENCONTRADA},
+            ]},
+        ]
+        modelos, fotos = app.png_plan_de_carga(resultados)
+        self.assertEqual((modelos, fotos), (1, 2))
+
+    def test_sin_nada_que_cargar(self):
+        self.assertEqual(app.png_plan_de_carga([]), (0, 0))
+
+
 class TestNoContaminaElMotorNormal(unittest.TestCase):
     """El motor de imagenes de siempre sigue siendo solo JPG."""
 

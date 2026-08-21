@@ -234,5 +234,105 @@ class TestResolverEan(unittest.TestCase):
         self.assertEqual(ean, "7798788888888")
 
 
+class TestCruceConElMaestroDeProductos(unittest.TestCase):
+    """El EAN vive en el Maestro de Productos, no en el ARTI.
+
+    Regresion del caso Rockford: el ARTI traia los SKU como "5486079" y el
+    maestro como "0005486079". El cruce comparaba la cadena tal cual, asi que
+    no emparejaba ninguno y la columna salia vacia sin ningun aviso.
+    """
+
+    def test_las_claves_cubren_las_tres_formas_del_sku(self):
+        self.assertIn("5486079", app._claves_sku_para_cruce("5486079"))
+        self.assertIn("5486079", app._claves_sku_para_cruce("0005486079"))
+        self.assertIn("5486079", app._claves_sku_para_cruce("5486079.0"))
+        self.assertIn("5486079", app._claves_sku_para_cruce(" 5486079 "))
+
+    def test_el_sku_con_ceros_empareja_con_el_que_no_los_tiene(self):
+        del_arti = app._claves_sku_para_cruce("5486079")
+        del_maestro = app._claves_sku_para_cruce("0005486079")
+        self.assertTrue(set(del_arti) & set(del_maestro))
+
+    def test_un_sku_con_letras_no_se_rompe(self):
+        self.assertEqual(app._claves_sku_para_cruce("RK-5486079"), ["RK5486079"])
+
+    def test_el_sql_normaliza_el_sku_del_maestro(self):
+        """El WHERE tambien tiene que normalizar, o la consulta vuelve vacia."""
+        expresion = app._sql_sku_normalizado("CODINT_MA")
+        self.assertIn("LTRIM", expresion)
+        self.assertIn("REGEXP_REPLACE", expresion)
+        self.assertIn("CODINT_MA", expresion)
+
+    def test_sin_bigquery_devuelve_el_arti_intacto(self):
+        arti = pd.DataFrame([{"CODINT_MA": "5486079", "CodBarras": "7798700000001"}])
+        salida, fuente = app.enrich_arti_barcodes_from_bigquery_table(arti, {})
+        self.assertEqual(list(salida["CodBarras"]), ["7798700000001"])
+        self.assertEqual(fuente, "")
+
+    def test_normaliza_el_ean_que_ya_venia(self):
+        """Un EAN en notacion cientifica no es vacio pero tampoco sirve."""
+        arti = pd.DataFrame([{"CODINT_MA": "5486079", "CodBarras": "7.798700000001E+12"}])
+        salida, _ = app.enrich_arti_barcodes_from_bigquery_table(arti, {})
+        self.assertEqual(list(salida["CodBarras"]), ["7798700000001"])
+
+    def test_un_fallo_del_maestro_se_cuenta_en_vez_de_tragarse(self):
+        """Antes cualquier error devolvia "" y el EAN salia vacio sin motivo."""
+        import inspect
+
+        fuente = inspect.getsource(app.enrich_arti_barcodes_from_bigquery_table)
+        self.assertIn("no se pudo completar desde el maestro", fuente)
+        # El `except` ya no puede devolver una fuente vacia.
+        self.assertIn("except Exception as exc:", fuente)
+
+
+class TestTallasDelMaestro(unittest.TestCase):
+    """Las tallas que se caen tienen que dejar rastro."""
+
+    def setUp(self):
+        import generate_columbia_matrixify as g
+
+        self.cfg = g.get_brand_config("rockford")
+        self.cod = "RK110021743-JUB"
+
+    def _arti(self, marcas):
+        return pd.DataFrame([
+            {"CODINT_MA": str(5486074 + i), "COD MOD COL": self.cod,
+             "TALNUM_MA": talla, "MARCA_MA": marca, "CodBarras": "",
+             "Precio": "199.90", "NombreModelo": "Zapato Vestir Hombre",
+             "TipoProducto": "Zapatos", "Genero": "MASCULINO", "ColorNombre": "Beige"}
+            for i, (talla, marca) in enumerate(zip(["38", "39", "40", "41"], marcas))
+        ])
+
+    def test_dice_cuantas_tallas_quedaron(self):
+        _, issues = app.build_centry_matrixify_from_master(
+            [self.cod], pd.DataFrame(), self._arti(["ROCKFORD"] * 4), self.cfg
+        )
+        textos = " ".join(str(v) for v in issues["Problema"])
+        self.assertIn("4 tallas", textos)
+        self.assertIn("38, 39, 40, 41", textos)
+
+    def test_avisa_de_las_tallas_que_tira_el_filtro_de_marca(self):
+        """Regresion: una fila con la marca escrita distinto desaparecia y el
+        producto salia con una talla menos sin que nadie lo supiera."""
+        marcas = ["ROCKFORD", "ROCKFORD", "ROCKFORD PERU", "ROCKFORD"]
+        _, issues = app.build_centry_matrixify_from_master(
+            [self.cod], pd.DataFrame(), self._arti(marcas), self.cfg
+        )
+        textos = " ".join(str(v) for v in issues["Problema"])
+        self.assertIn("descartadas por marca", textos)
+        self.assertIn("ROCKFORD PERU", textos)
+        self.assertIn("3 tallas", textos)
+
+    def test_cuenta_cuantas_traen_ean(self):
+        arti = self._arti(["ROCKFORD"] * 4)
+        arti.loc[0, "CodBarras"] = "7798700000001"
+        _, issues = app.build_centry_matrixify_from_master(
+            [self.cod], pd.DataFrame(), arti, self.cfg
+        )
+        textos = " ".join(str(v) for v in issues["Problema"])
+        self.assertIn("1 con EAN en el maestro", textos)
+        self.assertIn("3 sin EAN", textos)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -306,6 +306,106 @@ class TestVariasMarcas(unittest.TestCase):
                         self.assertTrue(ok, f"{columna} = {valor}")
 
 
+class TestRedireccionDeTipos(unittest.TestCase):
+    """Nuestros tipos, redirigidos al nombre que usa la plantilla Centry.
+
+    No son tipos nuevos: son los mismos, con el nombre que espera cada canal.
+    Casi todo son diferencias de escritura o de numero ("Suecos"/"Zuecos",
+    "Cortavientos"/"Cortaviento") y unos pocos el sinonimo del marketplace
+    ("Casacas" -> "Chaquetas").
+
+    Antes, esas columnas salian VACIAS: el catalogo escribia "Zapatillas", la
+    plantilla pedia "Zapatillas urbanas" y la puerta de plantilla lo borraba.
+    """
+
+    CALZADO = "Tipo - Calzado (Falabella GSC Perú)"
+    CALZADO_ML = "Tipo de calzado (MercadoLibre Perú)"
+    CHAQUETA = "Tipo de chaqueta/chaleco - Ropa y accesorios (Falabella GSC Perú)"
+
+    def test_el_calzado_generico_encuentra_su_valor(self):
+        for tipo, esperado in [("Zapatillas", "Zapatillas urbanas"),
+                               ("Zapatos", "Zapatos casuales"),
+                               ("Slip Ons", "Zapatillas urbanas"),
+                               ("Suecos", "Zuecos")]:
+            with self.subTest(tipo=tipo):
+                aplicados, _ = cm.tipo_para_columnas(tipo, "calzado")
+                self.assertEqual(aplicados.get(self.CALZADO), esperado)
+
+    def test_tambien_para_mercadolibre(self):
+        aplicados, _ = cm.tipo_para_columnas("Zapatos", "calzado")
+        self.assertEqual(aplicados.get(self.CALZADO_ML), "Zapatos casuales")
+
+    def test_el_vestuario_redirige_a_su_sinonimo(self):
+        for tipo, esperado in [("Casacas", "Chaquetas"),
+                               ("Cortavientos", "Cortaviento"),
+                               ("Polares", "Polar")]:
+            with self.subTest(tipo=tipo):
+                aplicados, _ = cm.tipo_para_columnas(tipo, "superior")
+                self.assertEqual(aplicados.get(self.CHAQUETA), esperado)
+
+    def test_lo_que_ya_coincidia_no_cambia(self):
+        aplicados, _ = cm.tipo_para_columnas("Botines", "calzado")
+        self.assertEqual(aplicados.get(self.CALZADO), "Botines")
+
+    def test_la_equivalencia_nunca_cuela_un_valor_invalido(self):
+        """El diccionario de la columna sigue mandando: si el destino no esta
+        permitido ahi, no se escribe nada."""
+        for tipo in ["Zapatillas", "Zapatos", "Casacas", "Cortavientos", "Suecos"]:
+            aplicados, _ = cm.tipo_para_columnas(tipo, "calzado")
+            for columna, valor in aplicados.items():
+                with self.subTest(tipo=tipo, columna=columna):
+                    _limpio, ok = cm.valor_valido(columna, valor)
+                    self.assertTrue(ok, f"{columna} = {valor}")
+
+    def test_un_tipo_que_no_existe_no_inventa_nada(self):
+        aplicados, _ = cm.tipo_para_columnas("Cosa Rara", "calzado")
+        self.assertEqual(aplicados, {})
+
+
+class TestElTipoLlegaAlArchivo(unittest.TestCase):
+    """De punta a punta: la columna de tipo sale llena en el Centry."""
+
+    def test_calzado_de_rockford(self):
+        centry, _ = centry_de("rockford", "Rockford", "RK1-ABC", "Zapatos",
+                              "Masculino", ["40", "41"])
+        fila_centry = centry.iloc[0]
+        self.assertEqual(
+            fila_centry["Tipo - Calzado (Falabella GSC Perú)"], "Zapatos casuales"
+        )
+
+    def test_calzado_de_vans(self):
+        centry, _ = centry_de("vans", "Vans", "VN1-BLK", "Zapatillas",
+                              "Masculino", ["8", "9"])
+        self.assertEqual(
+            centry.iloc[0]["Tipo - Calzado (Falabella GSC Perú)"], "Zapatillas urbanas"
+        )
+
+    def test_vestuario_de_columbia(self):
+        centry, _ = centry_de("columbia", "Columbia", "CO1-XYZ", "Casacas",
+                              "Masculino", ["S", "M"])
+        fila_centry = centry.iloc[0]
+        self.assertEqual(
+            fila_centry["Tipo de prenda para la parte superior - Ropa y accesorios (Falabella GSC Perú)"],
+            "Casacas",
+        )
+        self.assertEqual(
+            fila_centry["Tipo de chaqueta/chaleco - Ropa y accesorios (Falabella GSC Perú)"],
+            "Chaquetas",
+        )
+
+    def test_ya_no_quedan_avisos_de_plantilla_por_el_tipo(self):
+        """Regresion: cada producto dejaba un aviso "se dejo vacia"."""
+        for caso in [("rockford", "Rockford", "RK1-ABC", "Zapatos", "Masculino", ["40"]),
+                     ("vans", "Vans", "VN1-BLK", "Zapatillas", "Masculino", ["8"]),
+                     ("columbia", "Columbia", "CO1-XYZ", "Casacas", "Masculino", ["S"])]:
+            with self.subTest(marca=caso[1]):
+                _centry, issues = centry_de(*caso)
+                avisos = [r for r in issues.to_dict("records")
+                          if "plantilla" in str(r.get("Mod-Col"))
+                          and "Tipo" in str(r.get("Problema"))]
+                self.assertEqual(avisos, [])
+
+
 class TestResumenDeLaPantalla(unittest.TestCase):
     """Listos | Con observaciones | Bloqueados."""
 

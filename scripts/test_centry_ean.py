@@ -334,5 +334,108 @@ class TestTallasDelMaestro(unittest.TestCase):
         self.assertIn("3 sin EAN", textos)
 
 
+class TestClaveDeTalla(unittest.TestCase):
+    """La talla tiene que ser comparable entre Shopify y el maestro.
+
+    El maestro la guarda como numero y Shopify como texto, asi que la misma
+    talla llega escrita de varias formas. Comparando la cadena tal cual no
+    cruzaban y la variante se quedaba sin EAN teniendolo el maestro.
+    """
+
+    def test_las_formas_de_la_misma_talla_dan_la_misma_clave(self):
+        for valor in ("38", "038", "38.0", " 38 ", "38,0"):
+            with self.subTest(valor=valor):
+                self.assertEqual(app.centry_clave_talla(valor), "38")
+
+    def test_conserva_las_medias_tallas(self):
+        self.assertEqual(app.centry_clave_talla("38.5"), "38.5")
+        self.assertEqual(app.centry_clave_talla("038.50"), "38.5")
+
+    def test_no_toca_las_tallas_de_letra(self):
+        self.assertEqual(app.centry_clave_talla("M"), "M")
+        self.assertEqual(app.centry_clave_talla("O/S"), "O/S")
+
+    def test_vacio_no_revienta(self):
+        self.assertEqual(app.centry_clave_talla(""), "")
+        self.assertEqual(app.centry_clave_talla(None), "")
+
+
+class TestElEanLlegaAunqueLasClavesNoCoincidan(unittest.TestCase):
+    """Regresion Rockford: el EAN estaba en el maestro y no llegaba.
+
+    Cada caso tiene el codigo en el maestro; lo unico que cambia es como esta
+    escrita la clave con la que hay que cruzarlo.
+    """
+
+    COD = "RK110021743-5ZV"
+
+    def _maestro(self, skus, tallas):
+        return pd.DataFrame([{
+            "CODINT_MA": sku, "COD MOD COL": self.COD, "TALNUM_MA": talla,
+            "MARCA_MA": "ROCKFORD", "CodBarras": f"779870548607{i}",
+            "ColorNombre": "Negro",
+        } for i, (sku, talla) in enumerate(zip(skus, tallas))])
+
+    def _fila(self, sku, talla):
+        return pd.Series({"Variant SKU": sku, "Option1 Value": talla, "Variant Barcode": ""})
+
+    def test_el_maestro_trae_el_sku_con_ceros_a_la_izquierda(self):
+        lookup = app.build_centry_arti_lookup(self._maestro(["0005486079"], ["38"]))
+        ean, _via = app.centry_resolver_ean(
+            self._fila("5486079", "38"), {}, lookup, self.COD, "38")
+        self.assertEqual(ean, "7798705486070")
+
+    def test_el_maestro_trae_la_talla_con_cero(self):
+        lookup = app.build_centry_arti_lookup(self._maestro(["OTRO"], ["038"]))
+        ean, via = app.centry_resolver_ean(
+            self._fila("NO-ESTA", "38"), {}, lookup, self.COD, "38")
+        self.assertEqual(ean, "7798705486070")
+        self.assertIn("Mod-Col", via)
+
+    def test_el_maestro_trae_la_talla_como_decimal(self):
+        lookup = app.build_centry_arti_lookup(self._maestro(["OTRO"], ["38.0"]))
+        ean, _via = app.centry_resolver_ean(
+            self._fila("NO-ESTA", "38"), {}, lookup, self.COD, "38")
+        self.assertEqual(ean, "7798705486070")
+
+    def test_el_sku_de_shopify_era_el_ean(self):
+        """Cargas antiguas publicaron el codigo de barras como SKU. Buscar "su"
+        EAN por ese SKU no devuelve nada porque el SKU ya ERA el EAN."""
+        lookup = app.build_centry_arti_lookup(self._maestro(["5486079"], ["38"]))
+        ean, via = app.centry_resolver_ean(
+            self._fila("7798705486070", "99"), {}, lookup, "OTRO-COD", "99")
+        self.assertEqual(ean, "7798705486070")
+        self.assertIn("SKU de Shopify", via)
+
+    def test_si_de_verdad_no_esta_sigue_pendiente(self):
+        """No se inventa: lo que no existe queda marcado."""
+        lookup = app.build_centry_arti_lookup(self._maestro(["ZZ1"], ["99"]))
+        ean, via = app.centry_resolver_ean(
+            self._fila("5486079", "38"), {}, lookup, self.COD, "38")
+        self.assertEqual(ean, "")
+        self.assertEqual(via, app.CENTRY_EAN_SIN_RESOLVER)
+
+
+class TestElOrigenDelEanEsFiable(unittest.TestCase):
+    """El resumen tiene que decir por donde cruzo de verdad."""
+
+    COD = "RK1-ABC"
+
+    def test_distingue_el_cruce_por_sku_del_de_mod_col(self):
+        maestro = pd.DataFrame([{
+            "CODINT_MA": "111", "COD MOD COL": self.COD, "TALNUM_MA": "38",
+            "MARCA_MA": "ROCKFORD", "CodBarras": "7798700000001", "ColorNombre": "Negro",
+        }])
+        lookup = app.build_centry_arti_lookup(maestro)
+
+        fila_sku = pd.Series({"Variant SKU": "111", "Option1 Value": "38"})
+        item = app.centry_arti_item_for_row(fila_sku, lookup, self.COD, "38")
+        self.assertEqual(item.get("__via"), "SKU")
+
+        fila_mod = pd.Series({"Variant SKU": "NO-ESTA", "Option1 Value": "38"})
+        item = app.centry_arti_item_for_row(fila_mod, lookup, self.COD, "38")
+        self.assertEqual(item.get("__via"), "Mod-Col + talla")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1,163 +1,164 @@
 # Qué subir y por qué
 
-Paquete sobre `main` en `f5399b0`. **Es todo lo que te falta subir**: el ajuste
-de Centry contra la plantilla y la activación de Patagonia.pe.
+Paquete sobre `main` en `7675a4d`. **Es todo lo que te falta subir.**
 
-Sube cada archivo a su carpeta. **`app_matrixify.py` va al final.**
+**`app_matrixify.py` va al final.**
 
 | Archivo | Carpeta en el repo | Estado |
 | --- | --- | --- |
-| `generate_columbia_matrixify.py` | raíz | modificado |
+| `engines/tallas_calzado.py` | `engines` | **nuevo** |
 | `engines/centry_map.py` | `engines` | modificado |
-| `.streamlit/secrets.example.toml` | `.streamlit` | modificado |
-| `scripts/test_centry_contaminacion.py` | `scripts` | modificado |
-| `scripts/test_centry_plantilla.py` | `scripts` | **nuevo** |
-| `scripts/test_sitio_patagonia.py` | `scripts` | **nuevo** |
-| `app_matrixify.py` | raíz | modificado — **este al final** |
+| `generate_columbia_matrixify.py` | raíz | modificado |
+| `scripts/test_tallas_calzado_pe.py` | `scripts` | **nuevo** |
+| `scripts/test_centry_plantilla.py` | `scripts` | modificado |
+| `scripts/test_centry_ean.py` | `scripts` | modificado |
+| `app_matrixify.py` | raíz | modificado — **al final** |
 
-> Truco: arrastra la carpeta `engines` o `scripts` entera y GitHub respeta la
-> ruta sola, sin tener que navegar.
+> Arrastra las carpetas `engines` y `scripts` enteras y GitHub respeta la ruta.
 
 ---
 
-# PARTE 1 — Patagonia.pe como sitio propio
+# PARTE 1 — Rockford: los EAN que estaban en la BD y no llegaban
 
-Hasta ahora Patagonia era una **marca dentro de Rockford.pe**. Ahora es un
-**sitio**, y la activación alcanza a todo porque casi todo se lee de una sola
-entrada en `SITE_CONFIGS`.
+Cuando el código **sí está en el maestro** y la columna sale vacía, el problema
+no es el dato: es **cómo cruzan las claves**. Encontré tres desajustes más.
 
-**Qué queda activo:**
+**1. La talla se escribe distinto en cada lado.** El maestro la guarda como
+número y Shopify como texto, así que la misma talla llega como `38`, `038`,
+`38.0` o ` 38 `. Se comparaba la cadena tal cual, así que no cruzaban y la
+variante se quedaba sin EAN. Ahora hay una **clave de talla** que normaliza las
+dos partes: las cuatro formas caen en la misma entrada.
 
-- Aparece en el **selector de sitio**: `Columbia.pe · Rockford.pe ·
-  HushPuppies.pe · Patagonia.pe · Vans.pe`.
-- **Fotos** en su carpeta del bucket (`/PATAGONIA`), tanto el motor JPG normal
-  como el mantenedor PNG/JPEG.
-- **Input comercial** con su columna `PUBLICAR_PATAGONIA_PE`, sus clases
-  (Vestuario, Accesorios) y su plantilla.
-- **Centry** completo: probado de punta a punta con 0 hallazgos bloqueantes,
-  SKU y EAN por variante, género `Hombre` y guía `HombrevestuarioPatagonia`.
-- **Carga SIAL** con su propia columna `Porduct Id - Patagonia.pe`.
-- **Solicitudes**, KPIs y logo: ya funcionaban por marca, ahora también por
-  sitio.
+**2. El SKU de Shopify a veces ES el código de barras.** Hubo cargas antiguas
+que publicaron el EAN en la columna del SKU (era el viejo
+`barcode or variant_sku`). Buscar "su" EAN por ese SKU no devuelve nada… porque
+ese SKU ya era el EAN. Ahora hay un índice por código de barras y, si el SKU de
+Shopify aparece ahí, se usa como EAN y se reporta así.
 
-**Transición.** Patagonia sigue en `allowed_arti_brands` de Rockford.pe **a
-propósito**: la plantilla trae las **dos** columnas de publicación
-(`PUBLICAR_ROCKFORD_PE` y `PUBLICAR_PATAGONIA_PE`) y puedes decidir producto por
-producto mientras dura el cambio. Cuando quieras cortar del todo, se quita
-`"PATAGONIA"` de la lista de Rockford y listo.
+**3. El resumen mentía sobre el origen.** Todo salía etiquetado como
+`Maestro (SKU)` aunque hubiera cruzado por Mod-Col + talla, así que el
+diagnóstico apuntaba al sitio equivocado. Ahora dice por dónde cruzó de verdad.
 
-**Tipos de prenda.** Un sitio nuevo no está en el diccionario por sitio, así que
-cada tipo sale con su **nombre canónico** (`Casacas`, `Polares`...). Es el
-comportamiento correcto: no se inventa una nomenclatura que Patagonia no ha
-declarado. Si más adelante quiere nombres propios, se agregan a
-`engines/garment_types.py`.
+## Y si aun así falta alguno, la hoja te dice por qué
 
-## ⚠️ Lo que tienes que hacer tú
+`Revision Centry` trae ahora dos líneas nuevas que separan lo accionable:
 
-**1. Las credenciales de Shopify.** En los *Secrets* de Streamlit, añade:
+> `12 variantes: la fila SI está en el maestro pero llegó sin código de barras.
+> Ejemplos -> 5486079 (mod-col RK110021743-5ZV, talla 38); …`
 
-```toml
-[shopify_sites.patagonia]
-shop_domain = "patagoniape.myshopify.com"
-client_id = "..."
-client_secret = "..."
-admin_access_token = "..."
-api_version = "2026-04"
+> `4 variantes: el SKU no aparece en el maestro (ni por Mod-Col + talla).
+> Ejemplos -> …`
+
+> `El maestro trae 12.480 SKU y 9.310 pares Mod-Col+talla. Ejemplo de SKU del
+> maestro: 5486079, 5486080, …`
+
+Con eso se sabe **de un vistazo** si hay que arreglar el maestro (falta el
+código) o el emparejamiento (la fila está pero no cruza). Antes un "EAN
+faltante" no decía nada.
+
+## Comprobado
+
+Seis escenarios en los que el maestro **sí** tiene el código, cambiando solo
+cómo está escrita la clave:
+
+| Escenario | Antes | Ahora |
+| --- | --- | --- |
+| Todo coincide | 3/3 | 3/3 |
+| Maestro con ceros a la izquierda | 3/3 | 3/3 |
+| Talla `038` en el maestro | 0/3 | **3/3** |
+| Talla `38.0` en el maestro | 0/3 | **3/3** |
+| El SKU de Shopify era el EAN | 0/3 | **3/3** |
+| No está en el maestro | 0/3 | 0/3 + motivo explicado |
+
+---
+
+# PARTE 2 — Tipos redirigidos al diccionario de Centry
+
+El catálogo dice `Zapatillas`; la plantilla pide `Zapatillas urbanas`. Como no
+coincidían, la columna salía **vacía** y con un aviso por producto, en todo el
+calzado y en buena parte del vestuario.
+
+**No hay tipos nuevos**: los mismos, redirigidos en `EQUIVALENCIAS_TIPO`
+(`engines/centry_map.py`).
+
+| Nuestro tipo | Falabella | MercadoLibre |
+| --- | --- | --- |
+| Zapatillas | Zapatillas urbanas | Zapatilla |
+| Zapatos | Zapatos casuales | Zapatos casuales |
+| Slip Ons | Zapatillas urbanas | Zapatillas urbanas |
+| Suecos | Zuecos | Zuecos |
+| Casacas | Casacas / Chaquetas | — |
+| Cortavientos | Cortaviento | — |
+| Polares | Polares / Polar | — |
+| Polerones | Poleras | — |
+| Leggings | Leggins / Leggings | — |
+| Overol | Overoles | — |
+| Chullos, Pasamontañas | — | Gorros |
+| Cartucheras | Neceseres | Neceseres |
+
+Cada entrada admite varios destinos y se usa el primero que esa columna acepte.
+**La tabla nunca puede colar un valor inválido**: el diccionario de la plantilla
+sigue decidiendo, y hay una prueba que lo comprueba.
+
+**Y el mismo fallo que tenían los materiales**: `tipo_para_columnas` resolvía
+bien la columna y tres líneas más abajo el motor escribía encima el tipo crudo,
+que la puerta acababa vaciando. Nueve columnas corregidas.
+
+Columnas con diccionario que salen llenas: Rockford calzado **6 → 8**, Vans
+calzado **6 → 8**, Columbia vestuario **5 → 6**. Y desaparecen todos los avisos
+de "se dejó vacía".
+
+---
+
+# PARTE 3 — Vans: tallas de calzado en PE
+
+```
+5   → 36.5     7.5 → 40      10   → 43      12  → 46
+5.5 → 37       8   → 40.5    10.5 → 44      040 → 40
+6   → 38       8.5 → 41      11   → 44.5    045 → 45
+6.5 → 38.5     9   → 42      11.5 → 45
+7   → 39       9.5 → 42.5
 ```
 
-Sin esto el sitio aparece pero la API no conecta. El `shop_domain` que puse en
-el ejemplo es una suposición por el patrón de las otras tiendas: **corrígelo con
-el real**.
+Solo calzado y solo Vans (bandera `tallas_calzado_pe` del sitio). El mismo
+número US es otra talla según el género: un 8 de hombre es PE 40.5 y uno de
+mujer 38.5.
 
-**2. Confirmar la bodega SIAL.** Puse `sial_active_columns = ["6", "13"]`,
-heredado de Rockford, que es donde Patagonia se cargaba hasta ahora. Si opera en
-otra bodega hay que cambiar ese código en `SITE_CONFIGS["patagonia"]`. **El resto
-del sitio funciona igual**; sólo afecta a la hoja *Carga Sial*.
+**Tallas repetidas**: `7.5` y `040` son la misma talla física y al convertir
+chocan. No se borra ninguna; sale avisado con los SKU.
 
----
+## ⚠️ Pendiente de confirmar
 
-# PARTE 2 — Centry contra la plantilla
+**Los unisex.** Sin género uso **US Men** por defecto. Si Vans te los manda en
+escala de mujer, se cambia una línea en `engines/tallas_calzado.py`:
 
-## Por qué encontraba el material y lo dejaba vacío
-
-Dos causas encadenadas.
-
-**El motor se pisaba a sí mismo.** Los pares del Body (`Forro: 100% Poliéster`)
-se volcaban en la fila con `**atributos_centry`, y **tres líneas más abajo**
-`centry_apply_apparel_fields` escribía encima con `material`, que venía vacío
-porque `centry_seccion_como_valor` rechaza a propósito el texto con etiquetas —y
-la sección Materiales es justo eso—. El motor encontraba el dato, lo colocaba, y
-lo borraba. Ese era el `atributos no aplicados: Forro: ...` con la columna en
-blanco.
-
-**Y "Forro" no tenía dónde ir.** En `ETIQUETAS_A_COLUMNA` sólo apuntaba a
-columnas de **calzado**. En un cortavientos o un gorro esa columna no existe.
-`Material exterior` directamente **no estaba en la tabla**.
-
-**Corregido:** `centry_poner_si_vacio` (nada sobrescribe una columna con valor),
-`material`/`composición` se recuperan de los pares del Body y llegan al *Listado
-de características*, 11 etiquetas nuevas, y `atributos_desde_caracteristicas` va
-en **dos pasadas** para que `Composición` conserve su columna y `Forro` la use
-sólo si está libre.
-
-## Por qué el SKU salía mal y el EAN vacío
-
-`variant_centry_sku = variant_sku or barcode`. En sus dos versiones **un código
-de barras podía acabar publicado como SKU de la variante**, y buscar el EAN de un
-SKU que no existe no devuelve nada.
-
-**Corregido:** el SKU es el SKU y nada más. Si la variante llega sin SKU se
-rescata el `CODINT_MA` del maestro por Mod-Col + talla; si tampoco aparece, no
-entra y se reporta. El EAN se busca **a nivel variante**: input → `Variant
-Barcode` → maestro por SKU normalizado → maestro por Mod-Col + talla.
-
-## Por qué había 850 hallazgos bloqueantes
-
-El motor escribía el **valor crudo del catálogo** en columnas con diccionario
-cerrado: `Niños`/`Unisex` donde la plantilla pide `Niño`/`Unisex adulto`,
-`Zapatillas` donde pide `Zapatillas urbanas`. Centry los rechaza y la validación
-los contaba uno por producto.
-
-**Corregido en el origen:** `centry_gender_marketplace` traduce contra el
-diccionario real (mirando la edad), y **`centry_depurar_valores_de_plantilla`**
-es una puerta única — si el valor no está en el diccionario de su columna, no se
-escribe; si está con otra ortografía, se guarda como lo escribe la plantilla. El
-aviso sale **agrupado por columna**, no por producto.
-
-Medido con seis productos de cinco marcas: **de 850 bloqueantes a 0**.
-
-## Precio
-
-Fuera del Centry: no bloquea, no es error, no genera advertencias. Se quitó la
-tarjeta "Precio faltante" y el aviso por producto.
-
-## Pantalla de validación
-
-Resumen arriba **Listos | Con observaciones | Bloqueados**; sólo los bloqueantes
-a la vista; las demás plegadas en `N observaciones no bloqueantes`, agrupadas por
-campo y con el detalle debajo; la vista previa y las notas del proceso, también
-plegadas.
+```python
+ESCALA_UNISEX = MUJER
+```
 
 ---
 
 ## Pruebas
 
-**Batería completa: 37 archivos**, todos OK salvo `test_auth_accesos.py` y
-`test_brand_commercial_input.py`, los dos que ya fallaban antes de este trabajo.
-
-Nuevos:
+**Batería completa: 39 archivos**, todos OK salvo `test_auth_accesos.py` y
+`test_brand_commercial_input.py`, los dos que ya fallaban desde antes.
 
 ```bash
-python scripts/test_sitio_patagonia.py
+python scripts/test_centry_ean.py
 ```
+
+40 pruebas (9 nuevas): la clave de talla en sus cuatro formas, los tres
+desajustes de Rockford, el SKU que era el EAN, que lo que no existe siga
+marcado, y que el origen informado sea el real.
 
 ```bash
 python scripts/test_centry_plantilla.py
 ```
 
-25 pruebas para Patagonia (sitio, fotos, input, tipos, Centry, SIAL, y que no se
-rompan los sitios que ya estaban) y 25 para la plantilla, sobre seis productos de
-cinco marcas y las cuatro familias.
+35 pruebas (10 nuevas para la redirección de tipos).
 
-Además, con `AppTest`: la app arranca sin excepciones, el selector muestra los
-cinco sitios y cambiar a **Patagonia.pe** y entrar a carga parcial no lanza nada.
+```bash
+python scripts/test_tallas_calzado_pe.py
+```
+
+38 pruebas: las 34 filas de la guía y el producto real de la tienda.

@@ -185,6 +185,10 @@ SITE_CONFIGS = {
     "vans": {
         "label": "Vans",
         "site_label": "Vans.pe",
+        # Vans entrega el calzado en tallas US y la tienda las publica en PE.
+        # Es una bandera del sitio, no un `if` con el nombre de la marca: el
+        # dia que otra marca lo necesite, se le pone la bandera y ya.
+        "tallas_calzado_pe": True,
         "allowed_arti_brands": ["VANS"],
         "vendor": "Vans",
         "legacy_vendors": ["vanspe", "Vans"],
@@ -1066,12 +1070,41 @@ def is_one_size(value):
     return size in ("O/S", "OS", "ONESIZE", "UNICA", "ÚNICA", "TALLAUNICA")
 
 
-def display_size_for_site(value, brand_config=None):
+def es_calzado(product_type):
+    """True si ese tipo de prenda es calzado, segun el diccionario maestro."""
+    try:
+        from engines.garment_types import clase_de
+    except ImportError:
+        return False
+    return clean(clase_de(product_type)).casefold() == "calzado"
+
+
+def display_size_for_site(value, brand_config=None, gender="", product_type=""):
+    """La talla tal y como la publica ese sitio.
+
+    Con `tallas_calzado_pe`, el CALZADO se convierte de US a PE con la tabla
+    oficial (`engines/tallas_calzado`). Solo calzado: en vestuario una talla
+    "12" es una talla de nino, no un US 12, y convertirla destrozaria el dato.
+    Por eso hace falta el tipo de prenda, no basta el numero.
+    """
     brand_config = brand_config or get_brand_config()
     site_label = clean(brand_config.get("site_label"))
     if site_label == "Rockford.pe" and (is_one_size(value) or is_zero_size(value)):
         return "Talla Única"
-    return normalize_size(value)
+    talla = normalize_size(value)
+    if brand_config.get("tallas_calzado_pe") and product_type and es_calzado(product_type):
+        convertida, _nota = talla_calzado_pe(talla, gender)
+        return convertida or talla
+    return talla
+
+
+def talla_calzado_pe(value, gender=""):
+    """(talla PE, nota). Envuelve el conversor para no importarlo en 5 sitios."""
+    try:
+        from engines.tallas_calzado import talla_pe
+    except ImportError:
+        return clean(value), ""
+    return talla_pe(value, gender)
 
 
 def dedupe_variants_for_shopify(variants, brand_config=None, issues=None, key="", input_index=None):
@@ -3835,7 +3868,10 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                 continue
 
             is_first = position == 1
-            display_size = display_size_for_site(variant["__SIZE"], brand_config)
+            display_size = display_size_for_site(
+                variant["__SIZE"], brand_config,
+                gender=product_gender(product), product_type=product_type,
+            )
             output = {column: "" for column in matrixify_columns}
             variant_sku = clean(variant.get("CODINT_MA"))
             existing_variant = (

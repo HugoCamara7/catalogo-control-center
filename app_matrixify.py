@@ -138,6 +138,8 @@ from generate_columbia_matrixify import (
     brand_display_name,
     brand_image_config,
     display_size_for_site,
+    es_calzado,
+    talla_calzado_pe,
     fold_accents,
     get_brand_config,
     image_candidates,
@@ -4099,8 +4101,30 @@ CENTRY_MAESTRO_A_FILA = (
 CENTRY_CAMPOS_MAESTRO = tuple(campo for campo, _ in CENTRY_MAESTRO_A_FILA)
 
 
+def centry_clave_talla(valor):
+    """Talla comparable entre Shopify y el maestro.
+
+    El maestro guarda la talla como numero y Shopify como texto, asi que la
+    misma talla llega escrita de varias formas: "38", "038", "38.0", " 38 ".
+    Comparando la cadena tal cual no cruzaban, y la variante se quedaba sin
+    EAN aunque el maestro lo tuviera.
+    """
+    texto = clean_value(valor).upper().replace(",", ".")
+    texto = re.sub(r"\s+", "", texto)
+    if not texto:
+        return ""
+    if re.fullmatch(r"\d+(\.\d+)?", texto):
+        if "." in texto:
+            entero, _, decimales = texto.partition(".")
+            decimales = decimales.rstrip("0")
+            texto = f"{entero}.{decimales}" if decimales else entero
+        sin_ceros = texto.lstrip("0")
+        texto = sin_ceros if sin_ceros and not sin_ceros.startswith(".") else texto
+    return texto
+
+
 def build_centry_arti_lookup(arti_df):
-    lookup = {"by_sku": {}, "by_mod_size": {}}
+    lookup = {"by_sku": {}, "by_mod_size": {}, "by_barcode": {}}
     if arti_df is None or arti_df.empty:
         return lookup
     df = normalize_arti_columns_for_app(arti_df).copy()
@@ -4129,12 +4153,18 @@ def build_centry_arti_lookup(arti_df):
         for clave in {centry_clave_sku(sku), centry_clave_sku_sin_ceros(sku)}:
             _centry_guardar_en_indice(lookup["by_sku"], clave, item)
         if mod_col:
-            for size_key in {raw_size, display_size}:
-                size_key = clean_value(size_key)
+            # Se indexa con la clave de talla normalizada: "38", "038" y "38.0"
+            # acaban en la misma entrada.
+            for size_key in {centry_clave_talla(raw_size), centry_clave_talla(display_size)}:
                 if size_key:
                     _centry_guardar_en_indice(
-                        lookup["by_mod_size"], (mod_col.upper(), size_key.upper()), item
+                        lookup["by_mod_size"], (mod_col.upper(), size_key), item
                     )
+        # Indice por codigo de barras. Sirve para rescatar las variantes cuyo
+        # SKU en Shopify es en realidad el EAN: hubo cargas antiguas que
+        # publicaron el codigo de barras en la columna del SKU.
+        if barcode:
+            lookup["by_barcode"].setdefault(barcode, item)
     return lookup
 
 
@@ -4248,7 +4278,8 @@ def centry_resolver_ean(row, arti_item, arti_lookup, mod_col, raw_size):
 
     del_maestro = centry_normalizar_ean((arti_item or {}).get("barcode"))
     if del_maestro:
-        return del_maestro, "Maestro SIAL/BigQuery (SKU)"
+        via = clean_value((arti_item or {}).get("__via")) or "SKU"
+        return del_maestro, f"Maestro SIAL/BigQuery ({via})"
 
     # Segunda pasada por el maestro con las claves normalizadas del SKU. El
     # emparejamiento de `centry_arti_item_for_row` es por cadena exacta y se le
@@ -4263,27 +4294,44 @@ def centry_resolver_ean(row, arti_item, arti_lookup, mod_col, raw_size):
     por_mod_talla = (arti_lookup or {}).get("by_mod_size", {})
     clave_mod = clean_value(mod_col).upper()
     for talla in (raw_size, normalize_master_size(raw_size), row.get("Option1 Value")):
-        talla = clean_value(talla).upper()
+        talla = centry_clave_talla(talla)
         if not clave_mod or not talla:
             continue
         candidato = centry_normalizar_ean(por_mod_talla.get((clave_mod, talla), {}).get("barcode"))
         if candidato:
             return candidato, "Maestro SIAL/BigQuery (Mod-Col + talla)"
 
+    # Ultimo rescate: el SKU que trae Shopify ES el codigo de barras. Cargas
+    # antiguas publicaron el EAN en la columna del SKU, asi que buscar "su"
+    # EAN por ese SKU no devuelve nada... porque el SKU ya era el EAN.
+    posible = centry_normalizar_ean(row.get("Variant SKU"))
+    if posible and posible in (arti_lookup or {}).get("by_barcode", {}):
+        return posible, "El SKU de Shopify era el EAN"
+
     return "", CENTRY_EAN_SIN_RESOLVER
 
 
 def centry_arti_item_for_row(row, arti_lookup, current_mod_col, raw_size):
+    """La fila del maestro de esta variante. Anota POR DONDE cruzo.
+
+    El `__via` que se agrega es lo que despues informa el resumen de EAN. Sin
+    el, todo salia etiquetado como "por SKU" aunque hubiera cruzado por
+    Mod-Col + talla, y el diagnostico apuntaba al sitio equivocado.
+    """
     if not arti_lookup:
         return {}
+    for clave in (centry_clave_sku(row.get("Variant SKU")),
+                  centry_clave_sku_sin_ceros(row.get("Variant SKU"))):
+        if clave and clave in arti_lookup.get("by_sku", {}):
+            return dict(arti_lookup["by_sku"][clave], __via="SKU")
     sku = centry_value(row.get("Variant SKU")).upper()
     if sku and sku in arti_lookup.get("by_sku", {}):
-        return arti_lookup["by_sku"][sku]
+        return dict(arti_lookup["by_sku"][sku], __via="SKU")
     mod_col = clean_value(current_mod_col).upper()
     for size_key in (raw_size, normalize_master_size(raw_size), row.get("Option1 Value")):
-        size_key = clean_value(size_key).upper()
+        size_key = centry_clave_talla(size_key)
         if mod_col and size_key and (mod_col, size_key) in arti_lookup.get("by_mod_size", {}):
-            return arti_lookup["by_mod_size"][(mod_col, size_key)]
+            return dict(arti_lookup["by_mod_size"][(mod_col, size_key)], __via="Mod-Col + talla")
     return {}
 
 
@@ -4622,16 +4670,16 @@ def centry_apply_accessory_fields(centry_row, product_type, gender, material):
     centry_poner_si_vacio(centry_row, "Composición - Ropa y accesorios (Falabella GSC Perú)", first_non_empty(material, "-"))
     centry_poner_si_vacio(centry_row, "Composición (MercadoLibre Perú)", material)
     if any(word in text for word in ("gorro", "jockey", "sombrero", "beanie")):
-        centry_row["Tipo de ropa para la cabeza - Ropa y accesorios (Falabella GSC Perú)"] = product_type
-        centry_row["Tipo de sombrero (MercadoLibre Perú)"] = product_type
+        centry_poner_si_vacio(centry_row, "Tipo de ropa para la cabeza - Ropa y accesorios (Falabella GSC Perú)", product_type)
+        centry_poner_si_vacio(centry_row, "Tipo de sombrero (MercadoLibre Perú)", product_type)
     if "cuello" in text:
-        centry_row["Tipo de ropa para el cuello - Ropa y accesorios (Falabella GSC Perú)"] = product_type
+        centry_poner_si_vacio(centry_row, "Tipo de ropa para el cuello - Ropa y accesorios (Falabella GSC Perú)", product_type)
     if any(word in text for word in ("mochila", "bolso", "cartera", "billetera", "canguro", "banano")):
-        centry_row["Tipo de bolso mochila funda - Ropa y accesorios (Falabella GSC Perú)"] = product_type
-        centry_row["Tipo de cartera (MercadoLibre Perú)"] = product_type
+        centry_poner_si_vacio(centry_row, "Tipo de bolso mochila funda - Ropa y accesorios (Falabella GSC Perú)", product_type)
+        centry_poner_si_vacio(centry_row, "Tipo de cartera (MercadoLibre Perú)", product_type)
         centry_row["Uso de la cartera/mochila/bolsa - Uso de la cartera mochila bolsa - Ropa y accesorios (Falabella GSC Perú)"] = "Urbano"
     if "maleta" in text:
-        centry_row["Tipo de maleta - Ropa y accesorios (Falabella GSC Perú)"] = product_type
+        centry_poner_si_vacio(centry_row, "Tipo de maleta - Ropa y accesorios (Falabella GSC Perú)", product_type)
         centry_poner_si_vacio(centry_row, "Material de la maleta - Material de la maleta - Ropa y accesorios (Falabella GSC Perú)", material)
     centry_row["Contenido del paquete - Package content - Almacenamiento (Falabella GSC Perú)"] = "1"
     centry_row["Con monedero (MercadoLibre Perú)"] = "No"
@@ -4645,9 +4693,13 @@ def centry_apply_apparel_fields(centry_row, product_type, gender, material, comp
     centry_poner_si_vacio(centry_row, "Material de vestuario - Ropa y accesorios (Falabella GSC Perú)", material)
     centry_poner_si_vacio(centry_row, "Material principal - Material de vestuario - Ropa y accesorios (Falabella GSC Perú)", first_non_empty(material, "Otros"))
     centry_poner_si_vacio(centry_row, "Composición - Ropa y accesorios (Falabella GSC Perú)", first_non_empty(composition, material, "-"))
+    # `tipos_centry` ya resolvio estas columnas contra el diccionario de la
+    # plantilla, incluida la tabla de equivalencias. Escribir aqui el tipo
+    # crudo las pisaba, y la puerta de plantilla las acababa vaciando: por
+    # eso "Tipo - Calzado" salia en blanco en todo el calzado.
     target_column = centry_apparel_top_bottom_column(product_type)
-    centry_row[target_column] = product_type
-    centry_row["Tipo de prenda para la parte superior - Ropa y accesorios (Falabella GSC Perú)"] = product_type
+    centry_poner_si_vacio(centry_row, target_column, product_type)
+    centry_poner_si_vacio(centry_row, "Tipo de prenda para la parte superior - Ropa y accesorios (Falabella GSC Perú)", product_type)
     centry_row["Diseño - Ropa y accesorios (Falabella GSC Perú)"] = "-"
     centry_row["Tipo de cierre - Ropa y accesorios (Falabella GSC Perú)"] = ""
 
@@ -4995,6 +5047,10 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
     # mostraba la columna vacia.
     origenes_ean = {}
     pendientes_ean = []
+    # Tallas de calzado que no estaban en la tabla US->PE, y las que se
+    # resolvieron con la escala por defecto por no venir el genero.
+    tallas_desconocidas = {}
+    tallas_ambiguas = {}
     # Que campos completo el maestro y cuantas veces. Es lo que permite ver si
     # el ARTI esta llegando o no, en vez de mirar columnas vacias sin saber por
     # que lo estan.
@@ -5076,12 +5132,40 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             raw_size,
             centry_output_is_accessory(category_probe) and (is_one_size(raw_size) or is_zero_size(raw_size)),
         )
+        # Calzado de un sitio que publica en PE: la talla US se convierte aqui
+        # tambien, no solo al crear el producto. El Centry se arma desde el
+        # export de Shopify, y los productos que ya estaban siguen teniendo la
+        # talla US. Convertir dos veces es inofensivo: un PE se queda igual.
+        if brand_config.get("tallas_calzado_pe") and es_calzado(product_type):
+            size_pe, nota_talla = talla_calzado_pe(size, gender)
+            if nota_talla == "desconocida":
+                tallas_desconocidas.setdefault(clean_value(size), set()).add(current_mod_col)
+            else:
+                if nota_talla == "ambigua":
+                    tallas_ambiguas.setdefault(clean_value(size), set()).add(current_mod_col)
+                size = size_pe
         barcode, ean_fuente = centry_resolver_ean(
             row, arti_item, arti_lookup, current_mod_col, raw_size
         )
         origenes_ean[ean_fuente] = origenes_ean.get(ean_fuente, 0) + 1
         if not barcode:
-            pendientes_ean.append({"mod_col": current_mod_col, "sku": variant_sku})
+            # Se guardan las claves EXACTAS con las que se busco. Sin esto, un
+            # "EAN faltante" no dice nada: no se sabe si el SKU no cruzo, si la
+            # talla venia escrita distinto o si el maestro no traia la fila.
+            pendientes_ean.append({
+                "mod_col": current_mod_col,
+                "sku": variant_sku,
+                "clave_sku": centry_clave_sku(variant_sku),
+                "clave_talla": centry_clave_talla(raw_size),
+                "en_maestro_por_sku": bool(
+                    arti_lookup.get("by_sku", {}).get(centry_clave_sku(variant_sku))
+                ),
+                "en_maestro_por_mod_talla": bool(
+                    arti_lookup.get("by_mod_size", {}).get(
+                        (clean_value(current_mod_col).upper(), centry_clave_talla(raw_size))
+                    )
+                ),
+            })
         tal_value = first_non_empty(arti_item.get("raw_size"), raw_size)
         # El SKU de la variante es el SKU y NADA MAS. El EAN tiene su propia
         # columna. Esto llego a ser `barcode or variant_sku` y luego
@@ -5246,10 +5330,10 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             centry_row["URL imagen principal" if index == 1 else f"URL imagen {index}"] = image
         if is_footwear:
             centry_row["Género - Calzado (Falabella GSC Perú)"] = centry_gender_marketplace(gender, centry_age_from_gender(gender))
-            centry_row["Tipo - Calzado (Falabella GSC Perú)"] = product_type or "Zapatillas"
+            centry_poner_si_vacio(centry_row, "Tipo - Calzado (Falabella GSC Perú)", product_type)
             centry_row["Horma - Calzado (Falabella GSC Perú)"] = "Normal"
             centry_poner_si_vacio(centry_row, "Material principal - Calzado (Falabella GSC Perú)", material)
-            centry_row["Tipo de calzado (MercadoLibre Perú)"] = product_type or "Zapatillas"
+            centry_poner_si_vacio(centry_row, "Tipo de calzado (MercadoLibre Perú)", product_type)
             centry_row["Edad (MercadoLibre Perú)"] = age
             centry_poner_si_vacio(centry_row, "Material del calzado (MercadoLibre Perú)", first_non_empty(composition, material))
             centry_row["Tipo de taco (MercadoLibre Perú)"] = footwear_cane
@@ -5317,6 +5401,30 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                         f"ni en Shopify ni en el maestro (tallas: {', '.join(tallas[:10])})"
                     ),
                 })
+        if tallas_ambiguas:
+            detalle = ", ".join(
+                f"{talla} ({len(modelos)})"
+                for talla, modelos in sorted(tallas_ambiguas.items(), key=lambda par: -len(par[1]))[:8]
+            )
+            issues.append({
+                "Mod-Col": "Centry (tallas)",
+                "Problema": (
+                    f"Tallas US convertidas con la escala por defecto por no venir el genero: "
+                    f"{detalle}. Si el producto es de mujer la talla PE es otra."
+                ),
+            })
+        if tallas_desconocidas:
+            detalle = ", ".join(
+                f"{talla} ({len(modelos)})"
+                for talla, modelos in sorted(tallas_desconocidas.items(), key=lambda par: -len(par[1]))[:8]
+            )
+            issues.append({
+                "Mod-Col": "Centry (tallas)",
+                "Problema": (
+                    f"Tallas de calzado que no estan en la tabla US->PE y salen tal cual: "
+                    f"{detalle}"
+                ),
+            })
         if descartes_plantilla:
             # Agrupado por columna: "el tipo X no esta en el diccionario" es un
             # problema del diccionario, no de cada uno de los 40 productos.
@@ -5343,6 +5451,74 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
                 "Mod-Col": "Centry (enriquecimiento)",
                 "Problema": f"Campos completados desde el maestro SIAL/BigQuery -> {detalle_enriquecido}",
             })
+        # Tallas repetidas DESPUES de convertir. El catalogo cargado trae la
+        # misma talla fisica escrita de dos formas -"7.5" en US y "040" en PE-
+        # y al pasarlas las dos a PE chocan. No se borra ninguna: se avisa,
+        # porque cual sobra lo decide quien mira el stock.
+        if brand_config.get("tallas_calzado_pe") and not centry_df.empty:
+            claves = centry_df["SKU del producto"].map(clean_value)
+            repetidas = {}
+            for mod_col, grupo in centry_df.groupby(claves, sort=False):
+                cuenta = {}
+                for _, fila_centry in grupo.iterrows():
+                    talla = clean_value(fila_centry.get("Talla"))
+                    sku = clean_value(fila_centry.get("SKU de la variante"))
+                    if talla:
+                        cuenta.setdefault(talla, []).append(sku)
+                chocan = {t: skus for t, skus in cuenta.items() if len(skus) > 1}
+                if chocan:
+                    repetidas[mod_col] = chocan
+            for mod_col, chocan in list(repetidas.items())[:20]:
+                detalle = "; ".join(
+                    f"talla {talla}: {', '.join(skus)}" for talla, skus in chocan.items()
+                )
+                issues.append({
+                    "Mod-Col": mod_col or "Centry",
+                    "Problema": (
+                        f"Tallas repetidas tras convertir a PE ({detalle}). "
+                        "El producto trae la misma talla en US y en PE; revisa cual variante se queda."
+                    ),
+                })
+            if len(repetidas) > 20:
+                issues.append({
+                    "Mod-Col": "Centry (tallas)",
+                    "Problema": f"{len(repetidas):,} modelo-colores con tallas repetidas tras convertir a PE",
+                })
+
+        # Por que fallo cada EAN que quedo pendiente. Se agrupa por motivo,
+        # que es lo unico accionable: "el SKU no esta en el maestro" se
+        # arregla en el maestro; "la fila esta pero no cruza" se arregla aqui.
+        if pendientes_ean:
+            motivos = {}
+            for pendiente in pendientes_ean:
+                if pendiente.get("en_maestro_por_sku") or pendiente.get("en_maestro_por_mod_talla"):
+                    motivo = "la fila SI esta en el maestro pero llego sin codigo de barras"
+                elif not clean_value(pendiente.get("clave_sku")):
+                    motivo = "la variante no trae SKU"
+                else:
+                    motivo = "el SKU no aparece en el maestro (ni por Mod-Col + talla)"
+                motivos.setdefault(motivo, []).append(pendiente)
+            for motivo, lista in sorted(motivos.items(), key=lambda par: -len(par[1])):
+                ejemplos = "; ".join(
+                    f"{clean_value(item.get('sku')) or 'sin SKU'}"
+                    f" (mod-col {clean_value(item.get('mod_col')) or '?'},"
+                    f" talla {clean_value(item.get('clave_talla')) or '?'})"
+                    for item in lista[:6]
+                )
+                issues.append({
+                    "Mod-Col": "Centry (EAN: por que falta)",
+                    "Problema": f"{len(lista):,} variantes: {motivo}. Ejemplos -> {ejemplos}",
+                })
+            claves_maestro = list(arti_lookup.get("by_sku", {}))[:6]
+            issues.append({
+                "Mod-Col": "Centry (EAN: como se busco)",
+                "Problema": (
+                    f"El maestro trae {len(arti_lookup.get('by_sku', {})):,} SKU y "
+                    f"{len(arti_lookup.get('by_mod_size', {})):,} pares Mod-Col+talla. "
+                    f"Ejemplo de SKU del maestro: {', '.join(claves_maestro) or 'ninguno'}"
+                ),
+            })
+
         # Resumen de donde salio cada EAN. Es lo que permite ver la causa: si
         # todos dicen PENDIENTE, el maestro no llego; si el maestro resuelve
         # pocos, el problema es el emparejamiento por SKU.
@@ -5883,7 +6059,10 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             issues.append({"Mod-Col": key, "Problema": "No existe en Shopify; se completo Centry con BigQuery/ARTI y fotos S3"})
 
         for position, (_, variant) in enumerate(variants.iterrows(), start=1):
-            size = display_size_for_site(variant.get("__SIZE"), brand_config)
+            size = display_size_for_site(
+                variant.get("__SIZE"), brand_config,
+                gender=clean_value(maestro.get("Genero")), product_type=product_type,
+            )
             rows.append(
                 {
                     "Handle": clean_value(product_row.get("Handle")) if product_row is not None else key.lower(),

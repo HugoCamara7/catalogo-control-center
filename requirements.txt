@@ -1,6 +1,9 @@
 streamlit>=1.50
 pandas>=2.0
 openpyxl>=3.1
+# El Excel de salida se genera con xlsxwriter: openpyxl arma el libro entero
+# en memoria y es lo que tumbaba el proceso con el catalogo completo.
+xlsxwriter>=3.1
 xlrd>=2.0.1
 google-cloud-bigquery>=3.20
 google-auth>=2.29

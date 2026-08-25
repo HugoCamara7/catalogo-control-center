@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -1631,12 +1631,29 @@ def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_d
 # NO se usa el modo constant_memory: se probo y pierde la primera fila de cada
 # hoja, aun dando el formato antes de escribir. La correccion no vale un archivo
 # con datos faltantes.
-MOTOR_EXCEL = "xlsxwriter"
+def _motor_excel_disponible():
+    """xlsxwriter si esta instalado; si no, openpyxl.
+
+    xlsxwriter va en `requirements.txt`, que es donde tiene que estar. Pero si
+    un despliegue se queda sin el, esto hace que el Excel salga igual -mas
+    lento y con mas memoria- en vez de reventar con
+    `ModuleNotFoundError: No module named 'xlsxwriter'` justo al final del
+    proceso, despues de haber calculado todo.
+    """
+    try:
+        import xlsxwriter  # noqa: F401
+    except ImportError:
+        return "openpyxl"
+    return "xlsxwriter"
+
+
+MOTOR_EXCEL = _motor_excel_disponible()
 
 
 def _dar_formato_hojas(writer, ancho=18):
     """Congela la fila de encabezados y fija el ancho, con cualquier motor."""
-    if getattr(writer, "engine", "") == "xlsxwriter" or MOTOR_EXCEL == "xlsxwriter":
+    motor = clean_value(getattr(writer, "engine", "")) or MOTOR_EXCEL
+    if motor == "xlsxwriter":
         for hoja in writer.sheets.values():
             try:
                 hoja.freeze_panes(1, 0)

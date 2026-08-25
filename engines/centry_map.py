@@ -892,6 +892,50 @@ def columnas_de_tipo(familia, ruta=None):
     return salida
 
 
+# Como se llama cada tipo NUESTRO en el diccionario de Centry.
+#
+# No son tipos nuevos: son los mismos que ya manejamos, redirigidos al nombre
+# que usa la plantilla. Casi todos son diferencias de escritura o de numero
+# ("Suecos"/"Zuecos", "Cortavientos"/"Cortaviento") y unos pocos son el
+# sinonimo que usa el marketplace ("Casacas" -> "Chaquetas").
+#
+# Cada entrada admite VARIOS destinos, en orden de preferencia. Se usa el
+# primero que esa columna acepte, asi que una misma equivalencia sirve para
+# Falabella y para MercadoLibre aunque cada uno tenga su lista. Y si ninguna
+# columna lo acepta, no se escribe nada: el diccionario de la plantilla sigue
+# mandando y esta tabla nunca puede colar un valor invalido.
+EQUIVALENCIAS_TIPO = {
+    # --- Calzado ---
+    "zapatilla": ("Zapatillas urbanas", "Zapatilla"),
+    "zapato": ("Zapatos casuales",),
+    "slip on": ("Zapatillas urbanas", "Zapatilla"),
+    "sueco": ("Zuecos",),
+    # --- Vestuario: parte superior ---
+    "casaca": ("Casacas", "Chaquetas"),
+    "cortaviento": ("Cortaviento", "Chaquetas", "Casacas"),
+    "polar": ("Polares", "Polar"),
+    "poleron": ("Poleras",),
+    "impermeable": ("Impermeables", "Chaquetas"),
+    "interior termico": ("Camisetas", "Polos"),
+    # --- Vestuario: parte inferior ---
+    "legging": ("Leggings", "Leggins"),
+    "pantalon": ("Pantalones outdoor", "Pantalón de vestir"),
+    "overol": ("Overoles", "Overol"),
+    "enterizo": ("Enterizos", "Enteritos"),
+    "ropa de bano": ("Shorts",),
+    # --- Accesorios ---
+    "cartuchera": ("Neceseres", "Portadocumentos"),
+    "cuellera": ("Cuellera",),
+    "chullo": ("Gorros",),
+    "pasamontana": ("Gorros",),
+}
+
+
+def equivalencias_de_tipo(tipo):
+    """Los nombres de plantilla que le corresponden a ese tipo nuestro."""
+    return EQUIVALENCIAS_TIPO.get(_singular(tipo), ())
+
+
 def tipo_para_columnas(tipo, familia, ruta=None):
     """{columna: valor} escribiendo el tipo en las columnas donde SI encaja.
 
@@ -910,11 +954,21 @@ def tipo_para_columnas(tipo, familia, ruta=None):
     for columna in columnas_de_tipo(familia, ruta):
         # Se comparan las dos partes en singular: el catalogo dice "Canguro" y
         # la plantilla "Canguros". Sin esto no cruzaba ninguno de los dos.
+        permitidos = valores_permitidos(columna, ruta)
         encontrado = ""
-        for permitido in valores_permitidos(columna, ruta):
+        for permitido in permitidos:
             if _singular(permitido) == clave:
                 encontrado = permitido
                 break
+        if not encontrado:
+            # No coincide el nombre: se mira la tabla de equivalencias. El
+            # diccionario de la columna sigue decidiendo, asi que de aqui no
+            # puede salir un valor que la plantilla rechace.
+            por_singular = {_singular(v): v for v in permitidos}
+            for destino in equivalencias_de_tipo(tipo):
+                if _singular(destino) in por_singular:
+                    encontrado = por_singular[_singular(destino)]
+                    break
         if encontrado:
             aplicados[columna] = encontrado
         else:

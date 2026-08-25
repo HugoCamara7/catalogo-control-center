@@ -4549,20 +4549,32 @@ def centry_looks_like_color_code(value, color_code=""):
     return bool(re.fullmatch(r"[A-Z]{0,3}\d{1,4}[A-Z]{0,3}", text))
 
 
+# De donde puede salir el nombre del color, en orden de preferencia.
+#
+# Esta lista es TAMBIEN la que se arrastra a las variantes. Antes solo UNA de
+# estas columnas estaba en `product_fields`, y Matrixify escribe el bloque de
+# producto unicamente en la PRIMERA fila de cada producto: el color salia en la
+# primera variante y las demas se quedaban en blanco. Al tenerla en un solo
+# sitio, las dos partes no se pueden desincronizar.
+CENTRY_COLUMNAS_COLOR = (
+    "Color Web",
+    "Color",
+    "COLOR",
+    "Nombre Color",
+    "Color Nombre",
+    "Metafield: custom.color_forus [single_line_text_field]",
+    "Metafield: theme.siblings_color [single_line_text_field]",
+    "Metafield: custom.siblings_color [single_line_text_field]",
+    "Metafield: custom.color [single_line_text_field]",
+    "Option2 Value",
+)
+
+
 def centry_color_name_from_row(row, color_code=""):
     if row is None:
         return ""
     color = first_non_empty(
-        row.get("Color Web"),
-        row.get("Color"),
-        row.get("COLOR"),
-        row.get("Nombre Color"),
-        row.get("Color Nombre"),
-        row.get("Metafield: custom.color_forus [single_line_text_field]"),
-        row.get("Metafield: theme.siblings_color [single_line_text_field]"),
-        row.get("Metafield: custom.siblings_color [single_line_text_field]"),
-        row.get("Metafield: custom.color [single_line_text_field]"),
-        row.get("Option2 Value"),
+        *[row.get(columna) for columna in CENTRY_COLUMNAS_COLOR],
         centry_tag_value(row, "Color", "Color Comercial", "Color Web"),
     )
     if centry_looks_like_color_code(color, color_code):
@@ -5049,7 +5061,10 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         # Sin esto el genero solo existia en la primera fila de cada producto y
         # las variantes lo perdian.
         "Metafield: custom.genero [single_line_text_field]",
-        "Metafield: custom.color [single_line_text_field]",
+        # TODAS las columnas de color, no solo `custom.color`. El resolutor
+        # mira diez y se arrastraba una: el color salia solo en la primera
+        # variante de cada producto.
+        *CENTRY_COLUMNAS_COLOR,
         "Metafield: custom.materialidad [single_line_text_field]",
         "Metafield: custom.tecnologia [list.single_line_text_field]",
     ]
@@ -5607,7 +5622,8 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
             df[column] = ""
     product_fields = [
         "Title", "Body HTML", "Vendor", "Type", "Tags", "Image Src",
-        "Metafield: custom.codigo_modelo_color [id]", "Metafield: custom.color [single_line_text_field]",
+        "Metafield: custom.codigo_modelo_color [id]",
+        *CENTRY_COLUMNAS_COLOR,
         "Metafield: custom.materialidad [single_line_text_field]",
         "Metafield: custom.tecnologia [list.single_line_text_field]",
     ]

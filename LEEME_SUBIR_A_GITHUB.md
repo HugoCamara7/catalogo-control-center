@@ -1,164 +1,87 @@
-# Qué subir y por qué
+# Qué subir — repo `app-matrixify-columbia`
 
-Paquete sobre `main` en `7675a4d`. **Es todo lo que te falta subir.**
+> ⚠️ **Este paquete va a `app-matrixify-columbia`**, que es el repo desde el que
+> Streamlit despliega tu app (lo confirmé en la traza del error:
+> `/mount/src/app-matrixify-columbia/`). **No** a `catalogo-control-center`.
 
 **`app_matrixify.py` va al final.**
 
-| Archivo | Carpeta en el repo | Estado |
+| Archivo | Carpeta | Estado |
 | --- | --- | --- |
-| `engines/tallas_calzado.py` | `engines` | **nuevo** |
-| `engines/centry_map.py` | `engines` | modificado |
-| `generate_columbia_matrixify.py` | raíz | modificado |
-| `scripts/test_tallas_calzado_pe.py` | `scripts` | **nuevo** |
+| `requirements.txt` | raíz | modificado |
+| `scripts/test_dependencias.py` | `scripts` | **nuevo** |
 | `scripts/test_centry_plantilla.py` | `scripts` | modificado |
-| `scripts/test_centry_ean.py` | `scripts` | modificado |
 | `app_matrixify.py` | raíz | modificado — **al final** |
 
-> Arrastra las carpetas `engines` y `scripts` enteras y GitHub respeta la ruta.
-
 ---
 
-# PARTE 1 — Rockford: los EAN que estaban en la BD y no llegaban
+## 1. El color solo salía en la primera variante
 
-Cuando el código **sí está en el maestro** y la columna sale vacía, el problema
-no es el dato: es **cómo cruzan las claves**. Encontré tres desajustes más.
+Matrixify escribe el **bloque de producto únicamente en la primera fila** de
+cada producto; las filas de las demás tallas vienen con esos campos vacíos.
+`forward_fill_product_block` existe justo para arrastrarlo hacia abajo…
 
-**1. La talla se escribe distinto en cada lado.** El maestro la guarda como
-número y Shopify como texto, así que la misma talla llega como `38`, `038`,
-`38.0` o ` 38 `. Se comparaba la cadena tal cual, así que no cruzaban y la
-variante se quedaba sin EAN. Ahora hay una **clave de talla** que normaliza las
-dos partes: las cuatro formas caen en la misma entrada.
+…pero de las **diez** columnas de las que el motor puede leer el color, solo se
+arrastraba **una** (`custom.color`), y no es la primera de la lista. El
+resolutor mira antes `Color Web`, `Color`, `custom.color_forus`… así que en
+cuanto el color venía por cualquiera de esas, la talla 38 salía con color y el
+resto en blanco.
 
-**2. El SKU de Shopify a veces ES el código de barras.** Hubo cargas antiguas
-que publicaron el EAN en la columna del SKU (era el viejo
-`barcode or variant_sku`). Buscar "su" EAN por ese SKU no devuelve nada… porque
-ese SKU ya era el EAN. Ahora hay un índice por código de barras y, si el SKU de
-Shopify aparece ahí, se usa como EAN y se reporta así.
+**Corregido:** las diez columnas viven ahora en una sola constante,
+`CENTRY_COLUMNAS_COLOR`, que usan **las dos partes**: el resolutor para leer y
+el arrastre para rellenar. No se pueden desincronizar — si mañana se agrega una
+columna al resolutor, se arrastra sola.
 
-**3. El resumen mentía sobre el origen.** Todo salía etiquetado como
-`Maestro (SKU)` aunque hubiera cruzado por Mod-Col + talla, así que el
-diagnóstico apuntaba al sitio equivocado. Ahora dice por dónde cruzó de verdad.
+Aplicado al **Centry** y a la **Carga Sial**, que tenía el mismo problema.
 
-## Y si aun así falta alguno, la hoja te dice por qué
+Comprobado con un Matrixify como el de verdad (bloque solo en la fila 1), una a
+una con las diez columnas: **4/4 variantes con color** en todas.
 
-`Revision Centry` trae ahora dos líneas nuevas que separan lo accionable:
+## 2. `ModuleNotFoundError: No module named 'xlsxwriter'`
 
-> `12 variantes: la fila SI está en el maestro pero llegó sin código de barras.
-> Ejemplos -> 5486079 (mod-col RK110021743-5ZV, talla 38); …`
+El motor de Excel se cambió de `openpyxl` a `xlsxwriter` para bajar el pico de
+memoria, pero **la dependencia nunca se declaró**. En local funcionaba porque
+venía instalada de arrastre; en el servidor no. Y el fallo salía **al final**,
+después de calcular todo el catálogo.
 
-> `4 variantes: el SKU no aparece en el maestro (ni por Mod-Col + talla).
-> Ejemplos -> …`
+**Corregido en tres niveles:**
 
-> `El maestro trae 12.480 SKU y 9.310 pares Mod-Col+talla. Ejemplo de SKU del
-> maestro: 5486079, 5486080, …`
+1. `xlsxwriter>=3.1` en `requirements.txt` — la causa.
+2. **Respaldo**: si un despliegue se queda sin la librería, cae a `openpyxl` en
+   vez de reventar. Comprobado bloqueando el import: el Excel sale igual.
+3. **`scripts/test_dependencias.py`** — recorre el código de producción, saca
+   sus imports de terceros y falla si alguno no está declarado. Eso cubre la
+   clase entera de fallo, no solo este caso.
 
-Con eso se sabe **de un vistazo** si hay que arreglar el maestro (falta el
-código) o el emparejamiento (la fila está pero no cruza). Antes un "EAN
-faltante" no decía nada.
-
-## Comprobado
-
-Seis escenarios en los que el maestro **sí** tiene el código, cambiando solo
-cómo está escrita la clave:
-
-| Escenario | Antes | Ahora |
-| --- | --- | --- |
-| Todo coincide | 3/3 | 3/3 |
-| Maestro con ceros a la izquierda | 3/3 | 3/3 |
-| Talla `038` en el maestro | 0/3 | **3/3** |
-| Talla `38.0` en el maestro | 0/3 | **3/3** |
-| El SKU de Shopify era el EAN | 0/3 | **3/3** |
-| No está en el maestro | 0/3 | 0/3 + motivo explicado |
-
----
-
-# PARTE 2 — Tipos redirigidos al diccionario de Centry
-
-El catálogo dice `Zapatillas`; la plantilla pide `Zapatillas urbanas`. Como no
-coincidían, la columna salía **vacía** y con un aviso por producto, en todo el
-calzado y en buena parte del vestuario.
-
-**No hay tipos nuevos**: los mismos, redirigidos en `EQUIVALENCIAS_TIPO`
-(`engines/centry_map.py`).
-
-| Nuestro tipo | Falabella | MercadoLibre |
-| --- | --- | --- |
-| Zapatillas | Zapatillas urbanas | Zapatilla |
-| Zapatos | Zapatos casuales | Zapatos casuales |
-| Slip Ons | Zapatillas urbanas | Zapatillas urbanas |
-| Suecos | Zuecos | Zuecos |
-| Casacas | Casacas / Chaquetas | — |
-| Cortavientos | Cortaviento | — |
-| Polares | Polares / Polar | — |
-| Polerones | Poleras | — |
-| Leggings | Leggins / Leggings | — |
-| Overol | Overoles | — |
-| Chullos, Pasamontañas | — | Gorros |
-| Cartucheras | Neceseres | Neceseres |
-
-Cada entrada admite varios destinos y se usa el primero que esa columna acepte.
-**La tabla nunca puede colar un valor inválido**: el diccionario de la plantilla
-sigue decidiendo, y hay una prueba que lo comprueba.
-
-**Y el mismo fallo que tenían los materiales**: `tipo_para_columnas` resolvía
-bien la columna y tres líneas más abajo el motor escribía encima el tipo crudo,
-que la puerta acababa vaciando. Nueve columnas corregidas.
-
-Columnas con diccionario que salen llenas: Rockford calzado **6 → 8**, Vans
-calzado **6 → 8**, Columbia vestuario **5 → 6**. Y desaparecen todos los avisos
-de "se dejó vacía".
-
----
-
-# PARTE 3 — Vans: tallas de calzado en PE
-
-```
-5   → 36.5     7.5 → 40      10   → 43      12  → 46
-5.5 → 37       8   → 40.5    10.5 → 44      040 → 40
-6   → 38       8.5 → 41      11   → 44.5    045 → 45
-6.5 → 38.5     9   → 42      11.5 → 45
-7   → 39       9.5 → 42.5
-```
-
-Solo calzado y solo Vans (bandera `tallas_calzado_pe` del sitio). El mismo
-número US es otra talla según el género: un 8 de hombre es PE 40.5 y uno de
-mujer 38.5.
-
-**Tallas repetidas**: `7.5` y `040` son la misma talla física y al convertir
-chocan. No se borra ninguna; sale avisado con los SKU.
-
-## ⚠️ Pendiente de confirmar
-
-**Los unisex.** Sin género uso **US Men** por defecto. Si Vans te los manda en
-escala de mujer, se cambia una línea en `engines/tallas_calzado.py`:
-
-```python
-ESCALA_UNISEX = MUJER
-```
+> Después de subir, **reinicia la app en Streamlit Cloud** para que reinstale
+> las dependencias.
 
 ---
 
 ## Pruebas
 
-**Batería completa: 39 archivos**, todos OK salvo `test_auth_accesos.py` y
+Batería completa: **40 archivos**, todos OK salvo `test_auth_accesos.py` y
 `test_brand_commercial_input.py`, los dos que ya fallaban desde antes.
 
 ```bash
-python scripts/test_centry_ean.py
+python scripts/test_dependencias.py
 ```
-
-40 pruebas (9 nuevas): la clave de talla en sus cuatro formas, los tres
-desajustes de Rockford, el SKU que era el EAN, que lo que no existe siga
-marcado, y que el origen informado sea el real.
 
 ```bash
 python scripts/test_centry_plantilla.py
 ```
 
-35 pruebas (10 nuevas para la redirección de tipos).
+39 pruebas, 4 nuevas para el color: que llegue a todas las variantes **venga de
+la columna que venga**, que ninguna fila quede vacía, que la Carga Sial también
+lo arrastre, y que el resolutor y el arrastre lean de la misma constante.
 
-```bash
-python scripts/test_tallas_calzado_pe.py
-```
+---
 
-38 pruebas: las 34 filas de la guía y el producto real de la tienda.
+## Nota sobre los dos repos
+
+`catalogo-control-center` se quedó **3 commits atrás**: no tiene las tallas de
+Vans, la redirección de tipos ni el EAN de Rockford. `app-matrixify-columbia`
+—el que corre— sí los tiene.
+
+Dime si quieres que `catalogo-control-center` se mantenga sincronizado o si lo
+damos por muerto, para no volver a mirar el repo equivocado.

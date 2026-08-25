@@ -406,6 +406,94 @@ class TestElTipoLlegaAlArchivo(unittest.TestCase):
                 self.assertEqual(avisos, [])
 
 
+class TestElColorLlegaATodasLasVariantes(unittest.TestCase):
+    """Regresion: el color salia solo en la primera variante del producto.
+
+    Matrixify escribe el bloque de producto UNICAMENTE en la primera fila de
+    cada producto; las filas de las demas tallas vienen con esos campos
+    vacios. `forward_fill_product_block` arrastra ese bloque hacia abajo, pero
+    de las DIEZ columnas de las que el motor puede leer el color solo se
+    arrastraba una (`custom.color`), y no es la primera de la lista. Resultado:
+    la talla 38 salia con color y el resto en blanco.
+    """
+
+    COD = "RK110021743-5ZV"
+    TALLAS = ["38", "39", "40", "41"]
+
+    def _centry_con_color_solo_en_la_primera_fila(self, columna_color):
+        """Un Matrixify como el de verdad: bloque de producto en la fila 1."""
+        cfg = g.get_brand_config("rockford")
+        mx = []
+        for indice, talla in enumerate(self.TALLAS):
+            campos = {
+                "Handle": "zapato",
+                "Variant SKU": str(600000 + indice),
+                "Option1 Value": talla,
+                "Variant Price": "199",
+            }
+            if indice == 0:
+                campos.update({
+                    "Title": "Zapato Vestir Hombre",
+                    "Vendor": "Rockford",
+                    "Type": "Zapatos",
+                    "Image Src": "https://cdn/f.jpg",
+                    "Metafield: custom.codigo_modelo_color [id]": self.COD,
+                    "Metafield: custom.genero [single_line_text_field]": "Masculino",
+                    columna_color: "Negro",
+                })
+            mx.append(fila(**campos))
+        arti = pd.DataFrame([{
+            "CODINT_MA": str(600000 + i), "COD MOD COL": self.COD, "TALNUM_MA": t,
+            "MARCA_MA": "ROCKFORD", "CodBarras": f"779870000000{i}",
+            "Precio": "199", "Genero": "MASCULINO", "TipoProducto": "Zapatos",
+        } for i, t in enumerate(self.TALLAS)])
+        centry, _ = app.build_centry_from_matrixify(pd.DataFrame(mx), cfg, arti_df=arti)
+        return centry
+
+    def test_venga_de_la_columna_que_venga_llega_a_todas(self):
+        for columna in app.CENTRY_COLUMNAS_COLOR:
+            with self.subTest(columna=columna):
+                centry = self._centry_con_color_solo_en_la_primera_fila(columna)
+                colores = [str(f.get("Color")).strip() for _, f in centry.iterrows()]
+                self.assertEqual(len(colores), len(self.TALLAS))
+                self.assertTrue(all(c == "Negro" for c in colores), colores)
+
+    def test_el_color_no_queda_vacio_en_ninguna_fila(self):
+        centry = self._centry_con_color_solo_en_la_primera_fila(
+            "Metafield: custom.color_forus [single_line_text_field]"
+        )
+        vacios = [i for i, (_, f) in enumerate(centry.iterrows())
+                  if not str(f.get("Color")).strip()]
+        self.assertEqual(vacios, [])
+
+    def test_la_lista_de_columnas_es_la_que_usa_el_resolutor(self):
+        """Las dos partes leen de la MISMA constante: si alguien agrega una
+        columna al resolutor, se arrastra sola."""
+        import inspect
+
+        fuente = inspect.getsource(app.centry_color_name_from_row)
+        self.assertIn("CENTRY_COLUMNAS_COLOR", fuente)
+
+    def test_la_carga_sial_tambien_lo_arrastra(self):
+        cfg = g.get_brand_config("rockford")
+        mx = []
+        for indice, talla in enumerate(["38", "39", "40"]):
+            campos = {"Handle": "zapato", "Variant SKU": str(700000 + indice),
+                      "Option1 Value": talla}
+            if indice == 0:
+                campos.update({
+                    "Title": "Zapato", "Vendor": "Rockford", "Type": "Zapatos",
+                    "Metafield: custom.codigo_modelo_color [id]": self.COD,
+                    "Metafield: custom.color_forus [single_line_text_field]": "Negro",
+                })
+            mx.append(fila(**campos))
+        sial = app.build_centry_sial_from_matrixify(pd.DataFrame(mx), cfg)
+        columnas = [c for c in sial.columns if "olor" in c]
+        self.assertTrue(columnas, "la Carga Sial deberia traer una columna de color")
+        valores = [str(v).strip() for v in sial[columnas[0]]]
+        self.assertTrue(all(v == "Negro" for v in valores), valores)
+
+
 class TestResumenDeLaPantalla(unittest.TestCase):
     """Listos | Con observaciones | Bloqueados."""
 

@@ -310,6 +310,32 @@ auditoría **no** lo causan (usan el sha del blob, no el del commit).
 libro sin hojas. Se corrigió en `dataframe_to_excel_bytes` escribiendo una hoja
 "Sin datos" cuando el diccionario llega vacío.
 
+**Siblings: el tipo del metacampo lo manda la TIENDA, no el código.**
+`theme.siblings` casi nunca tiene definición en Shopify: el tipo se le fija con
+la primera escritura y después rechaza cualquier otro. Ni `engines/catalog_map`
+ni la cabecera de Matrixify pueden saber cuál quedó. Por eso el mismo metacampo
+entraba por un camino y fallaba por otro.
+
+- La carga parcial mandaba `theme.siblings` y `custom.siblings` en la **misma**
+  llamada a `metafieldsSet`. La mutación es todo o nada: un solo tipo que no
+  coincidiera dejaba los **dos** sin escribir y la fila en ERROR.
+- Ahora cada metacampo va en su propia llamada, con el tipo de la definición de
+  la tienda, y si Shopify lo rechaza por tipo se lee el que exige del propio
+  mensaje de error y se reintenta **una** vez. El tipo aceptado se recuerda por
+  sesión (`_tipo_metafield_recordado`), así que el resto del grupo va directo.
+- Los valores se eligen según el tipo que se termine usando: `gid://` para
+  referencia, handles para texto. Mandar unos donde van los otros era la otra
+  mitad del error.
+- Un error que **no** habla de tipos (permisos, red) no se reintenta.
+- La vista previa compara **conjuntos**, no texto: Shopify devuelve el JSON sin
+  espacios y `json.dumps` lo escribe con `", "`. Comparando texto crudo, cada
+  análisis proponía reescribir el catálogo entero aunque ya estuviera correcto.
+
+**`apply_shopify_preview` usaba `brand_config`, que no recibe.** La rama de
+tecnologías de la carga parcial levantaba `NameError` y dejaba la fila en ERROR
+sin haber intentado escribir. El tipo y los logos se leen ahora de la propia
+vista previa, que ya los trae.
+
 **`inotify watch limit reached`** en Streamlit Cloud. Se resuelve con
 `fileWatcherType = "none"` en `.streamlit/config.toml`.
 
@@ -366,6 +392,9 @@ python scripts/test_engines_price_check.py             # 19
 python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 40
 python scripts/test_partial_maintenance_validations.py # 6
+python scripts/test_siblings_carga_completa.py         # 24
+python scripts/test_siblings_referencias.py            # 14
+python scripts/test_siblings_tipos.py                  # 20
 python scripts/test_ticket_system.py                   # 28
 ```
 

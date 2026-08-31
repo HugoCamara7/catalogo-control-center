@@ -6351,6 +6351,64 @@ def normalize_photo_update_input(df):
     return pd.DataFrame({"Mod-Col": values})
 
 
+# Columna interna donde quedan los links nuevos, ya limpios y en orden, para que
+# el resto del flujo de fotos los lea igual que si los hubiera armado el motor.
+PHOTO_LINKS_COLUMN = "Links fotos nuevos"
+
+
+def normalize_photo_links_input(df):
+    """Deja una fila por producto con los links de fotos que escribio el usuario.
+
+    Acepta los dos formatos que salen naturalmente de un Excel: una fila por
+    codigo con varias columnas de fotos (Foto 1, Foto 2...), o varias filas del
+    mismo codigo con un link cada una. En ambos casos termina con una sola fila
+    por Mod-Col y los links juntos, en el orden en que venian y sin repetidos.
+
+    Se conserva el indice de la primera fila de cada grupo para que los avisos
+    sigan apuntando a la fila real del Excel.
+    """
+    from generate_columbia_matrixify import photo_links_from_row
+
+    if df is None:
+        return pd.DataFrame()
+    source = df.dropna(how="all").copy()
+    if source.empty:
+        return pd.DataFrame()
+
+    key_col = first_existing_column(source, UPDATE_KEY_COLUMNS)
+    if key_col and key_col != "Mod-Col":
+        source["Mod-Col"] = source[key_col]
+    handle_col = first_existing_column(source, HANDLE_UPDATE_COLUMNS)
+    if handle_col and handle_col != "Handle":
+        source["Handle"] = source[handle_col]
+
+    columnas_links = [column for column in source.columns if column not in ("Mod-Col", "Handle")]
+    grupos = {}
+    orden = []
+    for indice, row in source.iterrows():
+        key = clean_value(row.get("Mod-Col")).upper()
+        handle = clean_value(row.get("Handle"))
+        # Sin codigo ni handle no hay con que agrupar: cada fila va sola para
+        # que el aviso salga por fila y no todas mezcladas en una.
+        identificador = key or handle or "__fila_%s" % indice
+        if identificador not in grupos:
+            grupos[identificador] = {"Mod-Col": key, "Handle": handle, "indice": indice, "links": []}
+            orden.append(identificador)
+        for link in photo_links_from_row(row, columns=columnas_links):
+            if link not in grupos[identificador]["links"]:
+                grupos[identificador]["links"].append(link)
+
+    filas = [
+        {
+            "Mod-Col": grupos[identificador]["Mod-Col"],
+            "Handle": grupos[identificador]["Handle"],
+            PHOTO_LINKS_COLUMN: "; ".join(grupos[identificador]["links"]),
+        }
+        for identificador in orden
+    ]
+    return pd.DataFrame(filas, index=[grupos[identificador]["indice"] for identificador in orden])
+
+
 TECHNOLOGY_MAINTAINER = [
     {
         "brand": "Columbia",
@@ -7230,6 +7288,7 @@ def build_shopify_update_preview(
     image_mode="replace",
     only_missing_images=True,
     body_mode="from_input",
+    photo_source="bucket",
 ):
     by_key, by_handle = _product_lookup_from_shopify(shopify_products)
     rows = []
@@ -7281,13 +7340,33 @@ def build_shopify_update_preview(
             )
         return pd.DataFrame(rows), pd.DataFrame(issues), pd.DataFrame()
 
+    photo_source = clean_value(photo_source).lower() or "bucket"
     if operation == "photos":
-        update_input_df = normalize_photo_update_input(update_input_df)
+        update_input_df = (
+            normalize_photo_links_input(update_input_df)
+            if photo_source == "links"
+            else normalize_photo_update_input(update_input_df)
+        )
     source_df = (
         normalize_partial_update_input(update_input_df, operation)
         if operation != "photos"
         else (update_input_df.dropna(how="all").copy() if update_input_df is not None else pd.DataFrame())
     )
+    if operation == "photos" and photo_source == "links" and source_df.empty:
+        # Sin archivo con links no hay nada que reemplazar. Caer al catalogo
+        # completo aqui seria borrarle las fotos a todo el sitio.
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(
+                [
+                    {
+                        "Problema": "No hay links de fotos que aplicar",
+                        "Detalle": "Sube un Excel con el codigo modelo color y los links nuevos de cada foto.",
+                    }
+                ]
+            ),
+            pd.DataFrame(),
+        )
     if operation in ("photos", "technologies") and source_df.empty:
         source_df = pd.DataFrame(shopify_products)
     if operation == "body" and body_mode == "fix_catalog" and source_df.empty:
@@ -7604,12 +7683,28 @@ def build_shopify_update_preview(
             rows.append(preview_row)
         elif operation == "photos":
             current_images = clean_value(product.get("Image Src"))
-            if only_missing_images and current_images:
-                continue
-            from generate_columbia_matrixify import brand_image_config, image_candidates
+            if photo_source == "links":
+                # Links escritos por el usuario: se usan tal cual y no se aplica
+                # el filtro "solo sin foto", porque pidio cambiar justo estas.
+                urls = _split_semicolon_values(row.get(PHOTO_LINKS_COLUMN))
+                if not urls:
+                    issues.append(
+                        {
+                            "Mod-Col": product_key,
+                            "Handle": product.get("Handle"),
+                            "Problema": "La fila no trae links de fotos",
+                            "Detalle": "Revisa que los links empiecen con http:// o https://.",
+                            "Fila": input_index + 2,
+                        }
+                    )
+                    continue
+            else:
+                if only_missing_images and current_images:
+                    continue
+                from generate_columbia_matrixify import brand_image_config, image_candidates
 
-            row_brand_config = brand_image_config(row.get("Marca") or product.get("Vendor"), brand_config)
-            urls = image_candidates(product_key, row_brand_config)
+                row_brand_config = brand_image_config(row.get("Marca") or product.get("Vendor"), brand_config)
+                urls = image_candidates(product_key, row_brand_config)
             urls_text = "; ".join(urls)
             rows.append(
                 {
@@ -7625,7 +7720,12 @@ def build_shopify_update_preview(
                     "Modo fotos": image_mode,
                     "Media IDs": product.get("Media IDs"),
                     "Estado": "OK",
-                    "Observacion": "REPLACE elimina fotos actuales antes de subir las 10 URLs nuevas; MERGE agrega las URLs nuevas.",
+                    "Observacion": (
+                        f"{len(urls)} link(s) tomados del Excel. "
+                        "REPLACE elimina las fotos actuales antes de subirlos; MERGE los agrega."
+                        if photo_source == "links"
+                        else "REPLACE elimina fotos actuales antes de subir las 10 URLs nuevas; MERGE agrega las URLs nuevas."
+                    ),
                 }
             )
             matrixify_rows.append(
@@ -20999,6 +21099,7 @@ api_version = "{DEFAULT_API_VERSION}"
         tag_mode = "merge"
         image_mode = "replace"
         only_missing_images = True
+        photo_source = "bucket"
         body_mode = "from_input"
         png_mod_col = ""
         png_image_mode = "merge"
@@ -21017,14 +21118,48 @@ api_version = "{DEFAULT_API_VERSION}"
             tag_mode = st.radio("Como aplicar tags", ["merge", "replace"], format_func=lambda v: "Agregar a los tags actuales" if v == "merge" else "Reemplazar todos los tags")
             update_file = st.file_uploader("2. Subir archivo con Mod-Col y Tags", type=["xlsx", "xls"], key="update_tags")
         elif update_operation == "photos":
+            photo_source_label = st.radio(
+                "2. De dónde salen las fotos",
+                ["Bucket por código (10 vistas)", "Links nuevos desde Excel"],
+                horizontal=True,
+                key=f"photo_source_{brand_config['site_key']}",
+                help=(
+                    "Bucket: la app arma las 10 URLs con el código modelo color, como siempre. "
+                    "Links nuevos: tú traes las direcciones porque las fotos están en otro lado."
+                ),
+            )
+            photo_source = "links" if clean_value(photo_source_label).startswith("Links") else "bucket"
             image_mode = st.radio("Comando de fotos", ["replace", "merge"], format_func=lambda v: "Reemplazar fotos del producto" if v == "replace" else "Agregar/mezclar fotos")
-            if image_mode == "replace":
+            if photo_source == "links":
+                # Con links escritos a mano el filtro "solo sin foto" estorba:
+                # Hugo sube estos links justamente para cambiar fotos que ya
+                # estan cargadas.
                 only_missing_images = False
-                st.caption("REPLACE procesa productos aunque ya tengan fotos: elimina las actuales y sube las 10 vistas nuevas por API.")
+                update_file = st.file_uploader(
+                    "3. Subir Excel con Cod Mod Col y los links de las fotos nuevas",
+                    type=["xlsx", "xls"],
+                    key="update_photos_links",
+                    help=(
+                        "Una columna con el código (Cod Mod Col, Mod-Col, Código Modelo Color) y los links "
+                        "en columnas Foto 1, Foto 2... o en una sola columna Links/URL. También sirve una "
+                        "fila por foto repitiendo el código."
+                    ),
+                )
+                st.caption(
+                    "Los links se usan tal cual, en el orden en que vengan: no se arma ninguna URL por código "
+                    "ni se filtra por extensión. REPLACE borra las fotos actuales y deja solo estas; "
+                    "MERGE las agrega a las que ya tiene el producto."
+                )
+                if update_file is None:
+                    st.info("Sube el Excel con los links para poder analizar.")
             else:
-                only_missing_images = st.checkbox("Solo productos sin foto en el catálogo", value=False)
-            update_file = st.file_uploader("2. Opcional: subir lista con Mod-Col a corregir", type=["xlsx", "xls"], key="update_photos")
-            st.caption("Si no subes lista, revisa el catálogo completo. Siempre genera 10 URLs por producto, solo JPG.")
+                if image_mode == "replace":
+                    only_missing_images = False
+                    st.caption("REPLACE procesa productos aunque ya tengan fotos: elimina las actuales y sube las 10 vistas nuevas por API.")
+                else:
+                    only_missing_images = st.checkbox("Solo productos sin foto en el catálogo", value=False)
+                update_file = st.file_uploader("3. Opcional: subir lista con Mod-Col a corregir", type=["xlsx", "xls"], key="update_photos")
+                st.caption("Si no subes lista, revisa el catálogo completo. Siempre genera 10 URLs por producto, solo JPG.")
         elif update_operation == "photos_png":
             png_origen = st.radio(
                 "2. De dónde salen los códigos",
@@ -21157,7 +21292,10 @@ api_version = "{DEFAULT_API_VERSION}"
 
         update_ready = (
             update_file
-            or update_operation in ("photos", "siblings", "technologies", "size_guides", "inventory_locations")
+            or update_operation in ("siblings", "technologies", "size_guides", "inventory_locations")
+            # Fotos por bucket funciona sin archivo (revisa el catalogo entero).
+            # Con links propios el Excel es obligatorio: sin el no hay links.
+            or (update_operation == "photos" and photo_source != "links")
             # El mantenedor PNG no necesita archivo cuando va con un solo
             # codigo: le basta el escrito. Con Excel entra por `update_file`.
             or (update_operation == "photos_png" and bool(png_mod_col))
@@ -21172,6 +21310,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 clean_value(update_operation),
                 clean_value(tag_mode),
                 clean_value(image_mode),
+                clean_value(photo_source),
                 clean_value(body_mode),
                 clean_value(only_missing_images),
                 clean_value(png_mod_col),
@@ -21607,6 +21746,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         image_mode=image_mode,
                         only_missing_images=only_missing_images,
                         body_mode=body_mode,
+                        photo_source=photo_source,
                     )
                     st.session_state["shopify_preview_df"] = preview_df
                     st.session_state["shopify_preview_issues_df"] = issues_df
@@ -21749,6 +21889,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         image_mode=image_mode,
                         only_missing_images=only_missing_images,
                         body_mode=body_mode,
+                        photo_source=photo_source,
                     )
                     diagnostic_df = pd.DataFrame()
                     if matrixify_df.empty:

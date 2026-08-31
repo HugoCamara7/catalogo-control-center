@@ -436,6 +436,98 @@ def image_candidates(mod_col, brand_config=None):
     return [f"{brand_config['image_base_url']}/{image_key}_{position}.jpg" for position in range(1, MAX_IMAGES_PER_PRODUCT + 1)]
 
 
+# ---------------------------------------------------------------------------
+# Fotos con links propios
+#
+# El motor de arriba arma las 10 vistas a partir del codigo modelo-color y del
+# bucket de la marca. Cuando la foto vive en otra direccion (una campana, un
+# proveedor, un bucket distinto) no hay codigo que la genere: el link tiene que
+# venir escrito. Estas funciones leen esos links desde el Excel del usuario y no
+# tocan `image_candidates`, que sigue siendo la unica fuente de las URLs por
+# codigo.
+# ---------------------------------------------------------------------------
+
+# Cabeceras que se entienden como "aqui van links de fotos". Se compara con
+# `normalize_header_key`, asi que "URL Imagen", "Foto 1" y "IMAGEN_2" caen todas
+# en la misma bolsa sin declarar cada variante.
+PHOTO_LINK_HEADER_HINTS = (
+    "foto",
+    "imagen",
+    "image",
+    "img",
+    "vista",
+    "link",
+    "url",
+    "picture",
+)
+
+# Columnas que suenan a link pero no son de fotos. Sin esto, una columna
+# "URL del producto" con la ficha de Shopify entraria como si fuera una imagen.
+PHOTO_LINK_HEADER_BLOCKED = (
+    "producto",
+    "product",
+    "ficha",
+    "handle",
+    "pagina",
+    "video",
+    "guia",
+)
+
+PHOTO_LINK_SPLIT_RE = re.compile(r"[\s;,|]+")
+
+# Signos que suelen venir pegados al link cuando se copia desde un correo o
+# desde una celda con formato.
+PHOTO_LINK_TRIM_CHARS = "\"'<>()[]"
+
+
+def is_photo_link_column(name):
+    """True si la cabecera anuncia links de fotos."""
+    key = normalize_header_key(name)
+    if not key:
+        return False
+    if any(bloqueada in key for bloqueada in PHOTO_LINK_HEADER_BLOCKED):
+        return False
+    return any(pista in key for pista in PHOTO_LINK_HEADER_HINTS)
+
+
+def split_photo_links(value):
+    """Saca las URLs de una celda, vengan de a una o varias pegadas.
+
+    Se separa por espacios, punto y coma, coma y barra vertical, y solo
+    sobrevive lo que empieza con http:// o https://. Asi una celda con un link
+    suelto, una con tres separados por coma y una con un texto cualquiera se
+    resuelven con la misma regla.
+    """
+    links = []
+    for token in PHOTO_LINK_SPLIT_RE.split(clean(value)):
+        candidato = token.strip().strip(PHOTO_LINK_TRIM_CHARS).rstrip(".")
+        if candidato.lower().startswith(("http://", "https://")):
+            links.append(candidato)
+    return links
+
+
+def photo_links_from_row(row, columns=None):
+    """Devuelve, en orden y sin repetir, los links de fotos de una fila.
+
+    Si la fila trae columnas reconocibles (Foto 1, Imagen, URL...) se leen solo
+    esas; si no hay ninguna, se revisan todas las celdas y se rescata lo que
+    parezca una URL. Sirve igual para un Excel con diez columnas de fotos que
+    para uno con una sola columna y los links pegados.
+    """
+    if row is None:
+        return []
+    if columns is None:
+        columns = list(row.index) if hasattr(row, "index") else list(row.keys())
+    marcadas = [column for column in columns if is_photo_link_column(column)]
+    revisar = marcadas or list(columns)
+    links = []
+    for column in revisar:
+        for link in split_photo_links(row.get(column)):
+            if link not in links:
+                links.append(link)
+    return links
+
+
 def validation_url(url, brand_config=None):
     brand_config = brand_config or get_brand_config()
     return url.replace(brand_config["image_base_url"], brand_config["image_validation_base_url"])
@@ -3345,6 +3437,7 @@ def build_matrixify_updates(
     image_mode="replace",
     only_missing_images=True,
     body_mode="from_input",
+    photo_source="bucket",
 ):
     brand_config = brand_config or get_brand_config()
     matrixify_df = matrixify_source.copy() if isinstance(matrixify_source, pd.DataFrame) else pd.DataFrame()
@@ -3428,17 +3521,32 @@ def build_matrixify_updates(
             )
         elif operation == "photos":
             product_key = key or clean(catalog_row.get(PRODUCT_KEY_COLUMN)).upper()
-            source_brand = first_non_empty(
-                source_row.get("Marca"),
-                source_row.get("Brand"),
-                catalog_row.get("Metafield: custom.marca [single_line_text_field]"),
-                brand_by_key.get(product_key),
-            )
-            row_brand_config = brand_image_config(source_brand, brand_config)
-            urls = image_candidates(product_key, row_brand_config)
             current_image = clean(catalog_row.get("Image Src"))
-            if only_missing_images and current_image:
-                continue
+            if clean(photo_source).lower() == "links":
+                # Los links vienen escritos en el Excel: no se arma ninguna URL
+                # por codigo y el filtro "solo sin foto" no aplica, porque el
+                # usuario pidio expresamente cambiar estas fotos.
+                urls = photo_links_from_row(source_row)
+                if not urls:
+                    issues.append(
+                        {
+                            "Mod-Col": product_key,
+                            "Handle": catalog_handle,
+                            "Problema": "La fila no trae links de fotos",
+                        }
+                    )
+                    continue
+            else:
+                source_brand = first_non_empty(
+                    source_row.get("Marca"),
+                    source_row.get("Brand"),
+                    catalog_row.get("Metafield: custom.marca [single_line_text_field]"),
+                    brand_by_key.get(product_key),
+                )
+                row_brand_config = brand_image_config(source_brand, brand_config)
+                urls = image_candidates(product_key, row_brand_config)
+                if only_missing_images and current_image:
+                    continue
             rows.append(
                 _minimal_product_update(
                     catalog_row,

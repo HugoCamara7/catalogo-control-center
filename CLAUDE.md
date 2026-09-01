@@ -313,8 +313,28 @@ Dos escalones, no uno: **640px** (todavía caben dos tarjetas por fila) y
 - Todo va dentro de un `@media`. Una regla suelta con `!important` se llevaría
   por delante el escritorio — hay un test que lo comprueba.
 
+**Cada clase la gobierna UNA hoja.** `.ticket-*` es de `render_ticket_styles`.
+Tenerla también en `inject_custom_css` con `!important` dejaba los KPI de la
+bandeja en dos columnas cuando la hoja de Solicitudes pedía tres. Dos hojas
+peleando por la misma clase no se ve hasta que alguien mide el DOM; hay un test
+que lo impide.
+
+**Columnas anidadas.** Una columna que CONTIENE otra fila de columnas tiene que
+quedarse con el ancho entero. Sin eso, la bandeja partía la pantalla en dos y
+los cinco filtros de adentro quedaban en 181px: uno por fila, con la mitad del
+ancho vacía al lado. Las columnas angostas sí comparten fila (base 50%, mínimo
+150px).
+
+**La bandeja de Solicitudes es la pantalla que había que medir.** En 390px la
+primera solicitud empezaba en **y=1138px** — 1,3 pantallas de scroll antes de
+ver nada útil. Nada estaba roto: simplemente no se podía trabajar. Quedó en
+**y=724px**, dentro de la primera pantalla. Se logró con la cabecera compacta
+(Streamlit le pone su propio padding a los `h1` de markdown, y con el
+sobretítulo oculto el hueco era más alto que el título), los seis KPI de a tres
+por fila y los filtros de a dos.
+
 Verificado con capturas reales (Chromium 390px, 360px y 1440px): sin desborde
-horizontal en ninguno, y escritorio intacto en 4 columnas.
+horizontal en ninguno, y escritorio intacto.
 
 ---
 
@@ -469,7 +489,7 @@ python scripts/test_engines_price_check.py             # 19
 python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 40
 python scripts/test_engines_load_status.py             # 28
-python scripts/test_css_movil.py                       # 15
+python scripts/test_css_movil.py                       # 21
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24
 python scripts/test_siblings_referencias.py            # 14

@@ -73,10 +73,21 @@ class TestCortesDeMovil(unittest.TestCase):
         self.assertIn("max-width:430px", CSS, "Falta el corte de telefono angosto")
 
     def test_las_rejillas_grandes_se_reducen_en_movil(self):
+        """Cada rejilla se comprueba en la hoja que la gobierna, no en las dos.
+
+        Las `.ticket-*` viven en `render_ticket_styles`; tenerlas tambien aqui
+        era el error que dejaba los KPI de la bandeja en dos columnas.
+        """
         movil = CSS[CSS.index("max-width:640px"):]
-        for clase in ("kpi-card-grid", "ticket-kpi-grid", "ticket-result-grid",
-                      "ticket-stepper", "ticket-workspace", "partial-kpi-grid"):
+        for clase in ("kpi-card-grid", "partial-kpi-grid", "metric-grid",
+                      "commercial-status-grid", "brand-request-kpis"):
             self.assertIn(clase, movil, f"{clase} no se reduce en movil")
+
+        ticket = _fuente_de("render_ticket_styles")
+        ticket_movil = ticket[ticket.index("max-width:640px"):]
+        for clase in ("ticket-kpi-grid", "ticket-request-grid",
+                      "ticket-summary", "ticket-workspace"):
+            self.assertIn(clase, ticket_movil, f"{clase} no se reduce en movil")
 
     def test_las_columnas_de_streamlit_se_apilan(self):
         movil = CSS[CSS.index("max-width:640px"):]
@@ -144,6 +155,56 @@ class TestLoginEnMovil(unittest.TestCase):
     def test_el_campo_del_login_no_hace_zoom_en_ios(self):
         movil = self.login[self.login.index("max-width: 560px"):]
         self.assertIn("font-size:16px !important", movil)
+
+
+class TestBandejaDeSolicitudesEnMovil(unittest.TestCase):
+    """La pantalla mas pesada de la app, medida en un telefono de 390px.
+
+    Antes de esto la primera solicitud empezaba en y=1138px: 1,3 pantallas de
+    scroll antes de ver nada util. Nada estaba roto, simplemente no se podia
+    trabajar. Quedo en y=724px, dentro de la primera pantalla.
+    """
+
+    def setUp(self):
+        self.ticket = _fuente_de("render_ticket_styles")
+
+    def test_la_hoja_de_solicitudes_tiene_su_propio_bloque_movil(self):
+        self.assertIn("max-width:640px", self.ticket)
+        self.assertIn("max-width:430px", self.ticket)
+
+    def test_las_clases_ticket_las_gobierna_una_sola_hoja(self):
+        # Estaban en las DOS hojas. La de `inject_custom_css` ganaba por
+        # `!important` y dejaba los KPI de la bandeja en dos columnas cuando la
+        # hoja de Solicitudes pedia tres. Dos hojas peleando por la misma clase
+        # no se ve hasta que alguien mide el DOM.
+        movil = CSS[CSS.index("================= MOVIL"):]
+        for clase in (".ticket-kpi-grid", ".ticket-result-grid", ".ticket-summary",
+                      ".ticket-request-grid", ".ticket-stepper", ".ticket-workspace"):
+            self.assertNotIn(clase, movil,
+                             f"{clase} volvio a inject_custom_css; la gobierna render_ticket_styles")
+
+    def test_los_kpi_de_la_bandeja_van_de_a_tres(self):
+        movil = self.ticket[self.ticket.index("max-width:640px"):]
+        self.assertIn(".ticket-kpi-grid{grid-template-columns:repeat(3", movil)
+
+    def test_la_cabecera_no_deja_hueco_muerto(self):
+        # Streamlit le pone su propio padding a los h1 de markdown (~36px
+        # arriba y abajo). Sin anularlo, el hueco era mas alto que el titulo.
+        movil = self.ticket[self.ticket.index("max-width:640px"):]
+        self.assertIn(".ticket-hero h1", movil)
+        self.assertIn("padding:0", movil)
+
+    def test_las_columnas_anidadas_toman_la_fila_entera(self):
+        # La fila exterior partia la pantalla en dos y los cinco filtros de
+        # adentro quedaban en 181px: uno por fila, con la mitad vacia al lado.
+        movil = CSS[CSS.index("max-width:640px"):]
+        self.assertIn('[data-testid="stColumn"]:has([data-testid="stHorizontalBlock"])', movil)
+        self.assertIn("flex-basis:100% !important", movil)
+
+    def test_las_columnas_angostas_comparten_fila(self):
+        movil = CSS[CSS.index("max-width:640px"):]
+        self.assertIn("calc(50% - 4px)", movil)
+        self.assertIn("min-width:150px", movil)
 
 
 class TestNoSeRompioEscritorio(unittest.TestCase):

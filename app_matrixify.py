@@ -16433,17 +16433,40 @@ def inject_custom_css(config):
             .block-container * {{ max-width:100%; }}
             img, svg {{ max-width:100%; height:auto; }}
 
-            /* Las columnas de st.columns se apilan. Sin esto quedan tres
-               columnas de 110px con un boton cortado en cada una. */
-            [data-testid="stHorizontalBlock"] {{ flex-wrap:wrap !important; gap:10px !important; }}
+            /* Las columnas de st.columns se reacomodan. Forzarlas al 100%
+               las apilaba TODAS: la bandeja de Solicitudes tiene cinco filtros
+               y se comian cinco pantallas antes de la primera solicitud. Con
+               base del 50% y un minimo de 150px, dos selectores angostos
+               comparten fila y uno ancho se queda con la fila entera. */
+            [data-testid="stHorizontalBlock"] {{ flex-wrap:wrap !important; gap:8px !important; }}
             [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
             [data-testid="stHorizontalBlock"] > [data-testid="column"] {{
-                flex:1 1 100% !important; width:100% !important; min-width:0 !important;
+                flex:1 1 calc(50% - 4px) !important; min-width:150px !important; width:auto !important;
+            }}
+            /* Una columna que CONTIENE otra fila de columnas se queda con el
+               ancho entero. Si no, la bandeja partia la pantalla en dos y los
+               cinco filtros de adentro quedaban en 181px: uno por fila, con la
+               mitad del ancho vacio al lado. */
+            [data-testid="stColumn"]:has([data-testid="stHorizontalBlock"]) {{
+                flex-basis:100% !important; min-width:100% !important;
             }}
 
-            /* Tarjetas chicas: dos por fila. */
-            .kpi-card-grid, .ticket-kpi-grid, .ticket-result-grid, .partial-kpi-grid,
-            .metric-grid, .base-status-grid, .commercial-status-grid, .ticket-summary,
+            /* La etiqueta de cada control reservaba 21px arriba y 24px abajo.
+               Con diez controles en pantalla eso es media pantalla en aire. */
+            [data-testid="stWidgetLabel"] {{ margin-bottom:2px !important; }}
+            [data-testid="stWidgetLabel"] p {{ font-size:12.5px !important; margin-bottom:0 !important; }}
+            [data-testid="stElementContainer"] {{ margin-bottom:0 !important; }}
+
+            /* Tarjetas chicas: dos por fila.
+
+               Las clases `.ticket-*` NO estan aqui a proposito: las gobierna
+               `render_ticket_styles()`, que es otra hoja. Con la regla puesta
+               en las dos, la de aca ganaba por `!important` y dejaba los KPI de
+               la bandeja en dos columnas cuando alla piden tres. Dos hojas
+               peleando por la misma clase es un error que no se ve hasta que
+               alguien mide el DOM. */
+            .kpi-card-grid, .partial-kpi-grid,
+            .metric-grid, .base-status-grid, .commercial-status-grid,
             .brand-request-kpis, .brand-request-results, .allowed-logo-grid,
             .ejec-grid, .cola-detalle-grid {{
                 grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:8px !important;
@@ -16451,13 +16474,12 @@ def inject_custom_css(config):
 
             /* Bloques de contenido y pasos: una sola columna. Un stepper en
                vertical se lee mejor en telefono que seis casillas apretadas. */
-            .ticket-workspace, .ticket-request-grid, .commercial-flow, .flow-split,
+            .commercial-flow, .flow-split,
             .kpi-chart-grid, .detail, .source-grid, .flow-cause-grid,
             .wide-checklist-grid, .brand-request-meta, .matrix-stepper, .pasos,
-            .ticket-stepper, .commercial-summary-grid {{
+            .commercial-summary-grid {{
                 grid-template-columns:1fr !important;
             }}
-            .ticket-list-panel {{ max-height:none !important; }}
 
             /* Objetivo tactil: 44px es el minimo de Apple y Google. Debajo de
                eso el dedo falla y el usuario pulsa el boton de al lado. */
@@ -16554,8 +16576,10 @@ def inject_custom_css(config):
             /* Se MANTIENEN dos por fila. Con la tarjeta ya compacta caben en
                los ~175px que deja cada columna, y ocho KPIs pasan de ocho
                filas a cuatro: la mitad de scroll para ver el titular completo. */
-            .kpi-card-grid, .ticket-kpi-grid, .ticket-result-grid, .partial-kpi-grid,
-            .metric-grid, .base-status-grid, .commercial-status-grid, .ticket-summary,
+            /* Sin las `.ticket-*`, por lo mismo que arriba: las gobierna la
+               hoja de Solicitudes. */
+            .kpi-card-grid, .partial-kpi-grid,
+            .metric-grid, .base-status-grid, .commercial-status-grid,
             .brand-request-kpis, .brand-request-results {{
                 grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:7px !important;
             }}
@@ -19589,6 +19613,59 @@ def render_ticket_styles():
           border:1px solid #BFDBFE;border-radius:999px;background:#EFF6FF;color:#1D4ED8;
           font-size:12px;font-weight:800}
         .ticket-bulk b{font-size:14px}
+
+        /* ================= MOVIL =================================
+           Medido en un telefono de 390px: la primera solicitud empezaba en
+           y=1138px, o sea 1,3 pantallas de scroll antes de ver nada util.
+           Se reparte asi: cabecera 170px, seis KPIs 221px y los filtros el
+           resto. Nada estaba roto; simplemente no se podia trabajar.
+
+           Este bloque va aparte del de `inject_custom_css` porque
+           `render_ticket_styles()` es su propia hoja: lo de alla no llega aca.
+           ========================================================= */
+        @media(max-width:640px){
+          /* La cabecera dedicaba 170px a repetir en tres tamanos donde estas.
+             En el telefono el titulo basta; el sobretitulo es decoracion. */
+          .ticket-hero{padding:11px 13px;margin:0 0 8px}
+          .ticket-hero p{display:none}
+          /* Streamlit le pone su propio padding a los h1 de markdown (~36px
+             arriba y abajo). Con el sobretitulo oculto quedaba un hueco muerto
+             mas alto que el propio titulo. */
+          .ticket-hero h1{font-size:18px;line-height:1.2;margin:0;padding:0}
+          .ticket-hero span{margin-top:3px;font-size:12px}
+
+          /* Los KPI de la bandeja son etiqueta y numero, sin icono: entran
+             tres por fila. Seis pasan de 221px a unos 100px. */
+          .ticket-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+          .ticket-kpi-card{min-height:0;padding:7px 8px}
+          .ticket-kpi-card small{font-size:9.5px;line-height:1.15}
+          .ticket-kpi-card strong{font-size:16px}
+
+          /* La tarjeta de solicitud es lo que se viene a ver: se le deja el
+             ancho completo y se le quita el alto minimo de escritorio. */
+          .ticket-request-grid{grid-template-columns:1fr;gap:8px}
+          .ticket-request-card{min-height:0;padding:11px 12px}
+          .ticket-request-brand{margin:6px 0 4px}
+
+          /* Detalle: cuatro columnas de resumen no caben; dos si. */
+          .ticket-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:9px 0}
+          .ticket-summary>div{min-height:0;padding:8px 9px}
+          .ticket-summary small{margin-bottom:4px;font-size:10px}
+          .ticket-summary strong{font-size:14px}
+          .ticket-detail-shell{padding:0 11px 11px}
+          .ticket-section{padding:11px 12px;margin:9px 0}
+          .ticket-section h3{font-size:15px}
+          .ticket-section > p{margin:0 0 9px;font-size:12px}
+          .ticket-workspace{grid-template-columns:1fr}
+          .ticket-list-panel{max-height:none}
+        }
+        @media(max-width:430px){
+          /* Tres KPI de 118px siguen leyendose; el numero es corto. */
+          .ticket-kpi-grid{gap:5px}
+          .ticket-kpi-card{padding:6px 7px}
+          .ticket-kpi-card strong{font-size:15px}
+          .ticket-hero h1{font-size:17px}
+        }
         </style>
         """,
         unsafe_allow_html=True,

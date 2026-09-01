@@ -16406,6 +16406,172 @@ def inject_custom_css(config):
         @media (max-width:820px) {{
             .pasos {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
         }}
+
+        /* ================= MOVIL =================================
+           Las 13 media queries que ya habia paran en 900-1100px, que es
+           tablet. En un telefono (360-430px) las rejillas de 4 y 6 columnas
+           dejaban tarjetas de 60px: el numero se partia en tres lineas y la
+           etiqueta se cortaba. Aqui abajo va el tramo que faltaba.
+
+           Dos escalones, no uno: a 640px todavia caben dos tarjetas por fila
+           y se lee mejor que una columna larguisima; a 430px ya no.
+           ========================================================= */
+
+        /* --- Telefono y tablet en vertical --- */
+        @media (max-width:640px) {{
+            /* El contenedor de Streamlit reserva margenes de escritorio.
+               En 390px eso se come la mitad del ancho util. */
+            .main .block-container,
+            section.main > div.block-container,
+            [data-testid="stAppViewContainer"] .block-container {{
+                padding-left:14px !important; padding-right:14px !important;
+                padding-top:12px !important; max-width:100% !important;
+            }}
+
+            /* Nada puede desbordar el ancho de la pantalla: un solo elemento
+               ancho obliga a hacer scroll lateral en TODA la pagina. */
+            .block-container * {{ max-width:100%; }}
+            img, svg {{ max-width:100%; height:auto; }}
+
+            /* Las columnas de st.columns se apilan. Sin esto quedan tres
+               columnas de 110px con un boton cortado en cada una. */
+            [data-testid="stHorizontalBlock"] {{ flex-wrap:wrap !important; gap:10px !important; }}
+            [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+            [data-testid="stHorizontalBlock"] > [data-testid="column"] {{
+                flex:1 1 100% !important; width:100% !important; min-width:0 !important;
+            }}
+
+            /* Tarjetas chicas: dos por fila. */
+            .kpi-card-grid, .ticket-kpi-grid, .ticket-result-grid, .partial-kpi-grid,
+            .metric-grid, .base-status-grid, .commercial-status-grid, .ticket-summary,
+            .brand-request-kpis, .brand-request-results, .allowed-logo-grid,
+            .ejec-grid, .cola-detalle-grid {{
+                grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:8px !important;
+            }}
+
+            /* Bloques de contenido y pasos: una sola columna. Un stepper en
+               vertical se lee mejor en telefono que seis casillas apretadas. */
+            .ticket-workspace, .ticket-request-grid, .commercial-flow, .flow-split,
+            .kpi-chart-grid, .detail, .source-grid, .flow-cause-grid,
+            .wide-checklist-grid, .brand-request-meta, .matrix-stepper, .pasos,
+            .ticket-stepper, .commercial-summary-grid {{
+                grid-template-columns:1fr !important;
+            }}
+            .ticket-list-panel {{ max-height:none !important; }}
+
+            /* Objetivo tactil: 44px es el minimo de Apple y Google. Debajo de
+               eso el dedo falla y el usuario pulsa el boton de al lado. */
+            /* `st.form_submit_button` no es `.stButton`: sin este selector el
+               boton de Ingresar se quedaba en 140px en el login. */
+            /* Mismo caso que en el login: el contenedor mide lo que el texto,
+               asi que un boton sin `use_container_width` no crece por mas
+               `width:100%` que lleve encima. */
+            [data-testid="stElementContainer"]:has(> [data-testid="stFormSubmitButton"]),
+            [data-testid="stElementContainer"]:has(> .stButton),
+            [data-testid="stElementContainer"]:has(> .stDownloadButton) {{
+                width:100% !important;
+            }}
+            [data-testid="stFormSubmitButton"] {{ width:100% !important; }}
+            .stButton > button, .stDownloadButton > button,
+            [data-testid="stFormSubmitButton"] > button,
+            [data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-primary"],
+            [data-testid="stBaseButton-primaryFormSubmit"],
+            [data-testid="stBaseButton-secondaryFormSubmit"] {{
+                min-height:44px !important; width:100% !important;
+                font-size:14px !important; padding:10px 14px !important;
+            }}
+            .stSelectbox div[data-baseweb="select"] > div,
+            .stMultiSelect div[data-baseweb="select"] > div,
+            .stTextInput input, .stDateInput input, .stNumberInput input {{
+                min-height:44px !important; font-size:15px !important;
+            }}
+            /* 16px evita que iOS haga zoom automatico al enfocar un campo. */
+            .stTextInput input, .stTextArea textarea {{ font-size:16px !important; }}
+
+            /* Las pestanas se salen: que rueden en horizontal, sin cortarse. */
+            .stTabs [data-baseweb="tab-list"] {{
+                overflow-x:auto !important; flex-wrap:nowrap !important;
+                scrollbar-width:none; -webkit-overflow-scrolling:touch;
+            }}
+            .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar {{ display:none; }}
+            .stTabs [data-baseweb="tab"] {{ white-space:nowrap; padding:8px 12px !important; }}
+
+            /* Las tablas ruedan dentro de su caja, no arrastran la pagina. */
+            [data-testid="stDataFrame"], [data-testid="stTable"], .stDataFrame {{
+                max-width:100% !important; overflow-x:auto !important;
+            }}
+
+            /* El menu lateral tapa la pantalla completa si mantiene su ancho
+               de escritorio. Se deja un borde para poder cerrarlo tocando fuera. */
+            [data-testid="stSidebar"] {{ max-width:86vw !important; }}
+            [data-testid="stSidebar"] .stButton > button {{ min-height:46px !important; }}
+
+            /* Tipografia: los tamanos de escritorio parten los titulos. */
+            /* El heroe NO tenia padding propio: agregarselo aqui solo lo
+               hacia mas alto. En un telefono el alto es lo escaso, asi que se
+               recorta el aire de arriba, que es puro margen muerto. */
+            .kpi-hero {{ padding:0 !important; margin-bottom:4px !important; gap:10px !important; }}
+            .kpi-hero h2, .ticket-inbox-heading h2 {{ font-size:17px !important; line-height:1.25 !important; }}
+            .kpi-hero p {{ font-size:12px !important; margin:4px 0 0 !important; line-height:1.35 !important; }}
+            .kpi-section-label {{ font-size:12px !important; margin:10px 0 -2px !important; }}
+            /* Streamlit separa cada elemento con 1rem. Cuatro separaciones ya
+               son una pantalla de telefono en blanco. */
+            [data-testid="stVerticalBlock"] {{ gap:0.65rem !important; }}
+
+            /* La tarjeta trae `height:96px` FIJO y el icono 54px. Ocho
+               tarjetas asi son 800px de scroll antes de llegar a algo que se
+               pueda tocar. Hay que pisar `height`, no solo `min-height`:
+               con la altura fija puesta, `min-height` no hace nada. */
+            .kpi-card {{
+                height:auto !important; min-height:62px !important;
+                padding:11px 12px !important; gap:10px !important;
+            }}
+            .kpi-icon {{
+                width:34px !important; height:34px !important; min-width:34px !important;
+                font-size:15px !important;
+            }}
+            .kpi-card strong, .partial-kpi-card strong {{
+                font-size:19px !important; margin-top:2px !important; line-height:1.1 !important;
+            }}
+            .kpi-card span, .partial-kpi-card span {{ font-size:10.5px !important; line-height:1.2 !important; }}
+            .partial-kpi-card {{ min-height:62px !important; padding:11px 12px !important; }}
+
+            /* nowrap + ellipsis en pantalla angosta esconde justo el dato:
+               "Solicitud SOL-0..." no le sirve a nadie. Mejor que baje. */
+            .ticket-request-brand, .ticket-request-requester,
+            .ticket-request-code {{ white-space:normal !important; overflow:visible !important;
+                text-overflow:clip !important; }}
+
+            /* Cabeceras que en escritorio van en fila y aqui no entran. */
+            .ticket-inbox-heading, .ticket-detail-header, .brand-request-heading {{
+                flex-direction:column !important; align-items:flex-start !important; gap:8px !important;
+            }}
+            .ticket-quick-view .stSelectbox {{ max-width:100% !important; }}
+        }}
+
+        /* --- Telefono angosto --- */
+        @media (max-width:430px) {{
+            /* Se MANTIENEN dos por fila. Con la tarjeta ya compacta caben en
+               los ~175px que deja cada columna, y ocho KPIs pasan de ocho
+               filas a cuatro: la mitad de scroll para ver el titular completo. */
+            .kpi-card-grid, .ticket-kpi-grid, .ticket-result-grid, .partial-kpi-grid,
+            .metric-grid, .base-status-grid, .commercial-status-grid, .ticket-summary,
+            .brand-request-kpis, .brand-request-results {{
+                grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:7px !important;
+            }}
+            .kpi-card, .partial-kpi-card {{ padding:9px 10px !important; gap:8px !important; }}
+            .kpi-icon {{
+                width:28px !important; height:28px !important; min-width:28px !important;
+                font-size:13px !important;
+            }}
+            .kpi-card strong, .partial-kpi-card strong {{ font-size:17px !important; }}
+            .kpi-card span, .partial-kpi-card span {{ font-size:10px !important; }}
+            .main .block-container,
+            [data-testid="stAppViewContainer"] .block-container {{
+                padding-left:10px !important; padding-right:10px !important;
+            }}
+            .kpi-hero h2 {{ font-size:16px !important; }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -19123,6 +19289,32 @@ def render_login_styles():
             .st-key-login_form_area { padding:22px 22px 26px; }
             .login-forus-logo { min-width:152px; }
             .login-head h1 { font-size:26px; }
+
+            /* El login NO pasa por `inject_custom_css`: tiene su propio
+               bloque, asi que las reglas de movil de alla no llegan aqui y el
+               boton se quedaba en 74x40. Entrar es lo primero que alguien hace
+               desde el telefono; si falla eso, no importa el resto. */
+            /* Quien limita el ancho no es el boton ni su envoltorio directo,
+               sino el `stElementContainer` de Streamlit, que mide lo que el
+               texto (74px). Se abre el contenedor dentro de la tarjeta de
+               login, donde solo viven los dos campos y el boton. */
+            .st-key-login_form_area [data-testid="stElementContainer"] { width:100% !important; }
+            [data-testid="stFormSubmitButton"] { width:100% !important; }
+            [data-testid="stFormSubmitButton"] > button,
+            [data-testid="stBaseButton-primaryFormSubmit"],
+            [data-testid="stBaseButton-secondaryFormSubmit"] {
+                width:100% !important; min-height:46px !important; font-size:15px !important;
+            }
+            /* 16px: debajo de eso Safari hace zoom al enfocar el campo y deja
+               el formulario a medio salir de la pantalla. */
+            .st-key-login_form_area .stTextInput input { min-height:46px !important; font-size:16px !important; }
+        }
+        @media (max-width: 430px) {
+            .login-head { padding:20px 16px 22px; }
+            .st-key-login_form_area { padding:18px 16px 20px; }
+            .login-head h1 { font-size:22px; }
+            .login-forus-logo { min-width:130px; height:56px; }
+            .login-logo-row { gap:14px; }
         }
         </style>
         """,

@@ -285,6 +285,39 @@ Todo se descarga en un solo Excel con las 9 hojas.
 
 ---
 
+## 5 quinquies. Interfaz móvil (septiembre 2026)
+
+Las 13 media queries que ya existían paran en 900–1100px: eso es tablet. En un
+teléfono (360–430px) las rejillas de 4 y 6 columnas dejaban tarjetas de 60px,
+con el número partido en tres líneas.
+
+**Hay DOS bloques de CSS y el login no comparte el de la app.** `require_login()`
+llama a `render_login_styles()` y **nunca** a `inject_custom_css`, así que las
+reglas de móvil hay que ponerlas en los dos sitios. Por eso el botón "Ingresar"
+se quedaba en 74×40 aunque la app ya estuviera arreglada. Hay un test que fija
+esta separación.
+
+Dos escalones, no uno: **640px** (todavía caben dos tarjetas por fila) y
+**430px** (teléfono angosto).
+
+- **`.kpi-card` trae `height:96px` FIJO.** Pisar solo `min-height` no hace nada.
+  Ocho tarjetas de 96px son 800px de scroll antes de llegar a algo tocable.
+- **El ancho lo limita `stElementContainer`**, no el botón ni su envoltorio: mide
+  lo que el texto (74px). Un botón sin `use_container_width` no crece por más
+  `width:100%` que lleve encima.
+- **44px es el mínimo táctil** de Apple y Google; el login usa 46px.
+- **16px en los inputs**: por debajo, Safari hace zoom al enfocar y deja el
+  formulario a medio salir de la pantalla.
+- Las pestañas ruedan en horizontal en vez de cortarse; las tablas ruedan dentro
+  de su caja y no arrastran la página.
+- Todo va dentro de un `@media`. Una regla suelta con `!important` se llevaría
+  por delante el escritorio — hay un test que lo comprueba.
+
+Verificado con capturas reales (Chromium 390px, 360px y 1440px): sin desborde
+horizontal en ninguno, y escritorio intacto en 4 columnas.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -436,6 +469,7 @@ python scripts/test_engines_price_check.py             # 19
 python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 40
 python scripts/test_engines_load_status.py             # 28
+python scripts/test_css_movil.py                       # 15
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24
 python scripts/test_siblings_referencias.py            # 14

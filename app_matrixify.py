@@ -7318,7 +7318,17 @@ def build_shopify_update_preview(
             custom_new_value = custom_siblings_by_model.get(product["__MODEL"], "[]")
             current_theme = clean_value(product.get("Siblings"))
             current_custom = clean_value(product.get("Custom Siblings"))
-            if not new_value or (current_theme == new_value and current_custom == custom_new_value):
+            # Se comparan los CONJUNTOS, no el texto. Shopify devuelve el JSON
+            # sin espacios y `json.dumps` lo escribe con ", ": comparando texto
+            # crudo no habia forma de que coincidieran y cada analisis proponia
+            # reescribir el catalogo completo, aunque ya estuviera correcto.
+            ya_esta = (
+                _clave_de_comparacion_de_siblings(current_theme)
+                == _clave_de_comparacion_de_siblings(new_value)
+                and _clave_de_comparacion_de_siblings(current_custom)
+                == _clave_de_comparacion_de_siblings(custom_new_value)
+            )
+            if not new_value or ya_esta:
                 continue
             rows.append(
                 {
@@ -7860,32 +7870,22 @@ def apply_shopify_preview(shopify_config, preview_df, progress_callback=None):
                     alt_text=clean_value(row.get("Handle")) or clean_value(row.get("Mod-Col")),
                 )
             elif operation == "technologies":
-                from generate_columbia_matrixify import (
-                    site_uses_technology_logo_metaobjects,
-                    technology_metafield_column,
-                )
-
-                technology_column = technology_metafield_column(brand_config)
-                technology_type = clean_value(row.get("Tipo tecnologia")) or (
-                    "list.single_line_text_field"
-                    if "[list.single_line_text_field]" in technology_column
-                    else "single_line_text_field"
-                )
+                # Esta funcion NO recibe brand_config. Las tres lineas que lo
+                # usaban levantaban NameError y dejaban toda la fila en ERROR,
+                # asi que el sitio y el tipo se leen de la propia vista previa,
+                # que ya los trae desde `build_shopify_update_preview`.
+                technology_type = clean_value(row.get("Tipo tecnologia")) or "list.single_line_text_field"
                 technology_value = clean_value(
                     row.get("Valor nuevo")
-                    or row.get(technology_column)
                     or row.get("Metafield: custom.tecnologia [list.single_line_text_field]")
                     or row.get("Metafield: custom.tecnologia [single_line_text_field]")
                 )
-                uses_logo_metaobjects = site_uses_technology_logo_metaobjects(brand_config)
-                logo_value = (
-                    clean_value(
-                        row.get("Valor nuevo logos")
-                        or row.get("Metafield: custom.logo [list.metaobject_reference]")
-                    )
-                    if uses_logo_metaobjects
-                    else ""
+                logo_desde_vista_previa = clean_value(
+                    row.get("Valor nuevo logos")
+                    or row.get("Metafield: custom.logo [list.metaobject_reference]")
                 )
+                uses_logo_metaobjects = bool(logo_desde_vista_previa)
+                logo_value = logo_desde_vista_previa
                 updated_parts = []
                 failed_parts = []
                 if technology_value:
@@ -7936,31 +7936,45 @@ def apply_shopify_preview(shopify_config, preview_df, progress_callback=None):
                 else:
                     message = f"Actualizado: {', '.join(updated_parts)}" if updated_parts else "Sin tecnologias/logos para actualizar"
             elif operation == "siblings":
-                sibling_value = clean_value(row.get("Valor nuevo"))
-                custom_sibling_value = clean_value(
-                    row.get("Valor nuevo custom") or row.get("Metafield: custom.siblings [list.product_reference]")
+                # Los dos metacampos van en llamadas SEPARADAS y con el tipo
+                # que declare la tienda. Antes iban juntos y con el tipo fijo
+                # en el codigo: bastaba que uno no coincidiera con la
+                # definicion para que `metafieldsSet` rechazara el lote entero
+                # y no se escribiera ninguno de los dos.
+                handles = _split_tags(row.get("Valor nuevo"))
+                gids = _lista_de_gids(
+                    row.get("Valor nuevo custom")
+                    or row.get("Metafield: custom.siblings [list.product_reference]")
                 )
-                if not custom_sibling_value:
-                    custom_sibling_value = "[]"
-                metafields_set(
-                    shopify_config,
-                    [
-                        {
-                            "ownerId": product_id,
-                            "namespace": "theme",
-                            "key": "siblings",
-                            "type": "list.single_line_text_field",
-                            "value": _list_text_metafield_value(sibling_value),
-                        },
-                        {
-                            "ownerId": product_id,
-                            "namespace": "custom",
-                            "key": "siblings",
-                            "type": "list.product_reference",
-                            "value": custom_sibling_value,
-                        }
-                    ],
-                )
+                if not gids and product_id:
+                    gids = [product_id]
+                escritos = []
+                fallidos = []
+                for namespace, key in (("theme", "siblings"), ("custom", "siblings")):
+                    tipo_base = (
+                        _tipo_metafield_de_la_tienda(shopify_config, namespace, key)
+                        or _tipo_metafield_por_clave(namespace, key)
+                    )
+                    ok, tipo_usado, error = _escribir_metafield_de_relacion(
+                        shopify_config,
+                        product_id,
+                        namespace,
+                        key,
+                        tipo_base,
+                        gids,
+                        handles,
+                    )
+                    if ok:
+                        escritos.append(f"{namespace}.{key} [{tipo_usado}]")
+                    else:
+                        fallidos.append(f"{namespace}.{key}: {error}")
+                if fallidos:
+                    status = "PARCIAL" if escritos else "ERROR"
+                    message = " | ".join(fallidos)
+                    if escritos:
+                        message = f"Actualizado: {', '.join(escritos)} | {message}"
+                else:
+                    message = f"Actualizado: {', '.join(escritos)}"
             else:
                 status = "OMITIDO"
                 message = "Operacion no habilitada para escritura directa"
@@ -9632,6 +9646,152 @@ def _valor_de_siblings_para_api(field_type, valores):
             return json.dumps(valores, ensure_ascii=False)
         return valores[0] if valores else ""
     return ", ".join(valores)
+
+
+# Tipos de metacampo que Shopify puede nombrar al rechazar un valor. Los
+# `list.` van PRIMERO: "single_line_text_field" es subcadena de
+# "list.single_line_text_field" y buscando al reves siempre ganaria el corto.
+TIPOS_METAFIELD_CONOCIDOS = (
+    "list.single_line_text_field",
+    "list.multi_line_text_field",
+    "list.product_reference",
+    "list.variant_reference",
+    "list.collection_reference",
+    "list.page_reference",
+    "list.metaobject_reference",
+    "list.file_reference",
+    "single_line_text_field",
+    "multi_line_text_field",
+    "rich_text_field",
+    "product_reference",
+    "variant_reference",
+    "collection_reference",
+    "page_reference",
+    "metaobject_reference",
+    "file_reference",
+)
+
+
+def _tipo_exigido_por_shopify(mensaje):
+    """El tipo que Shopify NOMBRA al rechazar un metacampo por tipo.
+
+    `theme.siblings` casi nunca tiene definicion en la tienda: Shopify le fija
+    el tipo con la PRIMERA escritura y despues rechaza cualquier otro. Ni la
+    tabla de `engines/catalog_map` ni la cabecera de Matrixify pueden saber cual
+    quedo, y por eso el mismo metacampo entraba por un camino y fallaba por el
+    otro. El propio error si lo dice ("Type must be single_line_text_field"),
+    asi que se lee de ahi y se reintenta una vez con ese tipo.
+
+    Devuelve "" si el mensaje no habla de tipos: un fallo de permisos o de red
+    no se debe reintentar con otro tipo.
+    """
+    texto = clean_value(mensaje).lower()
+    if "type" not in texto and "tipo" not in texto:
+        return ""
+    for tipo in TIPOS_METAFIELD_CONOCIDOS:
+        if tipo in texto:
+            return tipo
+    return ""
+
+
+def _tipo_metafield_recordado(namespace, key, tipo=None):
+    """Recuerda por sesion el tipo que Shopify ACEPTO para un metacampo.
+
+    La relacion se escribe en todos los hermanos del grupo: sin esto, cada
+    producto volveria a equivocarse de tipo y a pagar el reintento.
+    """
+    clave = f"tipo_metafield_aceptado_{clean_value(namespace)}.{clean_value(key)}"
+    if tipo is None:
+        return clean_value(st.session_state.get(clave))
+    tipo = clean_value(tipo)
+    if tipo:
+        st.session_state[clave] = tipo
+    return tipo
+
+
+def _tipo_metafield_por_clave(namespace, key):
+    """Tipo de la tabla central para un namespace.key, sin cabecera Matrixify."""
+    namespace = clean_value(namespace)
+    key = clean_value(key)
+    if not namespace or not key:
+        return ""
+    # Sin corchetes a proposito: `namespace_key` corta lo que va entre ellos y
+    # con `[]` vacio dejaria la key como "siblings []", que no esta en la tabla.
+    return clean_value(catalogo_tipo_shopify(f"Metafield: {namespace}.{key}"))
+
+
+def _escribir_metafield_de_relacion(
+    shopify_config, owner_gid, namespace, key, field_type, gids, handles
+):
+    """Escribe UN metacampo de relacion y se corrige si el tipo no era ese.
+
+    Va de a uno a proposito. Antes `theme.siblings` y `custom.siblings` salian
+    en la MISMA llamada a `metafieldsSet`: como la mutacion es todo o nada, el
+    tipo equivocado de uno tumbaba tambien al otro y la carga parcial terminaba
+    en ERROR sin escribir ninguno de los dos.
+
+    Los valores se eligen segun el tipo que se termine usando, no segun el que
+    se creia: un metacampo de referencia quiere `gid://shopify/Product/...` y
+    uno de texto quiere handles. Mandar unos donde van los otros es la otra
+    mitad del mismo error.
+
+    Devuelve (ok, tipo_usado, mensaje_error).
+    """
+    tipo = _tipo_metafield_recordado(namespace, key) or clean_value(field_type)
+    intentados = []
+    ultimo_error = ""
+    while tipo and tipo not in intentados:
+        intentados.append(tipo)
+        valores = list(gids) if tipo in TIPOS_REFERENCIA_A_PRODUCTO else list(handles)
+        try:
+            metafields_set(
+                shopify_config,
+                [
+                    {
+                        "ownerId": owner_gid,
+                        "namespace": namespace,
+                        "key": key,
+                        "type": tipo,
+                        "value": _valor_de_siblings_para_api(tipo, valores),
+                    }
+                ],
+            )
+            _tipo_metafield_recordado(namespace, key, tipo)
+            return True, tipo, ""
+        except Exception as exc:
+            ultimo_error = str(exc)
+            tipo = _tipo_exigido_por_shopify(ultimo_error)
+    return False, (intentados[-1] if intentados else ""), ultimo_error
+
+
+def _lista_de_gids(valor):
+    """Lee una lista de IDs de producto de un JSON o de un texto con comas."""
+    texto = clean_value(valor)
+    if not texto:
+        return []
+    if texto.startswith("["):
+        try:
+            crudo = json.loads(texto)
+        except (TypeError, ValueError):
+            crudo = []
+        if isinstance(crudo, list):
+            return [clean_value(item) for item in crudo if clean_value(item)]
+        return []
+    return [clean_value(item) for item in texto.split(",") if clean_value(item)]
+
+
+def _clave_de_comparacion_de_siblings(valor):
+    """Normaliza una lista de hermanos para comparar sin falsos positivos.
+
+    Shopify devuelve el JSON sin espacios y `json.dumps` lo escribe con ", ".
+    Comparando el texto crudo, TODOS los productos salian como "cambiados" en
+    cada analisis y la carga parcial reescribia el catalogo entero cada vez.
+    """
+    texto = clean_value(valor)
+    if not texto:
+        return frozenset()
+    items = _lista_de_gids(texto) if texto.startswith("[") else _split_tags(texto)
+    return frozenset(clean_value(item).lower() for item in items if clean_value(item))
 
 
 def _recordar_gid_de_handle(handle, gid):
@@ -12506,34 +12666,30 @@ def _escribir_referencias_a_producto(
 
             gids = list(dict.fromkeys(gid_por_destino.values()))
             handles_vivos = [h for h in handles_destino if clean_value(h).lower() in gid_por_destino]
-            es_referencia = field_type in TIPOS_REFERENCIA_A_PRODUCTO
-            valor = _valor_de_siblings_para_api(field_type, gids if es_referencia else handles_vivos)
 
             # La relacion es del grupo: se escribe la MISMA lista en todos sus
             # miembros. Asi, al entrar un color nuevo, los que ya estaban
             # publicados quedan apuntando tambien al nuevo.
             destinatarios = list(dict.fromkeys([propietario] + gids)) if key == ES_LISTA_DE_SIBLINGS else [propietario]
             escritos = 0
+            tipo_usado = field_type
             for destinatario in destinatarios:
-                try:
-                    metafields_set(
-                        shopify_config,
-                        [
-                            {
-                                "ownerId": destinatario,
-                                "namespace": namespace,
-                                "key": key,
-                                "type": field_type,
-                                "value": valor,
-                            }
-                        ],
-                    )
+                ok, tipo_usado, error = _escribir_metafield_de_relacion(
+                    shopify_config,
+                    destinatario,
+                    namespace,
+                    key,
+                    field_type,
+                    gids,
+                    handles_vivos,
+                )
+                if ok:
                     escritos += 1
-                except Exception as exc:
+                else:
                     hubo_error = True
-                    mensajes.append(f"{namespace}.{key} en {destinatario}: {exc}")
+                    mensajes.append(f"{namespace}.{key} en {destinatario}: {error}")
             if escritos:
-                detalle = f"{namespace}.{key}: {len(gids)} relacionados, escrito en {escritos} producto(s)"
+                detalle = f"{namespace}.{key} [{tipo_usado}]: {len(gids)} relacionados, escrito en {escritos} producto(s)"
                 if sin_resolver:
                     detalle += f" ({len(sin_resolver)} sin resolver: {', '.join(sin_resolver[:3])})"
                 mensajes.append(detalle)

@@ -36,6 +36,7 @@ from engines.ticket_flow import ETIQUETAS as FLUJO_ETIQUETAS
 from engines.ticket_flow import estado_visible as flujo_estado_visible
 from engines.ticket_flow import ORDEN as FLUJO_ORDEN
 from engines import centry_map as centry_plantilla
+from engines import load_status as status_carga
 
 try:
     from engines import enrich as enriquecimiento
@@ -17745,6 +17746,224 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     )
 
 
+STATUS_CARGA_LABEL = "Status de carga"
+
+
+def _clase_de_tipo_para_status():
+    """`clase_de` del diccionario de tipos, o None si no esta disponible.
+
+    Se importa aqui y no arriba para que el panel siga funcionando aunque el
+    diccionario de prendas falle: sin el, la clase cae al tag del producto.
+    """
+    try:
+        from engines.garment_types import clase_de
+
+        return clase_de
+    except Exception:
+        return None
+
+
+def cargar_catalogos_de_todos_los_sitios(force_refresh=False):
+    """El catalogo de CADA sitio configurado, mas el parte de por que falto.
+
+    Un sitio sin Shopify en Secrets, o que devuelve error, no se puede
+    reportar como catalogo vacio: eso se leeria como "no han cargado nada",
+    que es justo la conclusion equivocada. Por eso el estado de cada sitio
+    viaja aparte y la pantalla lo muestra.
+    """
+    catalogos = {}
+    estado_sitios = []
+    for site_key, config in SITE_CONFIGS.items():
+        etiqueta = clean_value(config.get("site_label")) or site_key
+        shopify_config = get_shopify_config(site_key)
+        if not is_shopify_configured(shopify_config):
+            estado_sitios.append({
+                "Sitio": etiqueta,
+                "Estado": "Sin configurar",
+                "Productos": 0,
+                "Detalle": "Falta shop_domain o token en Secrets.",
+            })
+            continue
+        try:
+            productos = session_shopify_products(site_key, shopify_config, force_refresh=force_refresh)
+        except Exception as exc:
+            estado_sitios.append({
+                "Sitio": etiqueta,
+                "Estado": "Error",
+                "Productos": 0,
+                "Detalle": str(exc)[:300],
+            })
+            continue
+        catalogos[site_key] = productos or []
+        estado_sitios.append({
+            "Sitio": etiqueta,
+            "Estado": "Leido",
+            "Productos": len(productos or []),
+            "Detalle": "",
+        })
+    return catalogos, estado_sitios
+
+
+def construir_status_de_carga(catalogos, solicitudes):
+    """Todas las tablas del panel, en una sola pasada por el motor."""
+    etiquetas = {key: clean_value(config.get("site_label")) or key for key, config in SITE_CONFIGS.items()}
+    filas = status_carga.inventario(
+        catalogos,
+        clase_de_tipo=_clase_de_tipo_para_status(),
+        marcas_conocidas=configured_commercial_brands(),
+        etiquetas_de_sitio=etiquetas,
+    )
+    sitios = [etiquetas[key] for key in SITE_CONFIGS if key in catalogos]
+
+    # Se pasa la ETIQUETA, no la clave interna: la tabla la lee una persona y
+    # "en_ejecucion" no es una respuesta. `estados_finales` y `orden` viajan en
+    # el mismo idioma para que sigan cuadrando.
+    def estado_legible(estado_interno):
+        return FLUJO_ETIQUETAS[flujo_estado_visible(estado_interno)]
+
+    finales = (FLUJO_ETIQUETAS[FLUJO_FINALIZADA],)
+    orden = [FLUJO_ETIQUETAS[clave] for clave in FLUJO_ORDEN]
+    return {
+        "kpis": status_carga.kpis(filas, solicitudes, estado_legible, finales),
+        "matriz": status_carga.matriz_marcas_por_sitio(filas, sitios),
+        "clases": status_carga.resumen_por_clase(filas),
+        "visibilidad": status_carga.estado_de_visibilidad(filas),
+        "no_visibles": status_carga.productos_no_visibles(filas),
+        "registro": status_carga.registro_de_cargas(solicitudes, estado_legible),
+        "avance": status_carga.resumen_de_solicitudes(solicitudes, estado_legible, finales),
+        "por_estado": status_carga.solicitudes_por_estado(solicitudes, estado_legible, orden),
+    }
+
+
+def _tabla_status(datos):
+    return pd.DataFrame(datos) if datos else pd.DataFrame()
+
+
+def render_status_de_carga(ticket_actor):
+    """Panel unico de operatividad de carga, con TODOS los sitios juntos.
+
+    El resto de la app trabaja sobre el sitio elegido en la barra lateral.
+    Aqui no: la pregunta es de cuanto se cargo en total y que falta, y esa no
+    se puede responder mirando un sitio a la vez.
+    """
+    render_html(
+        """
+        <div class="kpi-hero">
+            <div class="kpi-title">
+                <h2>Status de carga de catálogos</h2>
+                <p>Qué inyectaron las marcas, qué se cargó de verdad y qué quedó prendido y visible en la web.</p>
+            </div>
+        </div>
+        """
+    )
+
+    estado_key = "status_carga_resultado"
+    izquierda, derecha = st.columns([0.78, 0.22], vertical_alignment="center")
+    with derecha:
+        actualizar = st.button("Actualizar status", type="primary", use_container_width=True, key="status_carga_refresh")
+    if actualizar or st.session_state.get(estado_key) is None:
+        with st.spinner("Leyendo el catálogo de cada sitio y las solicitudes..."):
+            try:
+                catalogos, estado_sitios = cargar_catalogos_de_todos_los_sitios(force_refresh=bool(actualizar))
+                servicio, _ = get_ticket_service()
+                solicitudes = servicio.list_tickets(ticket_actor, force_refresh=bool(actualizar))
+            except Exception as exc:
+                st.error("No pude armar el status de carga.")
+                st.exception(exc)
+                return
+            st.session_state[estado_key] = {
+                "tablas": construir_status_de_carga(catalogos, solicitudes),
+                "sitios": estado_sitios,
+                "actualizado": _now_lima_text(),
+            }
+    guardado = st.session_state.get(estado_key) or {}
+    tablas = guardado.get("tablas") or {}
+    if not tablas:
+        st.info("Presiona Actualizar status para leer los catálogos.")
+        return
+
+    with izquierda:
+        st.caption(f"Última actualización: {guardado.get('actualizado', '')}")
+
+    kpis = tablas["kpis"]
+    tarjetas = [
+        ("Productos cargados", kpis["Productos cargados"], "blue", "&#9633;"),
+        ("Prendidos y visibles", kpis["Prendidos y visibles"], "green", "&#9711;"),
+        ("No visibles", kpis["No visibles"], "orange", "&#9676;"),
+        ("% visible", f"{kpis['% visible']:.1f}%", "purple", "%"),
+        ("SKUs inyectados", kpis["SKUs inyectados"], "blue", "&#8595;"),
+        ("SKUs en curso", kpis["SKUs en curso"], "orange", "!"),
+        ("Solicitudes en curso", kpis["Solicitudes en curso"], "orange", "&#9679;"),
+        ("Marcas con catálogo", kpis["Marcas con catálogo"], "purple", "&#9670;"),
+    ]
+    render_html(
+        '<div class="kpi-section-label">Operatividad de carga en todos los sitios</div>'
+        '<div class="kpi-card-grid">'
+        + "".join(
+            f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+            f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+            for titulo, valor, tono, icono in tarjetas
+        )
+        + "</div>"
+    )
+
+    sitios_df = _tabla_status(guardado.get("sitios"))
+    if not sitios_df.empty and (sitios_df["Estado"] != "Leido").any():
+        pendientes = sitios_df[sitios_df["Estado"] != "Leido"]
+        st.warning(
+            "Estos sitios no entraron en el status: "
+            + ", ".join(f"{fila['Sitio']} ({fila['Estado']})" for _, fila in pendientes.iterrows())
+            + ". Sus productos NO están contados abajo."
+        )
+
+    pestanas = st.tabs([
+        "Prendido y visible",
+        "Marcas por sitio",
+        "SKUs por clase",
+        "Registro de cargas",
+        "Avance por marca",
+    ])
+    with pestanas[0]:
+        st.caption(
+            "Cargado no es lo mismo que visible: un producto puede existir en Shopify y no verlo nadie, "
+            "por estar en borrador o activo sin publicar en el canal Online Store."
+        )
+        st.dataframe(_tabla_status(tablas["visibilidad"]), use_container_width=True, hide_index=True)
+        no_visibles = _tabla_status(tablas["no_visibles"])
+        if not no_visibles.empty:
+            st.markdown(f"#### Detalle de los {len(no_visibles):,} que no se ven")
+            st.dataframe(no_visibles.head(300), use_container_width=True, height=320, hide_index=True)
+    with pestanas[1]:
+        st.dataframe(_tabla_status(tablas["matriz"]), use_container_width=True, hide_index=True)
+    with pestanas[2]:
+        st.dataframe(_tabla_status(tablas["clases"]), use_container_width=True, hide_index=True)
+    with pestanas[3]:
+        st.dataframe(_tabla_status(tablas["registro"]), use_container_width=True, height=420, hide_index=True)
+    with pestanas[4]:
+        st.dataframe(_tabla_status(tablas["avance"]), use_container_width=True, hide_index=True)
+        st.markdown("#### Dónde están paradas las solicitudes")
+        st.dataframe(_tabla_status(tablas["por_estado"]), use_container_width=True, hide_index=True)
+
+    hojas = {
+        "Resumen": pd.DataFrame([{"Indicador": k, "Valor": v} for k, v in kpis.items()]),
+        "Sitios leidos": sitios_df,
+        "Prendido y visible": _tabla_status(tablas["visibilidad"]),
+        "No visibles": _tabla_status(tablas["no_visibles"]),
+        "Marcas x Sitios": _tabla_status(tablas["matriz"]),
+        "Resumen por clase": _tabla_status(tablas["clases"]),
+        "Registro de cargas": _tabla_status(tablas["registro"]),
+        "Avance por marca": _tabla_status(tablas["avance"]),
+        "Solicitudes por estado": _tabla_status(tablas["por_estado"]),
+    }
+    st.download_button(
+        "Descargar status general (todos los sitios)",
+        data=dataframe_to_excel_bytes(hojas),
+        file_name=f"status_carga_catalogos_{datetime.now().strftime('%d%m%Y')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        on_click=log_descarga, args=("Descargar status general", "render_status_de_carga"),
+    )
+
+
 def _normalize_auth_username(value):
     return clean_value(value).strip().casefold()
 
@@ -21125,7 +21344,13 @@ def main():
             render_commercial_input_center(forced_brands=allowed_brands, actor=ticket_actor)
         return
     render_allowed_brands_card(brand_config)
-    nav_options = ["KPIs de catálogo", "Input comercial", "Solicitudes", "Carga de catálogo"]
+    nav_options = [
+        "KPIs de catálogo",
+        STATUS_CARGA_LABEL,
+        "Input comercial",
+        "Solicitudes",
+        "Carga de catálogo",
+    ]
     if can_view_user_activity_log(auth_user):
         nav_options.append("Auditoria")
     if st.session_state.get("operation_area_choice") not in nav_options:
@@ -21133,6 +21358,7 @@ def main():
     st.sidebar.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
     with st.sidebar.container(key="operation_nav"):
         sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
+        sidebar_nav_button(STATUS_CARGA_LABEL, "operation_area_choice", STATUS_CARGA_LABEL, "operation_nav_status")
         sidebar_nav_button("Input comercial", "operation_area_choice", "Input comercial", "operation_nav_input")
         sidebar_nav_button("Solicitudes", "operation_area_choice", "Solicitudes", "operation_nav_tickets")
         if can_view_user_activity_log(auth_user):
@@ -21197,6 +21423,10 @@ api_version = "{DEFAULT_API_VERSION}"
         st.success(load_reset_message)
     if operation_area == "KPIs de catálogo":
         render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready)
+        return
+    if operation_area == STATUS_CARGA_LABEL:
+        log_acceso_modulo(STATUS_CARGA_LABEL)
+        render_status_de_carga(ticket_actor)
         return
     if operation_area == "Input comercial":
         render_commercial_input_center(actor=ticket_actor)

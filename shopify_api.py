@@ -196,6 +196,9 @@ def _client(config):
 
 def _product_node_to_record(node):
     metafield = node.get("codigoModeloColor") or {}
+    # `vendor` es del SITIO (rockfordpe), el mismo para todas las marcas de esa
+    # tienda. La marca comercial solo esta en este metacampo.
+    marca = node.get("marca") or {}
     materialidad = node.get("materialidad") or {}
     tecnologia = node.get("tecnologia") or {}
     logo = node.get("logo") or {}
@@ -243,6 +246,7 @@ def _product_node_to_record(node):
         "Body HTML": clean(node.get("descriptionHtml")),
         "Tags": ", ".join(node.get("tags") or []),
         "Vendor": clean(node.get("vendor")),
+        "Marca": clean(marca.get("value")),
         "Type": clean(node.get("productType")),
         "Status": clean(node.get("status")),
         "Online Store URL": clean(node.get("onlineStoreUrl")),
@@ -305,6 +309,9 @@ def fetch_products(config, max_products=5000):
           onlineStoreUrl
           __PUBLICATION_FIELD__
           codigoModeloColor: metafield(namespace: "custom", key: "codigo_modelo_color") {
+            value
+          }
+          marca: metafield(namespace: "custom", key: "marca") {
             value
           }
           materialidad: metafield(namespace: "custom", key: "materialidad") {

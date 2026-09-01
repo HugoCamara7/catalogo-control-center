@@ -241,6 +241,50 @@ alto, el maestro está duplicando variantes.
 
 ---
 
+## 5 quater. Status de carga de catálogos (septiembre 2026)
+
+`engines/load_status.py` (sin Streamlit ni pandas) + `render_status_de_carga()`.
+Pantalla propia en el menú, **al lado de KPIs de catálogo**.
+
+Reemplaza el Excel `Status_Carga_Catalogo`, que se llenaba a mano casilla por
+casilla y envejecía en cuanto alguien cargaba algo. Las mismas hojas, pero con
+datos vivos y una columna que el Excel no tenía.
+
+**Es la única pantalla que mira TODOS los sitios a la vez.** El resto de la app
+trabaja sobre el sitio elegido en la barra lateral; aquí la pregunta es cuánto
+se cargó en total y qué falta, y esa no se responde de a un sitio.
+
+| De dónde sale | Qué responde |
+|---|---|
+| Solicitudes (`ticket_system`) | qué inyectaron las marcas |
+| Catálogo real de cada sitio (Shopify) | qué se cargó de verdad |
+| La resta | qué falta |
+
+**Cargado ≠ visible.** Un producto puede existir en Shopify y no verlo nadie:
+en borrador, o activo sin publicar en el canal Online Store. Por eso hay cuatro
+estados web (`Prendido y visible`, `Activo sin publicar`, `Borrador`,
+`Archivado`) y solo el primero cuenta como prendido. Si la tienda no expone el
+canal, `Published Online Store` llega vacío: eso se reporta como "Activo sin
+publicar", **nunca** se asume publicado.
+
+**`Vendor` NO sirve para saber la marca.** En Shopify es el vendor del SITIO
+(`rockfordpe`), el mismo para todas las marcas de esa tienda: contando por
+vendor, Rockford.pe tendría una sola marca y Columbia, Patagonia y Sorel
+desaparecerían. Manda el metacampo `custom.marca`, que se **agregó a la
+consulta de `shopify_api.fetch_products`** para esto. Respaldo: los tags.
+
+La unidad es el **Modelo-Color**, igual que en `engines/stock.py`. Se cuenta una
+vez por sitio; en los totales por marca se deduplica entre sitios (si no,
+Rockford sumaría 435 × 3 sitios).
+
+Un sitio sin Shopify en Secrets o que devuelve error **no** se reporta como
+catálogo vacío — eso se leería como "no han cargado nada". Su estado viaja
+aparte y la pantalla avisa que sus productos no están contados.
+
+Todo se descarga en un solo Excel con las 9 hojas.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -391,6 +435,7 @@ python scripts/test_engines_notify.py                  # 88
 python scripts/test_engines_price_check.py             # 19
 python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 40
+python scripts/test_engines_load_status.py             # 28
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24
 python scripts/test_siblings_referencias.py            # 14

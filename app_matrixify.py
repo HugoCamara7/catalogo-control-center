@@ -36,6 +36,7 @@ from engines.ticket_flow import ETIQUETAS as FLUJO_ETIQUETAS
 from engines.ticket_flow import estado_visible as flujo_estado_visible
 from engines.ticket_flow import ORDEN as FLUJO_ORDEN
 from engines import centry_map as centry_plantilla
+from engines import load_status as status_carga
 
 try:
     from engines import enrich as enriquecimiento
@@ -16405,6 +16406,196 @@ def inject_custom_css(config):
         @media (max-width:820px) {{
             .pasos {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
         }}
+
+        /* ================= MOVIL =================================
+           Las 13 media queries que ya habia paran en 900-1100px, que es
+           tablet. En un telefono (360-430px) las rejillas de 4 y 6 columnas
+           dejaban tarjetas de 60px: el numero se partia en tres lineas y la
+           etiqueta se cortaba. Aqui abajo va el tramo que faltaba.
+
+           Dos escalones, no uno: a 640px todavia caben dos tarjetas por fila
+           y se lee mejor que una columna larguisima; a 430px ya no.
+           ========================================================= */
+
+        /* --- Telefono y tablet en vertical --- */
+        @media (max-width:640px) {{
+            /* El contenedor de Streamlit reserva margenes de escritorio.
+               En 390px eso se come la mitad del ancho util. */
+            .main .block-container,
+            section.main > div.block-container,
+            [data-testid="stAppViewContainer"] .block-container {{
+                padding-left:14px !important; padding-right:14px !important;
+                padding-top:12px !important; max-width:100% !important;
+            }}
+
+            /* Nada puede desbordar el ancho de la pantalla: un solo elemento
+               ancho obliga a hacer scroll lateral en TODA la pagina. */
+            .block-container * {{ max-width:100%; }}
+            img, svg {{ max-width:100%; height:auto; }}
+
+            /* Las columnas de st.columns se reacomodan. Forzarlas al 100%
+               las apilaba TODAS: la bandeja de Solicitudes tiene cinco filtros
+               y se comian cinco pantallas antes de la primera solicitud. Con
+               base del 50% y un minimo de 150px, dos selectores angostos
+               comparten fila y uno ancho se queda con la fila entera. */
+            [data-testid="stHorizontalBlock"] {{ flex-wrap:wrap !important; gap:8px !important; }}
+            [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+            [data-testid="stHorizontalBlock"] > [data-testid="column"] {{
+                flex:1 1 calc(50% - 4px) !important; min-width:150px !important; width:auto !important;
+            }}
+            /* Una columna que CONTIENE otra fila de columnas se queda con el
+               ancho entero. Si no, la bandeja partia la pantalla en dos y los
+               cinco filtros de adentro quedaban en 181px: uno por fila, con la
+               mitad del ancho vacio al lado. */
+            [data-testid="stColumn"]:has([data-testid="stHorizontalBlock"]) {{
+                flex-basis:100% !important; min-width:100% !important;
+            }}
+
+            /* La etiqueta de cada control reservaba 21px arriba y 24px abajo.
+               Con diez controles en pantalla eso es media pantalla en aire. */
+            [data-testid="stWidgetLabel"] {{ margin-bottom:2px !important; }}
+            [data-testid="stWidgetLabel"] p {{ font-size:12.5px !important; margin-bottom:0 !important; }}
+            [data-testid="stElementContainer"] {{ margin-bottom:0 !important; }}
+
+            /* Tarjetas chicas: dos por fila.
+
+               Las clases `.ticket-*` NO estan aqui a proposito: las gobierna
+               `render_ticket_styles()`, que es otra hoja. Con la regla puesta
+               en las dos, la de aca ganaba por `!important` y dejaba los KPI de
+               la bandeja en dos columnas cuando alla piden tres. Dos hojas
+               peleando por la misma clase es un error que no se ve hasta que
+               alguien mide el DOM. */
+            .kpi-card-grid, .partial-kpi-grid,
+            .metric-grid, .base-status-grid, .commercial-status-grid,
+            .brand-request-kpis, .brand-request-results, .allowed-logo-grid,
+            .ejec-grid, .cola-detalle-grid {{
+                grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:8px !important;
+            }}
+
+            /* Bloques de contenido y pasos: una sola columna. Un stepper en
+               vertical se lee mejor en telefono que seis casillas apretadas. */
+            .commercial-flow, .flow-split,
+            .kpi-chart-grid, .detail, .source-grid, .flow-cause-grid,
+            .wide-checklist-grid, .brand-request-meta, .matrix-stepper, .pasos,
+            .commercial-summary-grid {{
+                grid-template-columns:1fr !important;
+            }}
+
+            /* Objetivo tactil: 44px es el minimo de Apple y Google. Debajo de
+               eso el dedo falla y el usuario pulsa el boton de al lado. */
+            /* `st.form_submit_button` no es `.stButton`: sin este selector el
+               boton de Ingresar se quedaba en 140px en el login. */
+            /* Mismo caso que en el login: el contenedor mide lo que el texto,
+               asi que un boton sin `use_container_width` no crece por mas
+               `width:100%` que lleve encima. */
+            [data-testid="stElementContainer"]:has(> [data-testid="stFormSubmitButton"]),
+            [data-testid="stElementContainer"]:has(> .stButton),
+            [data-testid="stElementContainer"]:has(> .stDownloadButton) {{
+                width:100% !important;
+            }}
+            [data-testid="stFormSubmitButton"] {{ width:100% !important; }}
+            .stButton > button, .stDownloadButton > button,
+            [data-testid="stFormSubmitButton"] > button,
+            [data-testid="stBaseButton-secondary"], [data-testid="stBaseButton-primary"],
+            [data-testid="stBaseButton-primaryFormSubmit"],
+            [data-testid="stBaseButton-secondaryFormSubmit"] {{
+                min-height:44px !important; width:100% !important;
+                font-size:14px !important; padding:10px 14px !important;
+            }}
+            .stSelectbox div[data-baseweb="select"] > div,
+            .stMultiSelect div[data-baseweb="select"] > div,
+            .stTextInput input, .stDateInput input, .stNumberInput input {{
+                min-height:44px !important; font-size:15px !important;
+            }}
+            /* 16px evita que iOS haga zoom automatico al enfocar un campo. */
+            .stTextInput input, .stTextArea textarea {{ font-size:16px !important; }}
+
+            /* Las pestanas se salen: que rueden en horizontal, sin cortarse. */
+            .stTabs [data-baseweb="tab-list"] {{
+                overflow-x:auto !important; flex-wrap:nowrap !important;
+                scrollbar-width:none; -webkit-overflow-scrolling:touch;
+            }}
+            .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar {{ display:none; }}
+            .stTabs [data-baseweb="tab"] {{ white-space:nowrap; padding:8px 12px !important; }}
+
+            /* Las tablas ruedan dentro de su caja, no arrastran la pagina. */
+            [data-testid="stDataFrame"], [data-testid="stTable"], .stDataFrame {{
+                max-width:100% !important; overflow-x:auto !important;
+            }}
+
+            /* El menu lateral tapa la pantalla completa si mantiene su ancho
+               de escritorio. Se deja un borde para poder cerrarlo tocando fuera. */
+            [data-testid="stSidebar"] {{ max-width:86vw !important; }}
+            [data-testid="stSidebar"] .stButton > button {{ min-height:46px !important; }}
+
+            /* Tipografia: los tamanos de escritorio parten los titulos. */
+            /* El heroe NO tenia padding propio: agregarselo aqui solo lo
+               hacia mas alto. En un telefono el alto es lo escaso, asi que se
+               recorta el aire de arriba, que es puro margen muerto. */
+            .kpi-hero {{ padding:0 !important; margin-bottom:4px !important; gap:10px !important; }}
+            .kpi-hero h2, .ticket-inbox-heading h2 {{ font-size:17px !important; line-height:1.25 !important; }}
+            .kpi-hero p {{ font-size:12px !important; margin:4px 0 0 !important; line-height:1.35 !important; }}
+            .kpi-section-label {{ font-size:12px !important; margin:10px 0 -2px !important; }}
+            /* Streamlit separa cada elemento con 1rem. Cuatro separaciones ya
+               son una pantalla de telefono en blanco. */
+            [data-testid="stVerticalBlock"] {{ gap:0.65rem !important; }}
+
+            /* La tarjeta trae `height:96px` FIJO y el icono 54px. Ocho
+               tarjetas asi son 800px de scroll antes de llegar a algo que se
+               pueda tocar. Hay que pisar `height`, no solo `min-height`:
+               con la altura fija puesta, `min-height` no hace nada. */
+            .kpi-card {{
+                height:auto !important; min-height:62px !important;
+                padding:11px 12px !important; gap:10px !important;
+            }}
+            .kpi-icon {{
+                width:34px !important; height:34px !important; min-width:34px !important;
+                font-size:15px !important;
+            }}
+            .kpi-card strong, .partial-kpi-card strong {{
+                font-size:19px !important; margin-top:2px !important; line-height:1.1 !important;
+            }}
+            .kpi-card span, .partial-kpi-card span {{ font-size:10.5px !important; line-height:1.2 !important; }}
+            .partial-kpi-card {{ min-height:62px !important; padding:11px 12px !important; }}
+
+            /* nowrap + ellipsis en pantalla angosta esconde justo el dato:
+               "Solicitud SOL-0..." no le sirve a nadie. Mejor que baje. */
+            .ticket-request-brand, .ticket-request-requester,
+            .ticket-request-code {{ white-space:normal !important; overflow:visible !important;
+                text-overflow:clip !important; }}
+
+            /* Cabeceras que en escritorio van en fila y aqui no entran. */
+            .ticket-inbox-heading, .ticket-detail-header, .brand-request-heading {{
+                flex-direction:column !important; align-items:flex-start !important; gap:8px !important;
+            }}
+            .ticket-quick-view .stSelectbox {{ max-width:100% !important; }}
+        }}
+
+        /* --- Telefono angosto --- */
+        @media (max-width:430px) {{
+            /* Se MANTIENEN dos por fila. Con la tarjeta ya compacta caben en
+               los ~175px que deja cada columna, y ocho KPIs pasan de ocho
+               filas a cuatro: la mitad de scroll para ver el titular completo. */
+            /* Sin las `.ticket-*`, por lo mismo que arriba: las gobierna la
+               hoja de Solicitudes. */
+            .kpi-card-grid, .partial-kpi-grid,
+            .metric-grid, .base-status-grid, .commercial-status-grid,
+            .brand-request-kpis, .brand-request-results {{
+                grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:7px !important;
+            }}
+            .kpi-card, .partial-kpi-card {{ padding:9px 10px !important; gap:8px !important; }}
+            .kpi-icon {{
+                width:28px !important; height:28px !important; min-width:28px !important;
+                font-size:13px !important;
+            }}
+            .kpi-card strong, .partial-kpi-card strong {{ font-size:17px !important; }}
+            .kpi-card span, .partial-kpi-card span {{ font-size:10px !important; }}
+            .main .block-container,
+            [data-testid="stAppViewContainer"] .block-container {{
+                padding-left:10px !important; padding-right:10px !important;
+            }}
+            .kpi-hero h2 {{ font-size:16px !important; }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -17745,6 +17936,224 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     )
 
 
+STATUS_CARGA_LABEL = "Status de carga"
+
+
+def _clase_de_tipo_para_status():
+    """`clase_de` del diccionario de tipos, o None si no esta disponible.
+
+    Se importa aqui y no arriba para que el panel siga funcionando aunque el
+    diccionario de prendas falle: sin el, la clase cae al tag del producto.
+    """
+    try:
+        from engines.garment_types import clase_de
+
+        return clase_de
+    except Exception:
+        return None
+
+
+def cargar_catalogos_de_todos_los_sitios(force_refresh=False):
+    """El catalogo de CADA sitio configurado, mas el parte de por que falto.
+
+    Un sitio sin Shopify en Secrets, o que devuelve error, no se puede
+    reportar como catalogo vacio: eso se leeria como "no han cargado nada",
+    que es justo la conclusion equivocada. Por eso el estado de cada sitio
+    viaja aparte y la pantalla lo muestra.
+    """
+    catalogos = {}
+    estado_sitios = []
+    for site_key, config in SITE_CONFIGS.items():
+        etiqueta = clean_value(config.get("site_label")) or site_key
+        shopify_config = get_shopify_config(site_key)
+        if not is_shopify_configured(shopify_config):
+            estado_sitios.append({
+                "Sitio": etiqueta,
+                "Estado": "Sin configurar",
+                "Productos": 0,
+                "Detalle": "Falta shop_domain o token en Secrets.",
+            })
+            continue
+        try:
+            productos = session_shopify_products(site_key, shopify_config, force_refresh=force_refresh)
+        except Exception as exc:
+            estado_sitios.append({
+                "Sitio": etiqueta,
+                "Estado": "Error",
+                "Productos": 0,
+                "Detalle": str(exc)[:300],
+            })
+            continue
+        catalogos[site_key] = productos or []
+        estado_sitios.append({
+            "Sitio": etiqueta,
+            "Estado": "Leido",
+            "Productos": len(productos or []),
+            "Detalle": "",
+        })
+    return catalogos, estado_sitios
+
+
+def construir_status_de_carga(catalogos, solicitudes):
+    """Todas las tablas del panel, en una sola pasada por el motor."""
+    etiquetas = {key: clean_value(config.get("site_label")) or key for key, config in SITE_CONFIGS.items()}
+    filas = status_carga.inventario(
+        catalogos,
+        clase_de_tipo=_clase_de_tipo_para_status(),
+        marcas_conocidas=configured_commercial_brands(),
+        etiquetas_de_sitio=etiquetas,
+    )
+    sitios = [etiquetas[key] for key in SITE_CONFIGS if key in catalogos]
+
+    # Se pasa la ETIQUETA, no la clave interna: la tabla la lee una persona y
+    # "en_ejecucion" no es una respuesta. `estados_finales` y `orden` viajan en
+    # el mismo idioma para que sigan cuadrando.
+    def estado_legible(estado_interno):
+        return FLUJO_ETIQUETAS[flujo_estado_visible(estado_interno)]
+
+    finales = (FLUJO_ETIQUETAS[FLUJO_FINALIZADA],)
+    orden = [FLUJO_ETIQUETAS[clave] for clave in FLUJO_ORDEN]
+    return {
+        "kpis": status_carga.kpis(filas, solicitudes, estado_legible, finales),
+        "matriz": status_carga.matriz_marcas_por_sitio(filas, sitios),
+        "clases": status_carga.resumen_por_clase(filas),
+        "visibilidad": status_carga.estado_de_visibilidad(filas),
+        "no_visibles": status_carga.productos_no_visibles(filas),
+        "registro": status_carga.registro_de_cargas(solicitudes, estado_legible),
+        "avance": status_carga.resumen_de_solicitudes(solicitudes, estado_legible, finales),
+        "por_estado": status_carga.solicitudes_por_estado(solicitudes, estado_legible, orden),
+    }
+
+
+def _tabla_status(datos):
+    return pd.DataFrame(datos) if datos else pd.DataFrame()
+
+
+def render_status_de_carga(ticket_actor):
+    """Panel unico de operatividad de carga, con TODOS los sitios juntos.
+
+    El resto de la app trabaja sobre el sitio elegido en la barra lateral.
+    Aqui no: la pregunta es de cuanto se cargo en total y que falta, y esa no
+    se puede responder mirando un sitio a la vez.
+    """
+    render_html(
+        """
+        <div class="kpi-hero">
+            <div class="kpi-title">
+                <h2>Status de carga de catálogos</h2>
+                <p>Qué inyectaron las marcas, qué se cargó de verdad y qué quedó prendido y visible en la web.</p>
+            </div>
+        </div>
+        """
+    )
+
+    estado_key = "status_carga_resultado"
+    izquierda, derecha = st.columns([0.78, 0.22], vertical_alignment="center")
+    with derecha:
+        actualizar = st.button("Actualizar status", type="primary", use_container_width=True, key="status_carga_refresh")
+    if actualizar or st.session_state.get(estado_key) is None:
+        with st.spinner("Leyendo el catálogo de cada sitio y las solicitudes..."):
+            try:
+                catalogos, estado_sitios = cargar_catalogos_de_todos_los_sitios(force_refresh=bool(actualizar))
+                servicio, _ = get_ticket_service()
+                solicitudes = servicio.list_tickets(ticket_actor, force_refresh=bool(actualizar))
+            except Exception as exc:
+                st.error("No pude armar el status de carga.")
+                st.exception(exc)
+                return
+            st.session_state[estado_key] = {
+                "tablas": construir_status_de_carga(catalogos, solicitudes),
+                "sitios": estado_sitios,
+                "actualizado": _now_lima_text(),
+            }
+    guardado = st.session_state.get(estado_key) or {}
+    tablas = guardado.get("tablas") or {}
+    if not tablas:
+        st.info("Presiona Actualizar status para leer los catálogos.")
+        return
+
+    with izquierda:
+        st.caption(f"Última actualización: {guardado.get('actualizado', '')}")
+
+    kpis = tablas["kpis"]
+    tarjetas = [
+        ("Productos cargados", kpis["Productos cargados"], "blue", "&#9633;"),
+        ("Prendidos y visibles", kpis["Prendidos y visibles"], "green", "&#9711;"),
+        ("No visibles", kpis["No visibles"], "orange", "&#9676;"),
+        ("% visible", f"{kpis['% visible']:.1f}%", "purple", "%"),
+        ("SKUs inyectados", kpis["SKUs inyectados"], "blue", "&#8595;"),
+        ("SKUs en curso", kpis["SKUs en curso"], "orange", "!"),
+        ("Solicitudes en curso", kpis["Solicitudes en curso"], "orange", "&#9679;"),
+        ("Marcas con catálogo", kpis["Marcas con catálogo"], "purple", "&#9670;"),
+    ]
+    render_html(
+        '<div class="kpi-section-label">Operatividad de carga en todos los sitios</div>'
+        '<div class="kpi-card-grid">'
+        + "".join(
+            f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+            f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+            for titulo, valor, tono, icono in tarjetas
+        )
+        + "</div>"
+    )
+
+    sitios_df = _tabla_status(guardado.get("sitios"))
+    if not sitios_df.empty and (sitios_df["Estado"] != "Leido").any():
+        pendientes = sitios_df[sitios_df["Estado"] != "Leido"]
+        st.warning(
+            "Estos sitios no entraron en el status: "
+            + ", ".join(f"{fila['Sitio']} ({fila['Estado']})" for _, fila in pendientes.iterrows())
+            + ". Sus productos NO están contados abajo."
+        )
+
+    pestanas = st.tabs([
+        "Prendido y visible",
+        "Marcas por sitio",
+        "SKUs por clase",
+        "Registro de cargas",
+        "Avance por marca",
+    ])
+    with pestanas[0]:
+        st.caption(
+            "Cargado no es lo mismo que visible: un producto puede existir en Shopify y no verlo nadie, "
+            "por estar en borrador o activo sin publicar en el canal Online Store."
+        )
+        st.dataframe(_tabla_status(tablas["visibilidad"]), use_container_width=True, hide_index=True)
+        no_visibles = _tabla_status(tablas["no_visibles"])
+        if not no_visibles.empty:
+            st.markdown(f"#### Detalle de los {len(no_visibles):,} que no se ven")
+            st.dataframe(no_visibles.head(300), use_container_width=True, height=320, hide_index=True)
+    with pestanas[1]:
+        st.dataframe(_tabla_status(tablas["matriz"]), use_container_width=True, hide_index=True)
+    with pestanas[2]:
+        st.dataframe(_tabla_status(tablas["clases"]), use_container_width=True, hide_index=True)
+    with pestanas[3]:
+        st.dataframe(_tabla_status(tablas["registro"]), use_container_width=True, height=420, hide_index=True)
+    with pestanas[4]:
+        st.dataframe(_tabla_status(tablas["avance"]), use_container_width=True, hide_index=True)
+        st.markdown("#### Dónde están paradas las solicitudes")
+        st.dataframe(_tabla_status(tablas["por_estado"]), use_container_width=True, hide_index=True)
+
+    hojas = {
+        "Resumen": pd.DataFrame([{"Indicador": k, "Valor": v} for k, v in kpis.items()]),
+        "Sitios leidos": sitios_df,
+        "Prendido y visible": _tabla_status(tablas["visibilidad"]),
+        "No visibles": _tabla_status(tablas["no_visibles"]),
+        "Marcas x Sitios": _tabla_status(tablas["matriz"]),
+        "Resumen por clase": _tabla_status(tablas["clases"]),
+        "Registro de cargas": _tabla_status(tablas["registro"]),
+        "Avance por marca": _tabla_status(tablas["avance"]),
+        "Solicitudes por estado": _tabla_status(tablas["por_estado"]),
+    }
+    st.download_button(
+        "Descargar status general (todos los sitios)",
+        data=dataframe_to_excel_bytes(hojas),
+        file_name=f"status_carga_catalogos_{datetime.now().strftime('%d%m%Y')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        on_click=log_descarga, args=("Descargar status general", "render_status_de_carga"),
+    )
+
+
 def _normalize_auth_username(value):
     return clean_value(value).strip().casefold()
 
@@ -18904,6 +19313,32 @@ def render_login_styles():
             .st-key-login_form_area { padding:22px 22px 26px; }
             .login-forus-logo { min-width:152px; }
             .login-head h1 { font-size:26px; }
+
+            /* El login NO pasa por `inject_custom_css`: tiene su propio
+               bloque, asi que las reglas de movil de alla no llegan aqui y el
+               boton se quedaba en 74x40. Entrar es lo primero que alguien hace
+               desde el telefono; si falla eso, no importa el resto. */
+            /* Quien limita el ancho no es el boton ni su envoltorio directo,
+               sino el `stElementContainer` de Streamlit, que mide lo que el
+               texto (74px). Se abre el contenedor dentro de la tarjeta de
+               login, donde solo viven los dos campos y el boton. */
+            .st-key-login_form_area [data-testid="stElementContainer"] { width:100% !important; }
+            [data-testid="stFormSubmitButton"] { width:100% !important; }
+            [data-testid="stFormSubmitButton"] > button,
+            [data-testid="stBaseButton-primaryFormSubmit"],
+            [data-testid="stBaseButton-secondaryFormSubmit"] {
+                width:100% !important; min-height:46px !important; font-size:15px !important;
+            }
+            /* 16px: debajo de eso Safari hace zoom al enfocar el campo y deja
+               el formulario a medio salir de la pantalla. */
+            .st-key-login_form_area .stTextInput input { min-height:46px !important; font-size:16px !important; }
+        }
+        @media (max-width: 430px) {
+            .login-head { padding:20px 16px 22px; }
+            .st-key-login_form_area { padding:18px 16px 20px; }
+            .login-head h1 { font-size:22px; }
+            .login-forus-logo { min-width:130px; height:56px; }
+            .login-logo-row { gap:14px; }
         }
         </style>
         """,
@@ -19178,6 +19613,59 @@ def render_ticket_styles():
           border:1px solid #BFDBFE;border-radius:999px;background:#EFF6FF;color:#1D4ED8;
           font-size:12px;font-weight:800}
         .ticket-bulk b{font-size:14px}
+
+        /* ================= MOVIL =================================
+           Medido en un telefono de 390px: la primera solicitud empezaba en
+           y=1138px, o sea 1,3 pantallas de scroll antes de ver nada util.
+           Se reparte asi: cabecera 170px, seis KPIs 221px y los filtros el
+           resto. Nada estaba roto; simplemente no se podia trabajar.
+
+           Este bloque va aparte del de `inject_custom_css` porque
+           `render_ticket_styles()` es su propia hoja: lo de alla no llega aca.
+           ========================================================= */
+        @media(max-width:640px){
+          /* La cabecera dedicaba 170px a repetir en tres tamanos donde estas.
+             En el telefono el titulo basta; el sobretitulo es decoracion. */
+          .ticket-hero{padding:11px 13px;margin:0 0 8px}
+          .ticket-hero p{display:none}
+          /* Streamlit le pone su propio padding a los h1 de markdown (~36px
+             arriba y abajo). Con el sobretitulo oculto quedaba un hueco muerto
+             mas alto que el propio titulo. */
+          .ticket-hero h1{font-size:18px;line-height:1.2;margin:0;padding:0}
+          .ticket-hero span{margin-top:3px;font-size:12px}
+
+          /* Los KPI de la bandeja son etiqueta y numero, sin icono: entran
+             tres por fila. Seis pasan de 221px a unos 100px. */
+          .ticket-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+          .ticket-kpi-card{min-height:0;padding:7px 8px}
+          .ticket-kpi-card small{font-size:9.5px;line-height:1.15}
+          .ticket-kpi-card strong{font-size:16px}
+
+          /* La tarjeta de solicitud es lo que se viene a ver: se le deja el
+             ancho completo y se le quita el alto minimo de escritorio. */
+          .ticket-request-grid{grid-template-columns:1fr;gap:8px}
+          .ticket-request-card{min-height:0;padding:11px 12px}
+          .ticket-request-brand{margin:6px 0 4px}
+
+          /* Detalle: cuatro columnas de resumen no caben; dos si. */
+          .ticket-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:9px 0}
+          .ticket-summary>div{min-height:0;padding:8px 9px}
+          .ticket-summary small{margin-bottom:4px;font-size:10px}
+          .ticket-summary strong{font-size:14px}
+          .ticket-detail-shell{padding:0 11px 11px}
+          .ticket-section{padding:11px 12px;margin:9px 0}
+          .ticket-section h3{font-size:15px}
+          .ticket-section > p{margin:0 0 9px;font-size:12px}
+          .ticket-workspace{grid-template-columns:1fr}
+          .ticket-list-panel{max-height:none}
+        }
+        @media(max-width:430px){
+          /* Tres KPI de 118px siguen leyendose; el numero es corto. */
+          .ticket-kpi-grid{gap:5px}
+          .ticket-kpi-card{padding:6px 7px}
+          .ticket-kpi-card strong{font-size:15px}
+          .ticket-hero h1{font-size:17px}
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -21125,7 +21613,13 @@ def main():
             render_commercial_input_center(forced_brands=allowed_brands, actor=ticket_actor)
         return
     render_allowed_brands_card(brand_config)
-    nav_options = ["KPIs de catálogo", "Input comercial", "Solicitudes", "Carga de catálogo"]
+    nav_options = [
+        "KPIs de catálogo",
+        STATUS_CARGA_LABEL,
+        "Input comercial",
+        "Solicitudes",
+        "Carga de catálogo",
+    ]
     if can_view_user_activity_log(auth_user):
         nav_options.append("Auditoria")
     if st.session_state.get("operation_area_choice") not in nav_options:
@@ -21133,6 +21627,7 @@ def main():
     st.sidebar.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
     with st.sidebar.container(key="operation_nav"):
         sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
+        sidebar_nav_button(STATUS_CARGA_LABEL, "operation_area_choice", STATUS_CARGA_LABEL, "operation_nav_status")
         sidebar_nav_button("Input comercial", "operation_area_choice", "Input comercial", "operation_nav_input")
         sidebar_nav_button("Solicitudes", "operation_area_choice", "Solicitudes", "operation_nav_tickets")
         if can_view_user_activity_log(auth_user):
@@ -21197,6 +21692,10 @@ api_version = "{DEFAULT_API_VERSION}"
         st.success(load_reset_message)
     if operation_area == "KPIs de catálogo":
         render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready)
+        return
+    if operation_area == STATUS_CARGA_LABEL:
+        log_acceso_modulo(STATUS_CARGA_LABEL)
+        render_status_de_carga(ticket_actor)
         return
     if operation_area == "Input comercial":
         render_commercial_input_center(actor=ticket_actor)

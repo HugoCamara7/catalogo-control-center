@@ -1562,3 +1562,469 @@ def wait_media_statuses(config, media_ids, attempts=6, delay_seconds=3):
         if attempt < attempts - 1:
             time.sleep(delay_seconds)
     return statuses
+
+
+# ===========================================================================
+# Media de VIDEO en el producto
+# ===========================================================================
+# Un video de producto NO se resuelve como una foto. Con las fotos alcanza con
+# pasarle a Shopify la URL publica del bucket y el la descarga sola. Con los
+# videos eso NO funciona: `originalSource` de un media VIDEO solo acepta el
+# `resourceUrl` de un staged upload. Por eso hay tres viajes obligatorios:
+#
+#   1. stagedUploadsCreate(resource: VIDEO)  -> destino temporal
+#   2. POST multipart del archivo a ese destino
+#   3. productCreateMedia(mediaContentType: VIDEO, originalSource: resourceUrl)
+#
+# Y despues, como el media SIEMPRE se agrega al final, un cuarto viaje con
+# productReorderMedia para dejarlo en la posicion que toca.
+
+VIDEO_MIME_POR_DEFECTO = "video/mp4"
+
+
+def _multipart_body(campos, nombre_archivo, contenido, content_type):
+    """Arma un cuerpo multipart/form-data a mano.
+
+    Sin `requests` en el proyecto, y `urllib` no trae codificador multipart. El
+    orden importa: el destino de staged upload (Google Cloud Storage) exige que
+    el campo `file` vaya el ULTIMO, despues de todos los parametros firmados.
+    """
+    frontera = f"----shopifyvideo{uuid.uuid4().hex}"
+    separador = f"--{frontera}".encode("utf-8")
+    partes = []
+    for nombre, valor in campos:
+        partes.append(separador)
+        partes.append(f'Content-Disposition: form-data; name="{nombre}"'.encode("utf-8"))
+        partes.append(b"")
+        partes.append(clean(valor).encode("utf-8"))
+    partes.append(separador)
+    partes.append(
+        f'Content-Disposition: form-data; name="file"; filename="{nombre_archivo}"'.encode("utf-8")
+    )
+    partes.append(f"Content-Type: {content_type}".encode("utf-8"))
+    partes.append(b"")
+    cuerpo = b"\r\n".join(partes) + b"\r\n" + contenido + b"\r\n" + f"--{frontera}--\r\n".encode("utf-8")
+    return cuerpo, f"multipart/form-data; boundary={frontera}"
+
+
+def staged_upload_video(config, filename, mime_type, video_bytes, timeout=600):
+    """Sube el archivo a un destino temporal de Shopify y devuelve su resourceUrl.
+
+    Diferencias con `staged_upload_image`, que son las que hacen que no se pueda
+    reutilizar aquella:
+
+    - `resource: VIDEO` en vez de IMAGE.
+    - `fileSize` es OBLIGATORIO para VIDEO; sin el, la mutacion falla.
+    - `httpMethod: POST` y multipart, no PUT: el destino que devuelve Shopify
+      para video es una politica firmada de Google Cloud Storage.
+    """
+    shop_domain, api_version, token = _client(config)
+    contenido = video_bytes or b""
+    if not contenido:
+        raise ShopifyApiError("El archivo de video llego vacio.")
+    filename = clean(filename) or "product_video.mp4"
+    mime_type = clean(mime_type) or VIDEO_MIME_POR_DEFECTO
+    mutation = """
+    mutation StagedUploadsCreateVideo($input: [StagedUploadInput!]!) {
+      stagedUploadsCreate(input: $input) {
+        stagedTargets {
+          url
+          resourceUrl
+          parameters {
+            name
+            value
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {
+            "input": [
+                {
+                    "filename": filename,
+                    "mimeType": mime_type,
+                    "resource": "VIDEO",
+                    "fileSize": str(len(contenido)),
+                    "httpMethod": "POST",
+                }
+            ]
+        },
+        api_version=api_version,
+        timeout=60,
+    )
+    payload = data.get("stagedUploadsCreate") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    targets = payload.get("stagedTargets") or []
+    if not targets:
+        raise ShopifyApiError("Shopify no devolvio destino de subida para el video.")
+    target = targets[0]
+    destino = clean(target.get("url"))
+    if not destino:
+        raise ShopifyApiError("El destino de subida de video llego sin URL.")
+
+    campos = [
+        (clean(item.get("name")), item.get("value"))
+        for item in target.get("parameters") or []
+        if clean(item.get("name"))
+    ]
+    cuerpo, content_type = _multipart_body(campos, filename, contenido, mime_type)
+    request = Request(
+        destino,
+        data=cuerpo,
+        headers={"Content-Type": content_type, "Content-Length": str(len(cuerpo))},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            if response.status >= 400:
+                raise ShopifyApiError(f"La subida del video respondio HTTP {response.status}.")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:400]
+        raise ShopifyApiError(f"La subida del video respondio HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise ShopifyApiError(f"No se pudo subir el video a Shopify: {exc.reason}") from exc
+    return clean(target.get("resourceUrl"))
+
+
+def product_create_video_media(config, product_id, resource_url, alt="", filename=""):
+    """Asocia el video al PRODUCTO, no a los archivos de la tienda.
+
+    `fileCreate` deja el mp4 en Contenido > Archivos y ahi se queda: no aparece
+    en la galeria del producto. Lo que lo publica en la ficha es este
+    `productCreateMedia` con `mediaContentType: VIDEO`.
+
+    Devuelve los nodos de media creados. El procesamiento es ASINCRONO: salen
+    en UPLOADED o PROCESSING y hay que esperarlos con `wait_video_media_ready`.
+    """
+    resource_url = clean(resource_url)
+    if not resource_url:
+        raise ShopifyApiError("Falta el origen del video (resourceUrl del staged upload).")
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation ProductCreateVideoMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+      productCreateMedia(productId: $productId, media: $media) {
+        media {
+          id
+          mediaContentType
+          status
+          alt
+          ... on Video {
+            filename
+            originalSource {
+              url
+            }
+            sources {
+              url
+              format
+              mimeType
+            }
+          }
+          preview {
+            image {
+              url
+            }
+          }
+          mediaErrors {
+            code
+            details
+            message
+          }
+        }
+        mediaUserErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    media_input = [
+        {
+            "mediaContentType": "VIDEO",
+            "originalSource": resource_url,
+            "alt": clean(alt) or clean(filename),
+        }
+    ]
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"productId": clean(product_id), "media": media_input},
+        api_version=api_version,
+        timeout=60,
+    )
+    payload = data.get("productCreateMedia") or {}
+    errors = payload.get("mediaUserErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("media") or []
+
+
+def fetch_product_media(config, product_id, first=50):
+    """La galeria completa del producto, EN ORDEN.
+
+    El orden que devuelve Shopify es el orden real de la ficha, y es lo unico
+    con lo que se puede saber en que posicion quedo el video. Trae fotos y
+    videos juntos porque la posicion se cuenta sobre la galeria entera: mirar
+    solo los videos daria siempre "posicion 1".
+    """
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query ProductMediaForVideos($id: ID!, $first: Int!) {
+      product(id: $id) {
+        id
+        title
+        handle
+        status
+        onlineStoreUrl
+        codigoModeloColor: metafield(namespace: "custom", key: "codigo_modelo_color") {
+          value
+        }
+        marca: metafield(namespace: "custom", key: "marca") {
+          value
+        }
+        media(first: $first) {
+          nodes {
+            id
+            mediaContentType
+            status
+            alt
+            preview {
+              image {
+                url
+              }
+            }
+            mediaErrors {
+              code
+              details
+              message
+            }
+            ... on MediaImage {
+              image {
+                url
+              }
+            }
+            ... on Video {
+              filename
+              duration
+              originalSource {
+                url
+              }
+              sources {
+                url
+                format
+                mimeType
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        query,
+        {"id": clean(product_id), "first": max(1, min(int(first or 50), 250))},
+        api_version=api_version,
+        timeout=45,
+    )
+    product = data.get("product") or {}
+    if not product:
+        raise ShopifyApiError(f"Shopify no devolvio el producto {clean(product_id)}.")
+    media = ((product.get("media") or {}).get("nodes")) or []
+    return {
+        "id": clean(product.get("id")),
+        "title": clean(product.get("title")),
+        "handle": clean(product.get("handle")),
+        "status": clean(product.get("status")),
+        "onlineStoreUrl": clean(product.get("onlineStoreUrl")),
+        "modCol": clean((product.get("codigoModeloColor") or {}).get("value")).upper(),
+        "marca": clean((product.get("marca") or {}).get("value")),
+        "media": [node for node in media if node],
+    }
+
+
+def product_reorder_media(config, product_id, moves):
+    """Mueve media dentro de la galeria. `newPosition` empieza en 0.
+
+    Es el paso que hace que el video quede SEGUNDO: `productCreateMedia`
+    siempre lo agrega al final y no acepta posicion. La mutacion devuelve un
+    `job` porque el reordenamiento tambien es asincrono.
+    """
+    moves = [
+        {"id": clean(move.get("id")), "newPosition": clean(move.get("newPosition"))}
+        for move in moves or []
+        if clean((move or {}).get("id"))
+    ]
+    if not moves:
+        return {}
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation ProductReorderMediaForVideos($id: ID!, $moves: [MoveInput!]!) {
+      productReorderMedia(id: $id, moves: $moves) {
+        job {
+          id
+          done
+        }
+        mediaUserErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {"id": clean(product_id), "moves": moves},
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("productReorderMedia") or {}
+    errors = payload.get("mediaUserErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("job") or {}
+
+
+def fetch_video_media_statuses(config, media_ids):
+    """Estado de esos media, sirvan para foto o para video.
+
+    `fetch_media_statuses` solo abre el fragmento `... on MediaImage`: con un
+    video devuelve el nodo sin `status` y la espera termina creyendo que ya
+    esta listo. Este pide los dos fragmentos.
+    """
+    media_ids = [clean(media_id) for media_id in media_ids if clean(media_id)]
+    if not media_ids:
+        return []
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query VideoMediaStatuses($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        id
+        ... on Media {
+          mediaContentType
+          status
+          alt
+          preview {
+            image {
+              url
+            }
+          }
+          mediaErrors {
+            code
+            details
+            message
+          }
+        }
+        ... on Video {
+          filename
+          duration
+          sources {
+            url
+            format
+            mimeType
+          }
+        }
+      }
+    }
+    """
+    data = graphql_request(shop_domain, token, query, {"ids": media_ids}, api_version=api_version, timeout=45)
+    return [node for node in data.get("nodes") or [] if node]
+
+
+def wait_video_media_ready(config, media_ids, attempts=20, delay_seconds=6):
+    """Espera a que Shopify termine de procesar el video.
+
+    Un mp4 de producto tarda decenas de segundos, a veces minutos: los 6x3s de
+    `wait_media_statuses` (pensados para fotos) devuelven PROCESSING casi
+    siempre y la pantalla diria "no se pudo" con un video que estaba bien.
+    """
+    statuses = []
+    pending = [clean(media_id) for media_id in media_ids if clean(media_id)]
+    for attempt in range(max(1, attempts)):
+        statuses = fetch_video_media_statuses(config, pending)
+        pending = [
+            clean(node.get("id"))
+            for node in statuses
+            if clean(node.get("id")) and clean(node.get("status")).upper() in ("UPLOADED", "PROCESSING")
+        ]
+        if not pending:
+            break
+        if attempt < attempts - 1:
+            time.sleep(delay_seconds)
+    return statuses
+
+
+def search_products(config, search_query, first=20):
+    """Busqueda dirigida de productos, sin traer el catalogo entero.
+
+    Encontrar un producto para subirle un video no puede costar las 40 paginas
+    de `fetch_products`: el usuario espera minutos por un dato que Shopify
+    resuelve en un viaje. Devuelve lo minimo para identificarlo y decidir.
+    """
+    search_query = clean(search_query)
+    if not search_query:
+        return []
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query SearchProductsForVideos($first: Int!, $query: String!) {
+      products(first: $first, query: $query) {
+        nodes {
+          id
+          legacyResourceId
+          handle
+          title
+          status
+          vendor
+          onlineStoreUrl
+          codigoModeloColor: metafield(namespace: "custom", key: "codigo_modelo_color") {
+            value
+          }
+          marca: metafield(namespace: "custom", key: "marca") {
+            value
+          }
+          media(first: 1) {
+            nodes {
+              id
+            }
+          }
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        query,
+        {"first": max(1, min(int(first or 20), 100)), "query": search_query},
+        api_version=api_version,
+        timeout=45,
+    )
+    nodes = ((data.get("products") or {}).get("nodes")) or []
+    return [
+        {
+            "Product ID": clean(node.get("id")),
+            "Legacy ID": clean(node.get("legacyResourceId")),
+            "Handle": clean(node.get("handle")),
+            "Title": clean(node.get("title")),
+            "Status": clean(node.get("status")),
+            "Vendor": clean(node.get("vendor")),
+            "Online Store URL": clean(node.get("onlineStoreUrl")),
+            "Mod-Col": clean((node.get("codigoModeloColor") or {}).get("value")).upper(),
+            "Marca": clean((node.get("marca") or {}).get("value")),
+        }
+        for node in nodes
+        if node
+    ]

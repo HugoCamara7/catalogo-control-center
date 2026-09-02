@@ -37,6 +37,8 @@ from engines.ticket_flow import estado_visible as flujo_estado_visible
 from engines.ticket_flow import ORDEN as FLUJO_ORDEN
 from engines import centry_map as centry_plantilla
 from engines import load_status as status_carga
+from engines import video_media as video_motor
+from engines import s3_uploader as s3_motor
 
 try:
     from engines import enrich as enriquecimiento
@@ -253,6 +255,15 @@ wait_media_statuses = _shopify_attr("wait_media_statuses")
 fetch_metaobjects_for_definition = _shopify_attr("fetch_metaobjects_for_definition", None)
 fetch_metafield_definition = _shopify_attr("fetch_metafield_definition", None)
 fetch_product_id_by_handle = _shopify_attr("fetch_product_id_by_handle", None)
+# Mantenedor de Videos. Van con respaldo None porque la app tiene que poder
+# arrancar contra un shopify_api.py viejo: la pantalla avisa que falta
+# actualizarlo en vez de tumbar el import entero.
+staged_upload_video = _shopify_attr("staged_upload_video", None)
+product_create_video_media = _shopify_attr("product_create_video_media", None)
+fetch_product_media = _shopify_attr("fetch_product_media", None)
+product_reorder_media = _shopify_attr("product_reorder_media", None)
+wait_video_media_ready = _shopify_attr("wait_video_media_ready", None)
+search_products = _shopify_attr("search_products", None)
 
 try:
     from centry_static_masters import (
@@ -21668,6 +21679,805 @@ def render_ticket_detail(service, actor, code):
                 )
 
 
+
+# =========================================================================
+# Mantenedor de Videos
+# =========================================================================
+# Publicar un video de producto, no "subir un mp4". El usuario pone
+# Marca + Modelo + Color + archivo; el nombre, la ruta del bucket, la URL, la
+# busqueda del producto, la subida a Shopify y el ORDEN los resuelve la app.
+#
+# Se apoya en lo que ya existe y no lo duplica:
+#   - carpeta del bucket por marca -> `BRAND_IMAGE_FOLDERS` (motor de fotos)
+#   - conexion y credenciales      -> `get_shopify_config` / Secrets
+#   - catalogo del sitio           -> `session_shopify_products`
+#   - auditoria                    -> `log_user_activity` / `log_acceso_modulo`
+#
+# La logica que se puede decidir sin red vive en `engines/video_media.py`; la
+# escritura en el bucket, en `engines/s3_uploader.py`. Aqui solo queda la
+# pantalla y el encadenado de los 10 pasos.
+VIDEOS_LABEL = "Mantenedor de Videos"
+
+# Los pasos que se muestran en pantalla, en orden. Cada uno se marca ok/error a
+# medida que avanza: cuando algo falla se ve EXACTAMENTE donde, y no un
+# "no se pudo publicar" que no dice nada.
+VIDEO_PASOS = (
+    ("producto", "Validar que el producto exista"),
+    ("archivo", "Validar el video"),
+    ("nombre", "Generar el nombre del archivo"),
+    ("s3", "Subir el video al bucket S3"),
+    ("url", "Construir la URL pública"),
+    ("shopify", "Agregar el video al producto en Shopify"),
+    ("procesado", "Verificar que Shopify procesó el video"),
+    ("orden", "Revisar el orden de la galería"),
+    ("posicion", f"Dejar el video en la posición {video_motor.POSICION_VIDEO}"),
+    ("resultado", "Mostrar el resultado"),
+)
+
+
+def video_secrets_s3():
+    """La seccion [s3] de Secrets, ya normalizada. Nunca lanza."""
+    try:
+        return s3_motor.configuracion_s3(dict(st.secrets.get("s3", {})))
+    except Exception:
+        return s3_motor.configuracion_s3({})
+
+
+def video_marca_por_defecto(brand_config):
+    """La marca que se propone segun el sitio elegido en la barra lateral.
+
+    Es solo el valor inicial del selector: Rockford.pe vende Columbia,
+    Patagonia y Sorel, asi que la marca la termina eligiendo la persona y es
+    ella la que decide la carpeta del bucket.
+    """
+    marcas = video_motor.marcas_disponibles()
+    permitidas = [
+        marca for marca in (brand_config or {}).get("allowed_arti_brands", []) or []
+        if clean_value(marca) in marcas
+    ]
+    if permitidas:
+        return permitidas[0]
+    carpeta = clean_value((brand_config or {}).get("image_folder"))
+    for marca in marcas:
+        if video_motor.carpeta_de_marca(marca) == carpeta:
+            return marca
+    return marcas[0] if marcas else ""
+
+
+def video_buscar_producto(shopify_config, site_key, mod_col, force_refresh=False):
+    """El producto de Shopify de ese Modelo-Color. Devuelve (producto, detalle).
+
+    Dos caminos, en este orden:
+
+    1. **Busqueda dirigida** (`search_products`): un viaje. Se prueban varias
+       formas de preguntar porque el codigo vive en el handle, en los tags y en
+       el metacampo, y cada tienda lo tiene en distinto sitio. Lo que devuelve
+       se VERIFICA contra el metacampo `custom.codigo_modelo_color`: la
+       busqueda de Shopify es difusa y devuelve parecidos.
+    2. **Catalogo del sitio** (`session_shopify_products`), que es la misma
+       fuente que usa el mantenedor de fotos. Es exacta pero cara, asi que solo
+       se paga cuando la busqueda dirigida no encontro nada.
+
+    Nunca crea productos: si no existe, se dice y se para.
+    """
+    mod_col = clean_value(mod_col).upper()
+    if not mod_col:
+        return None, "No se armó el código modelo-color."
+
+    if search_products is not None and not force_refresh:
+        consultas = [
+            f'tag:"{mod_col}"',
+            f'handle:*{mod_col.lower()}*',
+            f'"{mod_col}"',
+        ]
+        for consulta in consultas:
+            try:
+                encontrados = search_products(shopify_config, consulta, first=20)
+            except Exception:
+                continue
+            for producto in encontrados or []:
+                if clean_value(producto.get("Mod-Col")).upper() == mod_col:
+                    return producto, f"Búsqueda directa en Shopify ({consulta})."
+
+    try:
+        productos = session_shopify_products(site_key, shopify_config, force_refresh=force_refresh)
+    except Exception as exc:
+        return None, f"No se pudo leer el catálogo de Shopify: {clean_value(exc)[:200]}"
+    producto = png_find_product(productos, mod_col)
+    if producto is None:
+        return None, f"No existe un producto con el código {mod_col} en este sitio."
+    return producto, "Encontrado en el catálogo del sitio."
+
+
+def video_leer_galeria(shopify_config, product_gid):
+    """La galeria actual del producto. (datos, error)."""
+    if fetch_product_media is None:
+        return None, "Falta actualizar shopify_api.py: no existe fetch_product_media."
+    try:
+        return fetch_product_media(shopify_config, product_gid), ""
+    except Exception as exc:
+        return None, clean_value(exc)[:300]
+
+
+def video_subir_a_s3(marca, modelo, color, contenido):
+    """PASO 4. (clave, url, detalle, subio). No lanza.
+
+    Si falta la seccion [s3] NO se inventa una subida: se devuelve `subio=False`
+    con el motivo. La publicacion puede seguir igual, porque quien sirve el
+    video en la ficha es el CDN de Shopify; el bucket guarda el archivo con el
+    nombre canonico para el resto de los procesos.
+    """
+    clave = video_motor.clave_s3(marca, modelo, color)
+    url = video_motor.url_de_video(marca, modelo, color)
+    config = video_secrets_s3()
+    if not s3_motor.s3_esta_configurado(config):
+        return clave, url, (
+            "No hay credenciales de escritura en Secrets (sección [s3]). "
+            "El archivo no se copió al bucket."
+        ), False
+    try:
+        s3_motor.subir_bytes(config, clave, contenido, content_type=video_motor.MIME_VIDEO)
+    except Exception as exc:
+        return clave, url, clean_value(exc)[:300], False
+    return clave, url, f"Subido a s3://{config.get('bucket')}/{clave}", True
+
+
+def video_publicar_en_shopify(shopify_config, product_gid, nombre, contenido, alt=""):
+    """PASOS 6 y 7. Devuelve (media, detalle).
+
+    Los tres viajes que exige Shopify para un video de producto, en orden:
+    destino temporal, POST del archivo y `productCreateMedia`. Una URL publica
+    NO sirve como origen de un video (eso solo vale para fotos), asi que este
+    camino no se puede acortar.
+    """
+    if staged_upload_video is None or product_create_video_media is None:
+        raise ShopifyApiError("Falta actualizar shopify_api.py: no existen las funciones de video.")
+    resource_url = staged_upload_video(shopify_config, nombre, video_motor.MIME_VIDEO, contenido)
+    creados = product_create_video_media(
+        shopify_config, product_gid, resource_url, alt=alt, filename=nombre
+    )
+    if not creados:
+        raise ShopifyApiError("Shopify no devolvió el media del video.")
+    return creados[0], f"Origen temporal aceptado ({resource_url[:60]}...)."
+
+
+def video_esperar_procesado(shopify_config, media_id):
+    """PASO 7. (estado, detalle). Un video tarda: la espera es larga a proposito."""
+    if wait_video_media_ready is None:
+        return "DESCONOCIDO", "Falta actualizar shopify_api.py: no existe wait_video_media_ready."
+    try:
+        estados = wait_video_media_ready(shopify_config, [media_id])
+    except Exception as exc:
+        return "ERROR", clean_value(exc)[:300]
+    nodo = next(
+        (item for item in estados or [] if clean_value(item.get("id")) == clean_value(media_id)),
+        None,
+    )
+    if nodo is None:
+        return "DESCONOCIDO", "Shopify no devolvió el estado del video."
+    return video_motor.estado_de_media(nodo)
+
+
+def video_colocar_en_posicion(shopify_config, product_gid, media_id, posicion=None):
+    """PASOS 8 y 9. (posicion_final, detalle, ok).
+
+    `productCreateMedia` SIEMPRE agrega al final y no acepta posicion, asi que
+    este paso no es opcional: se relee la galeria, se calcula el movimiento y
+    se vuelve a leer para comprobar donde quedo de verdad. Confiar en que la
+    mutacion salio bien no alcanza: el reordenamiento es un job asincrono.
+    """
+    posicion = int(posicion or video_motor.POSICION_VIDEO)
+    datos, error = video_leer_galeria(shopify_config, product_gid)
+    if datos is None:
+        return 0, error, False
+    media = datos.get("media") or []
+    movimientos = video_motor.plan_de_orden(media, media_id, posicion)
+    if not movimientos:
+        actual = video_motor.posicion_de_media(media, media_id)
+        if actual == posicion:
+            return actual, "El video ya estaba en la posición correcta.", True
+        if actual and len(media) < posicion:
+            return actual, (
+                f"El producto solo tiene {len(media)} media, así que el video quedó "
+                f"en la posición {actual}. Súbele una foto principal y vuelve a ordenar."
+            ), False
+        return actual, "No se pudo calcular el movimiento del video.", False
+
+    if product_reorder_media is None:
+        return 0, "Falta actualizar shopify_api.py: no existe product_reorder_media.", False
+    try:
+        product_reorder_media(shopify_config, product_gid, movimientos)
+    except Exception as exc:
+        return 0, clean_value(exc)[:300], False
+
+    # El reordenamiento devuelve un job: hay que releer para saber como quedo.
+    final = 0
+    detalle = ""
+    for intento in range(4):
+        time.sleep(1.5 if intento else 0.5)
+        datos, error = video_leer_galeria(shopify_config, product_gid)
+        if datos is None:
+            detalle = error
+            continue
+        final = video_motor.posicion_de_media(datos.get("media") or [], media_id)
+        if final == posicion:
+            return final, f"El video quedó en la posición {final}.", True
+    return final, detalle or (
+        f"Shopify aceptó el reordenamiento pero el video quedó en la posición {final}."
+    ), False
+
+
+def video_reemplazar_existente(shopify_config, product_gid, media_id):
+    """Borra el video anterior. Devuelve (borrado, detalle).
+
+    Se hace ANTES de crear el nuevo para que la posicion 2 quede libre y el
+    producto no pase por un estado con dos videos. Nunca se duplica en
+    silencio: este camino solo se recorre cuando la persona lo pidio.
+    """
+    try:
+        borrados = product_delete_media(shopify_config, product_gid, [media_id])
+    except Exception as exc:
+        detalle = clean_value(exc).lower()
+        if "do not exist" in detalle or "does not exist" in detalle:
+            return True, "El video anterior ya no existía."
+        return False, clean_value(exc)[:300]
+    return bool(borrados), f"{len(borrados or [])} video anterior eliminado."
+
+
+def video_publicar(shopify_config, site_key, marca, modelo, color, archivo,
+                   reemplazar=False, progreso=None):
+    """El proceso completo, de punta a punta. Devuelve el registro de los pasos.
+
+    Un solo lugar arma el resultado, y es el mismo que usa la carga masiva: si
+    el modo individual y el masivo publicaran por caminos distintos, se
+    separarian sin que nadie lo notara.
+
+    NUNCA lanza: cada paso queda con su estado y su detalle tecnico, que es lo
+    que la pantalla muestra y lo que va a la auditoria.
+    """
+    pasos = {clave: {"estado": "pendiente", "detalle": ""} for clave, _ in VIDEO_PASOS}
+    resultado = {
+        "ok": False,
+        "pasos": pasos,
+        "Marca": clean_value(marca),
+        "Modelo": video_motor.normalizar_modelo(modelo),
+        "Color": video_motor.normalizar_color(color),
+        "Código Modelo Color": video_motor.codigo_modelo_color(modelo, color),
+        "Nombre": "",
+        "URL": "",
+        "Clave S3": "",
+        "Producto": "",
+        "Product ID": "",
+        "Media ID": "",
+        "Posición": 0,
+        "Estado": "",
+        "En S3": False,
+    }
+
+    def marcar(clave, estado, detalle=""):
+        pasos[clave] = {"estado": estado, "detalle": clean_value(detalle)}
+        if callable(progreso):
+            progreso(clave, estado, detalle)
+
+    def fallar(clave, detalle):
+        marcar(clave, "error", detalle)
+        resultado["Estado"] = clean_value(detalle)
+        return resultado
+
+    # PASO 1 -------------------------------------------------------------
+    problemas = video_motor.validar_datos_del_producto(marca, modelo, color)
+    if problemas:
+        return fallar("producto", " ".join(problemas))
+    mod_col = resultado["Código Modelo Color"]
+    producto, detalle = video_buscar_producto(shopify_config, site_key, mod_col)
+    if producto is None:
+        return fallar("producto", f"Producto no encontrado. {detalle}")
+    product_gid = clean_value(producto.get("Product ID"))
+    resultado["Producto"] = clean_value(producto.get("Title"))
+    resultado["Product ID"] = product_gid
+    marcar("producto", "ok", f"{producto.get('Title')} ({detalle})")
+
+    # PASO 2 -------------------------------------------------------------
+    nombre_original = clean_value(getattr(archivo, "name", ""))
+    try:
+        archivo.seek(0)
+        contenido = archivo.read()
+    except Exception as exc:
+        return fallar("archivo", f"No se pudo leer el archivo: {clean_value(exc)[:200]}")
+    errores, avisos = video_motor.validar_video(nombre_original, len(contenido))
+    if errores:
+        return fallar("archivo", " ".join(errores))
+    marcar("archivo", "ok", " ".join(avisos) or
+           f"{nombre_original} · {video_motor.formatear_tamano(len(contenido))}")
+
+    # PASO 3 -------------------------------------------------------------
+    nombre = video_motor.nombre_de_video(modelo, color)
+    if not nombre:
+        return fallar("nombre", "No se pudo generar el nombre del archivo.")
+    resultado["Nombre"] = nombre
+    marcar("nombre", "ok", nombre)
+
+    # Video ya existente. Se mira ANTES de subir nada.
+    datos, error = video_leer_galeria(shopify_config, product_gid)
+    if datos is None:
+        return fallar("producto", f"No se pudo leer la galería del producto: {error}")
+    media_actual = datos.get("media") or []
+    existente = video_motor.video_existente(media_actual, nombre)
+    if existente is not None:
+        if not reemplazar:
+            return fallar(
+                "shopify",
+                f"El producto ya tiene un video ({video_motor.nombre_de_archivo_de_media(existente)}). "
+                "Elige Reemplazar video para cambiarlo.",
+            )
+        borrado, detalle_borrado = video_reemplazar_existente(
+            shopify_config, product_gid, clean_value(existente.get("id"))
+        )
+        if not borrado:
+            return fallar("shopify", f"No se pudo eliminar el video anterior: {detalle_borrado}")
+
+    # PASO 4 -------------------------------------------------------------
+    clave, url, detalle_s3, subio = video_subir_a_s3(marca, modelo, color, contenido)
+    resultado["Clave S3"] = clave
+    resultado["En S3"] = subio
+    marcar("s3", "ok" if subio else "aviso", detalle_s3)
+
+    # PASO 5 -------------------------------------------------------------
+    if not url:
+        return fallar("url", "No se pudo construir la URL pública.")
+    resultado["URL"] = url
+    marcar("url", "ok", url)
+
+    # PASO 6 -------------------------------------------------------------
+    try:
+        media, detalle_shopify = video_publicar_en_shopify(
+            shopify_config, product_gid, nombre, contenido,
+            alt=f"{resultado['Producto']} - video",
+        )
+    except Exception as exc:
+        return fallar("shopify", f"Shopify rechazó el video: {clean_value(exc)[:300]}")
+    media_id = clean_value(media.get("id"))
+    resultado["Media ID"] = media_id
+    if not media_id:
+        return fallar("shopify", "Shopify no devolvió el Media ID del video.")
+    marcar("shopify", "ok", f"{media_id} · {detalle_shopify}")
+
+    # PASO 7 -------------------------------------------------------------
+    estado, detalle_estado = video_esperar_procesado(shopify_config, media_id)
+    resultado["Estado"] = estado
+    if estado == video_motor.ESTADO_FALLIDO:
+        return fallar("procesado", f"Shopify no pudo procesar el video: {detalle_estado}")
+    if estado in video_motor.ESTADOS_EN_CURSO:
+        marcar("procesado", "aviso",
+               "Shopify sigue procesando el video. Queda asociado al producto y "
+               "aparecerá en cuanto termine.")
+    else:
+        marcar("procesado", "ok", f"Estado {estado}.")
+
+    # PASOS 8 y 9 --------------------------------------------------------
+    marcar("orden", "ok", f"La galería tenía {len(media_actual)} media antes del video.")
+    posicion, detalle_orden, ok_orden = video_colocar_en_posicion(
+        shopify_config, product_gid, media_id
+    )
+    resultado["Posición"] = posicion
+    if not ok_orden:
+        marcar("posicion", "error", detalle_orden)
+        resultado["Estado"] = detalle_orden
+        return resultado
+    marcar("posicion", "ok", detalle_orden)
+
+    # PASO 10 ------------------------------------------------------------
+    marcar("resultado", "ok", "Video publicado.")
+    resultado["ok"] = True
+    return resultado
+
+
+def video_registrar_auditoria(resultado, site_key):
+    """Deja el intento en la auditoria, salga bien o mal."""
+    fallidos = [
+        f"{clave}: {paso.get('detalle')}"
+        for clave, paso in (resultado.get("pasos") or {}).items()
+        if paso.get("estado") == "error"
+    ]
+    log_user_activity(
+        "Publicación de video",
+        detail=(
+            f"{resultado.get('Código Modelo Color')} · {resultado.get('Nombre')} · "
+            f"posición {resultado.get('Posición')}"
+            + (f" · {' | '.join(fallidos[:2])}" if fallidos else "")
+        ),
+        module=VIDEOS_LABEL,
+        site_key=clean_value(site_key),
+        marca=clean_value(resultado.get("Marca")),
+        resultado="ok" if resultado.get("ok") else "error",
+    )
+
+
+def render_video_pasos(pasos):
+    """Los 10 pasos con su estado. Es el mapa de errores de la pantalla."""
+    iconos = {"ok": "✅", "error": "❌", "aviso": "⚠️", "pendiente": "·"}
+    filas = []
+    for numero, (clave, titulo) in enumerate(VIDEO_PASOS, start=1):
+        paso = (pasos or {}).get(clave) or {}
+        filas.append(
+            {
+                "Paso": numero,
+                "": iconos.get(paso.get("estado"), "·"),
+                "Qué se hizo": titulo,
+                "Detalle": clean_value(paso.get("detalle")),
+            }
+        )
+    st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+
+
+def render_video_resultado(resultado):
+    """El resultado final, con el producto y su galeria para comprobarlo."""
+    if resultado.get("ok"):
+        st.success("✅ Video publicado correctamente")
+    else:
+        st.error("No se pudo publicar el video. Revisa en qué paso se detuvo.")
+
+    tarjetas = (
+        ("Producto", resultado.get("Código Modelo Color"), "blue"),
+        ("Video", resultado.get("Nombre"), "purple"),
+        ("Posición", resultado.get("Posición") or "-", "green" if resultado.get("ok") else "orange"),
+        ("Estado", resultado.get("Estado") or "-", "blue"),
+    )
+    render_html(
+        '<div class="kpi-card-grid">'
+        + "".join(
+            '<div class="kpi-card {tono}"><div><span>{titulo}</span>'
+            "<strong>{valor}</strong></div></div>".format(
+                tono=tono, titulo=escape(titulo), valor=escape(clean_value(valor) or "-")
+            )
+            for titulo, valor, tono in tarjetas
+        )
+        + "</div>"
+    )
+    st.caption(f"**Shopify Media ID:** {resultado.get('Media ID') or '-'}")
+    if resultado.get("URL"):
+        st.caption(f"**URL:** {resultado['URL']}")
+    if not resultado.get("En S3"):
+        st.info(
+            "El video quedó publicado en Shopify pero NO se copió al bucket S3. "
+            "Configura la sección [s3] en Secrets para guardar también el archivo "
+            "con su nombre canónico."
+        )
+    render_video_pasos(resultado.get("pasos"))
+
+
+def render_video_galeria(shopify_config, product_gid, titulo="Galería del producto"):
+    """Dibuja la galeria en orden. Es la comprobacion visual del resultado."""
+    datos, error = video_leer_galeria(shopify_config, product_gid)
+    if datos is None:
+        st.warning(f"No se pudo leer la galería: {error}")
+        return
+    media = datos.get("media") or []
+    resumen = video_motor.resumen_de_media(media)
+    st.markdown(f"**{titulo}** · {resumen['imagenes']} fotos · {resumen['videos']} videos")
+    st.dataframe(
+        pd.DataFrame(video_motor.filas_de_media(media)),
+        use_container_width=True,
+        hide_index=True,
+    )
+    for nodo in video_motor.videos_del_producto(media):
+        fuentes = [clean_value((f or {}).get("url")) for f in (nodo.get("sources") or [])]
+        fuente = next((url for url in fuentes if url), "")
+        if fuente:
+            try:
+                st.video(fuente)
+            except Exception:
+                st.caption(fuente)
+            break
+
+
+def render_video_masivo(shopify_config, site_key, marca_defecto):
+    """Carga masiva. El modo individual es la prioridad; esto deja el camino.
+
+    Mismo motor, mismo nombre, misma ruta y la misma funcion de publicacion que
+    el modo individual: aqui solo cambia de donde salen los datos.
+    """
+    st.markdown("Sube el Excel con **Marca · Modelo · Color · Video** y los archivos de video.")
+    excel = st.file_uploader(
+        "Excel con la lista",
+        type=["xlsx", "xls"],
+        key="video_masivo_excel",
+        help="Columnas Marca, Modelo, Color y Video. Si no traes Marca, se usa la marca elegida arriba.",
+    )
+    videos = st.file_uploader(
+        "Archivos de video",
+        type=["mp4"],
+        accept_multiple_files=True,
+        key="video_masivo_archivos",
+        help="Se emparejan con el Excel por el nombre de la columna Video, o por MODELO_COLOR en el nombre.",
+    )
+    if excel is None:
+        st.info("Sube el Excel para ver el plan de carga.")
+        return
+
+    try:
+        df = read_uploaded_excel_cached(excel, f"video_masivo_{clean_value(site_key)}")
+    except Exception as exc:
+        st.error(f"No se pudo leer el Excel: {clean_value(exc)[:200]}")
+        return
+    filas = df.fillna("").to_dict("records") if df is not None and not df.empty else []
+    trabajos, descartados = video_motor.trabajos_de_carga_masiva(
+        filas, cabeceras=list(df.columns) if df is not None else None,
+        marca_por_defecto=marca_defecto,
+    )
+    emparejados, sin_archivo = video_motor.emparejar_videos_con_trabajos(trabajos, videos)
+
+    if trabajos:
+        st.markdown(f"**Plan de carga: {len(emparejados)} videos listos de {len(trabajos)} filas válidas.**")
+        st.dataframe(
+            pd.DataFrame([{k: v for k, v in t.items() if k != "archivo"} for t in trabajos]),
+            use_container_width=True,
+            hide_index=True,
+        )
+    if descartados:
+        st.warning(f"{len(descartados)} filas descartadas.")
+        st.dataframe(pd.DataFrame(descartados), use_container_width=True, hide_index=True)
+    if sin_archivo:
+        st.warning(f"{len(sin_archivo)} filas sin archivo de video subido.")
+        st.dataframe(
+            pd.DataFrame([{k: v for k, v in t.items() if k != "archivo"} for t in sin_archivo]),
+            use_container_width=True,
+            hide_index=True,
+        )
+    if not emparejados:
+        st.info("No hay ninguna fila con su archivo de video para publicar.")
+        return
+
+    reemplazar = st.checkbox(
+        "Reemplazar el video si el producto ya tiene uno",
+        value=False,
+        key="video_masivo_reemplazar",
+        help="Sin esto, los productos que ya tienen video se saltan y se reportan.",
+    )
+    if not st.button(f"🚀 Publicar {len(emparejados)} videos", type="primary", key="video_masivo_publicar"):
+        return
+
+    barra = st.progress(0.0, text="Publicando videos...")
+    resultados = []
+    for indice, trabajo in enumerate(emparejados, start=1):
+        barra.progress(indice / len(emparejados), text=f"{trabajo['Código Modelo Color']} ({indice}/{len(emparejados)})")
+        resultado = video_publicar(
+            shopify_config, site_key, trabajo["Marca"], trabajo["Modelo"], trabajo["Color"],
+            trabajo["archivo"], reemplazar=reemplazar,
+        )
+        video_registrar_auditoria(resultado, site_key)
+        resultados.append(
+            {
+                "Fila": trabajo["Fila"],
+                "Código Modelo Color": resultado["Código Modelo Color"],
+                "Video": resultado["Nombre"],
+                "Producto": resultado["Producto"],
+                "Media ID": resultado["Media ID"],
+                "Posición": resultado["Posición"],
+                "En S3": "SI" if resultado["En S3"] else "NO",
+                "Resultado": "Publicado" if resultado["ok"] else "Error",
+                "Detalle": resultado["Estado"],
+            }
+        )
+    barra.empty()
+    publicados = sum(1 for item in resultados if item["Resultado"] == "Publicado")
+    if publicados == len(resultados):
+        st.success(f"✅ {publicados} videos publicados en posición {video_motor.POSICION_VIDEO}.")
+    else:
+        st.warning(f"{publicados} de {len(resultados)} videos publicados. El resto trae su motivo.")
+    tabla = pd.DataFrame(resultados)
+    st.dataframe(tabla, use_container_width=True, hide_index=True)
+    st.download_button(
+        "Descargar resultado",
+        data=dataframe_to_excel_bytes({"Videos": tabla}),
+        file_name=f"videos_publicados_{clean_value(site_key)}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="video_masivo_descarga",
+        on_click=log_descarga,
+        args=(f"videos_publicados_{clean_value(site_key)}.xlsx", VIDEOS_LABEL),
+    )
+
+
+def render_video_maintainer(brand_config, shopify_config):
+    """La pantalla del Mantenedor de Videos.
+
+    Marca + Modelo + Color + archivo. Todo lo demas lo resuelve la app: el
+    usuario no escribe una URL, no arma un nombre, no sabe que existe S3 ni
+    que Shopify agrega el media al final.
+    """
+    log_acceso_modulo(VIDEOS_LABEL)
+    render_html(
+        """
+        <div class="kpi-hero">
+            <div class="kpi-title">
+                <h2>🎥 Mantenedor de Videos</h2>
+                <p>Carga videos de productos y publícalos automáticamente en Shopify.</p>
+            </div>
+        </div>
+        """
+    )
+
+    if not is_shopify_configured(shopify_config):
+        st.error(
+            "Este sitio no tiene Shopify configurado en Secrets. "
+            "El Mantenedor de Videos publica directamente sobre la tienda, así que no puede trabajar sin conexión."
+        )
+        return
+    if staged_upload_video is None or product_create_video_media is None or product_reorder_media is None:
+        st.error(
+            "Falta actualizar `shopify_api.py`: no tiene las funciones de video "
+            "(staged_upload_video, product_create_video_media, product_reorder_media)."
+        )
+        return
+
+    site_key = clean_value(brand_config.get("site_key")) or "columbia"
+    modo = st.radio(
+        "Modo",
+        ["Carga individual", "Carga masiva"],
+        horizontal=True,
+        key="video_modo",
+        help="La carga individual es el camino principal. La masiva usa exactamente el mismo motor.",
+    )
+
+    st.markdown('<div class="section-card"><h2>1. Datos del producto</h2>', unsafe_allow_html=True)
+    marcas = video_motor.marcas_disponibles()
+    defecto = video_marca_por_defecto(brand_config)
+    marca = st.selectbox(
+        "Marca",
+        marcas,
+        index=marcas.index(defecto) if defecto in marcas else 0,
+        key="video_marca",
+        help="Define la carpeta del bucket. Es el mismo diccionario que usan las fotos.",
+    )
+    st.caption(f"Carpeta en el bucket: **{video_motor.carpeta_de_marca(marca)}**")
+
+    if modo == "Carga masiva":
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown('<div class="section-card"><h2>2. Carga masiva</h2>', unsafe_allow_html=True)
+        render_video_masivo(shopify_config, site_key, marca)
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    columna_modelo, columna_color = st.columns(2)
+    with columna_modelo:
+        modelo = st.text_input("Modelo", key="video_modelo", placeholder="2044361").strip()
+    with columna_color:
+        color = st.text_input("Color", key="video_color", placeholder="6RX").strip()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="section-card"><h2>2. Video</h2>', unsafe_allow_html=True)
+    archivo = st.file_uploader(
+        "Arrastra tu video aquí o selecciónalo",
+        type=list(video_motor.EXTENSIONES_ACEPTADAS),
+        key="video_archivo",
+        help="Solo .mp4. El nombre del archivo no importa: la app lo renombra sola.",
+    )
+    nombre_generado = video_motor.nombre_de_video(modelo, color)
+    if archivo is not None:
+        tamano = getattr(archivo, "size", 0) or 0
+        errores, avisos = video_motor.validar_video(clean_value(archivo.name), tamano)
+        detalle = st.columns([0.55, 0.45])
+        with detalle[0]:
+            st.video(archivo)
+        with detalle[1]:
+            st.markdown(
+                f"**Nombre original:** {clean_value(archivo.name)}  \n"
+                f"**Tamaño:** {video_motor.formatear_tamano(tamano)}  \n"
+                f"**Modelo:** {video_motor.normalizar_modelo(modelo) or '—'}  \n"
+                f"**Color:** {video_motor.normalizar_color(color) or '—'}  \n"
+                f"**Nombre generado:** `{nombre_generado or '—'}`"
+            )
+            # La duracion solo se puede leer con un reproductor: el navegador la
+            # sabe, el servidor no. Se dice en vez de inventarla.
+            st.caption("La duración se ve en el reproductor de la izquierda.")
+        for error in errores:
+            st.error(error)
+        for aviso in avisos:
+            st.warning(aviso)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    problemas = video_motor.validar_datos_del_producto(marca, modelo, color)
+    if problemas or archivo is None:
+        st.info("Completa marca, modelo, color y el video para continuar.")
+        return
+
+    mod_col = video_motor.codigo_modelo_color(modelo, color)
+    st.markdown('<div class="section-card"><h2>3. Producto encontrado</h2>', unsafe_allow_html=True)
+    buscar = st.button("Buscar el producto en Shopify", key="video_buscar", type="secondary")
+    clave_estado = f"video_producto_{site_key}_{mod_col}"
+    if buscar or st.session_state.get(clave_estado) is None:
+        with st.spinner(f"Buscando {mod_col} en {brand_config['site_label']}..."):
+            producto, detalle = video_buscar_producto(shopify_config, site_key, mod_col)
+            st.session_state[clave_estado] = {"producto": producto, "detalle": detalle}
+    guardado = st.session_state.get(clave_estado) or {}
+    producto = guardado.get("producto")
+    if producto is None:
+        st.error(f"❌ Producto no encontrado. {guardado.get('detalle', '')}")
+        st.caption(
+            "El Mantenedor de Videos nunca crea productos: el producto tiene que existir "
+            "en este sitio con el código en `custom.codigo_modelo_color`."
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    product_gid = clean_value(producto.get("Product ID"))
+    datos_media, error_media = video_leer_galeria(shopify_config, product_gid)
+    media_actual = (datos_media or {}).get("media") or []
+    resumen = video_motor.resumen_de_media(media_actual)
+    st.markdown(
+        f"**Modelo:** {video_motor.normalizar_modelo(modelo)}  \n"
+        f"**Color:** {video_motor.normalizar_color(color)}  \n"
+        f"**Producto Shopify:** {clean_value(producto.get('Title'))}  \n"
+        f"**Product ID:** `{product_gid}`  \n"
+        f"**Media actual:** {resumen['imagenes']} fotos · {resumen['videos']} videos"
+    )
+    if error_media:
+        st.warning(f"No se pudo leer la galería: {error_media}")
+    if media_actual:
+        st.dataframe(
+            pd.DataFrame(video_motor.filas_de_media(media_actual)),
+            use_container_width=True,
+            hide_index=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    existente = video_motor.video_existente(media_actual, nombre_generado)
+    reemplazar = False
+    if existente is not None:
+        st.warning("⚠️ Este producto ya tiene un video")
+        st.caption(
+            f"Video actual: `{video_motor.nombre_de_archivo_de_media(existente)}` "
+            f"en la posición {video_motor.posicion_de_media(media_actual, clean_value(existente.get('id')))}."
+        )
+        decision = st.radio(
+            "Qué hacer",
+            ["Cancelar", "Reemplazar video"],
+            horizontal=True,
+            key="video_decision_existente",
+            help="Reemplazar borra el video anterior y deja el nuevo en la posición 2. Nunca se duplica.",
+        )
+        if decision != "Reemplazar video":
+            st.info("No se realizará ningún cambio.")
+            return
+        reemplazar = True
+
+    st.markdown('<div class="section-card"><h2>¿Todo listo?</h2>', unsafe_allow_html=True)
+    st.markdown(
+        f"**Producto:** {mod_col} — {clean_value(producto.get('Title'))}  \n"
+        f"**Video:** `{nombre_generado}`  \n"
+        f"**URL:** {video_motor.url_de_video(marca, modelo, color)}  \n"
+        f"**Posición:** **{video_motor.POSICION_VIDEO}**"
+    )
+    config_s3 = video_secrets_s3()
+    if not s3_motor.s3_esta_configurado(config_s3):
+        st.info(
+            "No hay credenciales de escritura para el bucket (sección `[s3]` en Secrets). "
+            "El video se publicará en Shopify igual, pero el archivo no se copiará a "
+            f"`{config_s3.get('bucket')}`."
+        )
+    publicar = st.button("🚀 Publicar video en Shopify", type="primary", key="video_publicar")
+    st.markdown("</div>", unsafe_allow_html=True)
+    if not publicar:
+        return
+
+    estado_pasos = st.empty()
+    def _avance(clave, estado, detalle):
+        titulo = dict(VIDEO_PASOS).get(clave, clave)
+        estado_pasos.info(f"{titulo}: {detalle or estado}")
+
+    with st.spinner("Publicando el video. Shopify procesa el archivo, puede tardar."):
+        resultado = video_publicar(
+            shopify_config, site_key, marca, modelo, color, archivo,
+            reemplazar=reemplazar, progreso=_avance,
+        )
+    estado_pasos.empty()
+    video_registrar_auditoria(resultado, site_key)
+    st.session_state.pop(clave_estado, None)
+    render_video_resultado(resultado)
+    if resultado.get("Product ID"):
+        render_video_galeria(shopify_config, resultado["Product ID"], "Galería después de publicar")
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
     if not require_login():
@@ -21860,6 +22670,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Tags": "tags",
             "Fotos 10 vistas": "photos",
             "Mantenedor Fotos PNG": "photos_png",
+            "Mantenedor de Videos": "videos",
             "Siblings": "siblings",
             "Titulo": "title",
             "Guías de talla": "size_guides",
@@ -21875,6 +22686,15 @@ api_version = "{DEFAULT_API_VERSION}"
             key=f"partial_operation_select_{brand_config['site_key']}_v3",
         )
         update_operation = operation_labels[update_label]
+        if update_operation == "videos":
+            # El Mantenedor de Videos NO pasa por el analizar/ejecutar de la
+            # carga parcial: no hay vista previa que armar ni Excel que cruzar,
+            # se publica directo sobre el producto. Se corta aqui para no
+            # arrastrar una maquinaria que no le aplica y que solo agregaria
+            # ramas vacias en cada `if update_operation == ...` de mas abajo.
+            st.markdown("</div>", unsafe_allow_html=True)
+            render_video_maintainer(brand_config, shopify_config)
+            return
         update_source = st.radio(
             "Fuente de datos actuales",
             ["Shopify API", "Respaldo Excel"],

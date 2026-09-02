@@ -386,6 +386,83 @@ horizontal en ninguno, y escritorio intacto.
 
 ---
 
+## 5 sexies. Mantenedor de Videos (septiembre 2026)
+
+`engines/video_media.py` (sin Streamlit) + `engines/s3_uploader.py` +
+`render_video_maintainer()`. Entra como **una opción más de Carga parcial**,
+al lado de "Mantenedor Fotos PNG".
+
+El usuario pone **Marca + Modelo + Color + archivo**. Nada más. El nombre, la
+ruta del bucket, la URL, la búsqueda del producto, la subida y el orden los
+resuelve la app.
+
+```
+2044361 + 6RX  →  2044361_6RX_2.mp4  →  COLUMBIA/2044361_6RX_2.mp4
+               →  https://ecom-imagenes.../COLUMBIA/2044361_6RX_2.mp4
+```
+
+**El `_2` del nombre ES la posición en la galería.** No es un número de
+versión: el video va inmediatamente después de la foto principal.
+
+**La carpeta la manda la MARCA, no el sitio.** Rockford.pe vende Columbia,
+Patagonia, Sorel y Mountain Hardwear: tomar la carpeta del sitio dejaría los
+videos de cuatro marcas en `ROCKFORD/`. Se lee de `BRAND_IMAGE_FOLDERS`, el
+mismo diccionario de las fotos — aquí **no se copia**, se importa.
+
+**Un video de producto NO se resuelve como una foto.** Con las fotos alcanza
+con pasarle a Shopify la URL pública del bucket y él se la descarga. Con los
+videos eso **no funciona**: `originalSource` de un media VIDEO solo acepta el
+`resourceUrl` de un staged upload. Por eso hay tres viajes obligatorios y no
+uno:
+
+1. `stagedUploadsCreate(resource: VIDEO)` — `fileSize` es **obligatorio** y el
+   método es **POST multipart**, no PUT: el destino es una política firmada de
+   Google Cloud Storage y exige que el campo `file` vaya el **último**, después
+   de todos los parámetros firmados.
+2. POST del archivo a ese destino.
+3. `productCreateMedia(mediaContentType: VIDEO)`. **No `fileCreate`**: eso deja
+   el mp4 en Contenido > Archivos y nunca aparece en la ficha del producto.
+
+**Y un cuarto viaje que no es opcional.** `productCreateMedia` siempre agrega
+el media **al final** y no acepta posición. El video queda segundo con
+`productReorderMedia`, que trabaja con **índices que empiezan en 0**: la
+posición 2 que ve una persona es `newPosition: "1"`, en **texto**
+(`UnsignedInt64`). Confundir las dos numeraciones deja el video tercero. El
+reordenamiento devuelve un `job` asíncrono, así que se **relee** la galería
+para comprobar dónde quedó: confiar en que la mutación salió bien no alcanza.
+Si el video no quedó en la 2, se reporta como **fallo** — publicado en la
+posición equivocada es el peor error silencioso posible.
+
+**La espera de un video es larga a propósito.** `wait_media_statuses` (fotos,
+6×3s) devolvería `PROCESSING` casi siempre; `wait_video_media_ready` va 20×6s.
+Y `fetch_media_statuses` solo abre `... on MediaImage`: con un video devuelve
+el nodo **sin `status`** y la espera cree que ya terminó. Por eso existe
+`fetch_video_media_statuses`, que abre los dos fragmentos.
+
+**Escribir en el bucket es NUEVO.** La app siempre leyó de S3 y nunca escribió:
+no había boto3 ni credenciales de AWS. La sección `[s3]` de Secrets es nueva y
+es **opcional**: sin ella el video se publica en Shopify igual — quien lo sirve
+en la ficha es el CDN de Shopify — pero no queda copia en el bucket con el
+nombre canónico, y la pantalla lo avisa. El `ACL` solo se manda si Secrets lo
+pide: con "Object Ownership: bucket owner enforced" cualquier ACL es un 400.
+
+**Nunca crea productos y nunca duplica videos.** Si el producto ya tiene uno,
+se avisa y solo se reemplaza cuando la persona lo pide; el anterior se borra
+**antes** de crear el nuevo, para que la posición 2 quede libre.
+
+Los **10 pasos** quedan registrados uno por uno con su estado (ok / aviso /
+error) y su detalle técnico: cuando algo falla se ve exactamente dónde, no un
+"no se pudo publicar". Cada intento va a la auditoría, salga bien o mal.
+
+**Scopes de Shopify:** `read_products`, `write_products`. Los videos de
+producto van por `productCreateMedia` / `productReorderMedia`, que son de
+productos: `write_files` NO hace falta.
+
+El modo masivo usa **la misma** `video_publicar()` que el individual: si
+publicaran por caminos distintos se separarían sin que nadie lo notara.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -537,6 +614,7 @@ python scripts/test_engines_price_check.py             # 19
 python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 40
 python scripts/test_engines_load_status.py             # 28
+python scripts/test_engines_video_media.py             # 86
 python scripts/test_css_movil.py                       # 33
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24

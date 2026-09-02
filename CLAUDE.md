@@ -333,6 +333,19 @@ ver nada útil. Nada estaba roto: simplemente no se podía trabajar. Quedó en
 sobretítulo oculto el hueco era más alto que el título), los seis KPI de a tres
 por fila y los filtros de a dos.
 
+**Un botón nuevo del menú lateral hay que registrarlo en CINCO listas de
+selectores** (caja, contenedor del texto, `p`, `::before` y `:hover`) y darle su
+dibujo de icono. Nada en el código lo obliga: "Status de carga" se agregó al
+menú y salió sin icono y con otra tipografía, distinto de los otros cuatro. Hay
+un test que recorre cada `sidebar_nav_button` y falla si le falta alguna.
+
+**El menú lateral en móvil.** Se abre encima de todo y había que bajar dentro de
+él para llegar a "Operaciones": las cuatro tarjetas de presentación (logo Forus,
+usuario, sitio activo, marcas) se comían la pantalla. Compactadas, el menú
+entero entra de una. La tarjeta de usuario se compacta en SU hoja
+(`render_sidebar_account_card`), no en `inject_custom_css` — misma regla de un
+dueño por clase.
+
 Verificado con capturas reales (Chromium 390px, 360px y 1440px): sin desborde
 horizontal en ninguno, y escritorio intacto.
 
@@ -489,7 +502,7 @@ python scripts/test_engines_price_check.py             # 19
 python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 40
 python scripts/test_engines_load_status.py             # 28
-python scripts/test_css_movil.py                       # 21
+python scripts/test_css_movil.py                       # 24
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24
 python scripts/test_siblings_referencias.py            # 14

@@ -333,6 +333,23 @@ ver nada útil. Nada estaba roto: simplemente no se podía trabajar. Quedó en
 sobretítulo oculto el hueco era más alto que el título), los seis KPI de a tres
 por fila y los filtros de a dos.
 
+**En el teléfono el menú TIENE que poder cerrarse.** En escritorio el menú es
+un riel fijo de 360px, y para eso la app esconde todos los controles nativos
+para plegarlo (`stSidebarCollapseButton`, `stExpandSidebarButton`,
+`collapsedControl`) y lo clava con `transform:translateX(0) !important`.
+
+En un teléfono de 390px eso deja un panel de 360px encima de la pantalla
+entera, **sin ninguna forma de quitarlo**: el contenido queda debajo y no se
+puede accionar nada. Medido: Streamlit ya marcaba `aria-expanded="false"` — para
+él el menú estaba cerrado — y el CSS de la app lo forzaba a la vista igual.
+
+En móvil se le devuelven las tres piezas: respetar `aria-expanded="false"`
+(sale de pantalla), el botón para cerrarlo (estaba en 0×0) y el botón para
+abrirlo (vive en la cabecera oculta; se saca de ahí y queda flotando sobre el
+contenido). **Al devolver la cabecera vuelve el botón Deploy de Streamlit**, que
+se queda encima y se come el toque: la cabecera va con `pointer-events:none` y
+solo el botón de abrir recibe toques. Hay tests que fijan las tres piezas.
+
 **Un botón nuevo del menú lateral hay que registrarlo en CINCO listas de
 selectores** (caja, contenedor del texto, `p`, `::before` y `:hover`) y darle su
 dibujo de icono. Nada en el código lo obliga: "Status de carga" se agregó al
@@ -502,7 +519,7 @@ python scripts/test_engines_price_check.py             # 19
 python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 40
 python scripts/test_engines_load_status.py             # 28
-python scripts/test_css_movil.py                       # 24
+python scripts/test_css_movil.py                       # 31
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24
 python scripts/test_siblings_referencias.py            # 14

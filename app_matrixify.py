@@ -16531,10 +16531,77 @@ def inject_custom_css(config):
                 max-width:100% !important; overflow-x:auto !important;
             }}
 
-            /* El menu lateral tapa la pantalla completa si mantiene su ancho
-               de escritorio. Se deja un borde para poder cerrarlo tocando fuera. */
-            [data-testid="stSidebar"] {{ max-width:86vw !important; }}
+            /* ===== EL MENU LATERAL TIENE QUE PODER CERRARSE =====
+               En escritorio el menu es un riel fijo de 360px y por eso la app
+               esconde TODOS los controles nativos para plegarlo y lo clava con
+               `transform:translateX(0) !important`.
+
+               En un telefono eso deja un panel de 360px encima de una pantalla
+               de 390px, sin ninguna forma de quitarlo: no se puede accionar
+               NADA del contenido. Medido: Streamlit ya marcaba
+               `aria-expanded="false"` -- el menu estaba cerrado para el, y el
+               CSS de la app lo forzaba a la vista igual.
+
+               Aqui se le devuelven las tres piezas: que respete el estado
+               cerrado, el boton para cerrarlo y el boton para volver a abrirlo. */
+            section[data-testid="stSidebar"] {{
+                width:86vw !important; min-width:0 !important; max-width:320px !important;
+                z-index:1000 !important;
+                transition:transform .2s ease !important;
+            }}
+            section[data-testid="stSidebar"][aria-expanded="false"] {{
+                transform:translateX(-105%) !important;
+            }}
+            section[data-testid="stSidebar"][aria-expanded="true"] {{
+                transform:translateX(0) !important;
+            }}
             [data-testid="stSidebar"] .stButton > button {{ min-height:46px !important; }}
+
+            /* Cerrar: vive dentro del menu y estaba en 0x0. */
+            div[data-testid="stSidebarCollapseButton"] {{
+                display:flex !important; align-items:center !important; justify-content:center !important;
+                width:44px !important; height:44px !important; pointer-events:auto !important;
+            }}
+            div[data-testid="stSidebarCollapseButton"] button,
+            button[data-testid="stBaseButton-headerNoPadding"] {{
+                display:inline-flex !important; pointer-events:auto !important;
+                width:44px !important; height:44px !important;
+                opacity:1 !important; visibility:visible !important;
+            }}
+
+            /* Abrir: vive en la cabecera, que la app oculta entera. Se saca de
+               ahi y se deja flotando sobre el contenido, siempre alcanzable.
+               La barra de herramientas de Streamlit sigue oculta por su propia
+               regla, asi que no reaparece el boton de Deploy. */
+            header[data-testid="stHeader"] {{
+                display:block !important; height:0 !important; background:transparent !important;
+                pointer-events:none !important;
+            }}
+            /* Al devolver la cabecera vuelve tambien el boton Deploy de
+               Streamlit, que se queda encima y se come el toque. La cabecera
+               no recibe toques; solo el boton de abrir el menu. */
+            header[data-testid="stHeader"] button[data-testid="stExpandSidebarButton"] {{
+                pointer-events:auto !important;
+            }}
+            [data-testid="stAppDeployButton"], .stAppDeployButton,
+            [data-testid="stStatusWidget"] {{ display:none !important; }}
+            button[data-testid="stExpandSidebarButton"],
+            button[data-testid="stBaseButton-header"] {{
+                display:inline-flex !important; pointer-events:auto !important;
+                position:fixed !important; top:8px !important; left:8px !important;
+                z-index:1001 !important;
+                width:44px !important; height:44px !important;
+                align-items:center !important; justify-content:center !important;
+                background:var(--c-surface) !important;
+                border:1px solid var(--c-border) !important;
+                border-radius:12px !important;
+                box-shadow:0 6px 16px rgba(15,23,42,.12) !important;
+                opacity:1 !important; visibility:visible !important;
+            }}
+            /* Hueco para el boton flotante: si no, tapa el primer titulo. */
+            [data-testid="stAppViewContainer"] .block-container {{
+                padding-top:58px !important;
+            }}
 
             /* Medido en un telefono de 390px: habia que bajar 736px dentro del
                menu para llegar a "Operaciones", que es lo unico accionable.

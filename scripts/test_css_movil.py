@@ -254,6 +254,62 @@ class TestBotonesDelMenuLateral(unittest.TestCase):
                          f"Botones sin dibujo de icono: {sorted(set(self.claves) - set(con_dibujo))}")
 
 
+class TestElMenuSePuedeCerrarEnMovil(unittest.TestCase):
+    """El fallo mas grave que tuvo la app en telefono: no se podia hacer nada.
+
+    En escritorio el menu es un riel fijo de 360px, y para eso la app esconde
+    TODOS los controles nativos para plegarlo y lo clava con
+    `transform:translateX(0) !important`.
+
+    En un telefono de 390px eso deja un panel de 360px encima de la pantalla
+    entera, sin ninguna forma de quitarlo: el contenido queda debajo y no se
+    puede accionar NADA. Medido en Chromium: Streamlit ya marcaba
+    `aria-expanded="false"` -- para el, el menu estaba cerrado -- y el CSS de la
+    app lo forzaba a la vista igual.
+
+    Estas pruebas fijan las tres piezas que lo devuelven a la vida.
+    """
+
+    def setUp(self):
+        self.movil = CSS[CSS.index("max-width:640px"):CSS.index("max-width:430px")]
+
+    def test_el_menu_respeta_el_estado_cerrado(self):
+        # Sin esto, aunque Streamlit lo cierre, la app lo vuelve a mostrar.
+        self.assertIn('section[data-testid="stSidebar"][aria-expanded="false"]', self.movil)
+        self.assertIn("translateX(-105%)", self.movil)
+
+    def test_el_menu_vuelve_cuando_se_abre(self):
+        self.assertIn('section[data-testid="stSidebar"][aria-expanded="true"]', self.movil)
+
+    def test_existe_el_boton_para_cerrarlo(self):
+        # Estaba en 0x0: existia en el DOM pero no se podia tocar.
+        self.assertIn('div[data-testid="stSidebarCollapseButton"]', self.movil)
+        self.assertIn("pointer-events:auto !important", self.movil)
+
+    def test_existe_el_boton_para_abrirlo(self):
+        # Vive en la cabecera, que la app oculta entera; se saca de ahi y se
+        # deja flotando sobre el contenido.
+        self.assertIn('button[data-testid="stExpandSidebarButton"]', self.movil)
+        self.assertIn("position:fixed !important", self.movil)
+
+    def test_el_boton_de_deploy_no_se_come_el_toque(self):
+        # Al devolver la cabecera vuelve el boton Deploy de Streamlit, que se
+        # queda encima y roba el toque del boton de abrir el menu.
+        self.assertIn('[data-testid="stAppDeployButton"]', self.movil)
+        self.assertIn("pointer-events:none !important", self.movil)
+
+    def test_los_tres_controles_cumplen_el_objetivo_tactil(self):
+        self.assertIn("width:44px !important", self.movil)
+        self.assertIn("height:44px !important", self.movil)
+
+    def test_todo_esto_vive_dentro_del_corte_de_movil(self):
+        # En escritorio el riel fijo es lo correcto: si alguna de estas reglas
+        # se saliera del @media, romperia la pantalla grande.
+        antes = CSS[:CSS.index("================= MOVIL")]
+        self.assertIn('button[data-testid="stSidebarCollapseButton"]', antes)
+        self.assertIn("display: none !important", antes)
+
+
 class TestNoSeRompioEscritorio(unittest.TestCase):
     def test_los_cortes_de_movil_van_dentro_de_media_queries(self):
         # Todo lo nuevo tiene que estar dentro de un @media: una regla suelta

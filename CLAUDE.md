@@ -281,6 +281,13 @@ Un sitio sin Shopify en Secrets o que devuelve error **no** se reporta como
 catálogo vacío — eso se leería como "no han cargado nada". Su estado viaja
 aparte y la pantalla avisa que sus productos no están contados.
 
+**Las etiquetas llevan tilde; las CLAVES no.** `engines/load_status` no usa
+tildes en ninguna clave. `render_status_de_carga` pedía `kpis["Marcas con
+catálogo"]` con tilde y era un `KeyError` que tumbaba la pantalla entera en
+producción. No lo atrapó nada porque las pruebas cubrían el motor y el armado
+de tablas, pero **nadie tocaba la función que dibuja**. Hay un test que lee del
+árbol las claves que pide la pantalla y falla si el motor no las devuelve.
+
 Todo se descarga en un solo Excel con las 9 hojas.
 
 ---

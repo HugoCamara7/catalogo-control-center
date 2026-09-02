@@ -16577,17 +16577,38 @@ def inject_custom_css(config):
                 display:block !important; height:0 !important; background:transparent !important;
                 pointer-events:none !important;
             }}
-            /* Al devolver la cabecera vuelve tambien el boton Deploy de
-               Streamlit, que se queda encima y se come el toque. La cabecera
-               no recibe toques; solo el boton de abrir el menu. */
+            /* De la cabecera se rescata UN solo boton: el de abrir el menu.
+               Todo lo demas que viva ahi se queda oculto y sin toque.
+
+               Esto no es paranoia. Streamlit Cloud mete en esa cabecera botones
+               que en local no existen -- el lapiz de editar la app, Deploy, el
+               menu de tres puntos. Con un selector amplio
+               (`stBaseButton-header`) el lapiz recibia los mismos estilos de
+               boton flotante, quedaba EXACTAMENTE encima del de abrir el menu y
+               el toque se iba a la pantalla de edicion. Por eso se nombra solo
+               `stExpandSidebarButton`. */
+            header[data-testid="stHeader"] * {{ pointer-events:none !important; }}
+            /* El boton de abrir el menu vive DENTRO de `stToolbar`, que la app
+               deja en `visibility:hidden; height:0`. Ocultar la barra con
+               `display:none` se lleva el boton por delante -- medido: quedaba
+               en 0x0. Se la deja existir con altura cero y sin toques; lo que
+               se oculta son los botones, uno por uno. */
+            [data-testid="stToolbar"] {{
+                display:flex !important; visibility:visible !important;
+                height:0 !important; pointer-events:none !important;
+            }}
+            header[data-testid="stHeader"] button:not([data-testid="stExpandSidebarButton"]),
+            [data-testid="stAppDeployButton"], .stAppDeployButton,
+            [data-testid="stAppEditButton"], [data-testid="stMainMenu"],
+            [data-testid="stStatusWidget"] {{
+                display:none !important; pointer-events:none !important;
+            }}
             header[data-testid="stHeader"] button[data-testid="stExpandSidebarButton"] {{
                 pointer-events:auto !important;
             }}
-            [data-testid="stAppDeployButton"], .stAppDeployButton,
-            [data-testid="stStatusWidget"] {{ display:none !important; }}
-            button[data-testid="stExpandSidebarButton"],
-            button[data-testid="stBaseButton-header"] {{
+            button[data-testid="stExpandSidebarButton"] {{
                 display:inline-flex !important; pointer-events:auto !important;
+                visibility:visible !important;
                 position:fixed !important; top:8px !important; left:8px !important;
                 z-index:1001 !important;
                 width:44px !important; height:44px !important;

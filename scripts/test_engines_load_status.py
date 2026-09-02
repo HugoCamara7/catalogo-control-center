@@ -283,6 +283,63 @@ class TestKpis(unittest.TestCase):
         self.assertEqual(k["Productos cargados"], 0)
 
 
+class TestLaPantallaPideLoQueElMotorDa(unittest.TestCase):
+    """La pantalla y el motor tienen que hablar el mismo idioma.
+
+    Origen: `render_status_de_carga` pedia `kpis["Marcas con catálogo"]` CON
+    tilde, y el motor la devuelve SIN tilde como todas las suyas. Un solo
+    caracter, y la pantalla entera caia con `KeyError` en produccion.
+
+    No lo atrapo ninguna prueba porque estaban todas sobre el motor y sobre el
+    armado de tablas; la funcion que DIBUJA no la tocaba nadie. Esto la revisa
+    sin necesidad de levantar Streamlit: se leen del arbol las claves que pide
+    y se comparan con las que el motor produce.
+    """
+
+    def _claves_que_pide(self, funcion, variable):
+        import ast
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        for nodo in ast.walk(ast.parse(fuente)):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == funcion:
+                claves = set()
+                for sub in ast.walk(nodo):
+                    if (isinstance(sub, ast.Subscript)
+                            and isinstance(sub.value, ast.Name)
+                            and sub.value.id == variable
+                            and isinstance(sub.slice, ast.Constant)
+                            and isinstance(sub.slice.value, str)):
+                        claves.add(sub.slice.value)
+                return claves
+        raise AssertionError(f"No existe la funcion {funcion}")
+
+    def test_los_kpis_que_dibuja_la_pantalla_existen(self):
+        pedidas = self._claves_que_pide("render_status_de_carga", "kpis")
+        self.assertTrue(pedidas, "No se encontro ninguna clave; cambio la pantalla")
+        producidas = set(ls.kpis([], [], lambda e: e, ()))
+        faltan = pedidas - producidas
+        self.assertEqual(faltan, set(),
+                         f"La pantalla pide KPIs que el motor no devuelve: {sorted(faltan)}")
+
+    def test_las_tablas_que_dibuja_la_pantalla_existen(self):
+        # Mismo riesgo con las tablas: la pantalla lee `tablas["registro"]` y
+        # compania, que arma `construir_status_de_carga`.
+        pedidas = self._claves_que_pide("render_status_de_carga", "tablas")
+        armadas = self._claves_que_pide("construir_status_de_carga", "tablas")
+        # `construir_status_de_carga` las devuelve en un literal, no por indice:
+        # se leen del diccionario que retorna.
+        import ast
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        for nodo in ast.walk(ast.parse(fuente)):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == "construir_status_de_carga":
+                for sub in ast.walk(nodo):
+                    if isinstance(sub, ast.Dict):
+                        armadas |= {k.value for k in sub.keys
+                                    if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        faltan = pedidas - armadas
+        self.assertEqual(faltan, set(),
+                         f"La pantalla pide tablas que nadie arma: {sorted(faltan)}")
+
+
 class TestSinStreamlit(unittest.TestCase):
     def test_el_motor_no_importa_streamlit(self):
         fuente = (ROOT / "engines" / "load_status.py").read_text(encoding="utf-8")

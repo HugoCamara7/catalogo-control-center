@@ -18206,7 +18206,10 @@ def render_status_de_carga(ticket_actor):
         ("SKUs inyectados", kpis["SKUs inyectados"], "blue", "&#8595;"),
         ("SKUs en curso", kpis["SKUs en curso"], "orange", "!"),
         ("Solicitudes en curso", kpis["Solicitudes en curso"], "orange", "&#9679;"),
-        ("Marcas con catálogo", kpis["Marcas con catálogo"], "purple", "&#9670;"),
+        # La ETIQUETA lleva tilde porque la lee una persona; la CLAVE no,
+        # porque `engines/load_status` no usa tildes en ninguna. Pedirla con
+        # tilde era un KeyError que tumbaba la pantalla entera.
+        ("Marcas con catálogo", kpis["Marcas con catalogo"], "purple", "&#9670;"),
     ]
     render_html(
         '<div class="kpi-section-label">Operatividad de carga en todos los sitios</div>'

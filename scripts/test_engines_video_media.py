@@ -27,7 +27,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engines import video_media as vm          # noqa: E402
-from engines import s3_uploader as s3          # noqa: E402
 
 FUENTE_APP = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
 FUENTE_API = (ROOT / "shopify_api.py").read_text(encoding="utf-8-sig")
@@ -124,40 +123,56 @@ class TestLaCarpetaLaMandaLaMarca(unittest.TestCase):
         self.assertEqual(vm.host_de_imagenes(), DEFAULT_IMAGE_HOST.rstrip("/"))
 
 
-class TestValidacionDelVideo(unittest.TestCase):
-    """Se comprueba ANTES de subir. Un archivo de 1,4 GB sube durante minutos y
-    recien despues Shopify lo marca FAILED: es el peor lugar para enterarse."""
+class TestValidacionDeLaDescarga(unittest.TestCase):
+    """Se valida lo que el bucket devolvio, ANTES de darselo a Shopify.
 
-    def test_solo_mp4(self):
-        errores, _ = vm.validar_video("video.mov", 5_000_000)
-        self.assertTrue(errores)
+    Un archivo enorme tarda minutos en subir y recien despues Shopify lo marca
+    FAILED: es el peor lugar para enterarse de un tope que se sabia antes.
+    """
+
+    URL = "https://ecom-imagenes.forus-digital.xyz.peru.s3.amazonaws.com/COLUMBIA/2044361_6RX_2.mp4"
 
     def test_un_mp4_normal_pasa_sin_avisos(self):
-        errores, avisos = vm.validar_video("video.mp4", 5_000_000)
+        errores, avisos = vm.validar_descarga(self.URL, b"x" * 5_000_000, "video/mp4")
         self.assertEqual(errores, [])
         self.assertEqual(avisos, [])
 
     def test_el_archivo_vacio_se_rechaza(self):
-        errores, _ = vm.validar_video("video.mp4", 0)
+        errores, _ = vm.validar_descarga(self.URL, b"", "video/mp4")
         self.assertTrue(errores)
 
     def test_por_encima_del_tope_de_shopify_se_rechaza(self):
-        errores, _ = vm.validar_video("video.mp4", vm.VIDEO_MAX_BYTES + 1)
+        errores, _ = vm.validar_descarga(self.URL, b"x" * (vm.VIDEO_MAX_BYTES + 1), "video/mp4")
         self.assertTrue(errores)
 
     def test_un_video_pesado_avisa_pero_no_frena(self):
-        errores, avisos = vm.validar_video("video.mp4", vm.VIDEO_AVISO_BYTES + 1)
+        errores, avisos = vm.validar_descarga(self.URL, b"x" * (vm.VIDEO_AVISO_BYTES + 1), "video/mp4")
         self.assertEqual(errores, [])
         self.assertTrue(avisos)
 
-    def test_sin_archivo_hay_error(self):
-        errores, _ = vm.validar_video("", 0)
+    def test_octet_stream_no_es_un_error(self):
+        # S3 devuelve application/octet-stream para los mp4 a los que nadie les
+        # puso el tipo. Tratarlo como error rechazaria videos que estan bien.
+        errores, avisos = vm.validar_descarga(self.URL, b"x" * 5_000_000, "application/octet-stream")
+        self.assertEqual(errores, [])
+        self.assertEqual(avisos, [])
+
+    def test_un_tipo_raro_avisa_pero_no_frena(self):
+        errores, avisos = vm.validar_descarga(self.URL, b"x" * 5_000_000, "text/html")
+        self.assertEqual(errores, [])
+        self.assertTrue(avisos)
+
+    def test_una_url_que_no_es_mp4_se_rechaza(self):
+        errores, _ = vm.validar_descarga(self.URL.replace(".mp4", ".mov"), b"x" * 5_000_000, "video/quicktime")
+        self.assertTrue(errores)
+
+    def test_sin_url_hay_error(self):
+        errores, _ = vm.validar_descarga("", b"x" * 5_000_000, "video/mp4")
         self.assertTrue(errores)
 
     def test_faltan_datos_del_producto(self):
         self.assertTrue(vm.validar_datos_del_producto("", "2044361", "6RX"))
         self.assertTrue(vm.validar_datos_del_producto("COLUMBIA", "", "6RX"))
-        self.assertTrue(vm.validar_datos_del_producto("COLUMBIA", "2044361", ""))
         self.assertEqual(vm.validar_datos_del_producto("COLUMBIA", "2044361", "6RX"), [])
 
 
@@ -266,146 +281,83 @@ class TestLecturaDeLaGaleria(unittest.TestCase):
         self.assertIn("UPLOADED", vm.ESTADOS_EN_CURSO)
 
 
-class TestCargaMasiva(unittest.TestCase):
-    """Mismo motor y mismo nombre que el modo individual. Solo cambia el origen."""
+class TestCargaDesdeCodigos(unittest.TestCase):
+    """La unica entrada: un Excel con codigos. Ni un archivo de video."""
 
-    FILAS = [
-        {"Marca": "COLUMBIA", "Modelo": "2044361", "Color": "6RX", "Video": "video1.mp4"},
-        {"Marca": "COLUMBIA", "Modelo": "2045001", "Color": "010", "Video": "video2.mp4"},
-    ]
-
-    def test_cada_fila_trae_nombre_ruta_y_url_resueltos(self):
-        trabajos, descartados = vm.trabajos_de_carga_masiva(self.FILAS)
+    def test_cada_codigo_trae_nombre_y_url_resueltos(self):
+        trabajos, descartados = vm.trabajos_desde_codigos(
+            ["2044361-6RX", "2045001-010"], marca_por_defecto="COLUMBIA"
+        )
         self.assertEqual(len(trabajos), 2)
         self.assertEqual(descartados, [])
-        self.assertEqual(trabajos[0]["Nombre generado"], "2044361_6RX_2.mp4")
-        self.assertEqual(trabajos[0]["Clave S3"], "COLUMBIA/2044361_6RX_2.mp4")
-        self.assertEqual(trabajos[1]["Nombre generado"], "2045001_010_2.mp4")
+        self.assertEqual(trabajos[0]["Nombre"], "2044361_6RX_2.mp4")
+        self.assertEqual(trabajos[1]["Nombre"], "2045001_010_2.mp4")
+        self.assertIn("/COLUMBIA/2044361_6RX_2.mp4", trabajos[0]["URL"])
 
-    def test_el_nombre_masivo_es_el_mismo_que_el_individual(self):
-        trabajos, _ = vm.trabajos_de_carga_masiva(self.FILAS)
-        self.assertEqual(trabajos[0]["Nombre generado"], vm.nombre_de_video("2044361", "6RX"))
+    def test_un_codigo_que_no_se_parte_se_descarta_y_se_explica(self):
+        trabajos, descartados = vm.trabajos_desde_codigos(["SINGUION"], marca_por_defecto="COLUMBIA")
+        self.assertEqual(trabajos, [])
+        self.assertIn("modelo y color", descartados[0]["Motivo"])
+
+    def test_la_marca_del_excel_manda_sobre_la_de_pantalla(self):
+        trabajos, _ = vm.trabajos_desde_codigos(
+            ["2044361-6RX"], marcas={"2044361-6RX": "PATAGONIA"}, marca_por_defecto="COLUMBIA"
+        )
+        self.assertIn("/PATAGONIA/", trabajos[0]["URL"])
+
+    def test_sin_marca_la_url_queda_vacia_a_proposito(self):
+        # No se adivina: se resuelve despues con el metacampo del producto.
+        trabajos, _ = vm.trabajos_desde_codigos(["2044361-6RX"])
+        self.assertEqual(trabajos[0]["Marca"], "")
+        self.assertEqual(trabajos[0]["URL"], "")
+
+    def test_una_lista_vacia_lo_dice(self):
+        trabajos, descartados = vm.trabajos_desde_codigos([])
+        self.assertEqual(trabajos, [])
+        self.assertTrue(descartados)
+
+    def test_el_destino_reune_nombre_carpeta_y_las_dos_direcciones(self):
+        destino = vm.destino_del_video("COLUMBIA", "2044361", "6RX")
+        self.assertEqual(destino["Nombre"], "2044361_6RX_2.mp4")
+        self.assertEqual(destino["Carpeta"], "COLUMBIA")
+        self.assertEqual(destino["Clave S3"], "COLUMBIA/2044361_6RX_2.mp4")
+        self.assertIn("ecom-imagenes", destino["URL"])
+        # La alterna existe porque el host principal contesta 403 anonimo.
+        self.assertIn("s3.amazonaws.com/ecom-imagenes", destino["URL validación"])
+        self.assertNotEqual(destino["URL"], destino["URL validación"])
+
+    def test_el_nombre_de_la_lista_es_el_mismo_que_el_individual(self):
+        trabajos, _ = vm.trabajos_desde_codigos(["2044361-6RX"], marca_por_defecto="COLUMBIA")
+        self.assertEqual(trabajos[0]["Nombre"], vm.nombre_de_video("2044361", "6RX"))
         self.assertEqual(trabajos[0]["URL"], vm.url_de_video("COLUMBIA", "2044361", "6RX"))
 
-    def test_las_filas_repetidas_se_descartan_con_su_motivo(self):
-        trabajos, descartados = vm.trabajos_de_carga_masiva(self.FILAS + [self.FILAS[0]])
-        self.assertEqual(len(trabajos), 2)
-        self.assertEqual(len(descartados), 1)
-        self.assertIn("Repetido", descartados[0]["Motivo"])
 
-    def test_una_fila_sin_color_se_descarta_y_se_explica(self):
-        trabajos, descartados = vm.trabajos_de_carga_masiva(
-            [{"Marca": "COLUMBIA", "Modelo": "2044361", "Color": "", "Video": "v.mp4"}]
-        )
-        self.assertEqual(trabajos, [])
-        self.assertIn("color", descartados[0]["Motivo"].lower())
+class TestNoSeSubeNingunArchivo(unittest.TestCase):
+    """El video YA ESTA en el bucket, igual que las fotos.
 
-    def test_sin_columna_marca_se_usa_la_elegida_en_pantalla(self):
-        trabajos, _ = vm.trabajos_de_carga_masiva(
-            [{"Modelo": "2044361", "Color": "6RX", "Video": "v.mp4"}],
-            marca_por_defecto="PATAGONIA",
-        )
-        self.assertEqual(trabajos[0]["Clave S3"], "PATAGONIA/2044361_6RX_2.mp4")
-
-    def test_un_archivo_sin_columnas_utiles_no_devuelve_trabajos(self):
-        trabajos, descartados = vm.trabajos_de_carga_masiva([{"Comentario": "hola"}])
-        self.assertEqual(trabajos, [])
-        self.assertTrue(descartados)
-
-    def test_un_archivo_vacio_lo_dice(self):
-        trabajos, descartados = vm.trabajos_de_carga_masiva([])
-        self.assertEqual(trabajos, [])
-        self.assertTrue(descartados)
-
-    def test_los_videos_se_emparejan_por_nombre(self):
-        class Archivo:
-            def __init__(self, name):
-                self.name = name
-
-        trabajos, _ = vm.trabajos_de_carga_masiva(self.FILAS)
-        emparejados, sin_archivo = vm.emparejar_videos_con_trabajos(
-            trabajos, [Archivo("video2.mp4"), Archivo("video1.mp4")]
-        )
-        self.assertEqual(len(emparejados), 2)
-        self.assertEqual(sin_archivo, [])
-        self.assertEqual(emparejados[0]["archivo"].name, "video1.mp4")
-
-    def test_un_trabajo_sin_su_archivo_se_reporta_y_no_se_publica(self):
-        # Subir un video al producto equivocado es peor que no subirlo.
-        class Archivo:
-            def __init__(self, name):
-                self.name = name
-
-        trabajos, _ = vm.trabajos_de_carga_masiva(self.FILAS)
-        emparejados, sin_archivo = vm.emparejar_videos_con_trabajos(trabajos, [Archivo("video1.mp4")])
-        self.assertEqual(len(emparejados), 1)
-        self.assertEqual(len(sin_archivo), 1)
-
-
-class TestSubidaAlBucket(unittest.TestCase):
-    """La app siempre LEYO del bucket; escribir en el es nuevo.
-
-    Sin la seccion [s3] en Secrets no se inventa una subida: se dice que falta.
+    La app no escribe en S3 y no recibe archivos: solo lee. Estas pruebas
+    impiden que vuelva a aparecer una subida por la puerta de atras.
     """
 
-    class ClienteFalso:
-        def __init__(self):
-            self.llamadas = []
+    def test_no_existe_el_motor_de_escritura_en_s3(self):
+        self.assertFalse((ROOT / "engines" / "s3_uploader.py").exists())
 
-        def put_object(self, **kwargs):
-            self.llamadas.append(kwargs)
+    def test_boto3_no_se_declara_porque_no_se_usa(self):
+        self.assertNotIn("boto3", (ROOT / "requirements.txt").read_text(encoding="utf-8"))
 
-    def test_sin_bucket_ni_credenciales_no_esta_configurado(self):
-        self.assertFalse(s3.s3_esta_configurado({}))
+    def test_la_pantalla_no_pide_archivos_de_video(self):
+        bloque = FUENTE_APP[FUENTE_APP.index("def render_video_maintainer"):]
+        bloque = bloque[:bloque.index("\ndef ", 10) if "\ndef " in bloque[10:] else len(bloque)]
+        self.assertNotIn('type=["mp4"]', bloque)
+        self.assertNotIn("accept_multiple_files", bloque)
+        # El unico uploader que queda es el del Excel de codigos.
+        self.assertEqual(bloque.count("st.file_uploader"), 1)
+        self.assertIn('type=["xlsx", "xls"]', bloque)
 
-    def test_con_llave_a_medias_no_esta_configurado(self):
-        config = s3.configuracion_s3({"aws_access_key_id": "AKIA"})
-        self.assertFalse(s3.s3_esta_configurado(config))
-
-    def test_con_las_dos_llaves_esta_configurado(self):
-        config = s3.configuracion_s3({"aws_access_key_id": "AKIA", "aws_secret_access_key": "x"})
-        self.assertTrue(s3.s3_esta_configurado(config))
-
-    def test_el_bucket_por_defecto_es_el_que_ya_usa_la_app(self):
-        self.assertEqual(s3.configuracion_s3({})["bucket"], "ecom-imagenes.forus-digital.xyz.peru")
-        self.assertIn(s3.BUCKET_POR_DEFECTO, vm.host_de_imagenes())
-
-    def test_se_escribe_en_la_ruta_de_la_marca(self):
-        cliente = self.ClienteFalso()
-        config = s3.configuracion_s3({"aws_access_key_id": "AKIA", "aws_secret_access_key": "x"})
-        clave = s3.subir_bytes(
-            config, vm.clave_s3("COLUMBIA", "2044361", "6RX"), b"datos",
-            content_type=vm.MIME_VIDEO, cliente=cliente,
-        )
-        self.assertEqual(clave, "COLUMBIA/2044361_6RX_2.mp4")
-        self.assertEqual(cliente.llamadas[0]["Key"], "COLUMBIA/2044361_6RX_2.mp4")
-        self.assertEqual(cliente.llamadas[0]["ContentType"], "video/mp4")
-
-    def test_el_acl_solo_se_manda_si_secrets_lo_pide(self):
-        # Muchos buckets tienen "bucket owner enforced" y ahi cualquier ACL es
-        # un 400: mandarlo siempre romperia la subida en esos buckets.
-        cliente = self.ClienteFalso()
-        config = s3.configuracion_s3({"aws_access_key_id": "A", "aws_secret_access_key": "x"})
-        s3.subir_bytes(config, "COLUMBIA/a.mp4", b"d", cliente=cliente)
-        self.assertNotIn("ACL", cliente.llamadas[0])
-
-        cliente2 = self.ClienteFalso()
-        config2 = s3.configuracion_s3(
-            {"aws_access_key_id": "A", "aws_secret_access_key": "x", "acl": "public-read"}
-        )
-        s3.subir_bytes(config2, "COLUMBIA/a.mp4", b"d", cliente=cliente2)
-        self.assertEqual(cliente2.llamadas[0]["ACL"], "public-read")
-
-    def test_un_archivo_vacio_no_llega_al_bucket(self):
-        cliente = self.ClienteFalso()
-        config = s3.configuracion_s3({"aws_access_key_id": "A", "aws_secret_access_key": "x"})
-        with self.assertRaises(s3.S3Error):
-            s3.subir_bytes(config, "COLUMBIA/a.mp4", b"", cliente=cliente)
-        self.assertEqual(cliente.llamadas, [])
-
-    def test_boto3_esta_declarado_en_requirements(self):
-        # La clase de fallo del 24/08/2026: libreria usada y no declarada.
-        self.assertIn("boto3", (ROOT / "requirements.txt").read_text(encoding="utf-8"))
+    def test_el_motor_no_sabe_escribir_en_el_bucket(self):
+        fuente = (ROOT / "engines" / "video_media.py").read_text(encoding="utf-8")
+        for prohibido in ("put_object", "upload_fileobj", "boto3"):
+            self.assertNotIn(prohibido, fuente, prohibido)
 
 
 class TestLaApiDeShopifyEsLaCorrecta(unittest.TestCase):
@@ -499,11 +451,13 @@ class TestIntegracionConLaApp(unittest.TestCase):
 
     def test_existen_las_funciones_del_flujo(self):
         for nombre in (
-            "render_video_maintainer", "render_video_masivo", "render_video_resultado",
-            "render_video_galeria", "render_video_pasos", "video_publicar",
-            "video_buscar_producto", "video_subir_a_s3", "video_publicar_en_shopify",
+            "render_video_maintainer", "render_video_resultados", "render_video_galeria",
+            "render_video_pasos", "video_publicar", "video_buscar_producto",
+            "video_marca_del_producto", "video_marcas_del_excel",
+            "video_descargar_del_bucket", "video_publicar_en_shopify",
             "video_colocar_en_posicion", "video_reemplazar_existente",
             "video_esperar_procesado", "video_leer_galeria", "video_registrar_auditoria",
+            "video_fila_de_resultado", "video_detalle_de_pasos",
         ):
             self.assertIn(nombre, self.funciones, nombre)
 
@@ -516,6 +470,20 @@ class TestIntegracionConLaApp(unittest.TestCase):
         nuevas = {f for f in self.funciones
                   if f.startswith("video_") or f.startswith("render_video")}
         self.assertEqual(sorted(nuevas - usadas), [])
+
+    def test_reutiliza_la_lectura_de_codigos_del_mantenedor_de_fotos(self):
+        # `png_codigos_desde_excel` ya quita vacios y repetidos y explica cada
+        # descarte. Escribir una segunda lectura seria dos formas de leer el
+        # mismo Excel, que se separan sin que nadie lo note.
+        bloque = FUENTE_APP[FUENTE_APP.index("def render_video_maintainer"):]
+        self.assertIn("png_codigos_desde_excel", bloque)
+
+    def test_reutiliza_las_urls_del_bucket_del_mantenedor_de_fotos(self):
+        # `png_urls_a_probar` arma las mismas direcciones que usa la carga de
+        # fotos, incluida la del host alterno para el 403 anonimo.
+        bloque = FUENTE_APP[FUENTE_APP.index("def video_descargar_del_bucket"):]
+        bloque = bloque[:bloque.index("\ndef ", 10)]
+        self.assertIn("png_urls_a_probar", bloque)
 
     def test_reutiliza_la_busqueda_del_mantenedor_de_fotos(self):
         # `png_find_product` ya cruza el catalogo contra el metacampo: no se
@@ -548,22 +516,19 @@ class TestIntegracionConLaApp(unittest.TestCase):
 
     def test_el_motor_no_importa_streamlit(self):
         # Regla de arquitectura del proyecto: engines/ nunca importa Streamlit.
-        for archivo in ("engines/video_media.py", "engines/s3_uploader.py"):
+        for archivo in ("engines/video_media.py",):
             fuente = (ROOT / archivo).read_text(encoding="utf-8")
             self.assertNotIn("import streamlit", fuente, archivo)
 
 
 
 class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
-    """Los 10 pasos encadenados, con una tienda de mentira.
+    """Los 10 pasos encadenados, con una tienda y un bucket de mentira.
 
     Las clases de arriba prueban el motor puro; esta prueba el ORQUESTADOR, que
-    es donde de verdad aterriza la posicion 2: se comprueba que se llame a
-    `productReorderMedia` con el movimiento correcto y que el video termine
-    segundo en la galeria que devuelve la tienda.
-
-    Importa `app_matrixify`, asi que necesita Streamlit instalado. Si no esta,
-    la clase se salta en vez de fallar.
+    es donde aterriza la posicion 2 y donde se decide de que carpeta se baja el
+    video. Importa `app_matrixify`, asi que necesita Streamlit instalado; si no
+    esta, la clase se salta en vez de fallar.
     """
 
     @classmethod
@@ -581,11 +546,13 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
             "reorder": [],
             "borrados": [],
             "staged": [],
+            "descargas": [],
         }
         tienda = self.tienda
+        self.marca_del_producto = "COLUMBIA"
 
         def _fetch_product_media(config, product_gid, first=50):
-            return {"id": product_gid, "title": "Chaqueta Columbia", "handle": "chaqueta",
+            return {"id": product_gid, "title": "Chaqueta Columbia",
                     "modCol": "2044361-6RX", "media": list(tienda["media"])}
 
         def _staged_upload_video(config, filename, mime, contenido, timeout=600):
@@ -612,7 +579,12 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
 
         def _buscar(shopify_config, site_key, mod_col, force_refresh=False):
             return {"Product ID": "gid://shopify/Product/1", "Title": "Chaqueta Columbia",
-                    "Mod-Col": mod_col}, "tienda falsa"
+                    "Mod-Col": mod_col, "Marca": self.marca_del_producto}, "tienda falsa"
+
+        def _descargar(url, timeout=120):
+            tienda["descargas"].append(url)
+            nombre = url.rsplit("/", 1)[-1]
+            return b"x" * 50_000, "video/mp4", nombre, url
 
         self._originales = {}
         for nombre, doble in (
@@ -623,10 +595,10 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
             ("product_reorder_media", _product_reorder_media),
             ("product_delete_media", _product_delete_media),
             ("video_buscar_producto", _buscar),
+            ("video_descargar_del_bucket", _descargar),
         ):
             self._originales[nombre] = getattr(self.app, nombre)
             setattr(self.app, nombre, doble)
-        # Sin esto la prueba esperaria 1,5s por relectura de la galeria.
         self._sleep = self.app.time.sleep
         self.app.time.sleep = lambda *a, **k: None
 
@@ -635,23 +607,11 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
             setattr(self.app, nombre, original)
         self.app.time.sleep = self._sleep
 
-    class ArchivoFalso:
-        name = "cualquier_nombre.mp4"
-
-        def __init__(self, datos=b"x" * 50_000):
-            self.datos = datos
-            self.size = len(datos)
-
-        def seek(self, *a):
-            return 0
-
-        def read(self):
-            return self.datos
-
-    def _publicar(self, **kwargs):
+    def _publicar(self, codigo="2044361-6RX", **kwargs):
+        kwargs.setdefault("marca_pantalla", "COLUMBIA")
         return self.app.video_publicar(
             {"shop_domain": "prueba.myshopify.com", "admin_access_token": "t"},
-            "columbia", "COLUMBIA", "2044361", "6RX", self.ArchivoFalso(), **kwargs
+            "columbia", codigo, **kwargs
         )
 
     def test_el_video_termina_publicado_y_en_posicion_dos(self):
@@ -659,10 +619,31 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
         self.assertTrue(resultado["ok"], resultado["Estado"])
         self.assertEqual(resultado["Posición"], 2)
         self.assertEqual(resultado["Nombre"], "2044361_6RX_2.mp4")
+
+    def test_se_baja_del_bucket_en_la_carpeta_de_la_marca(self):
+        self._publicar()
         self.assertEqual(
-            resultado["URL"],
-            "https://ecom-imagenes.forus-digital.xyz.peru.s3.amazonaws.com/COLUMBIA/2044361_6RX_2.mp4",
+            self.tienda["descargas"],
+            ["https://ecom-imagenes.forus-digital.xyz.peru.s3.amazonaws.com/COLUMBIA/2044361_6RX_2.mp4"],
         )
+
+    def test_la_carpeta_sale_del_metacampo_del_producto_y_no_de_la_pantalla(self):
+        # Rockford.pe vende cuatro marcas: la de la barra lateral seria la
+        # misma para todas y mandaria los videos al cajon equivocado.
+        self.marca_del_producto = "PATAGONIA"
+        resultado = self._publicar(marca_pantalla="ROCKFORD")
+        self.assertEqual(resultado["Carpeta"], "PATAGONIA")
+        self.assertIn("/PATAGONIA/", self.tienda["descargas"][0])
+
+    def test_la_marca_del_excel_manda_sobre_el_metacampo(self):
+        self.marca_del_producto = "COLUMBIA"
+        resultado = self._publicar(marca_excel="SOREL", marca_pantalla="ROCKFORD")
+        self.assertEqual(resultado["Carpeta"], "SOREL")
+
+    def test_la_pantalla_es_el_ultimo_respaldo(self):
+        self.marca_del_producto = ""
+        resultado = self._publicar(marca_pantalla="VANS")
+        self.assertEqual(resultado["Carpeta"], "VANS")
 
     def test_se_reordena_con_el_indice_cero(self):
         self._publicar()
@@ -670,11 +651,9 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
 
     def test_la_galeria_final_deja_la_foto_principal_primera(self):
         self._publicar()
-        self.assertEqual(
-            [n["id"] for n in self.tienda["media"]], ["f1", "v-nuevo", "f2", "f3"]
-        )
+        self.assertEqual([n["id"] for n in self.tienda["media"]], ["f1", "v-nuevo", "f2", "f3"])
 
-    def test_el_archivo_se_sube_con_el_nombre_generado_y_no_con_el_original(self):
+    def test_se_entrega_a_shopify_con_el_nombre_canonico(self):
         self._publicar()
         self.assertEqual(self.tienda["staged"][0][0], "2044361_6RX_2.mp4")
         self.assertEqual(self.tienda["staged"][0][1], "video/mp4")
@@ -684,20 +663,13 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
         self.assertEqual(len(resultado["pasos"]), 10)
         self.assertNotIn("pendiente", [p["estado"] for p in resultado["pasos"].values()])
 
-    def test_sin_credenciales_de_s3_avisa_pero_publica_igual(self):
-        # El bucket es el respaldo con el nombre canonico; quien sirve el video
-        # en la ficha es el CDN de Shopify.
-        resultado = self._publicar()
-        self.assertFalse(resultado["En S3"])
-        self.assertEqual(resultado["pasos"]["s3"]["estado"], "aviso")
-        self.assertTrue(resultado["ok"])
-
     def test_un_producto_con_video_no_se_duplica(self):
         self.tienda["media"].insert(1, video("v-viejo", "viejo.mp4"))
         resultado = self._publicar()
         self.assertFalse(resultado["ok"])
         self.assertIn("ya tiene un video", resultado["Estado"])
-        self.assertEqual(self.tienda["staged"], [])   # ni siquiera se subio nada
+        # Ni siquiera se gasta la descarga del bucket.
+        self.assertEqual(self.tienda["descargas"], [])
         self.assertEqual(len(vm.videos_del_producto(self.tienda["media"])), 1)
 
     def test_reemplazar_borra_el_anterior_y_deja_uno_solo_en_posicion_dos(self):
@@ -713,7 +685,24 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
         resultado = self._publicar()
         self.assertFalse(resultado["ok"])
         self.assertEqual(resultado["pasos"]["producto"]["estado"], "error")
-        self.assertIn("no encontrado", resultado["Estado"])
+        self.assertEqual(self.tienda["descargas"], [])
+
+    def test_un_codigo_mal_escrito_no_llega_a_shopify(self):
+        resultado = self._publicar("SINGUION")
+        self.assertFalse(resultado["ok"])
+        self.assertEqual(resultado["pasos"]["producto"]["estado"], "error")
+
+    def test_si_el_video_no_esta_en_el_bucket_se_dice_en_su_paso(self):
+        def _revienta(url, timeout=120):
+            raise self.app.ShopifyApiError("HTTP 404 (no existe en el bucket)")
+
+        self.app.video_descargar_del_bucket = _revienta
+        resultado = self._publicar()
+        self.assertFalse(resultado["ok"])
+        self.assertEqual(resultado["pasos"]["descarga"]["estado"], "error")
+        self.assertIn("404", resultado["Estado"])
+        # Los pasos previos quedaron en ok: se ve exactamente donde se corto.
+        self.assertEqual(resultado["pasos"]["url"]["estado"], "ok")
         self.assertEqual(self.tienda["staged"], [])
 
     def test_si_shopify_rechaza_el_video_se_dice_en_que_paso(self):
@@ -725,8 +714,6 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
         self.assertFalse(resultado["ok"])
         self.assertEqual(resultado["pasos"]["shopify"]["estado"], "error")
         self.assertIn("Video demasiado largo", resultado["Estado"])
-        # Los pasos anteriores quedaron en ok: se ve exactamente donde se corto.
-        self.assertEqual(resultado["pasos"]["nombre"]["estado"], "ok")
 
     def test_si_shopify_no_procesa_el_video_se_dice(self):
         self.app.wait_video_media_ready = lambda config, ids, **k: [
@@ -735,7 +722,6 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
         resultado = self._publicar()
         self.assertFalse(resultado["ok"])
         self.assertEqual(resultado["pasos"]["procesado"]["estado"], "error")
-        self.assertIn("formato no soportado", resultado["Estado"])
 
     def test_si_el_video_no_queda_segundo_se_reporta_como_fallo(self):
         # El peor error silencioso posible: publicado pero en la posicion
@@ -745,16 +731,17 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
         self.assertFalse(resultado["ok"])
         self.assertEqual(resultado["pasos"]["posicion"]["estado"], "error")
 
-    def test_un_archivo_que_no_es_mp4_no_llega_a_shopify(self):
-        archivo = self.ArchivoFalso()
-        archivo.name = "video.mov"
-        resultado = self.app.video_publicar(
-            {"shop_domain": "x", "admin_access_token": "t"},
-            "columbia", "COLUMBIA", "2044361", "6RX", archivo,
-        )
-        self.assertFalse(resultado["ok"])
-        self.assertEqual(resultado["pasos"]["archivo"]["estado"], "error")
-        self.assertEqual(self.tienda["staged"], [])
+    def test_la_fila_de_resultado_resume_lo_que_paso(self):
+        fila = self.app.video_fila_de_resultado(self._publicar())
+        self.assertEqual(fila["Resultado"], "Publicado")
+        self.assertEqual(fila["Posición"], 2)
+        self.assertEqual(fila["Código Modelo Color"], "2044361-6RX")
+
+    def test_el_detalle_lista_los_diez_pasos_de_cada_codigo(self):
+        filas = self.app.video_detalle_de_pasos([self._publicar()])
+        self.assertEqual(len(filas), 10)
+        self.assertEqual(filas[0]["Código Modelo Color"], "2044361-6RX")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

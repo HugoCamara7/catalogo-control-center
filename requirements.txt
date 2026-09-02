@@ -9,6 +9,3 @@ google-cloud-bigquery>=3.20
 google-auth>=2.29
 db-dtypes>=1.2
 pyarrow>=14.0
-# Subida de videos al bucket de imagenes (Mantenedor de Videos).
-# La app siempre LEYO del bucket; escribir en el es nuevo.
-boto3>=1.34

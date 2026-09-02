@@ -4,29 +4,43 @@
 Sin Streamlit. Todo lo que se puede decidir sin tocar la red vive aqui, para
 que se pueda probar sin tienda y sin bucket.
 
-Por que existe
---------------
-El usuario solo pone **Marca + Modelo + Color + archivo**. Nombre, ruta, URL,
-busqueda del producto, subida y orden los resuelve la app. Este modulo es la
-mitad que no habla con nadie: arma nombres y rutas, valida el archivo, lee el
-media que devuelve Shopify y dice **que movimiento hace falta** para dejar el
-video en la posicion 2.
+Como funciona, y por que
+------------------------
+**Igual que las fotos: el video YA ESTA en el bucket.** Nadie sube un archivo
+desde la app. El usuario entrega un Excel con los codigos que quiere cargar y
+la app arma la direccion, la busca y la publica:
 
-La posicion 2 no es decoracion
-------------------------------
-La galeria queda: foto principal, VIDEO, y despues el resto de fotos. Shopify
-NO deja elegir la posicion al crear el media: siempre lo agrega al final. Por
-eso hay un segundo paso obligatorio (`productReorderMedia`) y por eso
-`plan_de_orden()` existe: traduce "quiero el video segundo" a la lista de
-movimientos que espera la mutacion, que trabaja con indices que empiezan en 0.
+    2044361-6RX  ->  COLUMBIA/2044361_6RX_2.mp4
+                 ->  https://ecom-imagenes.../COLUMBIA/2044361_6RX_2.mp4
+
+El `_2` del nombre ES la posicion en la galeria: el video va inmediatamente
+despues de la foto principal. No es un numero de version.
+
+Shopify no se baja el video solo
+--------------------------------
+Con una foto alcanza con pasarle la URL publica y el la descarga. Con un video
+NO: `originalSource` de un media VIDEO solo acepta el `resourceUrl` de un
+staged upload. Asi que la app hace de intermediaria — baja el mp4 del bucket y
+se lo entrega a Shopify — igual que ya hace `_sync_product_photos_direct` con
+las fotos. Para quien usa la pantalla es lo mismo que las fotos: solo codigos.
 
 La carpeta la manda la MARCA, no el sitio
 -----------------------------------------
-`ecom-imagenes.../COLUMBIA/...`, `.../ROCKFORD/...`, `.../HUSHPUPPIES/...`. Es
-el mismo diccionario que ya usan las fotos (`BRAND_IMAGE_FOLDERS` en
-`generate_columbia_matrixify`): aqui NO se copia, se importa. Rockford.pe
-vende Columbia, Patagonia y Sorel, asi que tomar la carpeta del sitio dejaria
-los videos de tres marcas en el cajon equivocado.
+Rockford.pe vende Columbia, Patagonia, Sorel y Mountain Hardwear: tomar la
+carpeta del sitio dejaria los videos de cuatro marcas en `ROCKFORD/`. Se lee
+de `BRAND_IMAGE_FOLDERS`, el mismo diccionario de las fotos: aqui NO se copia,
+se importa.
+
+La marca de cada codigo sale, en este orden: de la columna Marca del Excel si
+viene, del metacampo `custom.marca` del propio producto (la fuente
+autoritativa), y por ultimo de la marca elegida en pantalla.
+
+La posicion 2 no es decoracion
+------------------------------
+Shopify NO deja elegir la posicion al crear el media: siempre lo agrega al
+final. Por eso hay un segundo paso obligatorio (`productReorderMedia`) y por
+eso `plan_de_orden()` existe: traduce "quiero el video segundo" a la lista de
+movimientos que espera la mutacion, que trabaja con indices que empiezan en 0.
 """
 
 import re
@@ -211,33 +225,34 @@ def formatear_tamano(bytes_totales):
     return f"{cantidad:.1f} GB"
 
 
-def validar_video(nombre_original, tamano_bytes, extensiones=EXTENSIONES_ACEPTADAS):
-    """(errores, avisos). Errores frenan; avisos solo se muestran.
+def validar_descarga(url, contenido, content_type="", extensiones=EXTENSIONES_ACEPTADAS):
+    """(errores, avisos) de lo que el bucket devolvio. Nadie sube archivos.
 
-    Se comprueba ANTES de tocar S3 y Shopify. Un archivo de 1,4 GB sube durante
-    minutos y recien despues Shopify lo marca FAILED: es el peor lugar para
-    enterarse de un tope que se sabia desde el principio.
+    Se comprueba DESPUES de bajar el mp4 del bucket y ANTES de dárselo a
+    Shopify. Un archivo de 1,4 GB tarda minutos en subir y recien despues
+    Shopify lo marca FAILED: es el peor lugar para enterarse de un tope que se
+    sabia desde el principio.
+
+    El `content_type` es un aviso, no un error: S3 devuelve
+    `application/octet-stream` para los mp4 a los que nadie les puso el tipo, y
+    eso NO significa que el archivo este mal.
     """
     errores = []
     avisos = []
-    nombre = texto(nombre_original)
-    if not nombre:
-        errores.append("No se seleccionó ningún archivo de video.")
+    direccion = texto(url)
+    if not direccion:
+        errores.append("No se pudo armar la dirección del video en el bucket.")
         return errores, avisos
 
+    nombre = direccion.split("?", 1)[0].rsplit("/", 1)[-1]
     extension = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
     aceptadas = tuple(texto(item).lstrip(".").lower() for item in extensiones if texto(item))
     if extension not in aceptadas:
-        errores.append(
-            f"El archivo '{nombre}' no es {' ni '.join('.' + ext for ext in aceptadas)}."
-        )
+        errores.append(f"'{nombre}' no es {' ni '.join('.' + ext for ext in aceptadas)}.")
 
-    try:
-        tamano = int(tamano_bytes or 0)
-    except (TypeError, ValueError):
-        tamano = 0
+    tamano = len(contenido or b"")
     if tamano <= 0:
-        errores.append("El archivo llegó vacío.")
+        errores.append("El bucket devolvió el archivo vacío.")
     elif tamano < VIDEO_MIN_BYTES:
         errores.append(f"El archivo pesa {formatear_tamano(tamano)}: no es un video.")
     elif tamano > VIDEO_MAX_BYTES:
@@ -247,9 +262,13 @@ def validar_video(nombre_original, tamano_bytes, extensiones=EXTENSIONES_ACEPTAD
         )
     elif tamano > VIDEO_AVISO_BYTES:
         avisos.append(
-            f"El video pesa {formatear_tamano(tamano)}: la subida y el procesamiento "
-            "de Shopify van a tardar varios minutos."
+            f"El video pesa {formatear_tamano(tamano)}: la subida a Shopify y su "
+            "procesamiento van a tardar."
         )
+
+    tipo = texto(content_type).lower().split(";")[0]
+    if tipo and not tipo.startswith("video/") and tipo != "application/octet-stream":
+        avisos.append(f"El bucket lo entregó como '{tipo}' y no como video.")
     return errores, avisos
 
 
@@ -443,13 +462,6 @@ def estado_de_media(nodo):
 # forma de armar el nombre.
 
 COLUMNAS_MARCA = ("marca", "brand", "marca comercial")
-COLUMNAS_MODELO = ("modelo", "model", "codigo modelo", "código modelo")
-COLUMNAS_COLOR = ("color", "colour", "codigo color", "código color")
-COLUMNAS_VIDEO = ("video", "vídeo", "archivo", "archivo video", "nombre video", "file")
-COLUMNAS_CODIGO = (
-    "codigo modelo color", "código modelo color", "mod-col", "modcol",
-    "cod mod col", "sku",
-)
 
 
 def _clave_cabecera(nombre):
@@ -469,104 +481,61 @@ def columna_para(cabeceras, candidatas):
     return None
 
 
-def trabajos_de_carga_masiva(filas, cabeceras=None, marca_por_defecto=""):
-    """(trabajos, descartados) a partir de las filas del Excel.
+def trabajos_desde_codigos(codigos, marcas=None, marca_por_defecto=""):
+    """(trabajos, descartados) a partir de los codigos del Excel.
 
-    Cada trabajo trae ya el nombre, la clave de S3 y la URL resueltos, para que
-    el modo masivo y el individual publiquen exactamente lo mismo. Cada fila que
-    no entra dice por que: un Excel de 200 filas que reporta "180 procesados"
-    sin explicar las otras 20 no sirve para corregir el archivo.
+    Los codigos ya vienen limpios de `png_codigos_desde_excel`, que es la MISMA
+    lectura que usa el mantenedor de fotos: quita vacios y repetidos y explica
+    cada descarte. Aqui solo se valida que el codigo se parta en modelo y color
+    (sin eso no hay direccion que armar) y se prepara el trabajo.
+
+    La marca puede quedar VACIA a proposito: si el Excel no la trae, se resuelve
+    despues con el metacampo `custom.marca` del producto, que es la fuente
+    autoritativa. No se adivina aqui.
     """
-    filas = list(filas or [])
-    if not filas:
-        return [], [{"Fila": "", "Motivo": "El archivo no tiene filas."}]
-    if cabeceras is None:
-        cabeceras = list(filas[0].keys())
-
-    col_marca = columna_para(cabeceras, COLUMNAS_MARCA)
-    col_modelo = columna_para(cabeceras, COLUMNAS_MODELO)
-    col_color = columna_para(cabeceras, COLUMNAS_COLOR)
-    col_video = columna_para(cabeceras, COLUMNAS_VIDEO)
-    col_codigo = columna_para(cabeceras, COLUMNAS_CODIGO)
-
-    if not (col_modelo and col_color) and not col_codigo:
-        return [], [{
-            "Fila": "",
-            "Motivo": "El archivo necesita columnas Modelo y Color, o una columna Código Modelo Color.",
-        }]
-
+    marcas = marcas or {}
     trabajos = []
     descartados = []
-    vistos = set()
-    for numero, fila in enumerate(filas, start=2):
-        marca = texto(fila.get(col_marca)) if col_marca else ""
-        marca = marca or texto(marca_por_defecto)
-        if col_modelo and col_color:
-            modelo = normalizar_modelo(fila.get(col_modelo))
-            color = normalizar_color(fila.get(col_color))
-        else:
-            codigo = texto(fila.get(col_codigo)).upper()
-            modelo = normalizar_modelo(codigo)
-            color = normalizar_color(codigo) if "-" in codigo else ""
-        archivo = texto(fila.get(col_video)) if col_video else ""
-
-        problemas = validar_datos_del_producto(marca, modelo, color)
-        if problemas:
-            descartados.append({"Fila": numero, "Motivo": " ".join(problemas)})
+    for codigo in codigos or []:
+        codigo = texto(codigo).upper()
+        if not codigo:
             continue
-        clave = (carpeta_de_marca(marca), modelo, color)
-        if clave in vistos:
+        modelo = normalizar_modelo(codigo)
+        color = normalizar_color(codigo) if "-" in codigo else ""
+        if not modelo or not color:
             descartados.append({
-                "Fila": numero,
-                "Motivo": f"Repetido: {codigo_modelo_color(modelo, color)} ya estaba en el archivo.",
+                "Código Modelo Color": codigo,
+                "Motivo": "No se puede separar en modelo y color; se espera MODELO-COLOR.",
             })
             continue
-        vistos.add(clave)
+        marca = texto(marcas.get(codigo)) or texto(marca_por_defecto)
         trabajos.append(
             {
-                "Fila": numero,
-                "Marca": texto(marca),
+                "Código Modelo Color": codigo_modelo_color(modelo, color),
                 "Modelo": modelo,
                 "Color": color,
-                "Código Modelo Color": codigo_modelo_color(modelo, color),
-                "Archivo": archivo,
-                "Nombre generado": nombre_de_video(modelo, color),
-                "Clave S3": clave_s3(marca, modelo, color),
-                "URL": url_de_video(marca, modelo, color),
+                "Marca": marca,
+                "Nombre": nombre_de_video(modelo, color),
+                "URL": url_de_video(marca, modelo, color) if marca else "",
             }
         )
     if not trabajos and not descartados:
-        descartados.append({"Fila": "", "Motivo": "No se pudo leer ninguna fila."})
+        descartados.append({"Código Modelo Color": "", "Motivo": "El archivo no trae códigos."})
     return trabajos, descartados
 
 
-def emparejar_videos_con_trabajos(trabajos, archivos):
-    """Ata cada trabajo del Excel con el archivo de video que le corresponde.
+def destino_del_video(marca, modelo, color):
+    """Todo lo que hace falta para ir a buscar el video, en un diccionario.
 
-    Se empareja por el nombre escrito en la columna Video y, si el Excel no lo
-    trae, por un nombre que ya contenga MODELO_COLOR. Lo que no encuentra
-    pareja se devuelve aparte: subir un video al producto equivocado es peor
-    que no subirlo.
+    Un solo lugar arma nombre, clave y las dos direcciones. El host principal
+    contesta 403 a las consultas anonimas, asi que siempre viaja tambien la
+    alterna: tratar ese 403 como "no existe" fue lo que dejo 310 fotos en "Sin
+    PNG" en su momento.
     """
-    por_nombre = {texto(getattr(item, "name", item)).lower(): item for item in archivos or []}
-    emparejados = []
-    sin_archivo = []
-    usados = set()
-    for trabajo in trabajos or []:
-        buscado = texto(trabajo.get("Archivo")).lower()
-        elegido = por_nombre.get(buscado)
-        if elegido is None:
-            raiz = f"{trabajo.get('Modelo', '')}_{trabajo.get('Color', '')}".lower()
-            elegido = next(
-                (
-                    item for nombre, item in por_nombre.items()
-                    if raiz and raiz in nombre and nombre not in usados
-                ),
-                None,
-            )
-        if elegido is None:
-            sin_archivo.append({**trabajo, "Motivo": "No se subió un archivo con ese nombre."})
-            continue
-        usados.add(texto(getattr(elegido, "name", elegido)).lower())
-        emparejados.append({**trabajo, "archivo": elegido})
-    return emparejados, sin_archivo
+    return {
+        "Nombre": nombre_de_video(modelo, color),
+        "Clave S3": clave_s3(marca, modelo, color),
+        "Carpeta": carpeta_de_marca(marca),
+        "URL": url_de_video(marca, modelo, color),
+        "URL validación": url_de_validacion(marca, modelo, color),
+    }

@@ -207,6 +207,53 @@ class TestBandejaDeSolicitudesEnMovil(unittest.TestCase):
         self.assertIn("min-width:150px", movil)
 
 
+class TestBotonesDelMenuLateral(unittest.TestCase):
+    """Todo boton de `sidebar_nav_button` tiene que estar en el CSS del menu.
+
+    Origen: "Status de carga" se agrego al menu pero no a las listas de
+    selectores que le dan icono, negrita y alto. Salio sin icono y con otra
+    tipografia, distinto de los otros cuatro. No hay nada en el codigo que
+    obligue a registrarlo: son cinco listas separadas y se olvida una.
+    """
+
+    GRUPOS = (
+        "button,",                                  # caja, alto e icono
+        'button [data-testid="stMarkdownContainer"],',  # alineacion del texto
+        "button p,",                                # tipografia
+        "button::before,",                          # hueco del icono
+        "button:hover,",                            # estado
+    )
+
+    def setUp(self):
+        self.claves = sorted(set(re.findall(r'sidebar_nav_button\([^)]*"(operation_nav_\w+)"', FUENTE)))
+
+    def test_hay_botones_que_revisar(self):
+        self.assertGreaterEqual(len(self.claves), 4, "No se encontraron los botones del menu")
+
+    def test_cada_boton_esta_en_las_cinco_listas(self):
+        faltantes = []
+        for clave in self.claves:
+            for grupo in self.GRUPOS:
+                if f"div.st-key-{clave} {grupo}" not in FUENTE:
+                    faltantes.append(f"{clave} -> {grupo}")
+        self.assertEqual(faltantes, [], "Botones sin registrar en el CSS del menu: " + str(faltantes))
+
+    def test_cada_boton_tiene_su_icono(self):
+        # El hueco existe para todos; el dibujo se asigna por boton. Sin esto
+        # el boton queda con el recuadro vacio al lado del texto.
+        sin_icono = [
+            clave for clave in self.claves
+            if f"div.st-key-{clave} button::before {{{{" not in FUENTE
+            and f"div.st-key-{clave} button::before," not in FUENTE.split("background-image")[0]
+        ]
+        con_dibujo = [
+            clave for clave in self.claves
+            if re.search(rf"div\.st-key-{clave} button::before[,\s{{][^}}]*?background-image", FUENTE, re.S)
+        ]
+        self.assertEqual(sorted(con_dibujo), self.claves,
+                         f"Botones sin dibujo de icono: {sorted(set(self.claves) - set(con_dibujo))}")
+
+
 class TestNoSeRompioEscritorio(unittest.TestCase):
     def test_los_cortes_de_movil_van_dentro_de_media_queries(self):
         # Todo lo nuevo tiene que estar dentro de un @media: una regla suelta

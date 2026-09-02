@@ -14267,6 +14267,7 @@ def inject_custom_css(config):
             margin-right:8px !important;
         }}
         div.st-key-operation_nav_kpis button,
+        div.st-key-operation_nav_status button,
         div.st-key-operation_nav_input button,
         div.st-key-operation_nav_tickets button,
         div.st-key-operation_nav_audit button,
@@ -14300,6 +14301,7 @@ def inject_custom_css(config):
             transition:background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease !important;
         }}
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
+        div.st-key-operation_nav_status button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_input button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_tickets button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_audit button [data-testid="stMarkdownContainer"],
@@ -14314,6 +14316,7 @@ def inject_custom_css(config):
             text-align:left !important;
         }}
         div.st-key-operation_nav_kpis button p,
+        div.st-key-operation_nav_status button p,
         div.st-key-operation_nav_input button p,
         div.st-key-operation_nav_tickets button p,
         div.st-key-operation_nav_audit button p,
@@ -14333,6 +14336,7 @@ def inject_custom_css(config):
             white-space:normal !important;
         }}
         div.st-key-operation_nav_kpis button::before,
+        div.st-key-operation_nav_status button::before,
         div.st-key-operation_nav_input button::before,
         div.st-key-operation_nav_tickets button::before,
         div.st-key-operation_nav_audit button::before,
@@ -14357,6 +14361,9 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V5'/%3E%3Cpath d='M4 19h16'/%3E%3Cpath d='M8 16v-5'/%3E%3Cpath d='M12 16V8'/%3E%3Cpath d='M16 16v-9'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-operation_nav_status button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 18a8 8 0 1 1 16 0'/%3E%3Cpath d='M12 18l4.5-5.5'/%3E%3Cpath d='M12 18h.01'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-operation_nav_input button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
@@ -14385,6 +14392,7 @@ def inject_custom_css(config):
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22v-5'/%3E%3Cpath d='M9 7V2'/%3E%3Cpath d='M15 7V2'/%3E%3Cpath d='M6 7h12v5a6 6 0 0 1-12 0V7Z'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-operation_nav_kpis button:hover,
+        div.st-key-operation_nav_status button:hover,
         div.st-key-operation_nav_input button:hover,
         div.st-key-operation_nav_tickets button:hover,
         div.st-key-operation_nav_audit button:hover,
@@ -16527,6 +16535,32 @@ def inject_custom_css(config):
                de escritorio. Se deja un borde para poder cerrarlo tocando fuera. */
             [data-testid="stSidebar"] {{ max-width:86vw !important; }}
             [data-testid="stSidebar"] .stButton > button {{ min-height:46px !important; }}
+
+            /* Medido en un telefono de 390px: habia que bajar 736px dentro del
+               menu para llegar a "Operaciones", que es lo unico accionable.
+               Los 500px de arriba eran cuatro tarjetas de presentacion. Se
+               compactan; ninguna se elimina, porque el sitio activo y la marca
+               son justamente lo que hay que confirmar antes de cargar. */
+            section[data-testid="stSidebar"] .forus-sidebar {{
+                padding:10px 14px !important; margin:0 0 10px !important; border-radius:16px !important;
+            }}
+            section[data-testid="stSidebar"] .forus-sidebar img {{ max-height:30px !important; }}
+            section[data-testid="stSidebar"] .st-key-site_picker_card {{
+                padding:9px 11px !important; margin-bottom:8px !important;
+            }}
+            /* El logo del sitio se repite en el selector de abajo, que dice el
+               mismo nombre: en el telefono basta con uno. */
+            section[data-testid="stSidebar"] .site-picker-visual {{
+                grid-template-columns:34px minmax(0,1fr) !important; gap:8px !important;
+            }}
+            section[data-testid="stSidebar"] .allowed-logo-grid {{ gap:6px !important; }}
+            section[data-testid="stSidebar"] .allowed-logo-chip {{
+                min-height:0 !important; padding:7px 9px !important;
+            }}
+            section[data-testid="stSidebar"] .allowed-logo-chip img {{ max-height:26px !important; }}
+            section[data-testid="stSidebar"] .sidebar-label {{
+                margin:6px 0 4px !important; font-size:11px !important;
+            }}
 
             /* Tipografia: los tamanos de escritorio parten los titulos. */
             /* El heroe NO tenia padding propio: agregarselo aqui solo lo
@@ -18767,6 +18801,21 @@ def render_sidebar_account_card(username=None):
             overflow: hidden;
             text-overflow: ellipsis;
             max-width: 220px;
+        }}
+        /* En un telefono el menu lateral se abre encima de todo y hay que
+           bajar hasta "Operaciones" para llegar a lo unico accionable. Esta
+           tarjeta se compacta aqui, en SU hoja: la clase la gobierna esta. */
+        @media (max-width:640px) {{
+            section[data-testid="stSidebar"] .ccc-account-card {{
+                padding: 9px 11px !important; margin-bottom: 8px !important; gap: 9px !important;
+            }}
+            section[data-testid="stSidebar"] .ccc-account-avatar {{
+                width: 34px !important; height: 34px !important;
+                min-width: 34px !important; font-size: 14px !important;
+            }}
+            section[data-testid="stSidebar"] .ccc-account-role {{ font-size: 9px !important; }}
+            section[data-testid="stSidebar"] .ccc-account-name {{ font-size: 13px !important; }}
+            section[data-testid="stSidebar"] .ccc-account-email {{ font-size: 10px !important; margin-top: 2px !important; }}
         }}
         </style>
         <div class="ccc-account-card">

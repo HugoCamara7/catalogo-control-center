@@ -350,6 +350,17 @@ contenido). **Al devolver la cabecera vuelve el botón Deploy de Streamlit**, qu
 se queda encima y se come el toque: la cabecera va con `pointer-events:none` y
 solo el botón de abrir recibe toques. Hay tests que fijan las tres piezas.
 
+**Streamlit Cloud mete en la cabecera botones que en local NO existen** — el
+lápiz de editar la app, Deploy, el menú de tres puntos. Con un selector amplio
+(`stBaseButton-header`), el lápiz recibía los estilos del botón flotante,
+quedaba exactamente encima del de abrir el menú y el toque se iba a la pantalla
+de edición. Se nombra solo `stExpandSidebarButton`; el resto de la cabecera se
+oculta uno por uno. **No se prueba en local: hay que simular esos botones.**
+
+**`stToolbar` no se puede ocultar con `display:none`**: el botón de abrir el
+menú vive DENTRO de ella. Medido, quedaba en 0×0 y no había forma de abrir el
+menú. Se la deja existir con altura cero y sin toques.
+
 **Un botón nuevo del menú lateral hay que registrarlo en CINCO listas de
 selectores** (caja, contenedor del texto, `p`, `::before` y `:hover`) y darle su
 dibujo de icono. Nada en el código lo obliga: "Status de carga" se agregó al
@@ -519,7 +530,7 @@ python scripts/test_engines_price_check.py             # 19
 python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 40
 python scripts/test_engines_load_status.py             # 28
-python scripts/test_css_movil.py                       # 31
+python scripts/test_css_movil.py                       # 33
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24
 python scripts/test_siblings_referencias.py            # 14

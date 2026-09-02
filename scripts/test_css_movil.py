@@ -298,6 +298,38 @@ class TestElMenuSePuedeCerrarEnMovil(unittest.TestCase):
         self.assertIn('[data-testid="stAppDeployButton"]', self.movil)
         self.assertIn("pointer-events:none !important", self.movil)
 
+    def test_solo_se_rescata_el_boton_de_abrir_el_menu(self):
+        """Streamlit Cloud mete botones en la cabecera que en local no existen.
+
+        Con un selector amplio (`stBaseButton-header`), el lapiz de "editar la
+        app" recibia los estilos del boton flotante, quedaba EXACTAMENTE encima
+        del de abrir el menu y el toque se iba a la pantalla de edicion. En
+        local no se veia porque ese boton no existe.
+        """
+        # Hay dos reglas con ese selector: la que solo devuelve el toque dentro
+        # de la cabecera, y la del boton flotante. Interesa la segunda.
+        marca = 'button[data-testid="stExpandSidebarButton"] {{'
+        flotante = self.movil[self.movil.rindex(marca):]
+        flotante = flotante[:flotante.index("}}")]
+        self.assertNotIn("stBaseButton-header", flotante,
+                         "Selector demasiado amplio: agarra botones de Streamlit Cloud")
+        self.assertIn("position:fixed !important", flotante)
+        # y el resto de la cabecera se oculta uno por uno
+        self.assertIn('button:not([data-testid="stExpandSidebarButton"])', self.movil)
+        self.assertIn('[data-testid="stAppEditButton"]', self.movil)
+
+    def test_la_barra_de_herramientas_no_se_oculta_con_display_none(self):
+        """El boton de abrir el menu vive DENTRO de `stToolbar`.
+
+        Ocultar la barra con `display:none` se lleva el boton por delante:
+        medido, quedaba en 0x0 y no habia forma de abrir el menu.
+        """
+        barra = self.movil[self.movil.index('[data-testid="stToolbar"] {{'):]
+        barra = barra[:barra.index("}}")]
+        self.assertIn("display:flex !important", barra)
+        self.assertNotIn("display:none", barra)
+        self.assertIn("height:0 !important", barra)
+
     def test_los_tres_controles_cumplen_el_objetivo_tactil(self):
         self.assertIn("width:44px !important", self.movil)
         self.assertIn("height:44px !important", self.movil)

@@ -645,5 +645,12 @@ Trabaja en español. Prefiere entregas completas en ZIP, no fragmentos para
 copiar. Valora que se le diga con claridad qué no se hizo y por qué, y que se
 distinga un fallo propio de uno preexistente.
 
+**El trabajo no está terminado hasta que está en GitHub.** No basta con dejarlo
+en una rama o en un PR abierto: la app se despliega desde `main`, así que
+mientras el cambio no esté mergeado el usuario redespliega y **no ve nada**.
+Ya pasó con el Mantenedor de Videos: el PR quedó abierto esperando confirmación,
+él actualizó la app y el módulo no aparecía. Entregar = commit + push + PR
+mergeado a `main`, y decírselo.
+
 Cuando pida algo que parezca arriesgado, hay que decírselo — pero si lo
 reafirma, se hace.

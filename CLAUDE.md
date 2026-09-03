@@ -709,6 +709,51 @@ visible. No las borré porque eso es una decisión aparte.
 
 ---
 
+## 5 septies. El flujo de carga, de punta a punta (septiembre 2026)
+
+```
+Subir Brand → Aceptar carga → Carga completa → Seleccionar aprobada
+           → Leer archivo → Analizar input → Cerrar solicitud
+```
+
+Siete pasos y **el usuario solo interviene en cuatro**: aceptar la carga,
+elegir la solicitud, analizar y cerrar. El resto son transiciones automáticas.
+
+| Paso | Quién lo hace |
+|---|---|
+| Subir Brand | la marca, en Input comercial |
+| Aceptar carga | **1 clic** — el atajo encadena tomar + revisar + aprobar |
+| Carga completa | automático: `va_a: carga_completa` lleva a la pantalla |
+| Seleccionar aprobada | **1 clic** — ya viene preseleccionada la recién aceptada |
+| Leer archivo | automático: se lee el adjunto de la solicitud |
+| Analizar input | **1 clic** |
+| Cerrar solicitud | **1 clic** |
+
+**El cierre NO puede estar detrás de la casilla de sincronización.**
+`_render_acciones_solicitud_tras_carga()` estaba anidado tres niveles: dentro
+de `if complete_source == "Shopify API"`, dentro de `if confirm_complete:` y
+después del panel de sincronización. Con "Respaldo Excel", o sin marcar la
+casilla, no había forma de cerrar la solicitud desde Carga completa y tocaba
+volver a la bandeja. Ahora se dibuja una sola vez al terminar el análisis, y
+hay un test que compara la sangría y falla si vuelve a quedar dentro del `if`.
+
+**Pero cerrar sigue exigiendo que la carga se haya ejecutado.** La sección se
+dibuja apenas termina el análisis, cuando la solicitud todavía está en "Lista
+para ejecutar": ofrecer ahí "Completar carga" cerraría una solicitud que nunca
+se cargó, que es exactamente el error corregido en agosto de 2026. Por eso hay
+una guarda por estado:
+
+- Estados de la cadena de cierre → `render_seguimiento_carga` + la cadena.
+- `loading` → los cuatro botones de cierre.
+- Cualquier otro → `render_barra_acciones`, que deriva de `engines/ticket_flow`
+  lo que se puede hacer. Desde "Lista para ejecutar" eso es **"Ejecutar
+  carga"**: el eslabón que faltaba entre analizar y cerrar.
+
+No se escribió una segunda lista de botones: manda el mismo motor que la
+bandeja, con sus pruebas.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -858,7 +903,7 @@ GitHub Actions usa sus propios secretos (Settings → Secrets → Actions):
 
 ```bash
 python scripts/test_brand_commercial_input.py          # 6
-python scripts/test_carga_desde_solicitud.py           # 20
+python scripts/test_carga_desde_solicitud.py           # 28
 python scripts/test_engines_audit.py                   # 45
 python scripts/test_engines_metrics.py                 # 26
 python scripts/test_engines_notify.py                  # 88

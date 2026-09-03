@@ -221,5 +221,90 @@ class TestNoSeDuplicoElMotor(unittest.TestCase):
         self.assertEqual(fuente.count("build_columbia_matrixify("), 1)
 
 
+
+class TestElCierreEstaAlAlcanceTrasElAnalisis(unittest.TestCase):
+    """El paso 7 del flujo: cerrar la solicitud sin salir de Carga completa.
+
+    Origen: `_render_acciones_solicitud_tras_carga()` estaba anidado TRES
+    niveles -- dentro de `if complete_source == "Shopify API" ...`, dentro de
+    `if confirm_complete:` (una casilla) y despues del panel de
+    sincronizacion. Con "Respaldo Excel", o sin marcar la casilla, no habia
+    forma de cerrar la solicitud desde esta pantalla y tocaba volver a la
+    bandeja de Solicitudes. Ese era el paso intermedio que sobraba.
+    """
+
+    FUENTE = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+
+    def _linea_de(self, aguja):
+        for numero, linea in enumerate(self.FUENTE.splitlines(), start=1):
+            if aguja in linea:
+                return numero, linea
+        self.fail(f"No se encontró: {aguja}")
+
+    def test_el_cierre_no_depende_de_la_casilla_de_sincronizacion(self):
+        _, linea = self._linea_de("_render_acciones_solicitud_tras_carga()")
+        sangria_cierre = len(linea) - len(linea.lstrip())
+        _, linea_casilla = self._linea_de("confirm_complete = st.checkbox(")
+        sangria_casilla = len(linea_casilla) - len(linea_casilla.lstrip())
+        self.assertLessEqual(
+            sangria_cierre, sangria_casilla,
+            "El cierre volvió a quedar dentro del `if confirm_complete`",
+        )
+
+    def test_se_llama_una_sola_vez(self):
+        # Sacarlo del `if` y dejar el de dentro lo dibujaria dos veces.
+        self.assertEqual(
+            self.FUENTE.count("                _render_acciones_solicitud_tras_carga()"), 1
+        )
+
+    def test_solo_se_ofrece_cerrar_cuando_la_carga_esta_ejecutada(self):
+        """Cerrar una solicitud que nunca se cargo es el error de agosto 2026.
+
+        La seccion ahora se dibuja apenas termina el analisis, cuando la
+        solicitud todavia esta en "Lista para ejecutar". Los cuatro botones de
+        cierre solo pueden salir en `loading`.
+        """
+        cuerpo = self.FUENTE[self.FUENTE.index("def _render_acciones_solicitud_tras_carga"):]
+        cuerpo = cuerpo[:cuerpo.index("\ndef ", 10)]
+        guarda = cuerpo.index("if estado != STATE_LOADING:")
+        botones = cuerpo.index('"Carga SIAL terminada"')
+        self.assertLess(guarda, botones,
+                        "Los botones de cierre tienen que ir DESPUÉS de la guarda de estado")
+
+    def test_en_los_demas_estados_manda_el_motor_del_flujo(self):
+        # No una segunda lista de botones escrita aparte: `render_barra_acciones`
+        # ya deriva de engines/ticket_flow lo que se puede hacer en cada estado.
+        cuerpo = self.FUENTE[self.FUENTE.index("def _render_acciones_solicitud_tras_carga"):]
+        cuerpo = cuerpo[:cuerpo.index("\ndef ", 10)]
+        self.assertIn("render_barra_acciones(servicio, actor, ticket)", cuerpo)
+
+    def test_la_cadena_de_cierre_sigue_intacta(self):
+        # SIAL -> precios -> validacion -> cierre no se atajo NUNCA.
+        cuerpo = self.FUENTE[self.FUENTE.index("def _render_acciones_solicitud_tras_carga"):]
+        cuerpo = cuerpo[:cuerpo.index("\ndef ", 10)]
+        self.assertIn("_render_cadena_cierre_carga(servicio, actor, ticket)", cuerpo)
+        self.assertIn("STATE_READY_CLOSE", cuerpo)
+
+
+class TestAceptarCargaLlevaSoloALaPantalla(unittest.TestCase):
+    """Pasos 2 y 3: aceptar la carga deja al usuario en Carga completa, con la
+    solicitud ya elegida. Sin buscar el modo de carga en la barra lateral."""
+
+    FUENTE = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+    FLUJO = (ROOT / "engines" / "ticket_flow.py").read_text(encoding="utf-8")
+
+    def test_el_atajo_declara_su_destino(self):
+        self.assertIn('"va_a": "carga_completa"', self.FLUJO)
+
+    def test_la_pantalla_obedece_ese_destino(self):
+        self.assertIn('if accion.get("va_a") == "carga_completa":', self.FUENTE)
+        self.assertIn("ir_a_carga_completa(codigo)", self.FUENTE)
+
+    def test_deja_la_solicitud_preseleccionada(self):
+        cuerpo = self.FUENTE[self.FUENTE.index("def ir_a_carga_completa"):]
+        cuerpo = cuerpo[:cuerpo.index("\ndef ", 10)]
+        self.assertIn('st.session_state["carga_solicitud_preseleccionada"] = codigo', cuerpo)
+        self.assertIn('st.session_state["operation_mode_choice"] = "Carga completa"', cuerpo)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

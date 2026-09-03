@@ -56,6 +56,23 @@ def _clave(valor):
     return _texto(valor).casefold()
 
 
+def _identidad(fila):
+    """La llave con la que se cuenta una fila del inventario.
+
+    `Clave` la pone `inventario()`. El respaldo es para filas armadas a mano
+    (pruebas viejas, llamadas externas) que traen solo `Mod-Col`.
+    """
+    fila = fila or {}
+    clave = _texto(fila.get("Clave"))
+    if clave:
+        return clave
+    codigo = _texto(fila.get("Mod-Col")).upper()
+    if codigo:
+        return codigo
+    handle = _clave(fila.get("Handle"))
+    return "handle:%s" % handle if handle else ""
+
+
 def _entero(valor):
     try:
         return int(float(_texto(valor) or 0))
@@ -137,6 +154,32 @@ def visible_en_la_web(producto):
     return estado_web(producto) == PRENDIDO
 
 
+def clave_de_producto(producto):
+    """Identidad estable de un producto, para poder contarlo.
+
+    Es el Modelo-Color cuando lo hay. Cuando NO lo hay se usa el handle, con
+    prefijo para que no pueda chocar con un codigo real.
+
+    Por que no alcanza con el Modelo-Color: sale del metacampo
+    `custom.codigo_modelo_color`, que los productos viejos no tienen. Contando
+    directamente por ese campo, TODOS los productos sin metacampo comparten la
+    misma llave (la cadena vacia) y el `set` los colapsa en uno solo. Medido:
+    7 productos de los cuales 4 sin metacampo se reportaban como 4, mientras la
+    tabla de visibilidad -- que cuenta filas -- decia 7. Dos numeros distintos
+    para lo mismo en la misma pantalla.
+
+    Peor todavia en la resta: con dos productos sin metacampo, uno visible y
+    uno en borrador, la cadena vacia quedaba en el conjunto de cargados Y en el
+    de visibles, asi que "No visibles" daba 0 con la mitad del catalogo apagado.
+    """
+    producto = producto or {}
+    codigo = modelo_color(producto)
+    if codigo:
+        return codigo
+    handle = _clave(producto.get("Handle"))
+    return "handle:%s" % handle if handle else ""
+
+
 # --- inventario aplanado --------------------------------------------------
 def inventario(productos_por_sitio, clase_de_tipo=None, marcas_conocidas=(), etiquetas_de_sitio=None):
     """Una fila por (sitio, producto), ya con marca, clase y estado web.
@@ -153,19 +196,24 @@ def inventario(productos_por_sitio, clase_de_tipo=None, marcas_conocidas=(), eti
         etiqueta = _texto(etiquetas.get(site_key)) or _texto(site_key)
         vistos = set()
         for producto in productos or []:
-            clave = modelo_color(producto) or _clave(producto.get("Handle"))
+            clave = clave_de_producto(producto)
             if not clave or clave in vistos:
                 # Un Modelo-Color se cuenta UNA vez por sitio. Dos productos
                 # con el mismo codigo son un duplicado del catalogo, no dos SKU.
                 continue
             vistos.add(clave)
             estado = estado_web(producto)
+            codigo = modelo_color(producto)
             filas.append({
                 "Sitio": etiqueta,
                 "Sitio key": _texto(site_key),
                 "Marca": marca_de_producto(producto, marcas_conocidas),
                 "Clase": clase_de_producto(producto, clase_de_tipo),
-                "Mod-Col": modelo_color(producto),
+                # `Mod-Col` es para MOSTRAR: vacio si el producto no tiene el
+                # metacampo, que es la verdad. `Clave` es para CONTAR.
+                "Mod-Col": codigo,
+                "Clave": clave,
+                "Sin codigo": not codigo,
                 "Handle": _texto(producto.get("Handle")),
                 "Tipo": _texto(producto.get("Type")),
                 "Estado web": estado,
@@ -192,7 +240,7 @@ def matriz_marcas_por_sitio(filas, sitios=()):
     for fila in filas:
         datos = por_marca.setdefault(fila["Marca"], {"sitios": set(), "por_clase": {}})
         datos["sitios"].add(fila["Sitio"])
-        datos["por_clase"].setdefault(fila["Clase"], set()).add(fila["Mod-Col"])
+        datos["por_clase"].setdefault(fila["Clase"], set()).add(_identidad(fila))
 
     tabla = []
     for marca in sorted(por_marca, key=_clave):
@@ -217,7 +265,7 @@ def resumen_por_clase(filas):
     """SKUs por marca y clase. La hoja "Resumen por clase" del Excel."""
     por_marca = {}
     for fila in filas:
-        por_marca.setdefault(fila["Marca"], {}).setdefault(fila["Clase"], set()).add(fila["Mod-Col"])
+        por_marca.setdefault(fila["Marca"], {}).setdefault(fila["Clase"], set()).add(_identidad(fila))
 
     columnas = list(CLASES) + [SIN_CLASE]
     tabla = []
@@ -399,9 +447,15 @@ def kpis(filas, solicitudes, estado_visible=None, estados_finales=()):
     es lo que ya se cargo pero no lo ve nadie todavia.
     """
     finales = {_texto(e) for e in estados_finales if _texto(e)}
-    cargados = len({(fila["Sitio"], fila["Mod-Col"]) for fila in filas})
+    # Se cuenta por `_identidad`, no por `Mod-Col`: ver `clave_de_producto`.
+    # Con `Mod-Col` a secas, cada producto sin metacampo colapsaba con todos
+    # los demas sin metacampo y estos cuatro numeros dejaban de cuadrar entre
+    # si y con la tabla de visibilidad.
+    cargados = len({(fila["Sitio"], _identidad(fila)) for fila in filas})
     modelos = len({fila["Mod-Col"] for fila in filas if fila["Mod-Col"]})
-    visibles = len({(fila["Sitio"], fila["Mod-Col"]) for fila in filas if fila["Visible"]})
+    visibles = len({(fila["Sitio"], _identidad(fila)) for fila in filas if fila["Visible"]})
+    sin_codigo = sum(1 for fila in filas if not _texto(fila.get("Mod-Col")))
+    sin_marca = sum(1 for fila in filas if _texto(fila.get("Marca")) in ("", SIN_MARCA))
 
     inyectados = 0
     terminados = 0
@@ -417,7 +471,11 @@ def kpis(filas, solicitudes, estado_visible=None, estados_finales=()):
 
     return {
         "Sitios con catalogo": len({fila["Sitio"] for fila in filas}),
-        "Marcas con catalogo": len({fila["Marca"] for fila in filas}),
+        # "Sin marca" NO es una marca. Contandola, un sitio con productos sin
+        # el metacampo `custom.marca` reportaba una marca de mas.
+        "Marcas con catalogo": len({
+            fila["Marca"] for fila in filas if _texto(fila["Marca"]) not in ("", SIN_MARCA)
+        }),
         "Productos cargados": cargados,
         "Modelo-Color unicos": modelos,
         "Prendidos y visibles": visibles,
@@ -428,4 +486,8 @@ def kpis(filas, solicitudes, estado_visible=None, estados_finales=()):
         "SKUs inyectados": inyectados,
         "SKUs terminados": terminados,
         "SKUs en curso": inyectados - terminados,
+        # Los dos de abajo explican por que un total puede verse raro, en vez
+        # de dejar que el usuario descubra el desfase por su cuenta.
+        "Productos sin codigo Modelo-Color": sin_codigo,
+        "Productos sin marca": sin_marca,
     }

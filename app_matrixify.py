@@ -999,24 +999,42 @@ def is_shopify_configured(config):
     return bool(config.get("shop_domain") and (has_token or has_client_credentials))
 
 
-def session_shopify_products(site_key, shopify_config, force_refresh=False):
-    cache_key = f"shopify_products_cache_{clean_value(site_key)}"
-    meta_key = f"{cache_key}_meta"
-    cache_meta = {
-        "shop_domain": clean_value(shopify_config.get("shop_domain")),
-        "api_version": clean_value(shopify_config.get("api_version")),
+def _shopify_cache_meta(shopify_config):
+    return {
+        "shop_domain": clean_value((shopify_config or {}).get("shop_domain")),
+        "api_version": clean_value((shopify_config or {}).get("api_version")),
     }
-    if (
-        not force_refresh
-        and st.session_state.get(meta_key) == cache_meta
-        and st.session_state.get(cache_key) is not None
-    ):
-        return st.session_state[cache_key]
-    products = fetch_products(shopify_config)
+
+
+def shopify_products_en_cache(site_key, shopify_config):
+    """Lo que ya hay en la sesion para este sitio, o None si no hay nada.
+
+    Existe separada del fetch porque `st.session_state` SOLO se puede tocar
+    desde el hilo de la pantalla. Para leer varios sitios en paralelo hay que
+    consultar la cache aqui, en el hilo principal, y dejar que los hilos hagan
+    unicamente el viaje a la red.
+    """
+    cache_key = f"shopify_products_cache_{clean_value(site_key)}"
+    if st.session_state.get(f"{cache_key}_meta") != _shopify_cache_meta(shopify_config):
+        return None
+    return st.session_state.get(cache_key)
+
+
+def guardar_shopify_products(site_key, shopify_config, products):
+    """Guarda en la sesion. Solo desde el hilo de la pantalla."""
+    cache_key = f"shopify_products_cache_{clean_value(site_key)}"
     st.session_state[cache_key] = products
-    st.session_state[meta_key] = cache_meta
+    st.session_state[f"{cache_key}_meta"] = _shopify_cache_meta(shopify_config)
     st.session_state[f"{cache_key}_loaded_at"] = datetime.now(timezone.utc).isoformat()
     return products
+
+
+def session_shopify_products(site_key, shopify_config, force_refresh=False):
+    if not force_refresh:
+        guardados = shopify_products_en_cache(site_key, shopify_config)
+        if guardados is not None:
+            return guardados
+    return guardar_shopify_products(site_key, shopify_config, fetch_products(shopify_config))
 
 
 def clear_shopify_products_cache(site_key):
@@ -18092,6 +18110,11 @@ def _clase_de_tipo_para_status():
         return None
 
 
+# Cuantos sitios se leen a la vez. Son seis como maximo y cada uno es un crawl
+# paginado: mas hilos que sitios no aporta nada.
+CATALOGOS_LECTURAS_PARALELAS = 6
+
+
 def cargar_catalogos_de_todos_los_sitios(force_refresh=False):
     """El catalogo de CADA sitio configurado, mas el parte de por que falto.
 
@@ -18101,36 +18124,67 @@ def cargar_catalogos_de_todos_los_sitios(force_refresh=False):
     viaja aparte y la pantalla lo muestra.
     """
     catalogos = {}
-    estado_sitios = []
+    estado_sitios = {}
+    pendientes = {}
     for site_key, config in SITE_CONFIGS.items():
         etiqueta = clean_value(config.get("site_label")) or site_key
         shopify_config = get_shopify_config(site_key)
         if not is_shopify_configured(shopify_config):
-            estado_sitios.append({
+            estado_sitios[site_key] = {
                 "Sitio": etiqueta,
                 "Estado": "Sin configurar",
                 "Productos": 0,
                 "Detalle": "Falta shop_domain o token en Secrets.",
-            })
+            }
             continue
-        try:
-            productos = session_shopify_products(site_key, shopify_config, force_refresh=force_refresh)
-        except Exception as exc:
-            estado_sitios.append({
+        if not force_refresh:
+            guardados = shopify_products_en_cache(site_key, shopify_config)
+            if guardados is not None:
+                catalogos[site_key] = guardados or []
+                estado_sitios[site_key] = {
+                    "Sitio": etiqueta,
+                    "Estado": "Leido",
+                    "Productos": len(guardados or []),
+                    "Detalle": "",
+                }
+                continue
+        pendientes[site_key] = (etiqueta, shopify_config)
+
+    # Los sitios que faltan se leen EN PARALELO. En serie eran seis crawls
+    # paginados de GraphQL encadenados, y el mas lento marcaba el ritmo de la
+    # pantalla entera. Dentro del hilo solo va `fetch_products`, que no toca
+    # Streamlit; la cache de sesion se escribe despues, en este hilo.
+    if pendientes:
+        def _leer(site_key):
+            try:
+                return site_key, fetch_products(pendientes[site_key][1]), None
+            except Exception as exc:  # un sitio caido no puede tumbar el resto
+                return site_key, None, exc
+
+        with ThreadPoolExecutor(max_workers=min(len(pendientes), CATALOGOS_LECTURAS_PARALELAS)) as pool:
+            resultados = list(pool.map(_leer, list(pendientes)))
+        for site_key, productos, error in resultados:
+            etiqueta, shopify_config = pendientes[site_key]
+            if error is not None:
+                estado_sitios[site_key] = {
+                    "Sitio": etiqueta,
+                    "Estado": "Error",
+                    "Productos": 0,
+                    "Detalle": str(error)[:300],
+                }
+                continue
+            guardar_shopify_products(site_key, shopify_config, productos)
+            catalogos[site_key] = productos or []
+            estado_sitios[site_key] = {
                 "Sitio": etiqueta,
-                "Estado": "Error",
-                "Productos": 0,
-                "Detalle": str(exc)[:300],
-            })
-            continue
-        catalogos[site_key] = productos or []
-        estado_sitios.append({
-            "Sitio": etiqueta,
-            "Estado": "Leido",
-            "Productos": len(productos or []),
-            "Detalle": "",
-        })
-    return catalogos, estado_sitios
+                "Estado": "Leido",
+                "Productos": len(productos or []),
+                "Detalle": "",
+            }
+
+    # Se devuelve en el orden de SITE_CONFIGS, no en el que fueron llegando:
+    # una tabla que cambia de orden en cada refresco no se puede comparar.
+    return catalogos, [estado_sitios[k] for k in SITE_CONFIGS if k in estado_sitios]
 
 
 def construir_status_de_carga(catalogos, solicitudes):
@@ -18247,6 +18301,28 @@ def render_status_de_carga(ticket_actor):
             + ", ".join(f"{fila['Sitio']} ({fila['Estado']})" for _, fila in pendientes.iterrows())
             + ". Sus productos NO están contados abajo."
         )
+
+    # Por que este aviso: los productos sin `custom.codigo_modelo_color` SI se
+    # cuentan (uno por uno, por su handle), pero no pueden agruparse por codigo
+    # ni cruzarse contra las solicitudes. Decirlo aqui evita que el usuario vea
+    # un total que no le cuadra con su Excel y no sepa por que.
+    sin_codigo = safe_int_value(kpis.get("Productos sin codigo Modelo-Color"), 0)
+    sin_marca = safe_int_value(kpis.get("Productos sin marca"), 0)
+    if sin_codigo or sin_marca:
+        partes = []
+        if sin_codigo:
+            partes.append(
+                f"**{sin_codigo:,} productos sin el metacampo `custom.codigo_modelo_color`**. "
+                "Se cuentan por su handle, así que los totales de arriba están completos, "
+                "pero esos productos no se pueden agrupar por Modelo-Color ni cruzar contra "
+                "las solicitudes."
+            )
+        if sin_marca:
+            partes.append(
+                f"**{sin_marca:,} productos sin marca reconocible** (les falta el metacampo "
+                "`custom.marca` y ningún tag coincide). Salen agrupados como \"Sin marca\"."
+            )
+        st.info("Datos incompletos en el catálogo: " + " ".join(partes))
 
     pestanas = st.tabs([
         "Prendido y visible",

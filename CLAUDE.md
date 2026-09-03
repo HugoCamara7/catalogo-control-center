@@ -408,6 +408,33 @@ versión: el video va inmediatamente después de la foto principal.
 modo individual con Modelo y Color escritos a mano sería una segunda forma de
 armar el mismo nombre, y las dos se separan sin que nadie lo note.
 
+**Trabaja en DOS TIEMPOS, igual que el mantenedor de fotos.** Primero
+`video_analizar_codigos()` revisa TODO el Excel **sin escribir nada** en
+Shopify: qué productos existen, de qué carpeta sale cada video y cuáles están
+de verdad en el bucket. Solo después, y con confirmación, se publica. Sin esto,
+en una lista de 50 códigos se empieza a cargar y uno se entera a mitad de
+camino de que 30 videos no estaban. Hay un test que lee la función y falla si
+aparece cualquier mutación de Shopify dentro.
+
+El análisis deja cada código en un estado: `Listo para cargar`,
+`Sin video en el bucket`, `No está en Shopify` o `Sin confirmar`. **"Sin
+confirmar" SÍ se publica**: el bucket contesta 403 a las consultas anónimas y
+eso no es "no existe" — es el mismo detalle que en las fotos dejaba 310 vistas
+en "Sin PNG".
+
+La comprobación del bucket es `png_comprobar_url`, **la misma de las fotos**,
+con un parámetro `tipos` nuevo. Su valor por defecto es `("image/",)`, así que
+las fotos no cambian en nada; los videos pasan
+`("video/", "application/octet-stream")` porque S3 devuelve octet-stream para
+los mp4 a los que nadie les puso el tipo.
+
+**Se procesa por BLOQUES**, con `png_bloques`, la misma función de las fotos:
+cada bloque termina, **se guarda** y la barra avanza, así una lista larga no se
+cae entera. `VIDEO_MODELOS_POR_BLOQUE` es 5 y no 20 como las fotos: allí cada
+código son diez peticiones HEAD, aquí es bajar decenas de MB del bucket y
+volver a subirlos a Shopify. Bloques más chicos guardan más seguido. Hay un
+test que comprueba que el guardado esté DENTRO del bucle.
+
 La lectura del Excel es `png_codigos_desde_excel`, **la misma** del mantenedor
 de fotos: quita vacíos y repetidos y explica cada descarte. Las direcciones del
 bucket salen de `png_urls_a_probar`, también la misma.
@@ -623,7 +650,7 @@ python scripts/test_engines_price_check.py             # 19
 python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 40
 python scripts/test_engines_load_status.py             # 28
-python scripts/test_engines_video_media.py             # 90
+python scripts/test_engines_video_media.py             # 106
 python scripts/test_css_movil.py                       # 33
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24

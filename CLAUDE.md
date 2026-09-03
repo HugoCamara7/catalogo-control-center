@@ -303,6 +303,49 @@ catálogo"]` con tilde y era un `KeyError` que tumbaba la pantalla entera en
 producción. No lo atrapó nada porque las pruebas cubrían el motor y el armado
 de tablas, pero **nadie tocaba la función que dibuja**. Hay un test que lee del
 árbol las claves que pide la pantalla y falla si el motor no las devuelve.
+Desde septiembre de 2026 ese test también mira los `kpis.get("...")`, no solo
+los `kpis["..."]`: un `.get()` con la clave mal escrita **no revienta**,
+devuelve `None` y el número o el aviso simplemente no aparece nunca. Es peor
+que el `KeyError`, porque nadie se entera.
+
+**Se cuenta por `clave_de_producto`, NUNCA por `Mod-Col` a secas.** El
+`Mod-Col` sale del metacampo `custom.codigo_modelo_color`, y los productos
+viejos no lo tienen. Todas las tablas contaban con `set()` sobre ese campo, así
+que **todos** los productos sin metacampo compartían la misma llave — la cadena
+vacía — y el conjunto los colapsaba en uno solo.
+
+Medido: 7 productos, 4 sin metacampo → el KPI "Productos cargados" decía **4**
+y la tabla "Prendido y visible", que cuenta filas, decía **7**. Dos números
+distintos para lo mismo en la misma pantalla. Y en la resta era peor: con dos
+productos sin metacampo, uno visible y uno en borrador, la cadena vacía quedaba
+en el conjunto de cargados **y** en el de visibles, así que **"No visibles"
+daba 0 con la mitad del catálogo apagado**.
+
+`clave_de_producto` devuelve el Modelo-Color cuando lo hay y `handle:<handle>`
+cuando no — con prefijo, para que un handle que se parezca a un código no pueda
+chocar con uno real. `Mod-Col` se queda solo para MOSTRAR (vacío es la verdad);
+`Clave` es para CONTAR. `_identidad(fila)` es el respaldo para filas armadas a
+mano que traen solo `Mod-Col`.
+
+No lo atrapó ninguna de las 28 pruebas porque el helper `producto()` del test
+exige el código como primer argumento y **ningún caso pasaba uno vacío**: cero
+cobertura de lo que más abunda en producción. Ahora hay 7 pruebas de eso, y una
+que exige que el KPI de arriba y la tabla de abajo den el mismo número en
+catálogos con y sin metacampo. Fallan las 7 con el código anterior.
+
+**"Sin marca" no es una marca.** `Marcas con catalogo` la contaba, así que un
+sitio con productos sin `custom.marca` reportaba una marca de más. Los KPIs
+`Productos sin codigo Modelo-Color` y `Productos sin marca` existen para que la
+pantalla avise por qué un total puede no cuadrar con el Excel de alguien, en
+vez de dejar que lo descubra solo.
+
+**Los sitios se leen EN PARALELO.** Eran seis crawls paginados de GraphQL
+encadenados y el más lento marcaba el ritmo de la pantalla entera. Dentro del
+hilo va **solo** `fetch_products`: `st.session_state` no se puede tocar desde
+un hilo, así que la caché se consulta antes (`shopify_products_en_cache`) y se
+escribe después (`guardar_shopify_products`), las dos en el hilo de la
+pantalla. El orden de la tabla de sitios es el de `SITE_CONFIGS`, no el de
+llegada: una tabla que se reordena en cada refresco no se puede comparar.
 
 Todo se descarga en un solo Excel con las 9 hojas.
 

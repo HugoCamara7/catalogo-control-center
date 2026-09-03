@@ -309,6 +309,19 @@ class TestLaPantallaPideLoQueElMotorDa(unittest.TestCase):
                             and isinstance(sub.slice, ast.Constant)
                             and isinstance(sub.slice.value, str)):
                         claves.add(sub.slice.value)
+                    # Tambien `kpis.get("...")`. Un `.get()` con la clave mal
+                    # escrita NO revienta: devuelve None y el numero o el aviso
+                    # simplemente no aparece nunca. Es peor que el KeyError,
+                    # porque nadie se entera.
+                    elif (isinstance(sub, ast.Call)
+                            and isinstance(sub.func, ast.Attribute)
+                            and sub.func.attr == "get"
+                            and isinstance(sub.func.value, ast.Name)
+                            and sub.func.value.id == variable
+                            and sub.args
+                            and isinstance(sub.args[0], ast.Constant)
+                            and isinstance(sub.args[0].value, str)):
+                        claves.add(sub.args[0].value)
                 return claves
         raise AssertionError(f"No existe la funcion {funcion}")
 
@@ -338,6 +351,133 @@ class TestLaPantallaPideLoQueElMotorDa(unittest.TestCase):
         faltan = pedidas - armadas
         self.assertEqual(faltan, set(),
                          f"La pantalla pide tablas que nadie arma: {sorted(faltan)}")
+
+
+class TestProductosSinElMetacampoDelCodigo(unittest.TestCase):
+    """Los productos sin `custom.codigo_modelo_color` tienen que contarse igual.
+
+    Origen del error: `Mod-Col` sale de ese metacampo, y los productos viejos
+    no lo tienen. Todas las tablas contaban con `set()` sobre ese campo, asi
+    que TODOS los productos sin metacampo compartian la misma llave -- la
+    cadena vacia -- y el conjunto los colapsaba en uno solo.
+
+    No lo atrapo ninguna de las 28 pruebas anteriores porque el helper
+    `producto()` exige el codigo como primer argumento y ningun caso pasaba
+    uno vacio. Cero cobertura de lo que mas abunda en produccion.
+    """
+
+    def _filas(self, productos, site_key="columbia"):
+        return ls.inventario({site_key: productos}, clase_de_tipo,
+                             ["Columbia"], ETIQUETAS)
+
+    def test_cada_producto_sin_codigo_se_cuenta_por_separado(self):
+        filas = self._filas([
+            producto("CO1-620", marca="Columbia", tipo="Zapatilla"),
+            producto("", handle="vieja-1", marca="Columbia", tipo="Zapatilla"),
+            producto("", handle="vieja-2", marca="Columbia", tipo="Zapatilla"),
+            producto("", handle="vieja-3", marca="Columbia", tipo="Zapatilla"),
+        ])
+        k = ls.kpis(filas, [], lambda e: "", ())
+        # Con el error: 2 (el codigo real + todos los vacios juntos).
+        self.assertEqual(k["Productos cargados"], 4)
+        self.assertEqual(k["Productos sin codigo Modelo-Color"], 3)
+        # `Modelo-Color unicos` SI cuenta solo los que tienen codigo: es otra
+        # pregunta y no debe inventar codigos que no existen.
+        self.assertEqual(k["Modelo-Color unicos"], 1)
+
+    def test_la_resta_de_no_visibles_no_se_come_los_apagados(self):
+        """El peor caso: decia que todo estaba visible con la mitad apagada."""
+        filas = self._filas([
+            producto("", handle="visible", marca="Columbia", tipo="Zapatilla",
+                     estado="ACTIVE", publicado="SI"),
+            producto("", handle="borrador", marca="Columbia", tipo="Zapatilla",
+                     estado="DRAFT", publicado="NO"),
+        ])
+        k = ls.kpis(filas, [], lambda e: "", ())
+        self.assertEqual(k["Productos cargados"], 2)
+        self.assertEqual(k["Prendidos y visibles"], 1)
+        # Con el error: 0, porque la cadena vacia estaba en los dos conjuntos.
+        self.assertEqual(k["No visibles"], 1)
+        self.assertEqual(k["% visible"], 50.0)
+
+    def test_el_handle_distingue_pero_no_choca_con_un_codigo_real(self):
+        """Dos productos sin codigo y sin handle no se pueden distinguir."""
+        self.assertEqual(ls.clave_de_producto({"Mod-Col": "CO1-620"}), "CO1-620")
+        self.assertEqual(ls.clave_de_producto({"Handle": "vieja-1"}), "handle:vieja-1")
+        self.assertEqual(ls.clave_de_producto({}), "")
+        # El prefijo evita que un handle llamado como un codigo se confunda.
+        self.assertNotEqual(ls.clave_de_producto({"Handle": "CO1-620"}), "CO1-620")
+
+    def test_un_duplicado_de_verdad_sigue_contando_una_vez(self):
+        """Arreglar lo anterior no puede romper la deduplicacion real."""
+        filas = self._filas([
+            producto("CO1-620", handle="a", marca="Columbia", tipo="Zapatilla"),
+            producto("CO1-620", handle="b", marca="Columbia", tipo="Zapatilla"),
+        ])
+        self.assertEqual(len(filas), 1)
+        k = ls.kpis(filas, [], lambda e: "", ())
+        self.assertEqual(k["Productos cargados"], 1)
+
+    def test_sin_marca_no_cuenta_como_marca(self):
+        filas = self._filas([
+            producto("CO1-620", marca="Columbia", tipo="Zapatilla"),
+            producto("CO2-620", marca="", tipo="Zapatilla"),
+        ])
+        k = ls.kpis(filas, [], lambda e: "", ())
+        # Con el error: 2, porque "Sin marca" entraba al conjunto de marcas.
+        self.assertEqual(k["Marcas con catalogo"], 1)
+        self.assertEqual(k["Productos sin marca"], 1)
+
+
+class TestElTitularCuadraConLasTablasSiempre(unittest.TestCase):
+    """El KPI de arriba y la tabla de abajo tienen que dar el mismo numero.
+
+    Son dos caminos distintos: el KPI cuenta conjuntos y la tabla de
+    visibilidad cuenta filas. Mientras cuenten lo mismo da igual; en cuanto uno
+    colapsa filas, la pantalla se contradice sola y el usuario deja de creerle.
+    Esta prueba recorre catalogos con y sin metacampo y exige que coincidan.
+    """
+
+    def _catalogos(self):
+        return [
+            ("todos con codigo", [
+                producto("CO1-620", marca="Columbia", tipo="Zapatilla", publicado="SI"),
+                producto("CO2-620", marca="Columbia", tipo="Chaqueta", publicado="NO"),
+            ]),
+            ("ninguno con codigo", [
+                producto("", handle="v1", marca="Columbia", tipo="Zapatilla", publicado="SI"),
+                producto("", handle="v2", marca="Columbia", tipo="Chaqueta", publicado="NO"),
+                producto("", handle="v3", marca="Columbia", tipo="Chaqueta", estado="DRAFT"),
+            ]),
+            ("mezclado", [
+                producto("CO1-620", marca="Columbia", tipo="Zapatilla", publicado="SI"),
+                producto("", handle="v1", marca="Columbia", tipo="Zapatilla", publicado="SI"),
+                producto("", handle="v2", marca="", tipo="Chaqueta", estado="ARCHIVED"),
+                producto("CO2-620", marca="Columbia", tipo="Chaqueta", publicado="NO"),
+            ]),
+        ]
+
+    def test_cargados_y_no_visibles_coinciden_en_los_dos_caminos(self):
+        for nombre, productos in self._catalogos():
+            with self.subTest(nombre):
+                filas = ls.inventario({"columbia": productos}, clase_de_tipo,
+                                      ["Columbia"], ETIQUETAS)
+                k = ls.kpis(filas, [], lambda e: "", ())
+                vis = ls.estado_de_visibilidad(filas)
+                self.assertEqual(k["Productos cargados"], sum(r["Cargados"] for r in vis))
+                self.assertEqual(k["Prendidos y visibles"],
+                                 sum(r[ls.PRENDIDO] for r in vis))
+                self.assertEqual(k["No visibles"], sum(r["No visibles"] for r in vis))
+                # Y con el numero de productos que de verdad manda Shopify.
+                self.assertEqual(k["Productos cargados"], len(productos))
+
+    def test_el_detalle_de_apagados_tiene_tantas_filas_como_dice_el_kpi(self):
+        for nombre, productos in self._catalogos():
+            with self.subTest(nombre):
+                filas = ls.inventario({"columbia": productos}, clase_de_tipo,
+                                      ["Columbia"], ETIQUETAS)
+                k = ls.kpis(filas, [], lambda e: "", ())
+                self.assertEqual(k["No visibles"], len(ls.productos_no_visibles(filas)))
 
 
 class TestSinStreamlit(unittest.TestCase):

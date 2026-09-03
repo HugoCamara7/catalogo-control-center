@@ -216,6 +216,37 @@ paso por el **índice**, no por `current_step`: el paso 2 decía siempre "OK" y 
 cargado, la barra afirmaba que BigQuery estaba resuelto y que había algo que
 revisar. Hay 4 pruebas que leen el HTML dibujado.
 
+**El panel de "Cargas pendientes" tenía su PROPIO juego de botones.**
+`render_full_load_ticket_queue` dibujaba "Ejecutar validación previa" y "Marcar
+carga iniciada" a mano, sin pasar por los atajos, así que ahí seguían
+apareciendo los dos pasos sueltos que la bandeja ya había unificado. Ahora usa
+`render_barra_acciones`, la misma de la bandeja: hay **un solo lugar** donde
+cambiar el recorrido.
+
+Solo para los estados **previos a la carga** (`ESTADOS_ANTES_DE_CARGAR`). De
+`loading` en adelante manda el cierre por etapas, que **necesita el archivo
+Carga SIAL** — y ese solo lo tiene la pantalla. Encadenarlo desde la barra
+mandaría el correo al Área de Producto sin adjunto.
+
+**`render_barra_acciones` y `render_acciones_con_comentario` llevan `prefijo`.**
+En Carga completa la barra se dibuja **dos veces**: en "Cargas pendientes" y
+después del análisis (`_render_acciones_solicitud_tras_carga`). Con la misma
+solicitud en las dos —que es el caso normal, la eliges arriba y la cargas
+abajo— las claves `accion_<clave>_<codigo>` serían idénticas y Streamlit corta
+la pantalla con `StreamlitDuplicateElementKey`. La cola pasa `"cola_"`; las
+demás superficies se quedan con el prefijo vacío. Hay un test que recorre las
+claves y falla si a alguna le falta.
+
+**El override manual ya no viene con "Finalizada" preseleccionada.**
+`_render_completar_carga` usa `set_status_manual`, que salta la máquina de
+transiciones **a propósito**: es el escape para un ticket que quedó atrasado.
+Pero venía con "Finalizada" marcada por defecto, así que una solicitud recién
+aprobada —sin cargar nada— ofrecía "Finalizar solicitud" listo para pulsar, y
+eso cierra saltándose la carga entera y toda la cadena de precios. Ahora el
+selector va con `index=None` y el botón deshabilitado hasta que se elija. **La
+capacidad no se quitó**, solo deja de ser el valor por defecto, y el panel se
+movió dentro de "Más opciones".
+
 **Cierre de carga por etapas** (6 etapas, `flujo.ETAPAS_CARGA`):
 
 ```
@@ -695,6 +726,31 @@ logo.
 **Los sitios del Status de carga se leen en paralelo** — ver la sección 5
 quater.
 
+### Los adjuntos se bajaban de GitHub en CADA rerun
+
+**`st.download_button` exige los bytes POR ADELANTADO.** No acepta un callable,
+así que cada rerun bajaba de GitHub el Excel del input **y** el de validación
+aunque nadie pulsara el botón. Con la bandeja y Carga completa abiertas eran
+**entre dos y cinco descargas por clic**, y la pantalla se quedaba en gris
+esperando la red: eso era la lentitud que se sentía.
+
+`artefacto_de_solicitud(_store, ruta)` lo cachea. Medido con 250 ms de latencia
+por descarga: **5 clics pasaban de 5,01 s a 0,50 s**, y de 20 descargas a 2.
+
+Cachear por ruta es correcto porque los adjuntos son **inmutables**: la ruta
+lleva la solicitud, el número de versión y el tipo, y una versión nueva escribe
+una ruta nueva.
+
+`_store` empieza con guion bajo **a propósito**: así Streamlit no lo hashea y la
+clave de caché es solo la ruta. Si el store entrara en la clave, cada rerun
+crearía uno nuevo y la caché no serviría de nada. Hay un test que lo fija, y
+otro que falla si alguien vuelve a poner `store.get_artifact(...)` en línea.
+
+**Lo que NO era el problema, medido:** `get_ticket_service()` no está cacheado y
+se llama 8 veces por rerun, pero construirlo cuesta **0,20 ms** — 2 ms en total.
+Cachearlo no habría cambiado nada. La auditoría tampoco: ya sale en un hilo
+aparte.
+
 ### Los archivos de `assets/` están CORRIDOS una posición
 
 Verificado abriendo las imágenes. Los nueve `assets/logo_*` de la raíz tienen,
@@ -960,8 +1016,8 @@ python scripts/test_engines_ticket_flow.py             # 55
 python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
 python scripts/test_css_movil.py                       # 33
-python scripts/test_rendimiento_logos.py               # 17
-python scripts/test_bandeja_solicitudes.py             # 42
+python scripts/test_rendimiento.py                     # 20
+python scripts/test_bandeja_solicitudes.py             # 57
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24
 python scripts/test_siblings_referencias.py            # 14

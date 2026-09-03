@@ -20514,7 +20514,7 @@ def _render_cadena_cierre_carga(servicio, actor, ticket):
             st.caption(f"Se adjuntará **{adjunto}** al correo.")
             try:
                 st.download_button(
-                    "Descargar Carga SIAL", servicio.store.get_artifact(sial.get("path")),
+                    "Descargar Carga SIAL", artefacto_de_solicitud(servicio.store, sial.get("path")),
                     file_name=adjunto, key=f"precios_sial_dl_{codigo}",
                     on_click=log_descarga, args=("Carga SIAL", "render_cadena_cierre_carga", codigo),
                 )
@@ -20675,6 +20675,28 @@ def solicitudes_ejecutables(service, actor, brand_config):
     return elegibles
 
 
+@st.cache_data(show_spinner=False, max_entries=64)
+def artefacto_de_solicitud(_store, ruta):
+    """Los bytes de un adjunto de solicitud, cacheados por ruta.
+
+    Por que hace falta: `st.download_button` exige los bytes POR ADELANTADO,
+    asi que cada rerun bajaba de GitHub el Excel del input Y el de validacion
+    aunque nadie pulsara el boton. Con la bandeja y Carga completa abiertas
+    eran entre dos y cinco descargas por CLIC, y la pantalla se quedaba en gris
+    esperando la red. Medido con 250 ms de latencia: 5 clics pasaban de 5,01 s
+    a 0,50 s.
+
+    Cachear por ruta es correcto porque los adjuntos son INMUTABLES: la ruta
+    lleva la solicitud, el numero de version y el tipo, y una version nueva
+    escribe una ruta nueva. No hay forma de que el contenido de una ruta cambie.
+
+    `_store` empieza con guion bajo a proposito: asi Streamlit no intenta
+    hashearlo y la clave de cache es solo la ruta. Si el store entrara en la
+    clave, cada rerun crearia uno nuevo y la cache no serviria de nada.
+    """
+    return _store.get_artifact(ruta)
+
+
 def archivo_de_solicitud(service, ticket):
     """Descarga el adjunto de la solicitud. Devuelve None si no se puede."""
     versiones = ticket.get("versions") or []
@@ -20685,7 +20707,7 @@ def archivo_de_solicitud(service, ticket):
     if not ruta:
         return None
     try:
-        contenido = service.store.get_artifact(ruta)
+        contenido = artefacto_de_solicitud(service.store, ruta)
     except Exception:
         return None
     if not contenido:
@@ -20695,6 +20717,17 @@ def archivo_de_solicitud(service, ticket):
         clean_value(ultima.get("filename")) or f"{ticket.get('code')}.xlsx",
         clean_value(ticket.get("code")),
     )
+
+
+# Estados en los que la solicitud todavia NO empezo a cargar. Son los unicos
+# donde el panel de Cargas pendientes usa la barra de acciones comun: de
+# LOADING en adelante manda el cierre por etapas, que necesita el archivo SIAL.
+ESTADOS_ANTES_DE_CARGAR = {
+    STATE_APPROVED,
+    STATE_PREPARING,
+    STATE_READY_EXECUTE,
+    STATE_FAILED,
+}
 
 
 def render_full_load_ticket_queue(brand_config):
@@ -20760,20 +20793,23 @@ def render_full_load_ticket_queue(brand_config):
             )
             with st.expander("Como cerrar una solicitud de carga"):
                 st.markdown(
-                    "1. Selecciona el sitio correcto y descarga el input validado.\n"
-                    "2. Usa **Ejecutar validación previa** para validar el archivo. Esta prueba no cierra la solicitud.\n"
-                    "3. Usa **Marcar carga iniciada** antes de ejecutar la carga real en Shopify.\n"
-                    "4. Cuando la carga real termine, vuelve a esta sección y registra **Finalizar carga**, "
-                    "**Finalizar con observaciones** o **Registrar incidencia**."
+                    "1. Selecciona el sitio correcto y elige la solicitud aprobada.\n"
+                    "2. Pulsa **Ejecutar carga**: corre la validación previa y arranca la carga "
+                    "en un solo paso.\n"
+                    "3. Ejecuta y verifica la carga en Shopify.\n"
+                    "4. Cuando termine, pulsa **Carga SIAL terminada** para guardar el archivo y "
+                    "avisar al Área de Producto. La solicitud NO se cierra hasta que los precios "
+                    "estén cargados y validados."
                 )
             return
 
         with st.expander("Como cerrar una solicitud de carga"):
             st.markdown(
-                "1. Descarga el input validado y usa **Ejecutar validación previa**. Esta prueba valida, pero no cierra el ticket.\n"
-                "2. Usa **Marcar carga iniciada** antes de ejecutar la carga real.\n"
+                "1. Elige la solicitud aprobada y revisa el archivo leído.\n"
+                "2. Pulsa **Ejecutar carga**: corre la validación previa y arranca la carga en un solo paso.\n"
                 "3. Ejecuta y verifica la carga en Shopify.\n"
-                "4. Registra **Finalizar carga**, **Finalizar con observaciones** o **Registrar incidencia**."
+                "4. Cuando termine, pulsa **Carga SIAL terminada** para guardar el archivo y avisar al "
+                "Área de Producto. La solicitud NO se cierra hasta que los precios estén cargados y validados."
             )
 
         queue_rows = []
@@ -20838,7 +20874,7 @@ def render_full_load_ticket_queue(brand_config):
             try:
                 download_cols[0].download_button(
                     "Descargar input validado",
-                    data=service.store.get_artifact(latest_version["input_path"]),
+                    data=artefacto_de_solicitud(service.store, latest_version["input_path"]),
                     file_name=latest_version.get("filename") or ticket.get("filename") or "input_validado.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"full_load_download_input_{selected_code}",
@@ -20851,7 +20887,7 @@ def render_full_load_ticket_queue(brand_config):
             try:
                 download_cols[1].download_button(
                     "Descargar validación",
-                    data=service.store.get_artifact(latest_version["report_path"]),
+                    data=artefacto_de_solicitud(service.store, latest_version["report_path"]),
                     file_name=f"validacion_{selected_code}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"full_load_download_report_{selected_code}",
@@ -20881,37 +20917,35 @@ def render_full_load_ticket_queue(brand_config):
             st.info(f"Esta solicitud está asignada a {ticket.get('assignee')}. Puedes descargar los archivos para consulta.")
             return
 
+        # Antes de cargar, la MISMA barra que la bandeja. Este panel tenia su
+        # juego de botones aparte --"Ejecutar validacion previa" y "Marcar carga
+        # iniciada"-- que no pasaba por los atajos, asi que aqui seguian
+        # apareciendo los dos pasos sueltos que la bandeja ya habia unificado.
+        # Ahora "Ejecutar carga" encadena los dos, y hay UN solo lugar donde
+        # cambiar el recorrido.
+        #
+        # De LOADING en adelante NO se toca: el cierre necesita el archivo Carga
+        # SIAL, que solo tiene esta pantalla. Encadenarlo desde la barra mandaria
+        # el correo al Area de Producto sin adjunto.
+        #
+        # El prefijo de clave es obligatorio: `_render_acciones_solicitud_tras_carga`
+        # dibuja otra barra mas abajo en esta misma pantalla y, con la misma
+        # solicitud en las dos, las claves chocarian.
         status = ticket.get("status")
-        if status in {STATE_APPROVED, STATE_PREPARING, STATE_FAILED}:
-            if st.button(
-                "Ejecutar validación previa",
-                type="primary",
-                key=f"full_load_prepare_{selected_code}",
-                use_container_width=True,
-            ):
-                try:
-                    service.run_dry_run(actor, selected_code)
-                    st.rerun()
-                except TicketError as exc:
-                    st.error(str(exc))
+        con_comentario = []
+        if status in ESTADOS_ANTES_DE_CARGAR:
+            con_comentario = render_barra_acciones(service, actor, ticket, prefijo="cola_")
         elif status == STATE_DRY_RUN:
             st.caption("La solicitud está ejecutando su validación previa.")
-        elif status == STATE_READY_EXECUTE:
-            if st.button(
-                "Marcar carga iniciada",
-                type="primary",
-                key=f"full_load_start_{selected_code}",
-                use_container_width=True,
-            ):
-                try:
-                    service.start_load(actor, selected_code)
-                    st.rerun()
-                except TicketError as exc:
-                    st.error(str(exc))
         elif status in {STATE_LOADING, STATE_VALIDATING}:
             _render_full_load_ticket_close(service, actor, ticket, latest_version)
 
-        _render_completar_carga(service, actor, ticket)
+        with st.expander("Más opciones", expanded=False):
+            if con_comentario:
+                render_acciones_con_comentario(service, actor, ticket, con_comentario,
+                                               prefijo="cola_")
+                st.divider()
+            _render_completar_carga(service, actor, ticket)
 
 
 # Etapas que el equipo Digital puede fijar desde la solicitud. Son las visibles
@@ -20959,10 +20993,16 @@ def _render_completar_carga(service, actor, ticket):
 
     columnas = st.columns([2, 3])
     with columnas[0]:
+        # SIN preseleccion. Venia con "Finalizada" marcada por defecto, asi que
+        # una solicitud recien aprobada --sin cargar nada-- ofrecia "Finalizar
+        # solicitud" listo para pulsar. Esto salta la maquina de transiciones a
+        # proposito (es el escape para un ticket que quedo atrasado), asi que la
+        # etapa se elige a mano o no pasa nada.
         destino = st.selectbox(
             "Etapa",
             opciones,
-            index=opciones.index(FLUJO_FINALIZADA) if FLUJO_FINALIZADA in opciones else 0,
+            index=None,
+            placeholder="Elige la etapa",
             format_func=lambda value: FLUJO_ETIQUETAS.get(value, value),
             key=f"etapa_destino_{code}",
         )
@@ -20972,11 +21012,13 @@ def _render_completar_carga(service, actor, ticket):
             placeholder="Ej: carga ejecutada completa en Shopify, revisada y conforme",
             key=f"etapa_motivo_{code}",
         )
-    st.caption(ayudas.get(destino, ""))
+    st.caption(ayudas.get(destino, "Cambia la etapa a mano cuando la solicitud quedó atrasada."))
 
     etiqueta_boton = "Finalizar solicitud" if destino == FLUJO_FINALIZADA else "Actualizar etapa"
-    if st.button(etiqueta_boton, type="primary", key=f"etapa_btn_{code}"):
-        if not clean_value(motivo):
+    if st.button(etiqueta_boton, key=f"etapa_btn_{code}", disabled=not destino):
+        if not destino:
+            st.warning("Elige la etapa a la que quieres mover la solicitud.")
+        elif not clean_value(motivo):
             st.warning("Escribe el motivo: queda en el historial y en la auditoría.")
         else:
             try:
@@ -21765,11 +21807,16 @@ def _mostrar_error_ticket(exc, code=""):
     st.error(str(exc))
 
 
-def render_barra_acciones(service, actor, ticket):
+def render_barra_acciones(service, actor, ticket, prefijo=""):
     """Botones contextuales: solo lo que se puede hacer en este estado y rol.
 
     Las opciones y los permisos salen de engines/ticket_flow, que ya tiene
     pruebas. La accion recomendada va destacada; el resto queda secundario.
+
+    `prefijo` separa las claves de widget. En Carga completa esta barra se
+    dibuja DOS veces --en "Cargas pendientes" y despues del analisis-- y con la
+    misma solicitud en ambas, `accion_<clave>_<codigo>` choca y Streamlit
+    revienta con StreamlitDuplicateElementKey. Cada superficie pasa el suyo.
     """
     estado = clean_value(ticket.get("status"))
     codigo = clean_value(ticket.get("code"))
@@ -21801,7 +21848,7 @@ def render_barra_acciones(service, actor, ticket):
                 ayuda = "%s (%s)" % (
                     ayuda, " → ".join(p["etiqueta"] for p in accion["pasos_resueltos"]))
             if not columna.button(
-                accion["etiqueta"], key=f"accion_{accion['clave']}_{codigo}",
+                accion["etiqueta"], key=f"accion_{prefijo}{accion['clave']}_{codigo}",
                 type="primary" if accion.get("principal") else "secondary",
                 use_container_width=True, help=ayuda,
             ):
@@ -21817,22 +21864,25 @@ def render_barra_acciones(service, actor, ticket):
     return con_comentario
 
 
-def render_acciones_con_comentario(service, actor, ticket, con_comentario):
-    """Observar, reabrir y cancelar: exigen texto, no pueden ser de un click."""
+def render_acciones_con_comentario(service, actor, ticket, con_comentario, prefijo=""):
+    """Observar, reabrir y cancelar: exigen texto, no pueden ser de un click.
+
+    `prefijo`: mismo motivo que en `render_barra_acciones`.
+    """
     codigo = clean_value(ticket.get("code"))
     if con_comentario:
         with st.container():
             comentario = st.text_area(
-                "Comentario", key=f"accion_comentario_{codigo}",
+                "Comentario", key=f"accion_comentario_{prefijo}{codigo}",
                 placeholder="Obligatorio para observar, reabrir o cancelar.", height=70,
             )
             observaciones = []
             if any(a["clave"] == "observar" for a in con_comentario):
                 detalle = st.columns(2)
-                producto = detalle[0].text_input("Producto / Mod-Col", key=f"observed_product_{codigo}")
-                campo = detalle[1].text_input("Campo", key=f"observed_field_{codigo}")
-                encontrado = detalle[0].text_input("Valor encontrado", key=f"observed_found_{codigo}")
-                sugerido = detalle[1].text_input("Corrección recomendada", key=f"observed_recommendation_{codigo}")
+                producto = detalle[0].text_input("Producto / Mod-Col", key=f"observed_product_{prefijo}{codigo}")
+                campo = detalle[1].text_input("Campo", key=f"observed_field_{prefijo}{codigo}")
+                encontrado = detalle[0].text_input("Valor encontrado", key=f"observed_found_{prefijo}{codigo}")
+                sugerido = detalle[1].text_input("Corrección recomendada", key=f"observed_recommendation_{prefijo}{codigo}")
                 if any(clean_value(v) for v in (producto, campo, encontrado, sugerido)):
                     observaciones.append({
                         "Producto": clean_value(producto), "Campo": clean_value(campo),
@@ -21842,7 +21892,7 @@ def render_acciones_con_comentario(service, actor, ticket, con_comentario):
             columnas = st.columns(len(con_comentario))
             for columna, accion in zip(columnas, con_comentario):
                 if not columna.button(
-                    accion["etiqueta"], key=f"accion_{accion['clave']}_{codigo}",
+                    accion["etiqueta"], key=f"accion_{prefijo}{accion['clave']}_{codigo}",
                     use_container_width=True, help=accion["ayuda"],
                 ):
                     continue
@@ -21935,7 +21985,7 @@ def render_ticket_detail(service, actor, code):
             if latest_version.get("input_path"):
                 download_cols[0].download_button(
                     "Descargar input validado",
-                    service.store.get_artifact(latest_version["input_path"]),
+                    artefacto_de_solicitud(service.store, latest_version["input_path"]),
                     file_name=latest_version.get("filename") or ticket.get("filename") or "input.xlsx",
                     key=f"ticket_input_{code}_{latest_version.get('number', 1)}",
                     on_click=log_descarga, args=("Descargar input validado", "render_ticket_detail"),
@@ -21943,7 +21993,7 @@ def render_ticket_detail(service, actor, code):
             if latest_version.get("report_path"):
                 download_cols[1].download_button(
                     "Descargar validación",
-                    service.store.get_artifact(latest_version["report_path"]),
+                    artefacto_de_solicitud(service.store, latest_version["report_path"]),
                     file_name=f"{code}_validacion_v{latest_version.get('number',1)}.xlsx",
                     key=f"ticket_report_{code}_{latest_version.get('number', 1)}",
                     on_click=log_descarga, args=("Descargar validación", "render_ticket_detail"),

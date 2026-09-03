@@ -1,4 +1,4 @@
-"""Pruebas del peso de los logos, que es lo que hacia lenta cada interaccion.
+"""Pruebas de rendimiento: lo que se recalcula o se vuelve a bajar en cada rerun.
 
 Por que existe
 --------------
@@ -220,6 +220,60 @@ class TestPillowEsDependenciaDeclarada(unittest.TestCase):
         with io.open(ROOT / "requirements.txt", encoding="utf-8") as fuente:
             requisitos = fuente.read().lower()
         self.assertIn("pillow", requisitos)
+
+
+class TestAdjuntosCacheados(unittest.TestCase):
+    """`st.download_button` exige los bytes POR ADELANTADO.
+
+    Eso hacia que cada rerun bajara de GitHub el Excel del input Y el de
+    validacion aunque nadie pulsara el boton. Con la bandeja y Carga completa
+    abiertas eran entre dos y cinco descargas por CLIC, y la pantalla se
+    quedaba en gris esperando la red. Medido con 250 ms de latencia por
+    descarga: 5 clics pasaban de 5,01 s a 0,50 s.
+
+    Cachear por ruta es correcto porque los adjuntos son INMUTABLES: la ruta
+    lleva la solicitud, el numero de version y el tipo, y una version nueva
+    escribe una ruta nueva.
+    """
+
+    class _StoreQueCuenta:
+        def __init__(self):
+            self.descargas = []
+
+        def get_artifact(self, path):
+            self.descargas.append(path)
+            return b"contenido " + str(path).encode("utf-8")
+
+    def test_la_misma_ruta_se_baja_una_sola_vez(self):
+        store = self._StoreQueCuenta()
+        ruta = "catalog_tickets/CAT-cache-1/v1/input/Input.xlsx"
+        primero = app.artefacto_de_solicitud(store, ruta)
+        for _ in range(9):
+            self.assertEqual(app.artefacto_de_solicitud(store, ruta), primero)
+        self.assertEqual(len(store.descargas), 1,
+                         f"se bajo {len(store.descargas)} veces en vez de 1")
+
+    def test_rutas_distintas_no_se_confunden(self):
+        store = self._StoreQueCuenta()
+        entrada = app.artefacto_de_solicitud(store, "CAT-cache-2/v1/input/a.xlsx")
+        reporte = app.artefacto_de_solicitud(store, "CAT-cache-2/v1/report/b.xlsx")
+        self.assertNotEqual(entrada, reporte)
+        self.assertEqual(len(store.descargas), 2)
+
+    def test_el_store_no_entra_en_la_clave_de_cache(self):
+        """Dos stores distintos y la misma ruta: no se vuelve a bajar.
+
+        El parametro se llama `_store` justamente para que Streamlit no lo
+        hashee. Si entrara en la clave, cada rerun crearia un store nuevo y la
+        cache no serviria de nada.
+        """
+        ruta = "catalog_tickets/CAT-cache-3/v1/input/Input.xlsx"
+        primero = self._StoreQueCuenta()
+        app.artefacto_de_solicitud(primero, ruta)
+        segundo = self._StoreQueCuenta()
+        app.artefacto_de_solicitud(segundo, ruta)
+        self.assertEqual(segundo.descargas, [],
+                         "el segundo store volvio a bajar el adjunto")
 
 
 if __name__ == "__main__":

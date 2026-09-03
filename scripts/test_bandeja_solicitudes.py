@@ -484,5 +484,193 @@ class TestStepperDiceLaVerdad(unittest.TestCase):
         self.assertEqual(html.count(">Pend.<"), 0)
 
 
+class TestAdjuntosCacheados(unittest.TestCase):
+    """`st.download_button` exige los bytes POR ADELANTADO.
+
+    Eso hacia que cada rerun bajara de GitHub el Excel del input Y el de
+    validacion aunque nadie pulsara el boton. Con la bandeja y Carga completa
+    abiertas eran entre dos y cinco descargas por CLIC, y la pantalla se
+    quedaba en gris esperando la red.
+
+    Cachear por ruta es correcto porque los adjuntos son INMUTABLES: la ruta
+    lleva la solicitud, el numero de version y el tipo.
+    """
+
+    # Las pruebas de COMPORTAMIENTO del cache viven en
+    # scripts/test_rendimiento.py: aqui `st` es un doble donde `cache_data` es
+    # un decorador vacio, asi que no hay cache que medir. Lo que si se puede
+    # comprobar aqui es la ESTRUCTURA: que nadie vuelva a llamar al store
+    # directo y que el helper siga cacheado.
+
+    def test_ninguna_pantalla_llama_al_store_directo(self):
+        """Si alguien vuelve a poner `store.get_artifact(...)` inline, vuelve
+        el problema. La unica llamada directa permitida es la del helper."""
+        import ast
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        directas = []
+        for nodo in ast.walk(ast.parse(fuente)):
+            if not isinstance(nodo, ast.FunctionDef):
+                continue
+            if nodo.name == "artefacto_de_solicitud":
+                continue
+            for sub in ast.walk(nodo):
+                if (isinstance(sub, ast.Call)
+                        and isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr == "get_artifact"):
+                    directas.append(f"{nodo.name}:{sub.lineno}")
+        self.assertEqual(directas, [],
+                         f"llaman a get_artifact sin cache: {directas}")
+
+    def test_el_helper_esta_cacheado(self):
+        import ast
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        for nodo in ast.walk(ast.parse(fuente)):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == "artefacto_de_solicitud":
+                decoradores = [ast.unparse(d) for d in nodo.decorator_list]
+                self.assertTrue(any("cache_data" in d for d in decoradores), decoradores)
+                # El store va con guion bajo o Streamlit intenta hashearlo.
+                self.assertTrue(nodo.args.args[0].arg.startswith("_"),
+                                nodo.args.args[0].arg)
+                return
+        raise AssertionError("no existe artefacto_de_solicitud")
+
+
+class TestCargaCompletaUsaLaBarraComun(unittest.TestCase):
+    """Carga completa tenia su propio juego de botones.
+
+    "Ejecutar validacion previa" y "Marcar carga iniciada" vivian solo en el
+    panel de Cargas pendientes y no pasaban por los atajos, asi que ahi seguian
+    apareciendo los dos pasos sueltos que la bandeja ya habia unificado.
+    """
+
+    def _fuente(self, funcion):
+        import ast
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        for nodo in ast.walk(ast.parse(fuente)):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == funcion:
+                return ast.unparse(nodo)
+        raise AssertionError(f"no existe {funcion}")
+
+    def test_ya_no_hay_botones_propios_de_transicion(self):
+        cuerpo = self._fuente("render_full_load_ticket_queue")
+        for etiqueta in ("Ejecutar validación previa", "Marcar carga iniciada"):
+            self.assertNotIn(etiqueta, cuerpo,
+                             f'"{etiqueta}" volvio como boton propio del panel')
+
+    def test_no_llama_al_servicio_por_su_cuenta(self):
+        """Las transiciones tienen que ir por la barra, no por el panel."""
+        cuerpo = self._fuente("render_full_load_ticket_queue")
+        for metodo in ("run_dry_run", "start_load"):
+            self.assertNotIn(f"service.{metodo}(", cuerpo,
+                             f"el panel llama a {metodo} directo")
+
+    def test_usa_la_barra_de_acciones(self):
+        cuerpo = self._fuente("render_full_load_ticket_queue")
+        self.assertIn("render_barra_acciones(", cuerpo)
+
+    def test_solo_antes_de_cargar(self):
+        """De LOADING en adelante manda el cierre por etapas: necesita el SIAL."""
+        self.assertEqual(
+            app.ESTADOS_ANTES_DE_CARGAR,
+            {app.STATE_APPROVED, app.STATE_PREPARING, app.STATE_READY_EXECUTE,
+             app.STATE_FAILED},
+        )
+        for estado in (app.STATE_LOADING, app.STATE_VALIDATING,
+                       app.STATE_SIAL_LOADED, app.STATE_PRICE_REQUESTED,
+                       app.STATE_PRICE_VALIDATION, app.STATE_READY_CLOSE):
+            self.assertNotIn(estado, app.ESTADOS_ANTES_DE_CARGAR, estado)
+
+    def test_desde_aprobada_el_boton_es_ejecutar_carga(self):
+        for estado in sorted(app.ESTADOS_ANTES_DE_CARGAR):
+            accion = app._accion_rapida(ticket(estado, asignada=OPERADOR["user"]), OPERADOR)
+            self.assertIsNotNone(accion, estado)
+            self.assertEqual(accion["etiqueta"], "Ejecutar carga", estado)
+
+
+class TestElOverrideManualNoVienePreseleccionado(unittest.TestCase):
+    """Venia con "Finalizada" marcada por defecto.
+
+    `set_status_manual` salta la maquina de transiciones a proposito: es el
+    escape para un ticket que quedo atrasado. Pero con "Finalizada"
+    preseleccionada, una solicitud recien aprobada --sin cargar nada-- ofrecia
+    "Finalizar solicitud" listo para pulsar, y eso cierra saltandose la carga y
+    toda la cadena de precios.
+    """
+
+    def _fuente(self):
+        import ast
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        for nodo in ast.walk(ast.parse(fuente)):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == "_render_completar_carga":
+                return ast.unparse(nodo)
+        raise AssertionError("no existe _render_completar_carga")
+
+    def test_el_selector_no_preselecciona_nada(self):
+        cuerpo = self._fuente()
+        self.assertIn("index=None", cuerpo)
+        self.assertNotIn("opciones.index(FLUJO_FINALIZADA)", cuerpo)
+
+    def test_el_boton_esta_deshabilitado_sin_etapa(self):
+        self.assertIn("disabled=not destino", self._fuente())
+
+    def test_el_escape_manual_sigue_existiendo(self):
+        """No se quita la capacidad: solo deja de ser el valor por defecto."""
+        self.assertIn("set_status_manual", self._fuente())
+
+
+class TestLasDosBarrasNoChocanDeClaves(unittest.TestCase):
+    """En Carga completa `render_barra_acciones` se dibuja DOS veces.
+
+    Una en el panel de "Cargas pendientes" y otra despues del analisis
+    (`_render_acciones_solicitud_tras_carga`). Con la misma solicitud en las
+    dos --que es el caso normal: la eliges arriba y la cargas abajo-- las claves
+    `accion_<clave>_<codigo>` serian identicas y Streamlit corta la pantalla con
+    StreamlitDuplicateElementKey.
+
+    Por eso las dos funciones aceptan `prefijo` y cada superficie pasa el suyo.
+    """
+
+    def _fuente(self, funcion):
+        import ast
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        for nodo in ast.walk(ast.parse(fuente)):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == funcion:
+                return ast.unparse(nodo)
+        raise AssertionError(f"no existe {funcion}")
+
+    def test_las_dos_funciones_aceptan_prefijo(self):
+        import inspect
+        for funcion in (app.render_barra_acciones, app.render_acciones_con_comentario):
+            parametros = inspect.signature(funcion).parameters
+            self.assertIn("prefijo", parametros, funcion.__name__)
+            self.assertEqual(parametros["prefijo"].default, "", funcion.__name__)
+
+    def test_toda_clave_de_widget_lleva_el_prefijo(self):
+        """Si una clave se queda sin el, esa es la que choca."""
+        for funcion in ("render_barra_acciones", "render_acciones_con_comentario"):
+            cuerpo = self._fuente(funcion)
+            for linea in cuerpo.splitlines():
+                if "key=f'accion" in linea or "key=f'observed" in linea:
+                    with self.subTest(f"{funcion}: {linea.strip()[:60]}"):
+                        self.assertIn("{prefijo}", linea)
+
+    def test_la_cola_pasa_un_prefijo_propio(self):
+        # `ast.unparse` normaliza las comillas a simples: se compara asi.
+        cuerpo = self._fuente("render_full_load_ticket_queue")
+        self.assertIn("prefijo='cola_'", cuerpo)
+
+    def test_la_otra_superficie_se_queda_con_el_prefijo_vacio(self):
+        """Solo UNA de las dos puede usar el prefijo por defecto."""
+        tras_carga = self._fuente("_render_acciones_solicitud_tras_carga")
+        self.assertIn("render_barra_acciones(", tras_carga)
+        self.assertNotIn("prefijo=", tras_carga)
+
+    def test_el_detalle_tampoco_lo_cambia(self):
+        """La bandeja y Carga completa son pantallas distintas: no coinciden."""
+        detalle = self._fuente("render_ticket_detail")
+        self.assertIn("render_barra_acciones(", detalle)
+        self.assertNotIn("prefijo=", detalle)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

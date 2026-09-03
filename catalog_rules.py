@@ -684,6 +684,35 @@ PRODUCT_TYPE_RULES = [
         "can_one_size": True,
         "examples": "Funda para Lata",
     },
+
+    # --- vestidos (septiembre 2026) --------------------------------------
+    # "VESTIDOS" bloqueaba una carga de Rockford y parecia una restriccion de
+    # la marca. No lo era: el diccionario NO tenia ningun tipo para vestido,
+    # ni en singular ni en plural ni en ingles. Rockford admite Vestuario
+    # (COMMERCIAL_BRAND_ALLOWED_CLASSES), asi que en cuanto el tipo existe lo
+    # acepta igual que Columbia, Vans o Hush Puppies Kids: el filtro por marca
+    # es por CATEGORIA, nunca por tipo.
+    #
+    # Va con size_guide_group explicito. Sin el, "vestido" no cae ni en
+    # bottom_markers ni en top_markers de resolve_size_guide, el grupo queda
+    # vacio y las guias de TOPS y BOTTOMS empatan en prioridad 95: la elegida
+    # depende del orden de la lista, no del producto. TOPS es la que mide
+    # busto y cintura, que es como se talla un vestido.
+    #
+    # "falda" NO se toca aqui: sigue siendo alias de Short por decision previa
+    # del diccionario, y moverla es una decision de negocio aparte.
+    {
+        "received": "vestido, vestidos, dress, dresses",
+        "normalized": "Vestido",
+        "singular": "Vestido",
+        "plural": "Vestidos",
+        "category": "Vestuario",
+        "subcategory": "Vestidos",
+        "size_guide_family": "Vestuario",
+        "size_guide_group": "TOPS",
+        "can_one_size": False,
+        "examples": "Vestido Mujer Terra",
+    },
 ]
 
 

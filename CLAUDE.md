@@ -754,6 +754,53 @@ bandeja, con sus pruebas.
 
 ---
 
+## 5 octies. Vestidos, y por que una carga decia 21 bloqueos sin explicar ninguno (septiembre 2026)
+
+Una carga de Rockford mostraba **una sola** observacion —"Tipo de prenda ·
+Bloquea la carga · VESTIDOS"— y abajo "La solicitud no puede enviarse: existen
+**21** registros bloqueados". Leido asi, Rockford no aceptaba vestidos. Eran
+**tres** fallos distintos, y ninguno era ese.
+
+**1. El diccionario no tenia vestidos.** Ni `vestido`, ni `vestidos`, ni
+`dress`: `PRODUCT_TYPE_RULES` tenia 45 tipos y ninguno para la prenda. No era
+una restriccion de la marca — `commercial_product_type_rules_for_brand` filtra
+por **CATEGORIA**, nunca por tipo, y Rockford admite Vestuario. En cuanto el
+tipo existe, lo aceptan las cuatro marcas de vestuario por igual.
+
+Va con `size_guide_group: "TOPS"` explicito. Sin grupo, "vestido" no cae ni en
+`bottom_markers` ni en `top_markers` de `resolve_size_guide`, el grupo queda
+vacio y las guias de TOPS y BOTTOMS **empatan en prioridad 95**: la elegida
+depende del orden de la lista, no del producto. Es el mismo hueco que arrastran
+Sweater, Jean, Enterizo y Chaleco Polar del lote de agosto.
+
+`falda` NO se toca: sigue siendo alias de **Short** por decision previa del
+diccionario, y moverla es una decision de negocio aparte.
+
+**2. La tarjeta roja era la del campo que no bloquea.** "Tipo de prenda" esta
+en `VALIDACIONES_SOLO_AVISO` y **nunca** bloquea, pero la fila del reporte se
+guardaba con el estado de la **FILA**, no de la observacion. Una fila bloqueada
+por cualquier otra causa pintaba "Bloquea la carga" sobre un campo que solo
+avisa. Ahora cada observacion viaja con su propio `bloquea` y el estado sale de
+ahi.
+
+**3. Las causas REALES de bloqueo no dejaban rastro.** Campo obligatorio vacio,
+`PUBLICAR_*` sin SI/NO, Clase no permitida, Marca cruzada y Fecha invalida solo
+escribian en `row_messages` —la columna "Mensaje" de la vista previa— y **no
+generaban fila en `report_df`**. El panel "Que hay que revisar" solo sabia de
+tipo de prenda, guia de tallas, separadores y descripcion: por eso 21 bloqueos
+no se explicaban en ningun lado. Todas pasan ahora por `anotar()`, que escribe
+el mensaje **y** la fila del reporte con su accion recomendada.
+
+Ademas: las tarjetas que bloquean se dibujan **primero** (con el orden del
+archivo, la unica visible sin bajar podia ser un aviso inofensivo), y el error
+final **nombra los campos** que bloquean en vez de solo contar filas.
+
+`scripts/test_tipos_vestido_y_bloqueos.py` (24 pruebas) fija las tres cosas; 20
+de ellas fallan con el codigo anterior. Una recorre cada causa de bloqueo y
+exige que ninguna fila bloqueada se quede sin explicacion en el reporte.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -920,6 +967,7 @@ python scripts/test_siblings_carga_completa.py         # 24
 python scripts/test_siblings_referencias.py            # 14
 python scripts/test_siblings_tipos.py                  # 20
 python scripts/test_ticket_system.py                   # 28
+python scripts/test_tipos_vestido_y_bloqueos.py       # 24
 ```
 
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes

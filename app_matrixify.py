@@ -2934,7 +2934,15 @@ def _render_resumen_observaciones(report_df):
         st.dataframe(report_df, use_container_width=True, hide_index=True)
         return
     bloques = []
-    for campo, grupo in report_df.groupby("Campo", sort=False):
+    # Primero lo que impide enviar. Con el orden del archivo, la unica tarjeta
+    # visible sin bajar la pantalla podia ser un aviso que no bloquea nada,
+    # mientras el motivo real del bloqueo quedaba mas abajo.
+    grupos = list(report_df.groupby("Campo", sort=False))
+    grupos.sort(key=lambda par: (
+        "Bloqueado" not in {clean_value(v) for v in par[1].get("Estado", pd.Series(dtype=object))},
+        -len(par[1]),
+    ))
+    for campo, grupo in grupos:
         estados = {clean_value(v) for v in grupo.get("Estado", pd.Series(dtype=object))}
         bloquea = "Bloqueado" in estados
         pill = ("obs-bloqueo", "Bloquea la carga") if bloquea else ("obs-aviso", "No bloquea")
@@ -3025,37 +3033,80 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
         row_status = "Listo"
         row_messages = []
         row_issues = []
+
+        # Toda causa de bloqueo pasa por aqui. Antes cada una solo escribia en
+        # row_messages, que va a la columna "Mensaje" de la vista previa, y no
+        # dejaba fila en report_df: el panel "Que hay que revisar" solo sabia
+        # de tipo de prenda, guia de tallas, separadores y descripcion. El
+        # sintoma real fue una carga de Rockford que decia "existen 21
+        # registros bloqueados" y arriba mostraba UNA sola tarjeta, de un campo
+        # que ni siquiera bloquea, asi que parecia el culpable de los 21.
+        def anotar(campo, mensaje, accion, valor=None, bloquea=True):
+            nonlocal row_status
+            if bloquea:
+                row_status = "Bloqueado"
+            elif row_status == "Listo":
+                row_status = "Con advertencia"
+            row_messages.append(mensaje)
+            row_issues.append({
+                "campo": campo,
+                "valor": clean_value(normalized.get(campo) if valor is None else valor),
+                "mensaje": mensaje,
+                "accion": accion,
+                "bloquea": bool(bloquea),
+            })
+
         row_brand = normalize_brand_name(normalized.get("Marca"))
         expected_brand = normalize_brand_name(brand_label)
         if row_brand != expected_brand:
-            row_status = "Bloqueado"
-            row_messages.append(f"Marca del archivo ({normalized.get('Marca')}) no corresponde a {brand_label}.")
+            anotar(
+                "Marca",
+                f"Marca del archivo ({normalized.get('Marca')}) no corresponde a {brand_label}.",
+                f"Escribe {brand_label} en la columna Marca, o sube el archivo desde esa marca.",
+            )
         for column in COMMERCIAL_INPUT_REQUIRED_COLUMNS:
             value = normalized.get(column)
             if _input_norm_key(value) in COMMERCIAL_INPUT_INVALID_TEXTS:
-                row_status = "Bloqueado"
-                row_messages.append(f"{column} obligatorio vacio o invalido.")
+                anotar(
+                    column,
+                    f"{column} obligatorio vacio o invalido.",
+                    f"Completa {column} en todas las filas. No valen '-', '0', 'n/a' ni 'pendiente'.",
+                    valor=value or "(vacio)",
+                )
         for column in site_columns:
             value = normalized.get(column).upper()
             if value not in {"SI", "NO"}:
-                row_status = "Bloqueado"
-                row_messages.append(f"{column} debe ser SI o NO.")
+                anotar(
+                    column,
+                    f"{column} debe ser SI o NO.",
+                    "Escribe SI para publicar en ese sitio y NO para no publicarlo. No dejes la celda vacia.",
+                    valor=normalized.get(column) or "(vacio)",
+                )
         class_value = normalized.get("Clase")
         if class_value and _input_norm_key(class_value) not in allowed_class_keys:
-            row_status = "Bloqueado"
-            row_messages.append(f"Clase '{class_value}' no permitida para {brand_label}. Permitidas: {', '.join(allowed_classes)}.")
+            anotar(
+                "Clase",
+                f"Clase '{class_value}' no permitida para {brand_label}. Permitidas: {', '.join(allowed_classes)}.",
+                f"Usa una de estas clases: {', '.join(allowed_classes)}.",
+            )
         publication_date = normalized.get("Fecha publicacion")
         if publication_date:
             normalized_publication_date = parse_publication_date(publication_date)
             if parse_iso_datetime(normalized_publication_date) is None:
-                row_status = "Bloqueado"
-                row_messages.append(
-                    "Fecha publicacion debe usar DD/MM/AAAA HH:MM. Ejemplo: 01/08/2026 09:00."
+                anotar(
+                    "Fecha publicacion",
+                    "Fecha publicacion debe usar DD/MM/AAAA HH:MM. Ejemplo: 01/08/2026 09:00.",
+                    "Escribe la fecha como DD/MM/AAAA HH:MM, o deja la celda vacia.",
                 )
         key = (mod_col, normalized.get("Nombre de Producto"))
         if key in seen:
-            row_status = "Con advertencia" if row_status == "Listo" else row_status
-            row_messages.append("Mod-Col duplicado en el input; revisar si corresponde a variantes o duplicidad.")
+            anotar(
+                "Mod-Col",
+                "Mod-Col duplicado en el input; revisar si corresponde a variantes o duplicidad.",
+                "Deja una sola fila por Modelo-Color. Las tallas no van como filas aparte.",
+                valor=mod_col,
+                bloquea=False,
+            )
         seen.add(key)
         type_decision = validate_catalog_row(
             {
@@ -3073,7 +3124,8 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
             if issue.get("field") in {"Tipo de prenda", "Guia de tallas"}:
                 level = clean_value(issue.get("level"))
                 campo = clean_value(issue.get("field"))
-                if level == "bloqueo" and campo not in VALIDACIONES_SOLO_AVISO:
+                bloquea = level == "bloqueo" and campo not in VALIDACIONES_SOLO_AVISO
+                if bloquea:
                     row_status = "Bloqueado"
                 elif row_status == "Listo":
                     row_status = "Con advertencia"
@@ -3087,6 +3139,7 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                     "valor": clean_value(normalized.get(campo)),
                     "mensaje": clean_value(issue.get("message")),
                     "accion": ACCIONES_POR_CAMPO.get(campo, "Corregir el valor en el input."),
+                    "bloquea": bloquea,
                 })
         for list_column in COMMERCIAL_INPUT_TEXT_LIST_COLUMNS:
             aviso = revisar_separadores_lista(normalized.get(list_column))
@@ -3099,6 +3152,7 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                     "valor": clean_value(normalized.get(list_column))[:120],
                     "mensaje": aviso,
                     "accion": "Usa solo | para separar los valores.",
+                    "bloquea": False,
                 })
         description = normalized.get("Descripcion")
         visible_len = len(strip_html(description))
@@ -3113,6 +3167,7 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                 "valor": f"{visible_len} caracteres",
                 "mensaje": f"Descripcion bajo {DESCRIPCION_MINIMA} caracteres visibles.",
                 "accion": "Amplia la descripcion del producto.",
+                "bloquea": False,
             })
         handle = build_catalog_handle(
             product_type=normalized.get("Tipo de prenda"),
@@ -3141,6 +3196,11 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
         preview_rows.append(fila_preview)
         if row_issues:
             for observacion in row_issues:
+                # El estado es el de ESTA observacion, no el de la fila. Con el
+                # estado de la fila, una fila bloqueada por otra causa pintaba
+                # "Bloquea la carga" sobre campos que solo avisan: asi era como
+                # "Tipo de prenda" -que esta en VALIDACIONES_SOLO_AVISO y nunca
+                # bloquea- aparecia como el motivo del bloqueo.
                 report_rows.append(
                     {
                         "Fila": excel_row,
@@ -3148,7 +3208,7 @@ def validate_brand_commercial_input(uploaded_file, brand_name):
                         "Campo": observacion["campo"],
                         "Valor original": observacion["valor"],
                         "Valor normalizado": "",
-                        "Estado": row_status,
+                        "Estado": "Bloqueado" if observacion.get("bloquea") else "Con advertencia",
                         "Mensaje": observacion["mensaje"],
                         "Accion recomendada": observacion["accion"],
                     }
@@ -3411,7 +3471,29 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
                 == file_sha256(st.session_state.get("brand_input_validated_bytes", b""))
             )
             if blocked:
-                st.error(f"La solicitud no puede enviarse: existen {blocked} registros bloqueados.")
+                # Se nombran los campos que bloquean. "21 registros bloqueados"
+                # a secas obligaba a adivinar cual de las observaciones de
+                # arriba era la culpable, y las que solo avisan se llevaban la
+                # culpa.
+                campos_bloqueantes = []
+                if (
+                    isinstance(report_df, pd.DataFrame)
+                    and not report_df.empty
+                    and {"Campo", "Estado"} <= set(report_df.columns)
+                ):
+                    bloqueantes = report_df[report_df["Estado"].eq("Bloqueado")]
+                    campos_bloqueantes = [
+                        clean_value(v) for v in dict.fromkeys(bloqueantes["Campo"])
+                        if clean_value(v)
+                    ]
+                detalle = (
+                    " Los campos que bloquean son: " + ", ".join(campos_bloqueantes) + "."
+                    if campos_bloqueantes
+                    else " Revisa la columna Mensaje de la vista previa para ver el motivo de cada fila."
+                )
+                st.error(
+                    f"La solicitud no puede enviarse: existen {blocked} registros bloqueados.{detalle}"
+                )
             elif products <= 0:
                 st.warning("No existen productos válidos para crear una solicitud.")
             elif actor and actor.get("role") in {ROLE_BRAND, ROLE_ADMIN} and same_validation:

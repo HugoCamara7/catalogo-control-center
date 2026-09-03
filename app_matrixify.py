@@ -10421,7 +10421,8 @@ def png_urls_a_probar(url, brand_config=None):
     return list(dict.fromkeys(candidatas))
 
 
-def png_comprobar_url(url, brand_config=None, timeout=6, confirmar_descargando=False):
+def png_comprobar_url(url, brand_config=None, timeout=6, confirmar_descargando=False,
+                      tipos=("image/",)):
     """(existe, detalle). `existe` es True, False o None si no se pudo saber.
 
     Tres respuestas y no dos, porque el bucket contesta **403** a las consultas
@@ -10434,6 +10435,12 @@ def png_comprobar_url(url, brand_config=None, timeout=6, confirmar_descargando=F
     pero cuesta una descarga completa, asi que viene APAGADA por defecto y solo
     se enciende cuando se revisa un unico codigo. Encendida en una lista larga,
     el mantenedor se quedaba colgado.
+
+    `tipos` son los Content-Type que cuentan como "existe". Por defecto es una
+    imagen, asi que las fotos no cambian en nada. El Mantenedor de Videos pasa
+    `("video/", "application/octet-stream")`: el bucket devuelve octet-stream
+    para los mp4 a los que nadie les puso el tipo, y tratar eso como "no
+    existe" dejaria fuera videos que estan perfectamente subidos.
     """
     detalle = ""
     visto_404 = False
@@ -10446,7 +10453,7 @@ def png_comprobar_url(url, brand_config=None, timeout=6, confirmar_descargando=F
                 peticion = Request(destino, method=metodo, headers=cabeceras)
                 with urlopen(peticion, timeout=timeout) as respuesta:
                     tipo = clean_value(respuesta.headers.get("Content-Type")).lower()
-                    if respuesta.status < 400 and tipo.startswith("image/"):
+                    if respuesta.status < 400 and any(tipo.startswith(t) for t in tipos):
                         return True, ""
                     detalle = f"{metodo} {respuesta.status} {tipo or 'sin tipo'}"
             except HTTPError as exc:
@@ -21720,6 +21727,16 @@ VIDEO_PASOS = (
 # que el mantenedor PNG: en serie, una lista larga parece colgada.
 VIDEO_SONDEOS_PARALELOS = 8
 
+# Se procesa por bloques, igual que el mantenedor de fotos y la sincronizacion
+# de la carga parcial: cada bloque termina, se GUARDA y la barra avanza, asi
+# una lista larga no se cae entera y lo ya publicado no se pierde.
+#
+# El bloque es mas chico que el de las fotos (20) a proposito: alli cada codigo
+# son diez peticiones HEAD; aqui es bajar decenas de MB del bucket y volver a
+# subirlos a Shopify, con su espera de procesamiento. Bloques mas chicos
+# guardan mas seguido, que es justo lo que hace falta cuando cada paso es caro.
+VIDEO_MODELOS_POR_BLOQUE = 5
+
 
 def video_marca_por_defecto(brand_config):
     """La marca que se propone segun el sitio elegido en la barra lateral.
@@ -21761,6 +21778,107 @@ def video_marcas_del_excel(df):
         if codigo and clean_value(marca):
             marcas[codigo] = clean_value(marca)
     return marcas
+
+
+def video_comprobar_en_bucket(url, timeout=8):
+    """(existe, detalle). True, False, o None si el bucket no deja saberlo.
+
+    Es `png_comprobar_url`, la MISMA del mantenedor de fotos, pidiendole otro
+    Content-Type. Ahi vive el detalle que importa: el bucket contesta **403** a
+    las consultas anonimas y eso NO significa que el archivo falte. Tres
+    respuestas y no dos; un 404 si es un no rotundo.
+    """
+    return png_comprobar_url(url, timeout=timeout, tipos=video_motor.TIPOS_DE_VIDEO)
+
+
+def video_analizar_codigos(shopify_config, site_key, trabajos, marca_pantalla="",
+                           progreso=None):
+    """FASE 1: mirar que hay, sin escribir NADA en Shopify.
+
+    Es el mismo reparto en dos tiempos del mantenedor de fotos, y por la misma
+    razon: en una lista de 50 codigos no se puede empezar a publicar y
+    enterarse a mitad de camino de que 30 videos no estaban en el bucket.
+
+    Por cada codigo se resuelve, sin escribir:
+
+    - **El producto**, contra el catalogo del sitio (una sola lectura, queda en
+      sesion y la reutilizan los 50 codigos).
+    - **La marca y su carpeta**, que es lo que decide donde se busca el archivo.
+    - **Si el video esta en el bucket**, con `video_comprobar_en_bucket`.
+
+    Se recorre POR BLOQUES, igual que el mantenedor de fotos, y dentro de cada
+    bloque las comprobaciones del bucket salen EN PARALELO: en serie, una lista
+    larga parece colgada; todas a la vez, se abren cientos de conexiones de
+    golpe. El bloque acota las dos cosas.
+
+    Si el producto ya tiene un video no se comprueba aqui: eso cuesta una
+    llamada a Shopify por codigo y se resuelve al publicar, que es cuando de
+    verdad importa. La pantalla lo dice.
+    """
+    filas = []
+    for bloque in png_bloques(list(trabajos or []), VIDEO_MODELOS_POR_BLOQUE):
+        del_bloque = []
+        for trabajo in bloque:
+            codigo = clean_value(trabajo.get("Código Modelo Color"))
+            producto, detalle = video_buscar_producto(shopify_config, site_key, codigo)
+            marca, origen = video_marca_del_producto(
+                producto, trabajo.get("Marca Excel"), marca_pantalla
+            )
+            destino = video_motor.destino_del_video(
+                marca, trabajo.get("Modelo"), trabajo.get("Color")
+            )
+            del_bloque.append(
+                {
+                    "Código Modelo Color": codigo,
+                    "Producto": clean_value((producto or {}).get("Title")),
+                    "Product ID": clean_value((producto or {}).get("Product ID")),
+                    "Marca": marca,
+                    "Origen de la marca": origen,
+                    "Carpeta": destino["Carpeta"],
+                    "Video": destino["Nombre"],
+                    "URL": destino["URL"],
+                    "Estado": (
+                        video_motor.ESTADO_SIN_PRODUCTO if producto is None
+                        else video_motor.ESTADO_LISTO_PARA_CARGAR
+                    ),
+                    "Detalle": "" if producto is not None else detalle,
+                }
+            )
+
+        # Solo se consulta el bucket de los codigos que tienen producto: gastar
+        # la comprobacion en uno que no existe en Shopify no sirve para nada.
+        pendientes = [
+            fila for fila in del_bloque
+            if fila["Estado"] == video_motor.ESTADO_LISTO_PARA_CARGAR and fila["URL"]
+        ]
+        if pendientes:
+            def _consultar(fila):
+                existe, detalle = video_comprobar_en_bucket(fila["URL"])
+                return fila["Código Modelo Color"], existe, detalle
+
+            with ThreadPoolExecutor(
+                max_workers=min(VIDEO_SONDEOS_PARALELOS, len(pendientes))
+            ) as pool:
+                respuestas = {
+                    codigo: (existe, detalle)
+                    for codigo, existe, detalle in pool.map(_consultar, pendientes)
+                }
+            for fila in pendientes:
+                existe, detalle = respuestas.get(fila["Código Modelo Color"], (None, ""))
+                if existe is True:
+                    fila["Estado"] = video_motor.ESTADO_LISTO_PARA_CARGAR
+                    fila["Detalle"] = "El video está en el bucket."
+                elif existe is False:
+                    fila["Estado"] = video_motor.ESTADO_SIN_VIDEO
+                    fila["Detalle"] = detalle or "No hay video con ese nombre en el bucket."
+                else:
+                    fila["Estado"] = video_motor.ESTADO_SIN_CONFIRMAR
+                    fila["Detalle"] = detalle or "El bucket no deja comprobarlo; se intentará igual."
+
+        filas.extend(del_bloque)
+        if callable(progreso):
+            progreso(len(filas), del_bloque[-1]["Código Modelo Color"] if del_bloque else "")
+    return filas
 
 
 def video_buscar_producto(shopify_config, site_key, mod_col, force_refresh=False):
@@ -22247,12 +22365,40 @@ def render_video_galeria(shopify_config, product_gid, titulo="Galería del produ
     )
 
 
-def render_video_maintainer(brand_config, shopify_config):
-    """La pantalla del Mantenedor de Videos.
+def render_video_analisis(filas):
+    """La tabla del analisis, con el conteo por estado arriba."""
+    conteo = video_motor.resumen_del_analisis(filas)
+    columnas = st.columns(4)
+    columnas[0].metric("Códigos", len(filas))
+    columnas[1].metric("Listos", conteo.get(video_motor.ESTADO_LISTO_PARA_CARGAR, 0))
+    columnas[2].metric("Sin video", conteo.get(video_motor.ESTADO_SIN_VIDEO, 0))
+    columnas[3].metric("Sin producto", conteo.get(video_motor.ESTADO_SIN_PRODUCTO, 0))
+    sin_confirmar = conteo.get(video_motor.ESTADO_SIN_CONFIRMAR, 0)
+    if sin_confirmar:
+        st.caption(
+            f"{sin_confirmar} códigos quedaron **sin confirmar**: el bucket contesta 403 a las "
+            "comprobaciones anónimas, que no es lo mismo que \"no existe\". Se intentan igual."
+        )
+    st.dataframe(
+        pd.DataFrame([
+            {k: v for k, v in fila.items() if k not in ("Product ID", "URL")}
+            for fila in filas
+        ]),
+        use_container_width=True,
+        hide_index=True,
+    )
 
-    Un Excel con los codigos y nada mas. El video ya esta en el bucket, igual
-    que las fotos: aqui no se sube ningun archivo. La app arma la direccion,
-    baja el mp4, se lo entrega a Shopify y lo deja en la posicion 2.
+
+def render_video_maintainer(brand_config, shopify_config):
+    """La pantalla del Mantenedor de Videos, en DOS TIEMPOS.
+
+    Igual que el mantenedor de fotos: primero se analiza TODO el Excel sin
+    tocar Shopify (que productos existen, de que carpeta sale cada video y
+    cuales estan de verdad en el bucket) y solo despues, con confirmacion, se
+    publica. En una lista de 50 codigos no se puede empezar a cargar y
+    enterarse a mitad de camino de que 30 videos no estaban.
+
+    El video ya esta en el bucket: aqui no se sube ningun archivo.
     """
     log_acceso_modulo(VIDEOS_LABEL)
     render_html(
@@ -22281,6 +22427,7 @@ def render_video_maintainer(brand_config, shopify_config):
 
     site_key = clean_value(brand_config.get("site_key")) or "columbia"
 
+    # --- 1. El Excel ------------------------------------------------------
     st.markdown('<div class="section-card"><h2>1. Los códigos</h2>', unsafe_allow_html=True)
     st.caption(
         "El video ya tiene que estar en el bucket con su nombre: "
@@ -22318,7 +22465,7 @@ def render_video_maintainer(brand_config, shopify_config):
     st.markdown("</div>", unsafe_allow_html=True)
 
     if excel is None:
-        st.info("Sube el Excel con los códigos para ver el plan de carga.")
+        st.info("Sube el Excel con los códigos para empezar.")
         return
 
     try:
@@ -22332,66 +22479,137 @@ def render_video_maintainer(brand_config, shopify_config):
     codigos, descartes_excel = png_codigos_desde_excel(df)
     marcas_excel = video_marcas_del_excel(df)
     trabajos, descartes_codigo = video_motor.trabajos_desde_codigos(
-        codigos, marcas=marcas_excel, marca_por_defecto=marca_pantalla
+        codigos, marcas=marcas_excel, marca_por_defecto=""
     )
+    for trabajo in trabajos:
+        trabajo["Marca Excel"] = marcas_excel.get(trabajo["Código Modelo Color"], "")
     descartados = list(descartes_excel) + list(descartes_codigo)
 
-    st.markdown('<div class="section-card"><h2>2. Plan de carga</h2>', unsafe_allow_html=True)
-    if trabajos:
-        st.markdown(f"**{len(trabajos)} códigos listos para publicar.**")
-        st.dataframe(
-            pd.DataFrame([
-                {
-                    "Código Modelo Color": t["Código Modelo Color"],
-                    "Video que se buscará": t["Nombre"],
-                    "Marca": t["Marca"] or "(del producto)",
-                    "Posición": video_motor.POSICION_VIDEO,
-                }
-                for t in trabajos
-            ]),
-            use_container_width=True,
-            hide_index=True,
-        )
     if descartados:
-        st.warning(f"{len(descartados)} filas descartadas.")
-        st.dataframe(pd.DataFrame(descartados), use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
+        with st.expander(f"⚠️ {len(descartados)} filas descartadas del Excel y por qué",
+                         expanded=not trabajos):
+            st.dataframe(pd.DataFrame(descartados), use_container_width=True, hide_index=True)
     if not trabajos:
-        st.info("No hay ningún código válido que publicar.")
+        st.error("No quedó ningún código válido. Revisa la columna Código Modelo Color.")
         return
 
-    if not st.button(
-        f"🚀 Publicar {len(trabajos)} videos en Shopify",
-        type="primary",
-        key=f"video_publicar_{site_key}",
-    ):
-        return
+    # --- 2. Analizar, sin escribir nada -----------------------------------
+    st.markdown('<div class="section-card"><h2>2. Revisar antes de cargar</h2>', unsafe_allow_html=True)
+    clave_analisis = f"video_analisis_{site_key}_{uploaded_file_fingerprint(excel)}_{marca_pantalla}"
+    if st.button(f"Revisar los {len(trabajos)} códigos", type="primary", key=f"video_analizar_{site_key}"):
+        st.session_state.pop(clave_analisis, None)
+        avance = st.empty()
+        barra_analisis = st.progress(0.0, text="Buscando los productos en Shopify...")
+        total = len(trabajos)
+        vistos = {"n": 0}
 
-    barra = st.progress(0.0, text="Publicando videos...")
-    detalle_vivo = st.empty()
-    resultados = []
-    for indice, trabajo in enumerate(trabajos, start=1):
-        codigo = trabajo["Código Modelo Color"]
-        barra.progress(indice / len(trabajos), text=f"{codigo} ({indice}/{len(trabajos)})")
-
-        def _avance(clave, estado, texto_detalle, _codigo=codigo):
-            detalle_vivo.caption(
-                f"{_codigo} · {dict(VIDEO_PASOS).get(clave, clave)}: {texto_detalle or estado}"
+        def _avance_analisis(procesados, codigo):
+            vistos["n"] = procesados
+            barra_analisis.progress(
+                min(procesados / total, 1.0), text=f"{procesados}/{total} · {codigo}"
             )
 
-        resultado = video_publicar(
-            shopify_config, site_key, codigo,
-            marca_excel=trabajo.get("Marca") if trabajo.get("Código Modelo Color") in marcas_excel else "",
-            marca_pantalla=marca_pantalla,
-            reemplazar=reemplazar,
-            progreso=_avance,
+        try:
+            with st.spinner("Revisando productos y bucket..."):
+                st.session_state[clave_analisis] = video_analizar_codigos(
+                    shopify_config, site_key, trabajos, marca_pantalla,
+                    progreso=_avance_analisis,
+                )
+        except Exception as exc:
+            st.error(f"No se pudo revisar la lista: {clean_value(exc)[:250]}")
+        barra_analisis.empty()
+        avance.empty()
+    if st.session_state.get(clave_analisis) is None:
+        st.caption(
+            "Se comprueba qué productos existen, de qué carpeta sale cada video y cuáles "
+            "están de verdad en el bucket. **No se escribe nada en Shopify.**"
         )
-        video_registrar_auditoria(resultado, site_key)
-        resultados.append(resultado)
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.info("Pulsa **Revisar** para ver qué se puede publicar antes de tocar la tienda.")
+        return
+
+    filas = st.session_state[clave_analisis]
+    render_video_analisis(filas)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    listos = video_motor.publicables(filas)
+    if not listos:
+        st.error(
+            "Ningún código está listo para publicar. Revisa la columna Estado: "
+            "los que dicen «Sin video en el bucket» necesitan que alguien suba el mp4 primero."
+        )
+        return
+
+    # --- 3. Publicar ------------------------------------------------------
+    st.markdown('<div class="section-card"><h2>3. Publicar</h2>', unsafe_allow_html=True)
+    st.markdown(
+        f"Se van a publicar **{len(listos)} videos** en la posición "
+        f"**{video_motor.POSICION_VIDEO}** de su producto."
+        + ("  \nLos que ya tengan un video **se reemplazarán**." if reemplazar
+           else "  \nLos que ya tengan un video **se saltarán** y se reportarán.")
+    )
+    st.caption(
+        f"Se procesan en {len(png_bloques(listos, VIDEO_MODELOS_POR_BLOQUE))} bloque(s) de hasta "
+        f"{VIDEO_MODELOS_POR_BLOQUE} códigos, igual que el mantenedor de fotos: cada bloque "
+        "termina, se guarda y la barra avanza, así una lista larga no se cae entera."
+    )
+    publicar = st.button(
+        f"🚀 Publicar {len(listos)} videos en Shopify",
+        type="primary",
+        key=f"video_publicar_{site_key}",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+    if not publicar:
+        return
+
+    # Se publica por BLOQUES, como el mantenedor de fotos: cada bloque termina,
+    # se guarda en sesion y la barra avanza. Si el navegador se cae o Shopify
+    # deja de responder en el bloque 4, los tres primeros ya estan publicados y
+    # su resultado no se pierde.
+    bloques = png_bloques(listos, VIDEO_MODELOS_POR_BLOQUE)
+    clave_resultados = f"video_resultados_{site_key}"
+    st.session_state.pop(clave_resultados, None)
+    barra = st.progress(0.0, text="Publicando videos...")
+    estado_bloque = st.empty()
+    detalle_vivo = st.empty()
+    resultados = []
+    procesados = 0
+    for numero, bloque in enumerate(bloques, start=1):
+        estado_bloque.caption(f"Bloque {numero} de {len(bloques)} · {len(bloque)} códigos")
+        for fila in bloque:
+            codigo = fila["Código Modelo Color"]
+
+            def _avance(clave, estado, texto_detalle, _codigo=codigo, _n=numero):
+                detalle_vivo.caption(
+                    f"Bloque {_n}/{len(bloques)} · {_codigo} · "
+                    f"{dict(VIDEO_PASOS).get(clave, clave)}: {texto_detalle or estado}"
+                )
+
+            resultado = video_publicar(
+                shopify_config, site_key, codigo,
+                marca_excel=(
+                    fila.get("Marca")
+                    if clean_value(fila.get("Origen de la marca")).startswith("columna")
+                    else ""
+                ),
+                marca_pantalla=fila.get("Marca") or marca_pantalla,
+                reemplazar=reemplazar,
+                progreso=_avance,
+            )
+            video_registrar_auditoria(resultado, site_key)
+            resultados.append(resultado)
+            procesados += 1
+            barra.progress(
+                procesados / len(listos),
+                text=f"Bloque {numero}/{len(bloques)} · {procesados}/{len(listos)} · {codigo}",
+            )
+        # Se guarda AL CERRAR CADA BLOQUE, no al final.
+        st.session_state[clave_resultados] = list(resultados)
     barra.empty()
+    estado_bloque.empty()
     detalle_vivo.empty()
 
+    resultados = st.session_state.get(clave_resultados) or resultados
     render_video_resultados(resultados, site_key)
     publicados = [item for item in resultados if item.get("ok")]
     if len(publicados) == 1:

@@ -68,6 +68,25 @@ VIDEO_MAX_BYTES = 1024 * 1024 * 1024          # 1 GB
 VIDEO_AVISO_BYTES = 100 * 1024 * 1024         # 100 MB
 VIDEO_MIN_BYTES = 1024                        # menos que esto no es un video
 
+# Content-Type que cuentan como "hay un video ahi". El bucket devuelve
+# octet-stream para los mp4 a los que nadie les puso el tipo: tratarlo como
+# "no existe" dejaria fuera videos perfectamente subidos.
+TIPOS_DE_VIDEO = ("video/", "application/octet-stream")
+
+# Estado de un codigo tras ANALIZAR, sin haber escrito nada todavia. Son tres y
+# no dos por la misma razon que en las fotos: el bucket contesta 403 a las
+# consultas anonimas, y eso NO es "no existe".
+ESTADO_LISTO_PARA_CARGAR = "Listo para cargar"
+ESTADO_SIN_CONFIRMAR = "Sin confirmar"
+ESTADO_SIN_VIDEO = "Sin video en el bucket"
+ESTADO_SIN_PRODUCTO = "No está en Shopify"
+ESTADO_YA_TIENE = "Ya tiene video"
+
+# Los que se mandan a publicar. "Sin confirmar" entra a proposito: el bucket no
+# deja comprobar de forma anonima, y quien de verdad baja el archivo es la app,
+# que devuelve el error exacto si no esta.
+ESTADOS_PUBLICABLES = (ESTADO_LISTO_PARA_CARGAR, ESTADO_SIN_CONFIRMAR)
+
 # Tipos de media de Shopify.
 MEDIA_VIDEO = "VIDEO"
 MEDIA_IMAGEN = "IMAGE"
@@ -539,3 +558,20 @@ def destino_del_video(marca, modelo, color):
         "URL": url_de_video(marca, modelo, color),
         "URL validación": url_de_validacion(marca, modelo, color),
     }
+
+
+def resumen_del_analisis(filas):
+    """Cuantos codigos hay en cada estado. Es lo que se confirma antes de cargar."""
+    conteo = {}
+    for fila in filas or []:
+        estado = texto((fila or {}).get("Estado")) or "Sin estado"
+        conteo[estado] = conteo.get(estado, 0) + 1
+    return conteo
+
+
+def publicables(filas):
+    """Las filas que se van a intentar publicar, en el orden del Excel."""
+    return [
+        fila for fila in filas or []
+        if texto((fila or {}).get("Estado")) in ESTADOS_PUBLICABLES
+    ]

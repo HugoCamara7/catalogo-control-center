@@ -743,5 +743,194 @@ class TestElProcesoCompletoConShopifyFalso(unittest.TestCase):
         self.assertEqual(filas[0]["Código Modelo Color"], "2044361-6RX")
 
 
+
+class TestElAnalisisPrevio(unittest.TestCase):
+    """FASE 1: mirar antes de escribir, igual que el mantenedor de fotos.
+
+    Sin esto, en una lista de 50 codigos se empieza a publicar y uno se entera
+    a mitad de camino de que 30 videos no estaban en el bucket. El de fotos
+    trabaja en dos tiempos por esta misma razon.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import app_matrixify  # noqa: F401
+        except Exception as exc:  # pragma: no cover - depende del entorno
+            raise unittest.SkipTest(f"No se pudo importar app_matrixify: {exc}")
+        cls.app = sys.modules["app_matrixify"]
+
+    def setUp(self):
+        self.app = type(self).app
+        self.catalogo = {
+            "2044361-6RX": {"Product ID": "gid://p/1", "Title": "Chaqueta",
+                            "Mod-Col": "2044361-6RX", "Marca": "COLUMBIA"},
+            "2045001-010": {"Product ID": "gid://p/2", "Title": "Casaca",
+                            "Mod-Col": "2045001-010", "Marca": "PATAGONIA"},
+        }
+        # True existe, False no existe, None = el bucket no deja saberlo (403).
+        self.bucket = {
+            "COLUMBIA/2044361_6RX_2.mp4": True,
+            "PATAGONIA/2045001_010_2.mp4": False,
+        }
+        self.consultas = []
+        self._orig = (self.app.video_buscar_producto, self.app.video_comprobar_en_bucket)
+
+        def _buscar(cfg, sk, cod, force_refresh=False):
+            producto = self.catalogo.get(cod)
+            return (producto, "doble") if producto else (None, "no está en este sitio")
+
+        def _bucket(url, timeout=8):
+            self.consultas.append(url)
+            clave = "/".join(url.split("/")[-2:])
+            existe = self.bucket.get(clave)
+            if existe is True:
+                return True, ""
+            if existe is False:
+                return False, "404 en el bucket"
+            return None, "403 anónimo"
+
+        self.app.video_buscar_producto = _buscar
+        self.app.video_comprobar_en_bucket = _bucket
+
+    def tearDown(self):
+        self.app.video_buscar_producto, self.app.video_comprobar_en_bucket = self._orig
+
+    def _analizar(self, codigos, marca_pantalla="ROCKFORD", marcas_excel=None):
+        trabajos, _ = vm.trabajos_desde_codigos(codigos, marca_por_defecto="")
+        for trabajo in trabajos:
+            trabajo["Marca Excel"] = (marcas_excel or {}).get(trabajo["Código Modelo Color"], "")
+        return self.app.video_analizar_codigos({}, "columbia", trabajos, marca_pantalla)
+
+    def test_separa_lo_que_se_puede_cargar_de_lo_que_no(self):
+        filas = self._analizar(["2044361-6RX", "2045001-010", "9999999-ZZZ"])
+        estados = {f["Código Modelo Color"]: f["Estado"] for f in filas}
+        self.assertEqual(estados["2044361-6RX"], vm.ESTADO_LISTO_PARA_CARGAR)
+        self.assertEqual(estados["2045001-010"], vm.ESTADO_SIN_VIDEO)
+        self.assertEqual(estados["9999999-ZZZ"], vm.ESTADO_SIN_PRODUCTO)
+
+    def test_solo_se_publica_lo_que_esta_listo(self):
+        filas = self._analizar(["2044361-6RX", "2045001-010", "9999999-ZZZ"])
+        self.assertEqual(
+            [f["Código Modelo Color"] for f in vm.publicables(filas)], ["2044361-6RX"]
+        )
+
+    def test_sin_confirmar_SI_se_intenta(self):
+        # El bucket contesta 403 a las consultas anonimas y eso NO es "no
+        # existe": tratarlo como tal dejaria fuera videos que si estan.
+        self.bucket = {}
+        filas = self._analizar(["2044361-6RX"])
+        self.assertEqual(filas[0]["Estado"], vm.ESTADO_SIN_CONFIRMAR)
+        self.assertEqual(len(vm.publicables(filas)), 1)
+
+    def test_la_carpeta_sale_del_metacampo_de_cada_producto(self):
+        # Dos marcas distintas en el mismo Excel y en el mismo sitio: es el
+        # caso de Rockford.pe, que vende cuatro marcas.
+        filas = self._analizar(["2044361-6RX", "2045001-010"])
+        carpetas = {f["Código Modelo Color"]: f["Carpeta"] for f in filas}
+        self.assertEqual(carpetas["2044361-6RX"], "COLUMBIA")
+        self.assertEqual(carpetas["2045001-010"], "PATAGONIA")
+
+    def test_la_marca_del_excel_manda_sobre_el_metacampo(self):
+        filas = self._analizar(["2044361-6RX"], marcas_excel={"2044361-6RX": "SOREL"})
+        self.assertEqual(filas[0]["Carpeta"], "SOREL")
+        self.assertIn("Excel", filas[0]["Origen de la marca"])
+
+    def test_no_se_gasta_una_consulta_en_un_codigo_sin_producto(self):
+        self._analizar(["9999999-ZZZ"])
+        self.assertEqual(self.consultas, [])
+
+    def test_se_consulta_la_url_de_la_carpeta_correcta(self):
+        self._analizar(["2045001-010"])
+        self.assertEqual(len(self.consultas), 1)
+        self.assertIn("/PATAGONIA/2045001_010_2.mp4", self.consultas[0])
+
+    def test_el_resumen_cuenta_por_estado(self):
+        filas = self._analizar(["2044361-6RX", "2045001-010", "9999999-ZZZ"])
+        resumen = vm.resumen_del_analisis(filas)
+        self.assertEqual(resumen[vm.ESTADO_LISTO_PARA_CARGAR], 1)
+        self.assertEqual(resumen[vm.ESTADO_SIN_VIDEO], 1)
+        self.assertEqual(resumen[vm.ESTADO_SIN_PRODUCTO], 1)
+
+    def test_el_analisis_no_escribe_nada_en_shopify(self):
+        # Lo mas importante de la fase 1: se puede pulsar Revisar sin miedo.
+        fuente = FUENTE_APP[FUENTE_APP.index("def video_analizar_codigos"):]
+        fuente = fuente[:fuente.index("\ndef ", 10)]
+        for mutacion in ("product_create_video_media", "product_reorder_media",
+                         "product_delete_media", "staged_upload_video", "video_publicar("):
+            self.assertNotIn(mutacion, fuente, mutacion)
+
+
+class TestSeProcesaPorBloques(unittest.TestCase):
+    """Cada bloque termina, se GUARDA y la barra avanza.
+
+    Es la misma proteccion de la carga parcial y del mantenedor de fotos: si
+    Shopify deja de responder en el bloque 4, lo de los tres primeros ya esta
+    publicado y su resultado no se pierde.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import app_matrixify  # noqa: F401
+        except Exception as exc:  # pragma: no cover - depende del entorno
+            raise unittest.SkipTest(f"No se pudo importar app_matrixify: {exc}")
+        cls.app = sys.modules["app_matrixify"]
+
+    def test_se_reutiliza_el_partidor_de_bloques_de_las_fotos(self):
+        # No se escribe un segundo partidor: es `png_bloques`, el mismo.
+        self.assertIn("png_bloques(listos, VIDEO_MODELOS_POR_BLOQUE)", FUENTE_APP)
+        self.assertIn("png_bloques(list(trabajos or []), VIDEO_MODELOS_POR_BLOQUE)", FUENTE_APP)
+
+    def test_el_bloque_de_video_es_mas_chico_que_el_de_fotos(self):
+        # Una foto son diez HEAD; un video es bajar decenas de MB y volver a
+        # subirlos. Bloques mas chicos guardan mas seguido.
+        self.assertLess(self.app.VIDEO_MODELOS_POR_BLOQUE, self.app.PNG_MODELOS_POR_BLOQUE)
+
+    def test_los_bloques_parten_bien_la_lista(self):
+        tamanos = [len(b) for b in self.app.png_bloques(list(range(12)),
+                                                        self.app.VIDEO_MODELOS_POR_BLOQUE)]
+        self.assertEqual(sum(tamanos), 12)
+        self.assertTrue(all(t <= self.app.VIDEO_MODELOS_POR_BLOQUE for t in tamanos))
+
+    def test_se_guarda_al_cerrar_cada_bloque_y_no_al_final(self):
+        bloque = FUENTE_APP[FUENTE_APP.index("bloques = png_bloques(listos"):]
+        bloque = bloque[:bloque.index("render_video_resultados")]
+        guardado = bloque.index("st.session_state[clave_resultados] = list(resultados)")
+        cierre_del_for = bloque.index("barra.empty()")
+        self.assertLess(guardado, cierre_del_for,
+                        "El guardado tiene que estar DENTRO del bucle de bloques")
+
+
+class TestLaComprobacionDelBucketReutilizaLaDeFotos(unittest.TestCase):
+    """`png_comprobar_url` ya resuelve lo dificil: los tres estados y el 403."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import app_matrixify  # noqa: F401
+        except Exception as exc:  # pragma: no cover - depende del entorno
+            raise unittest.SkipTest(f"No se pudo importar app_matrixify: {exc}")
+        cls.app = sys.modules["app_matrixify"]
+
+    def test_se_apoya_en_png_comprobar_url(self):
+        bloque = FUENTE_APP[FUENTE_APP.index("def video_comprobar_en_bucket"):]
+        bloque = bloque[:bloque.index("\ndef ", 10)]
+        self.assertIn("png_comprobar_url", bloque)
+
+    def test_acepta_octet_stream_como_video(self):
+        # S3 devuelve application/octet-stream para los mp4 a los que nadie les
+        # puso el tipo. Rechazarlo dejaria fuera videos bien subidos.
+        self.assertIn("application/octet-stream", vm.TIPOS_DE_VIDEO)
+        self.assertIn("video/", vm.TIPOS_DE_VIDEO)
+
+    def test_las_fotos_no_cambian_de_comportamiento(self):
+        # El parametro nuevo trae por defecto el tipo de las fotos, asi que
+        # `png_comprobar_url` sigue haciendo exactamente lo mismo para ellas.
+        import inspect
+
+        firma = inspect.signature(self.app.png_comprobar_url)
+        self.assertEqual(firma.parameters["tipos"].default, ("image/",))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

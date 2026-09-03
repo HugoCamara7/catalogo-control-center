@@ -20223,14 +20223,34 @@ def _render_acciones_solicitud_tras_carga():
     estado = clean_value(ticket.get("status"))
     st.markdown("---")
     st.markdown(f"#### Solicitud {escape(codigo)}")
-    st.caption(f"Etapa actual: **{flujo_etiqueta(estado)}**. Elige como queda tras esta carga.")
 
     if estado in {STATE_SIAL_LOADED, STATE_PRICE_REQUESTED,
                   STATE_PRICE_VALIDATION, STATE_READY_CLOSE}:
+        st.caption(f"Etapa actual: **{flujo_etiqueta(estado)}**.")
         render_seguimiento_carga(ticket)
         _render_cadena_cierre_carga(servicio, actor, ticket)
         return
 
+    if estado != STATE_LOADING:
+        # Esta seccion se dibuja en cuanto termina el analisis, asi que muchas
+        # veces la carga TODAVIA no se ejecuto. Cerrar aqui seria cerrar una
+        # solicitud que nunca se cargo, que es justo el error que se corrigio en
+        # agosto de 2026.
+        #
+        # Se ofrece lo que SI se puede hacer en este estado, y quien lo decide
+        # es engines/ticket_flow -- el mismo motor de la bandeja, con sus
+        # pruebas--, no una lista de botones escrita aparte aqui. Desde
+        # "Lista para ejecutar" eso es "Ejecutar carga", que es exactamente el
+        # eslabon que faltaba entre analizar y cerrar.
+        st.caption(
+            f"Etapa actual: **{flujo_etiqueta(estado)}**. "
+            "La solicitud se podrá cerrar cuando la carga esté ejecutada."
+        )
+        con_comentario = render_barra_acciones(servicio, actor, ticket)
+        render_acciones_con_comentario(servicio, actor, ticket, con_comentario)
+        return
+
+    st.caption(f"Etapa actual: **{flujo_etiqueta(estado)}**. Elige como queda tras esta carga.")
     columnas = st.columns(4)
     if columnas[0].button("Observar", key=f"tras_carga_observar_{codigo}", use_container_width=True,
                           help="Devuelve la solicitud a la marca para que corrija."):
@@ -24377,7 +24397,17 @@ api_version = "{DEFAULT_API_VERSION}"
                             activate_inventory_locations=True,
                             session_key=f"shopify_complete_job_{brand_config['site_key']}",
                         )
-                        _render_acciones_solicitud_tras_carga()
+
+                # Cerrar la solicitud va AQUI, no dentro del `if confirm_complete`
+                # de arriba. Estaba anidado tres niveles: hacia falta estar en
+                # Shopify API, marcar la casilla y desplegar el panel de
+                # sincronizacion para que apareciera. Con "Respaldo Excel", o sin
+                # marcar la casilla, no habia forma de cerrar desde esta pantalla
+                # y tocaba volver a la bandeja de Solicitudes.
+                #
+                # La funcion se protege sola: si la carga no salio de una
+                # solicitud, no dibuja nada.
+                _render_acciones_solicitud_tras_carga()
             st.markdown("</div>", unsafe_allow_html=True)
         except MissingInputColumnError as exc:
             st.error(f"Falta una columna obligatoria en el input: {exc}")

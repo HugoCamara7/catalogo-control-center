@@ -71,7 +71,7 @@ app_matrixify.py        18.7xx lineas · 439 funciones · UI + routing + logica
 │   ├── stock.py        215 lin · stock por Mod-Col (35 pruebas)
 │   ├── metrics.py      190 lin · metricas por Mod-Col (26 pruebas)
 │   ├── price_check.py  200 lin · validacion precio/stock (19 pruebas)
-│   ├── ticket_flow.py  390 lin · 23 estados -> 5 visibles (40 pruebas)
+│   ├── ticket_flow.py  562 lin · 23 estados -> 5 visibles (55 pruebas)
 │   └── storage_check.py 176 lin · diagnostico de persistencia
 ├── ticket_system.py    1.093 lin · maquina de estados, 2 stores, 28 pruebas
 ├── generate_columbia_matrixify.py  3.319 lin · motor de catalogo
@@ -640,6 +640,75 @@ dónde. Cada intento va a la auditoría, salga bien o mal.
 **Scopes de Shopify:** `read_products`, `write_products`. `write_files` NO hace
 falta: los videos van por `productCreateMedia` / `productReorderMedia`.
 
+## 5 septies. Rendimiento: el peso de cada rerun (septiembre 2026)
+
+Streamlit vuelve a ejecutar el script entero en cada clic, así que lo que
+importa no es cuánto tarda un cálculo sino **cuántos bytes viajan por
+interacción**. Medido, no supuesto.
+
+**Lo que NO era el problema.** Rearmar el f-string de 130 KB de
+`inject_custom_css` cuesta **0,12 ms**. Cachearlo no habría servido de nada, y
+sacar el CSS a un archivo estático rompería las 33 pruebas de
+`test_css_movil.py`, que lo leen del código. No se toca.
+
+**Lo que sí era.** Los logos van embutidos como `data:` URI dentro del HTML, en
+resolución de origen: `assets/brands/logo_columbia.png` es **3840×696** para
+dibujarse a 138×54 px. Y el **mismo logo de marca se embute cuatro veces por
+rerun**: dentro del CSS (`site_logo_src`), en la tarjeta de marca, en la de
+Shopify y en la cabecera.
+
+| Sitio | Antes | Ahora |
+|---|---:|---:|
+| Columbia.pe | 668 KB | **182 KB** |
+| Vans.pe | 447 KB | **174 KB** |
+| MountainHardwear.pe | 406 KB | **226 KB** |
+| Patagonia.pe | 229 KB | **115 KB** |
+| HushPuppies.pe | 337 KB | **216 KB** |
+| Rockford.pe · Sorel.pe | 113 / 95 KB | sin cambio (ya eran chicos) |
+
+`image_data_uri` reduce a `LOGO_ANCHO_MAXIMO` (480 px, margen para retina) y
+cachea. Tres reglas que no son obvias:
+
+1. **Solo se usa la versión reducida si de verdad pesa menos.** Re-codificar
+   algo ya optimizado lo **engorda**: `shopify_logo.png` pasaba de 17 KB a
+   **83 KB** en PNG. Reducir sin comparar habría hecho la app más lenta en
+   varios sitios.
+2. **El formato se elige, no se asume.** `logo_vans.jpg` (1600×730, JPEG) en
+   PNG daba 99 KB y en JPEG da **31 KB**. Pero JPEG solo se usa en los modos de
+   Pillow **sin canal alfa** (`RGB`, `L`): pasar a JPEG algo con transparencia
+   le pone **fondo negro** al logo, y es un error que no revienta — la app sigue
+   andando y el logo sale con un rectángulo negro detrás. `P` puede llevar
+   transparencia en la paleta, así que va a PNG.
+3. **El `stat` va FUERA de la caché.** La firma de la función cacheada lleva
+   `(st_mtime_ns, st_size)` y no se usa dentro: está ahí para que reemplazar un
+   logo en disco invalide la caché sola. Con el `stat` dentro habría que
+   reiniciar la app para ver el logo nuevo.
+
+Pillow **se declara en `requirements.txt`**. Llega por Streamlit, pero aquí se
+importa directo. Si faltara, `_reducir_imagen` devuelve `None` y se usa el
+original: la app no puede quedarse sin logos por eso.
+
+`resolve_logo_path` también quedó cacheada: su último respaldo hace `iterdir()`
+—un listado de directorio— y se llamaba cuatro veces por rerun para el mismo
+logo.
+
+**Los sitios del Status de carga se leen en paralelo** — ver la sección 5
+quater.
+
+### Los archivos de `assets/` están CORRIDOS una posición
+
+Verificado abriendo las imágenes. Los nueve `assets/logo_*` de la raíz tienen,
+cada uno, el logo de la marca **anterior** en orden alfabético:
+`assets/logo_vans.jpg` contiene el logo de **Sorel**, y `assets/logo_columbia.png`
+son **2 bytes** (`\r\n`), ni siquiera una imagen.
+
+**La app NO los usa**: `SITE_UI_CONFIG` apunta a `assets/brands/`, y ahí los
+nueve están correctos (`assets/brands/logo_vans.jpg` sí es Vans). Son copias
+muertas y mal nombradas — van a la lista de la sección 10, no son un bug
+visible. No las borré porque eso es una decisión aparte.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -758,6 +827,12 @@ Verificado por firma binaria. No los usa nadie; la app lee los originales de
 | `dimensiones_productos.xlsx` (raíz) | imagen WEBP |
 | `matrixify_modelo.xlsx` (raíz) | imagen WEBP |
 | `formato_input_catalog_control_center.xlsx` | texto plano |
+| `assets/logo_*` (los 9 de la raíz) | el logo de la marca **anterior**; `logo_columbia.png` son 2 bytes |
+
+Los `assets/logo_*` de la raíz están **corridos una posición** (verificado
+abriendo las imágenes: `assets/logo_vans.jpg` es el logo de Sorel). La app no
+los usa — lee de `assets/brands/`, donde los nueve son correctos. Ver la
+sección 5 septies.
 
 Históricamente, `.streamlit/config.toml` llegó a tener pegado el contenido de
 `secrets.example.toml` (commit `542c3757`). Eso hacía que Streamlit rechazara
@@ -789,10 +864,12 @@ python scripts/test_engines_metrics.py                 # 26
 python scripts/test_engines_notify.py                  # 88
 python scripts/test_engines_price_check.py             # 19
 python scripts/test_engines_stock.py                   # 35
-python scripts/test_engines_ticket_flow.py             # 40
-python scripts/test_engines_load_status.py             # 28
+python scripts/test_engines_ticket_flow.py             # 55
+python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
 python scripts/test_css_movil.py                       # 33
+python scripts/test_rendimiento_logos.py               # 17
+python scripts/test_bandeja_solicitudes.py             # 42
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24
 python scripts/test_siblings_referencias.py            # 14
@@ -800,7 +877,8 @@ python scripts/test_siblings_tipos.py                  # 20
 python scripts/test_ticket_system.py                   # 28
 ```
 
-> `test_brand_commercial_input.py` falla desde antes de estos cambios.
+> `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes
+> de estos cambios. El segundo espera `auth_role_label`, que ya no existe.
 
 Además, siempre:
 

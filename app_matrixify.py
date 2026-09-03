@@ -13302,24 +13302,120 @@ SITE_UI_CONFIG = {
 }
 
 
-def image_data_uri(path):
-    path = Path(path)
-    if not path.exists():
+# Ancho maximo al que se reduce un logo antes de embutirlo como data URI. El
+# dibujo mas grande son 138px; 480 deja margen para pantallas retina.
+#
+# Por que hace falta: los logos estan en resolucion de origen --logo_hpk.png es
+# 3840x696, logo_patagonia.png y logo_rockford.webp son 3840x2160-- y el mismo
+# logo de marca se embute CUATRO veces por rerun (dentro del CSS, en la tarjeta
+# de marca, en la de Shopify y en la cabecera). Medido en HushPuppies.pe: 668 KB
+# de base64 en cada clic, contra 181 KB reduciendo. En Rockford.pe, 229 -> 115.
+LOGO_ANCHO_MAXIMO = 480
+
+_MIME_POR_SUFIJO = {
+    "jpg": "jpeg",
+    "jpeg": "jpeg",
+    "png": "png",
+    "webp": "webp",
+    "gif": "gif",
+}
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def _image_data_uri_cacheado(path_texto, firma, ancho_maximo):
+    """El data URI de una imagen, ya reducida si conviene.
+
+    `firma` es (mtime, tamano) y NO se usa dentro: esta en la firma para que
+    reemplazar un logo en disco invalide la cache sola. Sin eso habria que
+    reiniciar la app para ver el logo nuevo.
+    """
+    path = Path(path_texto)
+    try:
+        crudo = path.read_bytes()
+    except OSError:
         return ""
-    suffix = path.suffix.lower().replace(".", "")
-    mime_by_suffix = {
-        "jpg": "jpeg",
-        "jpeg": "jpeg",
-        "png": "png",
-        "webp": "webp",
-        "gif": "gif",
-    }
-    mime = mime_by_suffix.get(suffix, "png")
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:image/{mime};base64,{encoded}"
+    mime = _MIME_POR_SUFIJO.get(path.suffix.lower().replace(".", ""), "png")
+    reducido = _reducir_imagen(crudo, ancho_maximo)
+    if reducido is not None:
+        crudo, mime = reducido
+    return f"data:image/{mime};base64,{base64.b64encode(crudo).decode('ascii')}"
 
 
+# Modos de Pillow en los que es SEGURO guardar como JPEG. Cualquier otro
+# --RGBA, LA, P, PA-- puede llevar transparencia, y pasarlo a JPEG le pone
+# fondo negro al logo. Ante la duda, PNG.
+_MODOS_SIN_ALFA = ("RGB", "L")
+
+
+def _reducir_imagen(crudo, ancho_maximo):
+    """(bytes, mime) de la imagen reducida, o None si no conviene reducirla.
+
+    Devuelve None --y se usa el original-- en tres casos, todos medidos:
+
+    1. Sin Pillow. Es dependencia de Streamlit, pero si algun dia no esta la
+       app tiene que seguir dibujando los logos, no quedarse sin ellos.
+    2. La imagen ya es angosta.
+    3. **El resultado pesa MAS que el original.** Re-codificar algo que ya venia
+       optimizado lo engorda: shopify_logo.png pasaba de 17 KB a 83 KB en PNG.
+       Reducir sin comparar habria hecho la app mas lenta en varios sitios.
+
+    El formato se elige, no se asume. Con logo_vans.jpg --un JPEG de
+    1600x730-- reducir a PNG daba 99 KB de base64 y a JPEG da 31 KB.
+    """
+    if ancho_maximo <= 0:
+        return None
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        with Image.open(io.BytesIO(crudo)) as imagen:
+            if imagen.width <= ancho_maximo:
+                return None
+            alto = max(1, round(imagen.height * ancho_maximo / imagen.width))
+            sin_alfa = imagen.mode in _MODOS_SIN_ALFA
+            reducida = imagen.convert("RGB" if sin_alfa else "RGBA").resize(
+                (ancho_maximo, alto), Image.LANCZOS)
+            candidatos = []
+            destino = io.BytesIO()
+            (reducida if not sin_alfa else reducida.convert("RGBA")).save(
+                destino, format="PNG", optimize=True)
+            candidatos.append((destino.getvalue(), "png"))
+            if sin_alfa:
+                destino = io.BytesIO()
+                reducida.save(destino, format="JPEG", quality=85, optimize=True)
+                candidatos.append((destino.getvalue(), "jpeg"))
+    except Exception:
+        # Un archivo corrupto no puede tumbar la pantalla: assets/logo_columbia.png
+        # son 2 bytes y no es una imagen.
+        return None
+    contenido, mime = min(candidatos, key=lambda c: len(c[0]))
+    return (contenido, mime) if len(contenido) < len(crudo) else None
+
+
+def image_data_uri(path, ancho_maximo=None):
+    """Data URI de una imagen del repo, cacheado.
+
+    El `stat` va aqui, fuera de la cache: es barato (no lee el archivo) y es lo
+    que permite que la cache se invalide cuando el logo cambia en disco.
+    """
+    path = Path(path)
+    try:
+        info = path.stat()
+    except OSError:
+        return ""
+    ancho = LOGO_ANCHO_MAXIMO if ancho_maximo is None else int(ancho_maximo)
+    return _image_data_uri_cacheado(str(path), (info.st_mtime_ns, info.st_size), ancho)
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
 def resolve_logo_path(path):
+    """La ruta real del logo, probando alias y extensiones.
+
+    Cacheada porque el ultimo respaldo hace `iterdir()` --un listado de
+    directorio-- y esto se llama cuatro veces por rerun para el mismo logo.
+    Los assets vienen con el codigo, asi que no cambian entre reruns.
+    """
     path = Path(path)
     if path.exists():
         return str(path)

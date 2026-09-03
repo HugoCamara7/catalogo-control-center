@@ -45,6 +45,9 @@ except ImportError:  # engines/enrich.py todavia no subido
     enriquecimiento = None
 from engines.ticket_flow import acciones_disponibles as flujo_acciones
 from engines.ticket_flow import accion_principal as flujo_accion_principal
+from engines.ticket_flow import atajos_disponibles as flujo_atajos
+from engines.ticket_flow import claves_reemplazadas as flujo_claves_reemplazadas
+from engines.ticket_flow import pasos_del_atajo as flujo_pasos_del_atajo
 from engines.ticket_flow import etiqueta as flujo_etiqueta
 from engines.ticket_flow import paso_actual as flujo_paso_actual
 from engines.ticket_flow import tono as flujo_tono
@@ -16920,6 +16923,13 @@ def render_header(brand_config=None):
 
 
 def render_stepper(config, current_step=1):
+    """La barra de 4 pasos de la carga.
+
+    El estado de cada paso sale de `current_step`. Antes se calculaba por el
+    INDICE, asi que el paso 2 decia siempre "OK" y el 3 siempre "Revisar":
+    la barra afirmaba que BigQuery estaba resuelto y que habia algo que revisar
+    con la pantalla recien abierta y sin un solo archivo cargado.
+    """
     steps = [
         ("Input", "Archivo comercial"),
         ("BigQuery", "Fuente maestra"),
@@ -16929,8 +16939,12 @@ def render_stepper(config, current_step=1):
     items = []
     for index, (title, caption) in enumerate(steps, start=1):
         current = " current" if index == current_step else ""
-        status = "Actual" if index == 1 else ("OK" if index == 2 else ("Revisar" if index == 3 else "Pend."))
-        tone = "blue" if index == 1 else ("" if index == 2 else (" warn" if index == 3 else " blue"))
+        if index < current_step:
+            status, tone = "OK", ""
+        elif index == current_step:
+            status, tone = "Actual", " blue"
+        else:
+            status, tone = "Pend.", ""
         items.append(
             f"""
             <div class="step-card{current}">
@@ -20399,8 +20413,47 @@ def _render_cadena_cierre_carga(servicio, actor, ticket):
                 _mostrar_error_ticket(exc, codigo)
 
 
+# Estados en los que la solicitud esta APROBADA y todavia no arranco: son las
+# que el selector de Carga completa tiene que ofrecer primero. El resto de
+# FULL_LOAD_TICKET_STATES sigue en la lista, pero mas abajo, porque son cargas
+# ya en curso a las que se vuelve para reintentar.
+ESTADOS_APROBADA_SIN_CARGAR = {
+    STATE_APPROVED,
+    STATE_PREPARING,
+    STATE_DRY_RUN,
+    STATE_READY_EXECUTE,
+}
+
+
+def solicitud_esta_aprobada_sin_cargar(ticket):
+    return clean_value((ticket or {}).get("status")) in ESTADOS_APROBADA_SIN_CARGAR
+
+
+def etiqueta_solicitud_para_carga(ticket):
+    """Una linea por solicitud para el selector, con su estado visible.
+
+    El estado va en la etiqueta porque la lista mezcla aprobadas con cargas ya
+    en curso: sin el, dos lineas identicas pueden ser una lista para ejecutar y
+    una que ya se cargo, y no hay forma de distinguirlas.
+    """
+    ticket = ticket or {}
+    productos = safe_int_value((ticket.get("summary") or {}).get("products"), 0)
+    solicitante = clean_value(ticket.get("requested_by")) or "sin solicitante"
+    # Marcador en TEXTO, no emoji: se lee igual en cualquier codificacion y
+    # dice de frente cual corresponde cargar.
+    marcador = "APROBADA" if solicitud_esta_aprobada_sin_cargar(ticket) else "EN CURSO"
+    return (
+        f"[{marcador}] {clean_value(ticket.get('code'))} · {clean_value(ticket.get('brand'))} · "
+        f"{productos} productos · {solicitante} · {flujo_etiqueta(ticket.get('status'))}"
+    )
+
+
 def solicitudes_ejecutables(service, actor, brand_config):
-    """Solicitudes aprobadas o en curso, del sitio activo, con archivo adjunto."""
+    """Solicitudes aprobadas o en curso, del sitio activo, con archivo adjunto.
+
+    Las APROBADAS van primero: son las que corresponde cargar. Las que ya estan
+    en curso quedan detras, para poder volver a una y reintentar.
+    """
     try:
         tickets = service.list_tickets(actor)
     except Exception:
@@ -20416,7 +20469,11 @@ def solicitudes_ejecutables(service, actor, brand_config):
         versiones = ticket.get("versions") or []
         if versiones and clean_value(versiones[-1].get("input_path")):
             elegibles.append(ticket)
+    # Dos ordenamientos estables en vez de una clave compuesta: la fecha va
+    # descendente y el grupo ascendente, y mezclarlos en una sola clave obliga
+    # a invertir una cadena de texto.
     elegibles.sort(key=lambda t: clean_value(t.get("created_at")), reverse=True)
+    elegibles.sort(key=lambda t: not solicitud_esta_aprobada_sin_cargar(t))
     return elegibles
 
 
@@ -20803,7 +20860,16 @@ def _ejecutar_accion_ticket(service, actor, codigo, accion, comentario=""):
     Un solo camino para las tres superficies que ejecutan acciones: el boton
     rapido de la tarjeta, la accion masiva y la barra del detalle. Antes cada
     una llamaba al servicio por su cuenta y se desincronizaban.
+
+    Un atajo (varias acciones en un boton) entra por aqui igual que una accion
+    suelta: asi las tres superficies lo heredan sin que ninguna tenga que
+    saber que existe.
     """
+    # Se mira la CLAVE, no su valor: un atajo con la cadena vacia sigue siendo
+    # un atajo. Con `if accion.get(...)` caia al camino de accion suelta y
+    # reventaba con KeyError en "metodo", que los atajos no tienen.
+    if "pasos_resueltos" in accion:
+        return _ejecutar_atajo_ticket(service, actor, codigo, accion)
     comentario = clean_value(comentario)
     if accion.get("pide_comentario") and not comentario:
         return False, f'"{accion["etiqueta"]}" necesita un comentario.'
@@ -20834,14 +20900,59 @@ def _ejecutar_accion_ticket(service, actor, codigo, accion, comentario=""):
         return False, f'{codigo}: no se pudo ejecutar "{accion["etiqueta"]}" ({exc}).'
 
 
+def ir_a_carga_completa(codigo=""):
+    """Deja la app en la pantalla de Carga completa en el proximo rerun.
+
+    Aceptar una carga y quedarse en la bandeja obliga a buscar el modo de carga
+    en la barra lateral para poder ejecutarla. Los dos valores son los mismos
+    que escriben los botones del menu, asi que la barra queda marcada donde
+    corresponde y no en la opcion anterior.
+
+    `codigo` deja la solicitud recien aceptada YA elegida en el selector: si no,
+    se llega a la pantalla correcta y hay que volver a buscarla en una lista.
+    """
+    st.session_state["operation_area_choice"] = "Carga de catálogo"
+    st.session_state["operation_mode_choice"] = "Carga completa"
+    codigo = clean_value(codigo)
+    if codigo:
+        st.session_state["carga_solicitud_preseleccionada"] = codigo
+
+
+def _ejecutar_atajo_ticket(service, actor, codigo, atajo):
+    """Ejecuta los pasos del atajo en orden. Devuelve (ok, mensaje).
+
+    Para en el PRIMER paso que falle y dice cuales alcanzo a aplicar: la
+    solicitud queda en un estado intermedio valido, nunca a medias de una
+    escritura. Reusa `_ejecutar_accion_ticket`, asi que la auditoria y los
+    correos salen igual que si se hubieran pulsado los botones uno a uno.
+    """
+    hechos = []
+    for accion in atajo.get("pasos_resueltos") or ():
+        ok, mensaje = _ejecutar_accion_ticket(service, actor, codigo, accion)
+        if not ok:
+            if hechos:
+                return False, "%s Se aplicó: %s." % (mensaje, ", ".join(hechos))
+            return False, mensaje
+        hechos.append(accion["etiqueta"])
+    if not hechos:
+        return False, f'{codigo}: "{atajo["etiqueta"]}" no tiene pasos aplicables.'
+    return True, "%s: %s (%s)." % (codigo, atajo["etiqueta"], " → ".join(hechos))
+
+
 def _accion_rapida(ticket, actor):
-    """La accion principal de un ticket, si se puede hacer de un solo click."""
-    accion = flujo_accion_principal(
-        clean_value(ticket.get("status")),
-        clean_value(actor.get("role")).casefold(),
-        ticket.get("assignee"),
-        actor.get("user"),
-    )
+    """La accion principal de un ticket, si se puede hacer de un solo click.
+
+    Si hay un atajo, gana el atajo: es la misma direccion pero en un clic. Con
+    esto la accion masiva tambien encadena, asi que "Aceptar carga (5)" deja
+    cinco solicitudes listas para ejecutar de una vez.
+    """
+    estado = clean_value(ticket.get("status"))
+    rol = clean_value(actor.get("role")).casefold()
+    atajos = flujo_atajos(estado, rol, ticket.get("assignee"), actor.get("user"))
+    principal = next((a for a in atajos if a.get("principal")), None) or (atajos[0] if atajos else None)
+    if principal:
+        return principal
+    accion = flujo_accion_principal(estado, rol, ticket.get("assignee"), actor.get("user"))
     if not accion or accion.get("pide_comentario") or accion.get("requiere_archivo"):
         return None
     return accion
@@ -21201,7 +21312,10 @@ def render_ticket_inbox(service, actor, brand_view=False):
 # si se agrega una accion principal nueva al flujo hay que ordenarla aqui, y hay
 # una prueba que lo comprueba.
 ORDEN_ACCIONES_LOTE = [
-    "tomar", "revisar", "aprobar", "ejecutar", "finalizar",
+    # Los atajos van al lado de la etapa que cubren: "Aceptar carga" ocupa el
+    # lugar de tomar/revisar/aprobar, y "Ejecutar carga" el de ejecutar.
+    "aceptar_carga", "tomar", "revisar", "aprobar",
+    "ejecutar_carga", "ejecutar", "finalizar",
     "solicitar_precios", "validar_precio_stock", "finalizar_solicitud",
 ]
 
@@ -21463,28 +21577,42 @@ def render_barra_acciones(service, actor, ticket):
     codigo = clean_value(ticket.get("code"))
     rol = clean_value(actor.get("role")).casefold()
     acciones = flujo_acciones(estado, rol, ticket.get("assignee"), actor.get("user"))
-    if not acciones:
+    # Los atajos encadenan varias acciones en un boton y ESCONDEN las que
+    # cubren: "Aceptar carga" al lado de "Tomar solicitud" son dos botones para
+    # lo mismo y no hay forma de saber cual usar.
+    atajos = flujo_atajos(estado, rol, ticket.get("assignee"), actor.get("user"))
+    cubiertas = flujo_claves_reemplazadas(estado, rol, ticket.get("assignee"), actor.get("user"))
+    acciones = [a for a in acciones if a["clave"] not in cubiertas]
+    if not acciones and not atajos:
         st.caption("No hay acciones disponibles para esta solicitud en su estado actual.")
         return []
 
     # Sin barra de pasos aqui: el detalle ya dibuja una arriba. Antes se
     # apilaban dos (y tres si la solicitud estaba en carga) diciendo lo mismo.
-    principal = next((a for a in acciones if a.get("principal")), None)
     directas = [a for a in acciones if not a.get("pide_comentario") and not a.get("requiere_archivo")]
     con_comentario = [a for a in acciones if a.get("pide_comentario")]
 
     # Un click. Las destructivas y las que piden comentario van aparte, abajo.
-    if directas:
-        columnas = st.columns(len(directas))
-        for columna, accion in zip(columnas, directas):
+    botones = list(atajos) + directas
+    if botones:
+        columnas = st.columns(len(botones))
+        for columna, accion in zip(columnas, botones):
+            es_atajo = "pasos_resueltos" in accion
+            ayuda = accion["ayuda"]
+            if es_atajo:
+                ayuda = "%s (%s)" % (
+                    ayuda, " → ".join(p["etiqueta"] for p in accion["pasos_resueltos"]))
             if not columna.button(
                 accion["etiqueta"], key=f"accion_{accion['clave']}_{codigo}",
                 type="primary" if accion.get("principal") else "secondary",
-                use_container_width=True, help=accion["ayuda"],
+                use_container_width=True, help=ayuda,
             ):
                 continue
             ok, mensaje = _ejecutar_accion_ticket(service, actor, codigo, accion)
             if ok:
+                if accion.get("va_a") == "carga_completa":
+                    ir_a_carga_completa(codigo)
+                    st.session_state["flujo_aviso"] = mensaje
                 st.rerun()
             st.warning(mensaje)
 
@@ -22854,6 +22982,11 @@ api_version = "{DEFAULT_API_VERSION}"
     load_reset_message = st.session_state.pop("load_reset_message", "")
     if load_reset_message:
         st.success(load_reset_message)
+    # Lo que hizo el atajo que trajo al usuario hasta aqui. Sin esto, aceptar
+    # una carga cambia de pantalla sin decir que se aplico ni a que solicitud.
+    flujo_aviso = clean_value(st.session_state.pop("flujo_aviso", ""))
+    if flujo_aviso:
+        st.success(flujo_aviso)
     if operation_area == "KPIs de catálogo":
         render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready)
         return
@@ -23779,47 +23912,75 @@ api_version = "{DEFAULT_API_VERSION}"
         input_upload_key = f"input_{upload_nonce}"
         template_upload_key = f"template_{upload_nonce}"
 
-        # Origen del input: la solicitud ya trae el archivo validado, no hace
-        # falta descargarlo y volver a subirlo.
+        # Seleccionar aprobadas. La solicitud ya trae el archivo validado por
+        # la marca, asi que se elige y se lee: no hay que descargarlo y volver
+        # a subirlo.
+        #
+        # Antes habia un radio "Origen del input" delante del selector. Sobraba:
+        # cuando hay solicitudes listas, usarlas es lo que se quiere hacer
+        # siempre, y la carga a mano sigue disponible abajo para las solicitudes
+        # viejas sin adjunto.
         archivo_solicitud = None
-        origen_input = "Subir archivo manualmente"
+        ticket_elegido = None
+        # Salida de emergencia. El radio anterior preguntaba el origen en CADA
+        # carga; esto no pregunta nada y deja el caso raro a un clic: reemplazar
+        # el adjunto de la solicitud por un Excel corregido a mano.
+        forzar_manual = False
         if ticket_operator:
             servicio_tickets, _ = get_ticket_service()
             elegibles = solicitudes_ejecutables(servicio_tickets, ticket_actor, brand_config)
             if elegibles:
-                origen_input = st.radio(
-                    "Origen del input",
-                    ["Usar archivo de una solicitud", "Subir archivo manualmente"],
-                    horizontal=True,
-                    key="origen_input_carga",
-                    help="La solicitud ya guarda el Excel validado por la marca.",
+                etiquetas = {}
+                for candidato in elegibles:
+                    etiquetas[etiqueta_solicitud_para_carga(candidato)] = candidato
+                claves = list(etiquetas)
+                preseleccion = clean_value(st.session_state.pop("carga_solicitud_preseleccionada", ""))
+                indice = 0
+                if preseleccion:
+                    for posicion, clave in enumerate(claves):
+                        if clean_value(etiquetas[clave].get("code")) == preseleccion:
+                            indice = posicion
+                            break
+                elegida = st.selectbox(
+                    "Solicitud aprobada",
+                    claves,
+                    index=indice,
+                    key="solicitud_para_cargar",
+                    help="Las aprobadas van primero. Las que ya están en curso aparecen para reintentar.",
                 )
-                if origen_input == "Usar archivo de una solicitud":
-                    etiquetas = {
-                        (f"{t.get('code')} · {clean_value(t.get('brand'))} · "
-                         f"{safe_int_value((t.get('summary') or {}).get('products'), 0)} productos · "
-                         f"{clean_value(t.get('requested_by')) or 'sin solicitante'}"): t
-                        for t in elegibles
-                    }
-                    elegida = st.selectbox("Solicitud", list(etiquetas), key="solicitud_para_cargar")
-                    ticket_elegido = etiquetas[elegida]
-                    archivo_solicitud = archivo_de_solicitud(servicio_tickets, ticket_elegido)
-                    if archivo_solicitud is None:
-                        st.warning(
-                            "Esta solicitud no tiene un archivo recuperable. "
-                            "Usa la carga manual como respaldo."
-                        )
-                    else:
-                        st.markdown(
-                            '<div class="origen-ok"><b>Archivo listo</b>'
-                            f'<span>{escape(archivo_solicitud.name)} · '
-                            f'{archivo_solicitud.size:,} bytes · {escape(ticket_elegido.get("code"))}</span></div>',
-                            unsafe_allow_html=True,
-                        )
-                        st.session_state["carga_desde_solicitud"] = ticket_elegido.get("code")
+                ticket_elegido = etiquetas[elegida]
+                archivo_solicitud = archivo_de_solicitud(servicio_tickets, ticket_elegido)
+                if archivo_solicitud is None:
+                    st.warning(
+                        "Esta solicitud no tiene un archivo recuperable. "
+                        "Usa la carga manual de más abajo como respaldo."
+                    )
+                else:
+                    st.markdown(
+                        '<div class="origen-ok"><b>Archivo leído</b>'
+                        f'<span>{escape(archivo_solicitud.name)} · '
+                        f'{archivo_solicitud.size:,} bytes · {escape(ticket_elegido.get("code"))}</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.session_state["carga_desde_solicitud"] = ticket_elegido.get("code")
+                forzar_manual = st.checkbox(
+                    "Subir el input a mano en lugar del archivo de la solicitud",
+                    key="forzar_input_manual",
+                    help=(
+                        "Solo si tienes una versión corregida por fuera. Lo normal es usar "
+                        "el archivo que la marca ya dejó validado en la solicitud."
+                    ),
+                )
+                if forzar_manual:
+                    archivo_solicitud = None
+                    st.session_state.pop("carga_desde_solicitud", None)
+                    st.caption(
+                        f'La carga quedará asociada a {clean_value(ticket_elegido.get("code"))}, '
+                        "pero con el archivo que subas aquí."
+                    )
             else:
                 st.caption("No hay solicitudes con archivo listo para este sitio. Sube el input manualmente.")
-        if archivo_solicitud is None:
+        if archivo_solicitud is None and not forzar_manual:
             st.session_state.pop("carga_desde_solicitud", None)
 
         upload_left, upload_right = st.columns([3.5, 1.5], gap="large")

@@ -127,12 +127,94 @@ Los matices se conservan entre paréntesis: "Finalizada (rechazada)",
 **Recorrido feliz** (una sola acción principal por estado):
 
 ```
-pending_assignment → Tomar solicitud
-assigned           → Iniciar revisión
+pending_assignment → Aceptar carga    (atajo: tomar + revisar + aprobar)
 digital_review     → Aprobar para carga
-load_approved      → Ejecutar carga
+load_approved      → Ejecutar carga   (atajo: validación previa + ejecutar)
 loading            → Finalizar solicitud
 ```
+
+### 3 bis. Atajos (`flujo.ATAJOS`, septiembre 2026)
+
+Un atajo ejecuta **varias acciones del flujo con un solo botón**. Existen
+porque llegar de "recién llegada" a "cargando" pedía **cinco clics** repartidos
+en dos pantallas —Tomar solicitud, Iniciar revisión, Aprobar para carga,
+Ejecutar validación previa, Ejecutar carga— y **ninguno era una decisión
+distinta de la anterior**: quien toma una solicitud para revisarla ya decidió
+revisarla.
+
+Y había un bug: **"Ejecutar carga" desde `load_approved` fallaba SIEMPRE** con
+"Ejecuta y revisa el dry run antes de iniciar la carga". `start_load` exige el
+dry run, y el botón que lo corría vivía solo en el panel de "Cargas
+pendientes", en otra pantalla. Por eso `validacion_previa` (`run_dry_run`) es
+ahora una acción del flujo: para que el atajo la pueda encadenar.
+
+**El atajo REEMPLAZA los botones que cubre** (`claves_reemplazadas`). "Aceptar
+carga" al lado de "Tomar solicitud" son dos botones para lo mismo y no hay
+forma de saber cuál usar. Y **solo se ofrece si ahorra al menos un clic**: desde
+`digital_review` queda un único paso, así que se muestra "Aprobar para carga" a
+secas.
+
+**El despacho está en `_ejecutar_accion_ticket`**, no en cada pantalla: mira si
+la acción trae `pasos_resueltos` y deriva a `_ejecutar_atajo_ticket`. Así las
+tres superficies (botón rápido de la tarjeta, acción masiva y barra del
+detalle) heredan los atajos sin saber que existen — incluido el lote, así que
+**"Aceptar carga (5)" deja cinco solicitudes listas de una vez**. Se mira la
+CLAVE, no su valor: un atajo con la cadena vacía sigue siendo un atajo, y con
+`if accion.get(...)` caía al camino de acción suelta y reventaba con `KeyError`
+en `metodo`, que los atajos no tienen.
+
+**Para en el primer paso que falle** y dice qué alcanzó a aplicar. La solicitud
+queda en un estado intermedio válido, nunca a medias de una escritura. La
+auditoría y los correos salen igual que si se hubieran pulsado los botones uno
+a uno, porque reusa `_ejecutar_accion_ticket` paso por paso.
+
+**La cadena de cierre NO se ataja, a propósito.** Ahí cada paso espera algo
+real —que el Área de Producto cargue los precios, que la validación contra
+Shopify no traiga bloqueos— y saltárselos es exactamente el error que se
+corrigió en agosto de 2026. Además "Carga SIAL terminada" **necesita el archivo
+SIAL**, que solo tiene la pantalla: encadenarla desde el motor mandaría el
+correo al Área de Producto **sin adjunto**. Hay 4 pruebas que lo fijan, una de
+ellas recorriendo los 23 estados.
+
+**`queda_en` es un dato duplicado** de `TRANSITIONS`. Hay una prueba que
+comprueba que cada destino declarado sea **alcanzable** en el grafo real —no un
+salto único, porque varios métodos dan dos saltos internos (`run_dry_run` hace
+aprobada → preparando → dry run → lista, y `record_job_result` pasa por
+validando como `ROLE_SYSTEM`). Sin ella, alguien cambia una transición y el
+atajo hace el primer paso, falla el segundo y la solicitud queda a medio
+camino. Dos acciones quedan excluidas y anotadas por ser fallos
+**preexistentes**: `reabrir` y `cancelar` desde estados sin entrada admin en
+`TRANSITIONS`.
+
+**`tomar` solo sale en `pending_assignment`.** Estaba también en `draft` y
+`request_received`, y `assign()` rechaza los dos ("La solicitud ya no está
+disponible para asignación"): el botón se dibujaba y fallaba siempre. Un botón
+que no puede funcionar es peor que no tener botón.
+
+**Después de "Aceptar carga" la app va sola a Carga completa**
+(`ir_a_carga_completa`), con la solicitud **ya elegida** en el selector. Aceptar
+una carga y quedarse en la bandeja obliga a buscar el modo de carga en la barra
+lateral; llegar a la pantalla correcta y tener que rebuscar la solicitud en una
+lista es la mitad del mismo problema. Los dos valores que escribe son los
+mismos que usan los botones del menú, o la barra lateral queda marcada en otra
+opción — hay un test que lo fija.
+
+**El selector de Carga completa ya no pregunta el origen.** Había un radio
+"Origen del input" delante: sobraba, porque cuando hay solicitudes listas
+usarlas es lo que se quiere hacer siempre. Las **aprobadas van primero**
+(`ESTADOS_APROBADA_SIN_CARGAR`) y cada línea lleva su estado visible, porque la
+lista mezcla aprobadas con cargas en curso y sin eso dos líneas idénticas
+pueden ser una lista para ejecutar y una que ya se cargó. El marcador va en
+TEXTO (`[APROBADA]` / `[EN CURSO]`), no en emoji. La carga a mano sigue
+disponible: automática cuando la solicitud no tiene adjunto recuperable, y con
+una casilla explícita para reemplazar el adjunto por un Excel corregido por
+fuera.
+
+**El stepper de 4 pasos mentía.** `render_stepper` calculaba el estado de cada
+paso por el **índice**, no por `current_step`: el paso 2 decía siempre "OK" y el
+3 siempre "Revisar". Con la pantalla recién abierta y sin un solo archivo
+cargado, la barra afirmaba que BigQuery estaba resuelto y que había algo que
+revisar. Hay 4 pruebas que leen el HTML dibujado.
 
 **Cierre de carga por etapas** (6 etapas, `flujo.ETAPAS_CARGA`):
 

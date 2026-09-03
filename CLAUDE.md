@@ -27,8 +27,24 @@ Documento de continuidad. Léelo completo antes de tocar código.
 5. **Nunca dejes una función sin llamador.** Ya pasó dos veces: se definió un
    panel y nunca se invocó. Verifica con AST antes de entregar.
 
-6. **El usuario sube los archivos a mano.** No hay push automático. Entrega
-   siempre en ZIP con la estructura exacta del repositorio.
+6. **Se entrega por GitHub, no en ZIP.** Desde septiembre de 2026 el agente
+   escribe directo en el repositorio: rama, commit, push, PR y merge a `main`.
+   Ya no se arma ZIP para que el usuario suba los archivos a mano.
+
+   `gh` está instalado y autenticado como `HugoCamara7` (scopes `repo`,
+   `workflow`, `read:org`), con permiso ADMIN en los dos repositorios. **No
+   está en el PATH del shell**; se invoca por ruta completa:
+
+   ```
+   %LOCALAPPDATA%\Microsoft\WinGet\Packages\GitHub.cli_Microsoft.Winget.Source_8wekyb3d8bbwe\bin\gh.exe
+   ```
+
+   Sacar el token guardado de Git Credential Manager para llamar a la API a
+   mano **está bloqueado** por el clasificador de seguridad de Claude Code, y
+   no hay que intentar rodearlo: para eso está `gh`.
+
+   `git push` sí funciona por su cuenta (GCM tiene las credenciales), pero
+   entregar significa **PR mergeado a `main`** — ver la sección 13.
 
 ---
 
@@ -677,9 +693,10 @@ Además, siempre:
 
 ## 13. Tono de trabajo con este usuario
 
-Trabaja en español. Prefiere entregas completas en ZIP, no fragmentos para
-copiar. Valora que se le diga con claridad qué no se hizo y por qué, y que se
-distinga un fallo propio de uno preexistente.
+Trabaja en español. Prefiere entregas completas y ya aplicadas en el
+repositorio, no fragmentos para copiar ni ZIP para subir a mano (ver regla 6).
+Valora que se le diga con claridad qué no se hizo y por qué, y que se distinga
+un fallo propio de uno preexistente.
 
 **El trabajo no está terminado hasta que está en GitHub.** No basta con dejarlo
 en una rama o en un PR abierto: la app se despliega desde `main`, así que

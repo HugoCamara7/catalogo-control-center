@@ -9,3 +9,6 @@ google-cloud-bigquery>=3.20
 google-auth>=2.29
 db-dtypes>=1.2
 pyarrow>=14.0
+# Se usa para reducir los logos antes de embutirlos como data URI en el HTML.
+# Llega por Streamlit, pero aqui se importa directo, asi que va declarada.
+pillow>=10.0

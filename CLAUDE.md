@@ -72,6 +72,7 @@ app_matrixify.py        18.7xx lineas · 439 funciones · UI + routing + logica
 │   ├── metrics.py      190 lin · metricas por Mod-Col (26 pruebas)
 │   ├── price_check.py  200 lin · validacion precio/stock (19 pruebas)
 │   ├── ticket_flow.py  562 lin · 23 estados -> 5 visibles (55 pruebas)
+│   ├── vtex_catalog.py 1.351 lin · carga manual a VTEX (62 pruebas)
 │   └── storage_check.py 176 lin · diagnostico de persistencia
 ├── ticket_system.py    1.093 lin · maquina de estados, 2 stores, 28 pruebas
 ├── generate_columbia_matrixify.py  3.319 lin · motor de catalogo
@@ -671,6 +672,87 @@ dónde. Cada intento va a la auditoría, salga bien o mal.
 **Scopes de Shopify:** `read_products`, `write_products`. `write_files` NO hace
 falta: los videos van por `productCreateMedia` / `productReorderMedia`.
 
+## 5 sexies bis. Carga VTEX manual (septiembre 2026)
+
+`engines/vtex_catalog.py` (sin Streamlit ni pandas) + `render_vtex_export()`.
+Entra como **una opción más de Carga parcial**, al lado del Mantenedor de
+Videos. Documento completo en `docs/CARGA_VTEX.md`.
+
+Forus también vende en VTEX (`supermallpe`) y ahí la carga **no va por API**: se
+suben cuatro planillas a mano. La app las arma y **no se conecta a VTEX** — hay
+un test que falla si aparece una llamada HTTP dentro de la pantalla.
+
+**El dato que hace todo esto posible: la referencia de producto de VTEX ES el
+Mod-Col.** `HP102011307-251` en los dos lados, verificado contra la exportación
+real. No hay tabla de equivalencias que mantener.
+
+**El catálogo maestro es obligatorio y no es un capricho.** VTEX identifica por
+ID numérico: una fila con `Product ID` en blanco **crea**, una con el ID puesto
+**actualiza**. Generar sin mirar el maestro duplicaría cada producto que ya está
+cargado, con otro ID y otra URL. La regla del motor es que **un ID que sale del
+maestro nunca se reemplaza**.
+
+**Los SKU se emparejan por TALLA, no por referencia.** En esta tienda el
+`SKU reference code` **es el propio `SKU ID`** (coinciden en las 499 filas de la
+muestra), así que la referencia no puede reconocer un SKU que todavía no existe
+— un ID que VTEX aún no asignó no se puede adivinar. El maestro trae
+`SKU name` = `TALLA 39` y de ahí sale la talla. Producto existente + talla que
+falta = SKU nuevo, que es el caso normal al ampliar una curva. La referencia de
+los SKU nuevos es **configurable** desde la pantalla (`{mod_col}-{talla}` por
+defecto): es una decisión de negocio, no del código.
+
+**Los ID de campo NO se inventan.** Las especificaciones se cargan con el ID del
+campo (24 = Género, 28 = Talla) y esos IDs son de cada cuenta de VTEX.
+Escribirlos en el código sería el hardcodeo que hay que evitar. Por eso las tres
+exportaciones opcionales del maestro son el **diccionario de la tienda**: qué
+campos tiene cada categoría y qué valores admite un Radio, con su ID. Sin ellas
+las planillas de especificaciones salen **vacías, a propósito**. El mapeo campo →
+dato empareja **por nombre**, sin tildes ni mayúsculas, y un valor que no está en
+la lista del campo **se avisa y no se emite**: un Radio con un valor que la
+tienda no conoce no se carga, y eso hay que saberlo antes de bajar el ZIP.
+
+**A un producto que ya existe no se le reescribe nada.** Se re-emite tal cual
+viene del maestro. Reescribirle nombre, URL o meta description a un producto
+publicado le cambia el SEO sin que nadie lo pida. La casilla "Actualizar los que
+ya existen" lo permite, y aun así la `Product URL` se conserva: VTEX le agrega un
+sufijo cuando la URL ya existe, así que recalcularla no daría la misma. Igual
+con categoría y marca: si la app propone una distinta de la que el producto
+tiene en VTEX, **gana VTEX** y se avisa — cambiarla movería el producto de sitio
+en la web.
+
+**El departamento es una suposición; la categoría es el dato.** El departamento
+sale del género; si la categoría existe en otro departamento del maestro, manda
+el maestro. Sin eso, una camisa de niño que en VTEX vive en Hombre se quedaba
+sin ID.
+
+**Los cuatro archivos salen del MISMO plan.** `construir_archivos()` recibe un
+plan y arma las cuatro tablas de ahí, así que el Product ID y el SKU ID de una
+son el mismo objeto que en las otras tres: no hay forma de que se
+desincronicen. Hay pruebas que lo recorren fila por fila.
+
+**Una talla nueva hereda las medidas de sus hermanas.** Se despacha en la misma
+caja; sin eso el SKU sale con peso vacío y VTEX no puede cotizar su envío.
+
+**Todo se escribe como TEXTO y la cabecera va en la fila 2**, con la primera en
+blanco, igual que el archivo que VTEX entrega. Un `Product ID` que Excel guarde
+como número vuelve como `310669.0` y deja de emparejar.
+
+**El maestro pasa de los 100 MB.** Se lee con **openpyxl en `read_only`**, fila
+por fila, no con `pd.read_excel`, y se guarda **partido en dos niveles**
+(producto y SKU): las 23 columnas de producto se repiten en cada talla y un
+catálogo de 300.000 SKUs no cabe en memoria de otra forma. El índice se cachea
+con `st.cache_resource`; `_archivos` lleva guion bajo (que Streamlit no hashee
+100 MB por rerun) y **`firma` NO lo lleva**, porque es la única parte de la
+clave: con guion bajo, subir un maestro nuevo devolvería el anterior con los IDs
+viejos. Hay un test que fija las dos cosas. Shopify y ARTI se leen **una vez**,
+antes del bucle de códigos.
+
+**No rompe nada del flujo actual.** Corte temprano en Carga parcial, el mismo
+patrón del Mantenedor de Videos: la pantalla solo LEE Shopify y no toca la
+maquinaria de analizar/ejecutar.
+
+---
+
 ## 5 septies. Rendimiento: el peso de cada rerun (septiembre 2026)
 
 Streamlit vuelve a ejecutar el script entero en cada clic, así que lo que
@@ -1015,6 +1097,7 @@ python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 55
 python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
+python scripts/test_engines_vtex_catalog.py            # 62
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 20
 python scripts/test_bandeja_solicitudes.py             # 57

@@ -13,6 +13,7 @@ import threading
 import time
 import unicodedata
 import uuid
+import zipfile
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -38,6 +39,7 @@ from engines.ticket_flow import ORDEN as FLUJO_ORDEN
 from engines import centry_map as centry_plantilla
 from engines import load_status as status_carga
 from engines import video_media as video_motor
+from engines import vtex_catalog as vtex_motor
 
 try:
     from engines import enrich as enriquecimiento
@@ -23068,6 +23070,762 @@ def render_video_maintainer(brand_config, shopify_config):
         render_video_galeria(shopify_config, publicados[0]["Product ID"], "Galería después de publicar")
 
 
+# =========================================================================
+# Carga VTEX (manual)
+# =========================================================================
+# Forus vende tambien en VTEX (supermallpe) y ahi la carga NO va por API: se
+# suben cuatro planillas a mano en el admin. Esta pantalla las arma.
+#
+# Lo que la hace posible es que la referencia de producto de VTEX es el mismo
+# codigo Modelo-Color que usa toda la app:
+#
+#     Mod-Col HP102011307-251  ==  Product reference code HP102011307-251
+#
+# Asi que no hay tabla de equivalencias que mantener: se busca el codigo tal
+# cual en el catalogo maestro que el usuario sube.
+#
+# Se apoya en lo que ya existe y no lo duplica:
+#   - codigos desde Excel        -> `png_codigos_desde_excel` (el de fotos)
+#   - catalogo del sitio         -> `session_shopify_products`
+#   - maestro de tallas y EAN    -> `session_arti_for_app` (BigQuery/ARTI)
+#   - fotos por codigo           -> `image_candidates` (el del motor)
+#   - tallas publicadas          -> `display_size_for_site`
+#   - medidas del paquete        -> `centry_lookup_dimensions`
+#   - auditoria                  -> `log_user_activity` / `log_acceso_modulo`
+#
+# La logica que se puede decidir sin red vive en `engines/vtex_catalog.py`.
+# Aqui NO hay reglas de negocio: se leen archivos, se arman las entradas y se
+# dibuja. Shopify no se toca en ningun momento: esta pantalla solo LEE.
+VTEX_LABEL = "Carga VTEX (manual)"
+
+# Los cuatro archivos del catalogo maestro. Solo el primero es obligatorio:
+# sin el no hay IDs y no se puede decidir que existe. Los otros tres son el
+# DICCIONARIO de la tienda (que campos tiene cada categoria, que valores admite
+# un Radio) y las fotos ya cargadas; sin ellos se generan igual las planillas,
+# pero las de especificaciones salen vacias porque no hay ID de campo que poner.
+VTEX_MAESTRO_ARCHIVOS = (
+    ("productos", "1. Products and SKUs", vtex_motor.COLUMNAS_PRODUCTOS_Y_SKUS, True,
+     "La exportacion general del catalogo. De aqui salen los Product ID y los SKU ID."),
+    ("especificaciones_producto", "2. Especificaciones de productos", vtex_motor.COLUMNAS_ESPECIFICACIONES_PRODUCTO, False,
+     "Opcional. Sin ella no se puede armar el archivo de especificaciones de producto."),
+    ("especificaciones_sku", "3. Especificaciones de SKUs", vtex_motor.COLUMNAS_ESPECIFICACIONES_SKU, False,
+     "Opcional. Sin ella no se puede armar el archivo de especificaciones de SKU (Talla y Color)."),
+    ("imagenes", "4. Imagenes", vtex_motor.COLUMNAS_IMAGENES, False,
+     "Opcional. Sirve para saber que SKUs ya tienen fotos cargadas."),
+)
+
+# Cuantos codigos se resuelven antes de refrescar la barra. El cruce es en
+# memoria y no toca la red, pero con 2.000 codigos la pantalla se queda muda
+# varios segundos y parece colgada.
+VTEX_CODIGOS_POR_BLOQUE = 50
+
+# Columnas con las que el Excel de codigos puede MANDAR sobre lo que la app
+# deduzca. Es la valvula de escape para un producto cuya categoria de VTEX no
+# se puede adivinar desde el tipo de prenda de Shopify.
+VTEX_COLUMNAS_OVERRIDE = {
+    "nombre": ["Nombre", "Nombre de Producto", "Product Name", "Titulo", "Título"],
+    "descripcion": ["Descripcion", "Descripción", "Description"],
+    "departamento": ["Departamento", "Department"],
+    "categoria": ["Categoria", "Categoría", "Category"],
+    "marca": ["Marca", "Brand"],
+    "color_web": ["Color web", "Color web/filtro", "Color Web", "Color"],
+    "color_comercial": ["Color Comercial", "Color comercial"],
+    "genero": ["Genero", "Género", "Gender"],
+    "clase": ["Clase"],
+    "tipo_prenda": ["Tipo de prenda", "Tipo de Producto", "Tipo"],
+    "material": ["Material", "Materiales"],
+    "composicion": ["Composicion", "Composición"],
+    "temporada": ["Temporada"],
+    "guia_tallas": ["Guia de Tallas", "Guía de Tallas", "Guia de tallas"],
+    "caracteristicas": ["Caracteristicas", "Características"],
+    "tecnologia": ["Tecnologia", "Tecnología"],
+}
+
+# Genero de la app -> departamento de VTEX. Es solo una PROPUESTA: el
+# departamento definitivo lo decide el maestro (`maestro.categoria`), que si la
+# categoria existe en otro departamento se queda con el del maestro.
+VTEX_DEPARTAMENTO_POR_GENERO = {
+    "Masculino": "Hombre",
+    "Femenino": "Mujer",
+    "Unisex": "Hombre",
+    "Niños": "Niños",
+}
+
+# Genero de la app -> el valor que espera el campo Genero de VTEX. Si el valor
+# no esta en la lista del campo, el motor avisa y no emite la especificacion:
+# nunca se manda un valor inventado.
+VTEX_GENERO_ESPECIFICACION = {
+    "Masculino": "Hombre",
+    "Femenino": "Mujer",
+    "Unisex": "Unisex",
+    "Niños": "Niños",
+}
+
+
+def vtex_firma_de_archivo(archivo):
+    """Que identifica al archivo subido, sin leerlo entero.
+
+    `file_id` cambia en cada subida, asi que reemplazar el maestro por otro del
+    mismo nombre y tamano invalida la cache igual. Hashear 60 MB en cada rerun
+    para lograr lo mismo costaria mas que la propia lectura.
+    """
+    if archivo is None:
+        return ()
+    return (
+        clean_value(getattr(archivo, "name", "")),
+        int(getattr(archivo, "size", 0) or 0),
+        clean_value(getattr(archivo, "file_id", "")),
+    )
+
+
+def vtex_hojas_de_archivo(archivo):
+    """Las filas del archivo, hoja por hoja. Lista de listas de listas.
+
+    Se lee con openpyxl en modo `read_only`: el maestro de VTEX pasa de los
+    100 MB y `pd.read_excel` lo carga entero en un DataFrame con las 50
+    columnas, incluidas las descripciones largas que aqui no se usan. En modo
+    read_only openpyxl entrega fila por fila y no guarda nada.
+
+    Se devuelven las hojas por separado porque VTEX parte los archivos grandes
+    en varias, y cada una repite la cabecera.
+    """
+    if archivo is None:
+        return []
+    nombre = clean_value(getattr(archivo, "name", "")).lower()
+    datos = archivo.getvalue()
+    if nombre.endswith(".csv") or nombre.endswith(".txt"):
+        import csv as _csv
+        texto = datos.decode("utf-8-sig", errors="replace")
+        return [[list(fila) for fila in _csv.reader(io.StringIO(texto))]]
+    if nombre.endswith(".xls"):
+        # Formato viejo: openpyxl no lo abre. pandas si, con el motor que haya.
+        hojas = pd.read_excel(io.BytesIO(datos), sheet_name=None, header=None, dtype=object)
+        return [tabla.values.tolist() for tabla in hojas.values()]
+    import openpyxl
+    libro = openpyxl.load_workbook(io.BytesIO(datos), read_only=True, data_only=True)
+    try:
+        return [
+            [list(fila) for fila in hoja.iter_rows(values_only=True)]
+            for hoja in libro.worksheets
+        ]
+    finally:
+        libro.close()
+
+
+def vtex_filas_de_archivo(archivo):
+    """Todas las hojas pegadas. Las cabeceras repetidas las salta el motor."""
+    filas = []
+    for hoja in vtex_hojas_de_archivo(archivo):
+        filas.extend(hoja)
+    return filas
+
+
+@st.cache_resource(show_spinner=False, max_entries=2)
+def vtex_maestro_cacheado(firma, _archivos):
+    """El catalogo maestro indexado. Se arma UNA vez por archivo subido.
+
+    `_archivos` va con guion bajo a proposito, igual que `artefacto_de_solicitud`:
+    asi Streamlit no intenta hashear 100 MB de Excel en cada rerun y la clave de
+    cache es solo la firma. Sin esto, cada clic de la pantalla volveria a leer
+    el maestro entero.
+
+    Y `firma` va SIN guion bajo, tambien a proposito: es la unica parte de la
+    clave. Con guion bajo Streamlit la ignoraria igual que a los archivos, la
+    clave seria siempre la misma y subir un maestro nuevo devolveria el
+    anterior, con los IDs viejos. Hay una prueba que lo fija.
+    """
+    return vtex_motor.CatalogoMaestroVTEX.desde_filas(
+        vtex_filas_de_archivo(_archivos.get("productos")),
+        vtex_filas_de_archivo(_archivos.get("especificaciones_producto")),
+        vtex_filas_de_archivo(_archivos.get("especificaciones_sku")),
+        vtex_filas_de_archivo(_archivos.get("imagenes")),
+    )
+
+
+def vtex_indice_shopify(productos):
+    """{Mod-Col: producto} del catalogo del sitio."""
+    indice = {}
+    for producto in productos or []:
+        codigo = vtex_motor.normalizar_referencia(producto.get("Mod-Col"))
+        if codigo:
+            indice.setdefault(codigo, producto)
+    return indice
+
+
+def vtex_indice_arti(arti_df):
+    """{Mod-Col: [filas del maestro ARTI]}. Ahi estan las tallas y los EAN."""
+    indice = {}
+    if arti_df is None or getattr(arti_df, "empty", True):
+        return indice
+    columna = first_existing_column(arti_df, ["Mod-Col", "COD MOD COL"])
+    if columna is None:
+        return indice
+    for fila in arti_df.to_dict("records"):
+        codigo = vtex_motor.normalizar_referencia(fila.get(columna))
+        if codigo:
+            indice.setdefault(codigo, []).append(fila)
+    return indice
+
+
+def vtex_overrides_desde_excel(df):
+    """{Mod-Col: {campo: valor}} con lo que el Excel traiga de mas.
+
+    El Excel de codigos puede venir con una sola columna, que es lo normal. Si
+    ademas trae Categoria, Nombre o Color web, eso MANDA sobre lo que la app
+    deduzca: es la unica forma de cargar un producto cuya categoria de VTEX no
+    se puede adivinar desde el tipo de prenda de Shopify.
+    """
+    if df is None or getattr(df, "empty", True):
+        return {}
+    columna_codigo = first_existing_column(df, PNG_COLUMNAS_CODIGO)
+    if columna_codigo is None:
+        return {}
+    columnas = {}
+    for llave, alias in VTEX_COLUMNAS_OVERRIDE.items():
+        encontrada = first_existing_column(df, alias)
+        if encontrada is not None and encontrada != columna_codigo:
+            columnas[llave] = encontrada
+    if not columnas:
+        return {}
+    overrides = {}
+    for fila in df.to_dict("records"):
+        codigo = vtex_motor.normalizar_referencia(fila.get(columna_codigo))
+        if not codigo:
+            continue
+        valores = {llave: clean_value(fila.get(columna)) for llave, columna in columnas.items()}
+        overrides[codigo] = {llave: valor for llave, valor in valores.items() if valor}
+    return overrides
+
+
+def vtex_tallas_de_shopify(producto, brand_config, genero, tipo):
+    """[(talla, ean)] leidas de las variantes del producto en Shopify."""
+    tallas = []
+    for variante in (producto or {}).get("Variants") or []:
+        valor = ""
+        for numero in ("1", "2"):
+            nombre = clean_value(variante.get(f"Option{numero} Name")).lower()
+            if nombre.startswith("talla") or nombre.startswith("size"):
+                valor = clean_value(variante.get(f"Option{numero} Value"))
+                break
+        valor = valor or clean_value(variante.get("Option1 Value"))
+        talla = display_size_for_site(valor, brand_config, genero, tipo)
+        if talla:
+            tallas.append((talla, clean_value(variante.get("Variant Barcode"))))
+    return tallas
+
+
+def vtex_tallas_de_arti(filas, brand_config, genero, tipo):
+    """[(talla, ean)] del maestro ARTI. Es el respaldo cuando el producto
+    todavia no esta en Shopify: sin esto un producto nuevo no tiene curva."""
+    tallas = []
+    for fila in filas or []:
+        talla = display_size_for_site(fila.get("TALNUM_MA"), brand_config, genero, tipo)
+        if talla:
+            tallas.append((talla, clean_value(fila.get("CodBarras"))))
+    return tallas
+
+
+def vtex_imagenes_de_codigo(codigo, producto_shopify, brand_config, origen):
+    """Las URLs de las fotos, en orden.
+
+    Dos origenes, y ninguno inventa nada: las que ya estan publicadas en
+    Shopify, o las diez vistas del bucket armadas con el codigo, que es la
+    misma funcion que usa el motor de catalogo.
+    """
+    if origen == "shopify":
+        urls = [
+            clean_value(parte)
+            for parte in clean_value((producto_shopify or {}).get("Image Src")).split(";")
+            if clean_value(parte)
+        ]
+        if urls:
+            return urls
+    return image_candidates(codigo, brand_config)
+
+
+def vtex_entrada_de_codigo(codigo, producto_shopify, filas_arti, brand_config,
+                           overrides, opciones):
+    """Todo lo que se sabe de un Modelo-Color, en el formato del motor.
+
+    El orden de las fuentes no es casual: manda lo que el usuario escribe en el
+    Excel, despues el catalogo real de Shopify (que es lo que esta publicado) y
+    al final el maestro ARTI. La pantalla es el ultimo respaldo, no el primero.
+    """
+    overrides = overrides or {}
+    modelo, color = split_model_color(codigo)
+    fila_arti = (filas_arti or [{}])[0]
+    fila_falsa = {
+        "Title": clean_value((producto_shopify or {}).get("Title")),
+        "Tags": clean_value((producto_shopify or {}).get("Tags")),
+        "Body HTML": clean_value((producto_shopify or {}).get("Body HTML")),
+        "Type": clean_value((producto_shopify or {}).get("Type")),
+        "Genero": clean_value(overrides.get("genero")),
+        "GENERO_MA": clean_value(fila_arti.get("GENERO_MA")),
+    }
+    genero = centry_gender(fila_falsa)
+    tipo = clean_value(overrides.get("tipo_prenda")) or clean_value((producto_shopify or {}).get("Type"))
+    nombre = (
+        clean_value(overrides.get("nombre"))
+        or clean_value((producto_shopify or {}).get("Title"))
+        or clean_value(fila_arti.get("NombreModelo"))
+    )
+    descripcion = clean_value(overrides.get("descripcion"))
+    if not descripcion:
+        descripcion = texto_plano_de_body((producto_shopify or {}).get("Body HTML"))
+    marca = (
+        clean_value(overrides.get("marca"))
+        or clean_value((producto_shopify or {}).get("Marca"))
+        or clean_value(fila_arti.get("MARCA_MA"))
+        or clean_value(brand_config.get("label"))
+    )
+    color_web = (
+        clean_value(overrides.get("color_web"))
+        or clean_value(fila_arti.get("ColorNombre"))
+        or clean_value((producto_shopify or {}).get("Siblings Color"))
+        or clean_value((producto_shopify or {}).get("Custom Siblings Color"))
+    )
+    tallas = vtex_tallas_de_shopify(producto_shopify, brand_config, genero, tipo)
+    if not tallas:
+        tallas = vtex_tallas_de_arti(filas_arti, brand_config, genero, tipo)
+    medidas = centry_lookup_dimensions(tipo, {"weight": "", "width": "", "height": "", "length": ""})
+    imagenes = vtex_imagenes_de_codigo(codigo, producto_shopify, brand_config, opciones.get("origen_fotos"))
+    entrada = {
+        "mod_col": codigo,
+        "modelo": modelo,
+        "color": color,
+        "encontrado": bool(producto_shopify or filas_arti or overrides),
+        "detalle_origen": (
+            "Shopify" if producto_shopify else ("Maestro ARTI" if filas_arti else "Solo el Excel")
+        ),
+        "nombre": nombre,
+        "nombre_corto": limit_words(nombre, 8),
+        "descripcion": descripcion,
+        "descripcion_adicional": descripcion.replace("\n", " ") if descripcion else "",
+        "marca": marca,
+        "departamento": (
+            clean_value(overrides.get("departamento"))
+            or VTEX_DEPARTAMENTO_POR_GENERO.get(genero, "")
+        ),
+        "categoria": clean_value(overrides.get("categoria")) or tipo,
+        "genero": clean_value(overrides.get("genero")) or VTEX_GENERO_ESPECIFICACION.get(genero, ""),
+        "clase": clean_value(overrides.get("clase")) or centry_garment_class(tipo),
+        "tipo_prenda": tipo,
+        "color_web": color_web,
+        "color_comercial": clean_value(overrides.get("color_comercial")) or color_web,
+        "material": clean_value(overrides.get("material")) or clean_value(
+            (producto_shopify or {}).get("Metafield: custom.materialidad [single_line_text_field]")),
+        "composicion": clean_value(overrides.get("composicion")),
+        "temporada": clean_value(overrides.get("temporada")),
+        "guia_tallas": clean_value(overrides.get("guia_tallas")),
+        "caracteristicas": clean_value(overrides.get("caracteristicas")),
+        "tecnologia": clean_value(overrides.get("tecnologia")) or clean_value(
+            (producto_shopify or {}).get("Metafield: custom.tecnologia [list.single_line_text_field]")),
+        "descripcion_modelo": "",
+        "cuidado_lavado": "",
+        "modelo_texto": modelo,
+        "paquete": medidas,
+        "skus": [{"talla": talla, "ean": ean} for talla, ean in tallas],
+        "imagenes": imagenes,
+    }
+    # El campo "Modelo" de VTEX espera el codigo de modelo, no el nombre.
+    entrada["modelo"] = modelo
+    return entrada
+
+
+def vtex_construir_entradas(codigos, brand_config, shopify_config, overrides,
+                            opciones, progreso=None):
+    """Las entradas de todos los codigos. UNA lectura de Shopify y UNA de ARTI.
+
+    Las dos fuentes se leen enteras antes del bucle: pedir por codigo serian
+    2.000 viajes para 2.000 codigos, que es justo lo que la carga parcial ya
+    aprendio a no hacer.
+    """
+    indice_shopify = {}
+    if opciones.get("usar_shopify") and is_shopify_configured(shopify_config):
+        indice_shopify = vtex_indice_shopify(
+            session_shopify_products(brand_config["site_key"], shopify_config)
+        )
+    indice_arti = {}
+    if opciones.get("usar_arti"):
+        arti_df, _ = session_arti_for_app(brand_config, mod_cols=list(codigos))
+        indice_arti = vtex_indice_arti(arti_df)
+    entradas = []
+    total = len(codigos) or 1
+    for numero, codigo in enumerate(codigos, start=1):
+        entradas.append(vtex_entrada_de_codigo(
+            codigo,
+            indice_shopify.get(codigo),
+            indice_arti.get(codigo),
+            brand_config,
+            overrides.get(codigo),
+            opciones,
+        ))
+        if progreso and (numero % VTEX_CODIGOS_POR_BLOQUE == 0 or numero == total):
+            progreso(numero / total, f"{numero}/{total} · {codigo}")
+    return entradas
+
+
+def vtex_excel_bytes(tabla):
+    """Una planilla de VTEX en Excel, con la fila en blanco de la exportacion.
+
+    La cabecera va en la fila 2, como en el archivo que VTEX entrega. Se escribe
+    todo como TEXTO: un Product ID que Excel guarde como numero vuelve como
+    310669.0 y deja de emparejar.
+    """
+    columnas = list(tabla["columnas"])
+    df = pd.DataFrame(
+        [[vtex_motor.texto(fila.get(columna, "")) for columna in columnas] for fila in tabla["filas"]],
+        columns=columnas,
+        dtype=object,
+    )
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(
+            writer, index=False, sheet_name="Sheet1",
+            startrow=vtex_motor.FILAS_VACIAS_ANTES_DE_CABECERA,
+        )
+        for hoja in writer.book.worksheets:
+            for celdas in hoja.columns:
+                hoja.column_dimensions[celdas[0].column_letter].width = 22
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def vtex_zip_bytes(archivos):
+    """Los cuatro Excel en un ZIP, en el orden en que se cargan en VTEX."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for nombre in vtex_motor.ORDEN_ARCHIVOS:
+            tabla = archivos.get(nombre)
+            if tabla is None:
+                continue
+            zip_file.writestr(f"{nombre}.xlsx", vtex_excel_bytes(tabla))
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def vtex_registrar_auditoria(accion, detalle, brand_config, extra=None):
+    log_user_activity(
+        accion,
+        detail=detalle,
+        module=VTEX_LABEL,
+        site_key=clean_value(brand_config.get("site_key")),
+        extra=extra,
+    )
+
+
+def render_vtex_alertas(alertas):
+    """Los errores primero. Un aviso arriba de un bloqueo hace perder el tiempo
+    a quien mira: lo que impide bajar el ZIP tiene que verse sin bajar."""
+    if not alertas:
+        st.success("Sin alertas: los códigos cruzaron limpio contra el catálogo maestro.")
+        return
+    errores = [alerta for alerta in alertas if alerta["Nivel"] == vtex_motor.NIVEL_ERROR]
+    avisos = [alerta for alerta in alertas if alerta["Nivel"] == vtex_motor.NIVEL_AVISO]
+    if errores:
+        st.error(
+            f"**{len(errores):,} error(es) crítico(s)**: no se puede generar la carga hasta corregirlos. "
+            + ", ".join(sorted({alerta["Alerta"] for alerta in errores}))
+        )
+        st.dataframe(pd.DataFrame(errores)[["Alerta", "Mod-Col", "Detalle"]],
+                     use_container_width=True, hide_index=True)
+    if avisos:
+        with st.expander(f"Avisos para revisar ({len(avisos):,})", expanded=not errores):
+            st.dataframe(pd.DataFrame(avisos)[["Alerta", "Mod-Col", "Detalle"]],
+                         use_container_width=True, hide_index=True)
+
+
+def render_vtex_resumen(resumen):
+    filas = [
+        ("Productos encontrados", resumen["Productos encontrados"]),
+        ("Productos existentes", resumen["Productos existentes"]),
+        ("Productos nuevos", resumen["Productos nuevos"]),
+        ("SKUs encontrados", resumen["SKUs encontrados"]),
+        ("SKUs existentes", resumen["SKUs existentes"]),
+        ("SKUs nuevos", resumen["SKUs nuevos"]),
+        ("Imágenes", resumen["Imagenes"]),
+        ("Alertas", resumen["Errores"] + resumen["Avisos"]),
+    ]
+    columnas = st.columns(4)
+    for numero, (etiqueta, valor) in enumerate(filas):
+        columnas[numero % 4].metric(etiqueta, f"{valor:,}")
+
+
+def render_vtex_vista_previa(filas):
+    """La tabla con la que se valida el mapeo antes de bajar nada."""
+    df = pd.DataFrame(filas)
+    if df.empty:
+        st.info("No hay filas para mostrar.")
+        return
+    estados = ["Todos"] + sorted(df["Estado"].map(clean_value).unique().tolist())
+    columnas = st.columns([1, 2])
+    estado = columnas[0].selectbox("Estado", estados, key="vtex_filtro_estado")
+    busqueda = columnas[1].text_input("Buscar modelo, color o referencia", key="vtex_filtro_busqueda")
+    vista = df
+    if estado != "Todos":
+        vista = vista[vista["Estado"].map(clean_value) == estado]
+    if clean_value(busqueda):
+        patron = clean_value(busqueda).upper()
+        mascara = vista.apply(
+            lambda fila: patron in " ".join(clean_value(valor).upper() for valor in fila.values),
+            axis=1,
+        )
+        vista = vista[mascara]
+    st.caption(f"{len(vista):,} de {len(df):,} filas")
+    st.dataframe(
+        vista[["Modelo", "Color", "Product Ref", "Product ID", "SKU Ref", "SKU ID",
+               "Talla", "Fotos", "Estado", "Detalle"]],
+        use_container_width=True, hide_index=True, height=420,
+    )
+
+
+def render_vtex_export(brand_config, shopify_config):
+    """La pantalla completa: maestro, seleccion, mapeo, validación y ZIP.
+
+    Los cuatro archivos salen del MISMO plan, asi que el Product ID y el SKU ID
+    que aparecen en uno son el mismo que en los otros tres. No hay forma de
+    generar tres archivos consistentes y uno desfasado.
+    """
+    log_acceso_modulo(VTEX_LABEL)
+    st.markdown(
+        """
+        <div class="section-card">
+            <h2>🛒 Carga VTEX (manual)</h2>
+            <p>Arma las cuatro planillas de VTEX a partir de los códigos Modelo-Color.
+            La app <strong>no se conecta a VTEX</strong>: genera los archivos y tú los subes al admin.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # --- Paso 1: catalogo maestro ---------------------------------------
+    st.markdown("### 1. Catálogo maestro VTEX")
+    st.caption(
+        "El último catálogo general descargado de VTEX. Es obligatorio: sin él no se sabe "
+        "qué productos y qué SKUs ya existen, y todo se cargaría duplicado con IDs nuevos."
+    )
+    archivos = {}
+    columnas = st.columns(2)
+    for numero, (clave, etiqueta, _columnas, obligatorio, ayuda) in enumerate(VTEX_MAESTRO_ARCHIVOS):
+        archivos[clave] = columnas[numero % 2].file_uploader(
+            etiqueta + (" *" if obligatorio else ""),
+            type=["xlsx", "xls", "csv"],
+            key=f"vtex_maestro_{clave}",
+            help=ayuda,
+        )
+    if archivos.get("productos") is None:
+        st.info("Sube al menos **Products and SKUs** para continuar.")
+        return
+
+    firma = tuple(vtex_firma_de_archivo(archivos.get(clave)) for clave, *_ in VTEX_MAESTRO_ARCHIVOS)
+    with st.spinner("Leyendo el catálogo maestro de VTEX..."):
+        try:
+            maestro = vtex_maestro_cacheado(firma, archivos)
+        except Exception as error:  # el archivo puede venir de cualquier lado
+            st.error(f"No se pudo leer el catálogo maestro: {error}")
+            return
+    if maestro.vacio:
+        st.error(
+            "El archivo no tiene filas reconocibles. Se esperan las columnas de la exportación "
+            "'Products and SKUs' de VTEX (Product ID, Product reference code, SKU ID...)."
+        )
+        return
+    resumen_maestro = maestro.resumen()
+    columnas = st.columns(4)
+    for numero, (etiqueta, valor) in enumerate(resumen_maestro.items()):
+        columnas[numero % 4].metric(etiqueta, f"{valor:,}")
+    faltantes = [
+        f"{etiqueta}: {', '.join(maestro.faltantes.get(clave) or [])}"
+        for clave, etiqueta in (("productos", "Products and SKUs"),
+                                ("especificaciones_producto", "Especificaciones de productos"),
+                                ("especificaciones_sku", "Especificaciones de SKUs"),
+                                ("imagenes", "Imágenes"))
+        if maestro.faltantes.get(clave)
+    ]
+    if faltantes:
+        st.warning("Columnas que no se encontraron en el maestro:\n\n- " + "\n- ".join(faltantes))
+    if not maestro.campos_producto:
+        st.info(
+            "Sin la exportación de **especificaciones de productos** el archivo "
+            "Product_Specifications sale vacío: los ID de campo son propios de tu cuenta de VTEX "
+            "y no se pueden inventar."
+        )
+    if not maestro.campos_sku:
+        st.info(
+            "Sin la exportación de **especificaciones de SKUs** el archivo SKU_Specifications "
+            "sale vacío (ahí van Talla y Color)."
+        )
+
+    # --- Paso 2: que se va a cargar -------------------------------------
+    st.markdown("### 2. Productos a preparar")
+    codigos_texto = st.text_area(
+        "Códigos Modelo-Color (uno por línea)",
+        key="vtex_codigos_texto",
+        height=110,
+        help="Por ejemplo HP102011307-251. También puedes subir un Excel más abajo.",
+    )
+    archivo_codigos = st.file_uploader(
+        "O subir un Excel con los códigos",
+        type=["xlsx", "xls"],
+        key="vtex_codigos_excel",
+        help=(
+            "Una columna con el código (Mod-Col, Cod Mod Col, Código Modelo Color). "
+            "Si además trae Categoría, Nombre, Color web, Género o Material, esos valores "
+            "mandan sobre lo que la app deduzca."
+        ),
+    )
+    columnas = st.columns(3)
+    usar_shopify = columnas[0].checkbox(
+        "Leer datos de Shopify", value=is_shopify_configured(shopify_config),
+        disabled=not is_shopify_configured(shopify_config),
+        help="Nombre, descripción, tipo, marca, fotos y tallas publicadas del sitio.",
+    )
+    usar_arti = columnas[1].checkbox(
+        "Leer el maestro ARTI (BigQuery)", value=True,
+        help="Tallas, EAN y color. Es la única fuente de curva para un producto que aún no está en Shopify.",
+    )
+    origen_fotos = columnas[2].radio(
+        "Fotos", ["bucket", "shopify"],
+        format_func=lambda valor: "Bucket por código" if valor == "bucket" else "Las publicadas en Shopify",
+        key="vtex_origen_fotos",
+        help="VTEX descarga la imagen desde la URL, así que tiene que ser pública.",
+    )
+    columnas = st.columns(3)
+    actualizar_existentes = columnas[0].checkbox(
+        "Actualizar los productos que ya existen", value=False,
+        help=(
+            "Apagado, un producto que ya está en VTEX se re-emite tal cual viene del maestro. "
+            "Encendido, se le reescriben nombre y descripción con los datos de la app."
+        ),
+    )
+    solo_sin_imagenes = columnas[1].checkbox(
+        "Solo fotos de SKUs que no tienen", value=False,
+        help="Necesita la exportación de Imágenes del maestro.",
+    )
+    patron_referencia = columnas[2].text_input(
+        "Referencia de los SKUs nuevos", value=vtex_motor.PATRON_REFERENCIA_SKU,
+        key="vtex_patron_referencia",
+        help=(
+            "En esta tienda la referencia de un SKU es su propio SKU ID, y el ID de un SKU que "
+            "todavía no existe no se puede adivinar. Campos: {mod_col}, {modelo}, {color}, {talla}, {ean}."
+        ),
+    )
+
+    codigos = [
+        vtex_motor.normalizar_referencia(linea)
+        for linea in clean_value(codigos_texto).splitlines()
+        if clean_value(linea)
+    ]
+    overrides = {}
+    if archivo_codigos is not None:
+        df_codigos = read_uploaded_excel_cached(
+            archivo_codigos, f"vtex_codigos_{brand_config['site_key']}"
+        )
+        desde_excel, descartados = png_codigos_desde_excel(df_codigos)
+        codigos.extend(vtex_motor.normalizar_referencia(codigo) for codigo in desde_excel)
+        overrides = vtex_overrides_desde_excel(df_codigos)
+        if descartados:
+            with st.expander(f"Filas descartadas del Excel ({len(descartados)})"):
+                st.dataframe(pd.DataFrame(descartados), use_container_width=True, hide_index=True)
+    codigos = list(dict.fromkeys(codigo for codigo in codigos if codigo))
+    if not codigos:
+        st.info("Escribe o sube los códigos Modelo-Color que quieres preparar.")
+        return
+    st.caption(f"{len(codigos):,} código(s) para preparar.")
+
+    opciones = {
+        "usar_shopify": usar_shopify,
+        "usar_arti": usar_arti,
+        "origen_fotos": origen_fotos,
+        "actualizar_existentes": actualizar_existentes,
+        "solo_sin_imagenes": solo_sin_imagenes,
+        "patron_referencia_sku": patron_referencia,
+    }
+
+    if st.button("Analizar y mapear IDs", type="primary", key="vtex_analizar"):
+        barra = st.progress(0.0, text="Preparando...")
+
+        def _avance(fraccion, texto):
+            barra.progress(min(1.0, fraccion), text=texto)
+
+        try:
+            entradas = vtex_construir_entradas(
+                codigos, brand_config, shopify_config, overrides, opciones, progreso=_avance
+            )
+        except Exception as error:
+            barra.empty()
+            st.error(f"No se pudieron reunir los datos de los códigos: {error}")
+            return
+        barra.empty()
+        plan = vtex_motor.plan_de_carga(entradas, maestro, opciones)
+        st.session_state["vtex_plan"] = plan
+        st.session_state["vtex_plan_codigos"] = list(codigos)
+        st.session_state.pop("vtex_zip", None)
+        vtex_registrar_auditoria(
+            "Analisis VTEX",
+            f"{len(codigos)} codigos · {plan['resumen']['Productos nuevos']} nuevos",
+            brand_config,
+            extra=plan["resumen"],
+        )
+
+    plan = st.session_state.get("vtex_plan")
+    if not plan:
+        return
+
+    # --- Paso 3: validacion ----------------------------------------------
+    st.markdown("### 3. Validación")
+    render_vtex_resumen(plan["resumen"])
+    render_vtex_alertas(plan["alertas"])
+
+    # --- Paso 4: vista previa --------------------------------------------
+    st.markdown("### 4. Previsualización del mapeo")
+    render_vtex_vista_previa(plan["filas"])
+
+    # --- Paso 5: descarga -------------------------------------------------
+    st.markdown("### 5. Generar carga VTEX")
+    if plan["bloqueado"]:
+        st.error("Hay errores críticos. Corrígelos y vuelve a analizar antes de generar los archivos.")
+        return
+    if st.button("Generar carga VTEX", type="primary", key="vtex_generar"):
+        with st.spinner("Armando las cuatro planillas..."):
+            archivos_generados = vtex_motor.construir_archivos(plan, maestro)
+            st.session_state["vtex_zip"] = vtex_zip_bytes(archivos_generados)
+            st.session_state["vtex_zip_conteo"] = {
+                nombre: len(tabla["filas"]) for nombre, tabla in archivos_generados.items()
+            }
+        vtex_registrar_auditoria(
+            "Generacion VTEX",
+            f"{plan['resumen']['Productos encontrados']} productos · "
+            f"{plan['resumen']['SKUs encontrados']} SKUs",
+            brand_config,
+            extra=st.session_state["vtex_zip_conteo"],
+        )
+
+    if st.session_state.get("vtex_zip"):
+        conteo = st.session_state.get("vtex_zip_conteo") or {}
+        st.dataframe(
+            pd.DataFrame(
+                [{"Archivo": f"{nombre}.xlsx", "Filas": conteo.get(nombre, 0)}
+                 for nombre in vtex_motor.ORDEN_ARCHIVOS]
+            ),
+            use_container_width=True, hide_index=True,
+        )
+        nombre_zip = f"VTEX_CARGA_{datetime.now().strftime('%Y%m%d_%H%M')}.zip"
+        st.download_button(
+            "Descargar ZIP con las 4 planillas",
+            data=st.session_state["vtex_zip"],
+            file_name=nombre_zip,
+            mime="application/zip",
+            type="primary",
+            on_click=log_descarga,
+            kwargs={"nombre_archivo": nombre_zip, "modulo": VTEX_LABEL},
+        )
+        st.caption(
+            "Orden de carga en VTEX: Products and SKUs primero (crea los IDs), "
+            "después especificaciones e imágenes."
+        )
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
     if not require_login():
@@ -23266,6 +24024,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Fotos 10 vistas": "photos",
             "Mantenedor Fotos PNG": "photos_png",
             "Mantenedor de Videos": "videos",
+            VTEX_LABEL: "vtex",
             "Siblings": "siblings",
             "Titulo": "title",
             "Guías de talla": "size_guides",
@@ -23281,6 +24040,14 @@ api_version = "{DEFAULT_API_VERSION}"
             key=f"partial_operation_select_{brand_config['site_key']}_v3",
         )
         update_operation = operation_labels[update_label]
+        if update_operation == "vtex":
+            # La carga VTEX tampoco pasa por el analizar/ejecutar de la carga
+            # parcial: no hay nada que escribir en Shopify, solo archivos que
+            # generar. Se corta aqui por la misma razon que el Mantenedor de
+            # Videos, para no arrastrar una maquinaria que no le aplica.
+            st.markdown("</div>", unsafe_allow_html=True)
+            render_vtex_export(brand_config, shopify_config)
+            return
         if update_operation == "videos":
             # El Mantenedor de Videos NO pasa por el analizar/ejecutar de la
             # carga parcial: no hay vista previa que armar ni Excel que cruzar,

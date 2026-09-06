@@ -939,6 +939,102 @@ exige que ninguna fila bloqueada se quede sin explicacion en el reporte.
 
 ---
 
+## 5 nonies. La carga sigue con la sesión cerrada (septiembre 2026)
+
+`engines/carga_remota.py` (sin Streamlit) + `scripts/worker_carga_shopify.py` +
+`.github/workflows/carga-shopify.yml`.
+
+**El problema:** la carga corría DENTRO del proceso de Streamlit. Cuando el
+navegador se desconecta —la PC se apaga, se cae el wifi, se cierra la pestaña—
+Streamlit corta la sesión y el script deja de avanzar a mitad del catálogo.
+
+El panel "Sincronización recuperable por bloques" parecía resolverlo y no lo
+hacía: **no avanza solo** (alguien tiene que pulsar "Continuar siguiente
+bloque") y guarda el avance en `outputs/sync_jobs/`, que es disco del
+contenedor de Streamlit Cloud y está en `.gitignore`. Un reinicio del
+contenedor borra el avance, no solo la sesión.
+
+Ahora la ejecuta un runner de GitHub Actions: una máquina que no es la del
+usuario. El avance vive en el repositorio **privado** de datos, en
+`catalog_tickets/catalog_jobs/`, al lado de las solicitudes.
+
+**El punto de enganche YA EXISTÍA.** `TicketService` recibe el adaptador de
+jobs por inyección y `start_load()` ya llamaba a `self.jobs.start(ticket)`,
+guardando el resultado en `ticket["job"]`. Como el ticket se persiste en
+GitHub, **el identificador del job sobrevive al cierre de sesión sin tocar la
+máquina de estados**. Es la misma historia que el motor de notificaciones:
+enchufando `AdaptadorCargaActions` ahí, las tres superficies que ejecutan
+cargas lo heredan sin saber que existe. Hasta ahora había un `MockJobAdapter`
+devolviendo un id falso.
+
+**El ticket guarda solo el puntero**, no el avance. Con los pendientes y los
+resultados dentro, cada escritura de la solicitud arrastraría el catálogo
+entero y el JSON crecería sin techo.
+
+**El Matrixify tiene que estar en el repositorio antes de disparar.** El runner
+no puede leer `st.session_state`. `attach_matrixify` lo sube como adjunto de la
+solicitud, y el enganche está en **`_ejecutar_accion_ticket`**, no en cada
+pantalla: así los atajos y las tres superficies lo heredan. No reescribe si el
+contenido no cambió —cada escritura es un commit— y solo se guarda la
+REFERENCIA al DataFrame en la sesión: el Excel se arma una sola vez, al pulsar.
+
+**Reanudable de verdad.** El avance se publica **dentro** del bucle, después de
+cada bloque de 20. Guardando solo al final, un runner que muere a los 40
+minutos no deja constancia de nada y el próximo intento recarga todo. Al
+reanudar, las claves salen del **Excel**, no de la lista guardada: si el
+adjunto se reemplazó por una versión corregida, la lista vieja cargaría
+productos que ya no están en el archivo.
+
+**Quedarse sin tiempo NO es terminar.** El tope del runner son 6 h; el worker
+corta a los 330 min y deja el job en `queued` con sus pendientes. Marcarlo
+completado con productos sin cargar es exactamente el error corregido en agosto
+de 2026. Hay pruebas que lo fijan.
+
+**Los logs de Actions son PÚBLICOS.** El workflow vive en el repositorio
+público a propósito: ahí los minutos son gratis e ilimitados (en un repositorio
+privado serían 2.000 al mes en el plan Free). La contrapartida es que cualquiera
+puede leer el log de una ejecución; GitHub solo enmascara los secretos
+declarados. Por eso:
+
+- El worker imprime **solo** contadores, número de bloque y códigos Modelo-Color.
+- Todo pasa por `_decir()`, que llama a `texto_publico()`. Hay un test AST que
+  falla si aparece un `print()` fuera de ahí.
+- El detalle de cada error va al registro del job, en el repositorio privado.
+- El resultado **no** se sube como `upload-artifact`: eso sería publicar el
+  catálogo. Va al repositorio de datos.
+
+**`concurrency` por sitio, con `cancel-in-progress: false`.** Dos runners
+cargando el mismo sitio se pisan en Shopify y chocan con el sha del repositorio
+de datos —el mismo `TicketConflictError` de la sección 9—. Cancelar la primera
+dejaría el catálogo a medias; como el job es reanudable, esperar no cuesta
+trabajo repetido.
+
+**Ojo con Hush Puppies.** `catalog_engine._env_name` arma la variable desde el
+`site_key`, y el suyo es `hush_puppies` → `HUSH_PUPPIES_SHOP_DOMAIN`. El secreto
+guardado se llama `HUSHPUPPIES_SHOP_DOMAIN`, sin el guion. El workflow los mapea;
+sin eso Hush Puppies falla con "faltan credenciales" y nada más. Hay un test que
+recorre los cinco sitios.
+
+**Sin `[carga_remota]` en Secrets no cambia nada.** `get_job_adapter()` cae al
+`MockJobAdapter` de siempre y la carga se sigue haciendo a mano por bloques.
+Misma regla que el motor de correo, que sin `[notificaciones]` cae a consola.
+El token **no** es el de `[ticketing]`: aquel es de contenidos sobre el
+repositorio privado, y disparar un workflow necesita **Actions: write** sobre el
+repositorio del código.
+
+**Un fallo al disparar no tumba la solicitud.** `start()` nunca levanta:
+devuelve un job en `not_dispatched` con el motivo, y la pantalla lo dice y
+ofrece revisar. Misma regla que los correos.
+
+**El dry run sigue siendo local.** Mandarlo a un runner solo agregaría cola a un
+paso que hoy es inmediato y que no llama a Shopify.
+
+**Deuda que NO se pagó aquí:** el worker importa `app_matrixify` para reusar
+`process_sync_job_next_block` —que ya tiene pruebas y está en producción—, así
+que arrastra Streamlit al runner. Es la deuda de la sección 2 (extraer
+`engines/shopify_sync.py`). Escribir aquí un segundo motor de carga sería tener
+dos que se separan sin que nadie lo note, como las dos `normalize_size`.
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -1089,6 +1185,7 @@ GitHub Actions usa sus propios secretos (Settings → Secrets → Actions):
 ```bash
 python scripts/test_brand_commercial_input.py          # 6
 python scripts/test_carga_desde_solicitud.py           # 28
+python scripts/test_carga_remota.py                    # 29
 python scripts/test_engines_audit.py                   # 45
 python scripts/test_engines_metrics.py                 # 26
 python scripts/test_engines_notify.py                  # 88

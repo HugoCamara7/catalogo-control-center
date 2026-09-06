@@ -1,0 +1,104 @@
+# Carga un catalogo a Shopify en un runner de GitHub, no en la PC del usuario.
+#
+# Lo dispara la app (Streamlit) con workflow_dispatch al pulsar "Ejecutar
+# carga". A partir de ahi la carga es independiente de la sesion: se puede
+# cerrar el navegador o apagar la PC y sigue hasta terminar.
+#
+# Este workflow vive en el repositorio PUBLICO a proposito: sus minutos de
+# Actions son gratis e ilimitados. La contrapartida es que **el log de cada
+# ejecucion lo puede leer cualquiera**. Por eso el worker solo imprime
+# contadores y codigos Modelo-Color, y el detalle de cada error va al registro
+# del job, que vive en el repositorio privado de datos.
+#
+# Para que el disparo funcione, este archivo tiene que estar mergeado en la
+# rama que la app usa como `ref` (main): workflow_dispatch solo ve los
+# workflows de la rama, no los de un PR abierto.
+
+name: Carga Shopify
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Identificador del job (lo crea la app)"
+        required: true
+      site_key:
+        description: "Sitio destino"
+        required: true
+        default: "columbia"
+      ticket:
+        description: "Codigo de la solicitud"
+        required: false
+        default: ""
+
+# Una carga por sitio a la vez. Dos runners cargando el mismo sitio se pisan
+# escribiendo el registro del job y en Shopify, y ademas chocan con el sha del
+# repositorio de datos -- el mismo TicketConflictError de la seccion 9.
+#
+# cancel-in-progress es false: cancelar una carga a medio camino deja el
+# catalogo a medias. La segunda espera, y como el job es reanudable, esperar no
+# cuesta trabajo repetido.
+concurrency:
+  group: carga-shopify-${{ inputs.site_key }}
+  cancel-in-progress: false
+
+jobs:
+  cargar:
+    runs-on: ubuntu-latest
+    # 360 es el tope del runner. El worker corta solo a los 330 minutos y deja
+    # los pendientes en el registro, para que el siguiente disparo continue en
+    # vez de que GitHub lo mate sin dejar rastro.
+    timeout-minutes: 360
+
+    env:
+      API_VERSION: "2026-04"
+      JOB_ID: ${{ inputs.job_id }}
+
+      # Donde vive el avance: el repositorio PRIVADO de datos, al lado de las
+      # solicitudes. El token necesita contenidos de lectura y escritura.
+      CATALOG_TICKETS_REPOSITORY: ${{ secrets.CATALOG_TICKETS_REPOSITORY }}
+      CATALOG_TICKETS_TOKEN: ${{ secrets.CATALOG_TICKETS_TOKEN }}
+      CATALOG_TICKETS_BRANCH: ${{ secrets.CATALOG_TICKETS_BRANCH }}
+      CATALOG_TICKETS_PREFIX: ${{ secrets.CATALOG_TICKETS_PREFIX }}
+
+      # Los nombres de la IZQUIERDA los arma catalog_engine._env_name a partir
+      # del site_key, y tienen que coincidir exactamente. Ojo con Hush Puppies:
+      # su site_key es `hush_puppies`, asi que la variable es
+      # HUSH_PUPPIES_SHOP_DOMAIN, mientras que el secreto guardado se llama
+      # HUSHPUPPIES_SHOP_DOMAIN. Sin este mapeo el worker no encuentra las
+      # credenciales y falla con "Faltan credenciales de Shopify".
+      COLUMBIA_SHOP_DOMAIN: ${{ secrets.COLUMBIA_SHOP_DOMAIN }}
+      COLUMBIA_ADMIN_API_ACCESS_TOKEN: ${{ secrets.COLUMBIA_ADMIN_API_ACCESS_TOKEN }}
+      COLUMBIA_INVENTORY_LOCATION_IDS: ${{ secrets.COLUMBIA_INVENTORY_LOCATION_IDS }}
+
+      ROCKFORD_SHOP_DOMAIN: ${{ secrets.ROCKFORD_SHOP_DOMAIN }}
+      ROCKFORD_ADMIN_API_ACCESS_TOKEN: ${{ secrets.ROCKFORD_ADMIN_API_ACCESS_TOKEN }}
+      ROCKFORD_INVENTORY_LOCATION_IDS: ${{ secrets.ROCKFORD_INVENTORY_LOCATION_IDS }}
+
+      HUSH_PUPPIES_SHOP_DOMAIN: ${{ secrets.HUSHPUPPIES_SHOP_DOMAIN }}
+      HUSH_PUPPIES_ADMIN_API_ACCESS_TOKEN: ${{ secrets.HUSHPUPPIES_ADMIN_API_ACCESS_TOKEN }}
+      HUSH_PUPPIES_INVENTORY_LOCATION_IDS: ${{ secrets.HUSHPUPPIES_INVENTORY_LOCATION_IDS }}
+
+      VANS_SHOP_DOMAIN: ${{ secrets.VANS_SHOP_DOMAIN }}
+      VANS_ADMIN_API_ACCESS_TOKEN: ${{ secrets.VANS_ADMIN_API_ACCESS_TOKEN }}
+      VANS_INVENTORY_LOCATION_IDS: ${{ secrets.VANS_INVENTORY_LOCATION_IDS }}
+
+      PATAGONIA_SHOP_DOMAIN: ${{ secrets.PATAGONIA_SHOP_DOMAIN }}
+      PATAGONIA_ADMIN_API_ACCESS_TOKEN: ${{ secrets.PATAGONIA_ADMIN_API_ACCESS_TOKEN }}
+      PATAGONIA_INVENTORY_LOCATION_IDS: ${{ secrets.PATAGONIA_INVENTORY_LOCATION_IDS }}
+
+    steps:
+      - name: Descargar repo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar carga
+        run: python scripts/worker_carga_shopify.py --job-id "${{ inputs.job_id }}"

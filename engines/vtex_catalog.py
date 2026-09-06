@@ -359,6 +359,80 @@ def separar_lista(valor):
 
 # --- Catalogo maestro ----------------------------------------------------
 
+def campo_desde_registro(registro):
+    """Un campo de la tienda a partir de una fila de la exportacion.
+
+    Cada fila REPITE la lista completa de valores admitidos del campo con sus
+    IDs, no solo el valor que usa ese producto. Por eso con una fila cualquiera
+    ya se tiene el campo entero, y por eso el diccionario se puede guardar.
+    """
+    campo = {
+        "ID de campo": texto(registro.get("ID de campo")),
+        "Nombre del campo": texto(registro.get("Nombre del campo")),
+        "Tipo de campo": texto(registro.get("Tipo de campo")),
+        "IDs de valores de campo": texto(registro.get("IDs de valores de campo")),
+        "Valores de campo": texto(registro.get("Valores de campo")),
+        "valores": {},
+        "categorias": set(),
+    }
+    ids_valores = separar_lista(campo["IDs de valores de campo"])
+    textos_valores = separar_lista(campo["Valores de campo"])
+    for valor_id, valor_texto in zip(ids_valores, textos_valores):
+        campo["valores"].setdefault(normalizar(valor_texto), (valor_id, valor_texto))
+    for categoria in registro.get("categorias") or []:
+        if isinstance(categoria, (list, tuple)) and len(categoria) == 2:
+            campo["categorias"].add((normalizar(categoria[0]), normalizar(categoria[1])))
+    if "Departamento" in registro or "Categoría" in registro:
+        campo["categorias"].add((
+            normalizar(registro.get("Departamento")),
+            normalizar(registro.get("Categoría")),
+        ))
+    return campo
+
+
+def _campo_a_registro(campo):
+    return {
+        "ID de campo": campo["ID de campo"],
+        "Nombre del campo": campo["Nombre del campo"],
+        "Tipo de campo": campo["Tipo de campo"],
+        "IDs de valores de campo": campo["IDs de valores de campo"],
+        "Valores de campo": campo["Valores de campo"],
+        "categorias": sorted(campo["categorias"]),
+    }
+
+
+def diccionario_de(maestro):
+    """El diccionario de la tienda, listo para guardar como JSON.
+
+    Que campos tiene cada categoria y que valores admite cada Radio o CheckBox,
+    con sus IDs. Se guarda aparte del catalogo porque son dos cosas que cambian
+    a ritmos MUY distintos: el catalogo cambia con cada carga (IDs nuevos), y el
+    diccionario solo cuando alguien crea un campo o un valor en el admin de
+    VTEX. Obligar a subir las dos exportaciones de especificaciones cada vez es
+    pedir 90 MB para leer algo que no se movio en meses.
+    """
+    return {
+        "campos_producto": [_campo_a_registro(campo) for campo in maestro.campos_producto.values()],
+        "campos_sku": [_campo_a_registro(campo) for campo in maestro.campos_sku.values()],
+    }
+
+
+def aplicar_diccionario(maestro, datos):
+    """Carga un diccionario guardado sobre el maestro. Devuelve el maestro.
+
+    Lo que venga del archivo de especificaciones subido en esta sesion MANDA:
+    un campo ya cargado no se pisa. Si no, actualizar el diccionario desde la
+    pantalla no serviria de nada, porque el guardado lo volveria a tapar.
+    """
+    for clave, campos in (("campos_producto", maestro.campos_producto),
+                          ("campos_sku", maestro.campos_sku)):
+        for registro in (datos or {}).get(clave) or []:
+            campo_id = texto(registro.get("ID de campo"))
+            if campo_id and campo_id not in campos:
+                campos[campo_id] = campo_desde_registro(registro)
+    return maestro
+
+
 class CatalogoMaestroVTEX:
     """El ultimo catalogo de VTEX, leido y ordenado para consultarlo.
 
@@ -479,19 +553,7 @@ class CatalogoMaestroVTEX:
                 continue
             campo = campos.get(campo_id)
             if campo is None:
-                campo = {
-                    "ID de campo": campo_id,
-                    "Nombre del campo": nombre,
-                    "Tipo de campo": texto(registro.get("Tipo de campo")),
-                    "IDs de valores de campo": texto(registro.get("IDs de valores de campo")),
-                    "Valores de campo": texto(registro.get("Valores de campo")),
-                    "valores": {},
-                    "categorias": set(),
-                }
-                ids_valores = separar_lista(registro.get("IDs de valores de campo"))
-                textos_valores = separar_lista(registro.get("Valores de campo"))
-                for valor_id, valor_texto in zip(ids_valores, textos_valores):
-                    campo["valores"].setdefault(normalizar(valor_texto), (valor_id, valor_texto))
+                campo = campo_desde_registro(registro)
                 campos[campo_id] = campo
             campo["categorias"].add((
                 normalizar(registro.get("Departamento")),

@@ -38,6 +38,7 @@ from engines.ticket_flow import estado_visible as flujo_estado_visible
 from engines.ticket_flow import ORDEN as FLUJO_ORDEN
 from engines import centry_map as centry_plantilla
 from engines import load_status as status_carga
+from engines import espejo_supermall as espejo
 from engines import video_media as video_motor
 
 try:
@@ -2376,9 +2377,18 @@ def configured_commercial_brands():
 
 
 def sites_for_commercial_brand(brand_name):
+    """Los sitios donde una marca comercial puede pedir que se publique.
+
+    Los sitios ESPEJO quedan fuera: Supermall.pe no recibe input comercial
+    propio, recibe lo que ya se cargo en otro sitio. Si entrara, la plantilla
+    del input le pondria a cada marca una columna `PUBLICAR_SUPERMALL_PE` que
+    no decide nada -- y una casilla que no hace nada es peor que no tenerla.
+    """
     brand_key = normalize_brand_name(brand_name)
     sites = []
     for site_key, config in SITE_CONFIGS.items():
+        if config.get("es_espejo"):
+            continue
         allowed = {normalize_brand_name(value) for value in config.get("allowed_arti_brands", [])}
         label_key = normalize_brand_name(config.get("label"))
         if brand_key in allowed or brand_key == label_key:
@@ -13957,6 +13967,17 @@ SITE_UI_CONFIG = {
         "accent_color": "#111827",
         "shopify_store": "mountainhardwearpe.myshopify.com",
     },
+    # Supermall no es una marca: es el marketplace que lleva el catalogo de
+    # todas. Todavia no hay `assets/brands/logo_supermall.png`; hasta que lo
+    # haya, la barra lateral dibuja la insignia de dos letras y no se rompe
+    # nada.
+    "Supermall.pe": {
+        "brand_name": "Supermall",
+        "logo_path": "assets/brands/supermall.png",
+        "primary_color": "#0F172A",
+        "accent_color": "#F59E0B",
+        "shopify_store": "supermallpe.myshopify.com",
+    },
 }
 
 
@@ -18995,11 +19016,128 @@ def construir_status_de_carga(catalogos, solicitudes):
         "registro": status_carga.registro_de_cargas(solicitudes, estado_legible),
         "avance": status_carga.resumen_de_solicitudes(solicitudes, estado_legible, finales),
         "por_estado": status_carga.solicitudes_por_estado(solicitudes, estado_legible, orden),
+        # El espejo sale de los MISMOS catalogos ya leidos. Es la misma
+        # pregunta con otro corte -- que hay en un sitio y no en Supermall -- y
+        # esta es la unica pantalla que ya tiene todos los sitios en la mano:
+        # darle pantalla propia costaria leerlos otra vez.
+        "espejo": espejo_de_supermall(catalogos, etiquetas),
+    }
+
+
+def espejo_de_supermall(catalogos, etiquetas):
+    """Lo que le falta a Supermall de lo que ya esta en los demas sitios."""
+    comparado = espejo.comparar(
+        catalogos,
+        etiquetas_de_sitio=etiquetas,
+        marcas_conocidas=configured_commercial_brands(),
+    )
+    return {
+        "filas": comparado["filas"],
+        "resumen": comparado["resumen"],
+        "por_marca": espejo.por_marca(comparado["filas"]),
+        "codigos": espejo.codigos_a_cargar(comparado["filas"]),
     }
 
 
 def _tabla_status(datos):
     return pd.DataFrame(datos) if datos else pd.DataFrame()
+
+
+ESPEJO_DETALLE_FILAS = 400
+
+
+def render_espejo_supermall(datos):
+    """La pestana del espejo: que le falta a Supermall y con que codigos pedirlo.
+
+    Supermall.pe lleva el catalogo de TODOS los sitios. Mantenerlo al dia
+    "acordandose de cargar tambien alli" falla el dia que alguien tiene prisa, y
+    nadie se entera hasta que un producto lleva meses sin salir. Aqui la
+    respuesta sale de la resta, que es un dato y no una costumbre.
+    """
+    datos = datos or {}
+    resumen = datos.get("resumen") or {}
+    filas = datos.get("filas") or []
+    if not resumen.get("destino_leido"):
+        # Sin el catalogo de Supermall, TODO saldria como "falta" y eso se
+        # leeria como "hay que cargar el catalogo entero". Es exactamente el
+        # error que el Status de carga ya evita con los sitios caidos.
+        st.warning(
+            "El catálogo de **Supermall.pe** no se pudo leer, así que no hay con qué comparar. "
+            "Revisa que tenga su sección `[shopify_sites.supermall]` en Secrets. "
+            "Mientras tanto no se muestra el espejo: con el destino sin leer, todo saldría "
+            "como \"falta\" y eso no es cierto."
+        )
+        return
+    if not filas:
+        st.info("No hay productos en los demás sitios con qué comparar.")
+        return
+
+    tarjetas = [
+        ("En los otros sitios", resumen["Productos en los otros sitios"], "blue", "&#9633;"),
+        ("Ya visibles en Supermall", resumen["Ya visibles en Supermall"], "green", "&#9711;"),
+        ("Faltan en Supermall", resumen["Faltan en Supermall"], "orange", "&#8595;"),
+        ("Cargados sin publicar", resumen["Cargados sin publicar"], "orange", "&#9676;"),
+        ("Cobertura", f"{resumen['Cobertura']:.1f}%", "purple", "%"),
+    ]
+    render_html(
+        '<div class="kpi-section-label">Espejo de Supermall.pe</div>'
+        '<div class="kpi-card-grid">'
+        + "".join(
+            f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+            f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+            for titulo, valor, tono, icono in tarjetas
+        )
+        + "</div>"
+    )
+    st.caption(
+        "Un producto cuenta una sola vez aunque esté en varios sitios. "
+        "**Cargado no es lo mismo que visible**: lo que está en Supermall pero en borrador "
+        "o sin publicar en el canal Online Store aparece como \"Cargados sin publicar\", "
+        "y eso no se vuelve a cargar — se publica."
+    )
+
+    sin_codigo = safe_int_value(resumen.get("Sin codigo Modelo-Color"), 0)
+    if sin_codigo:
+        st.info(
+            f"**{sin_codigo:,} productos no se pueden espejar por código**: no tienen el "
+            "metacampo `custom.codigo_modelo_color`. Están contados arriba, pero quedan fuera "
+            "de la lista de códigos, porque la carga se pide por código y el suyo no existe."
+        )
+
+    st.markdown("#### Dónde está el hueco")
+    st.dataframe(_tabla_status(datos.get("por_marca")), use_container_width=True, hide_index=True)
+
+    codigos = datos.get("codigos") or []
+    if codigos:
+        st.markdown(f"#### Los {len(codigos):,} códigos que hay que cargar en Supermall")
+        st.caption(
+            "Esta es la lista para pedir la carga: se pega en **Carga parcial → Carga Sial** "
+            "o en el Excel de una solicitud nueva para Supermall.pe. Solo van los que FALTAN; "
+            "los que ya están cargados y solo hay que publicar no se recargan, porque eso les "
+            "reescribiría la ficha sin que nadie lo haya pedido."
+        )
+        st.download_button(
+            "Descargar los códigos que faltan",
+            data=dataframe_to_excel_bytes({"Codigos": pd.DataFrame({"Mod-Col": codigos})}),
+            file_name=f"supermall_codigos_faltantes_{datetime.now().strftime('%d%m%Y')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="espejo_descargar_codigos",
+            on_click=log_descarga,
+            args=("Codigos faltantes de Supermall", "render_espejo_supermall"),
+        )
+
+    st.markdown("#### Detalle producto por producto")
+    detalle = _tabla_status(filas)
+    if not detalle.empty:
+        st.dataframe(
+            detalle.head(ESPEJO_DETALLE_FILAS),
+            use_container_width=True, height=420, hide_index=True,
+        )
+        if len(detalle) > ESPEJO_DETALLE_FILAS:
+            st.caption(
+                f"Se muestran {ESPEJO_DETALLE_FILAS:,} de {len(detalle):,} filas. "
+                "El Excel de abajo las lleva todas."
+            )
 
 
 def render_status_de_carga(ticket_actor):
@@ -19106,6 +19244,7 @@ def render_status_de_carga(ticket_actor):
 
     pestanas = st.tabs([
         "Prendido y visible",
+        "Espejo de Supermall",
         "Marcas por sitio",
         "SKUs por clase",
         "Registro de cargas",
@@ -19122,12 +19261,14 @@ def render_status_de_carga(ticket_actor):
             st.markdown(f"#### Detalle de los {len(no_visibles):,} que no se ven")
             st.dataframe(no_visibles.head(300), use_container_width=True, height=320, hide_index=True)
     with pestanas[1]:
-        st.dataframe(_tabla_status(tablas["matriz"]), use_container_width=True, hide_index=True)
+        render_espejo_supermall(tablas.get("espejo"))
     with pestanas[2]:
-        st.dataframe(_tabla_status(tablas["clases"]), use_container_width=True, hide_index=True)
+        st.dataframe(_tabla_status(tablas["matriz"]), use_container_width=True, hide_index=True)
     with pestanas[3]:
-        st.dataframe(_tabla_status(tablas["registro"]), use_container_width=True, height=420, hide_index=True)
+        st.dataframe(_tabla_status(tablas["clases"]), use_container_width=True, hide_index=True)
     with pestanas[4]:
+        st.dataframe(_tabla_status(tablas["registro"]), use_container_width=True, height=420, hide_index=True)
+    with pestanas[5]:
         st.dataframe(_tabla_status(tablas["avance"]), use_container_width=True, hide_index=True)
         st.markdown("#### Dónde están paradas las solicitudes")
         st.dataframe(_tabla_status(tablas["por_estado"]), use_container_width=True, hide_index=True)
@@ -19142,6 +19283,8 @@ def render_status_de_carga(ticket_actor):
         "Registro de cargas": _tabla_status(tablas["registro"]),
         "Avance por marca": _tabla_status(tablas["avance"]),
         "Solicitudes por estado": _tabla_status(tablas["por_estado"]),
+        "Espejo Supermall": _tabla_status((tablas.get("espejo") or {}).get("filas")),
+        "Espejo por marca": _tabla_status((tablas.get("espejo") or {}).get("por_marca")),
     }
     st.download_button(
         "Descargar status general (todos los sitios)",
@@ -20842,6 +20985,13 @@ def _full_load_site_tokens(value):
 
 
 def _ticket_matches_active_site(ticket, brand_config):
+    # Supermall.pe es el sitio ESPEJO: lleva el catalogo de todos los demas, no
+    # el de una marca. Una solicitud aprobada para Vans.pe tambien se carga
+    # ahi, asi que aqui tiene que aparecer. Sin esto habria que duplicar la
+    # solicitud para el espejo, y serian dos tickets para una sola decision:
+    # justo lo que la cadena de estados existe para evitar.
+    if brand_config.get("es_espejo"):
+        return True
     active_tokens = set()
     for key in ("site_label", "site_key", "brand_name", "brand", "shop_domain"):
         active_tokens.update(_full_load_site_tokens(brand_config.get(key)))
@@ -22027,6 +22177,82 @@ def ir_a_carga_completa(codigo=""):
     codigo = clean_value(codigo)
     if codigo:
         st.session_state["carga_solicitud_preseleccionada"] = codigo
+
+
+SUPERMALL_SITE_KEY = "supermall"
+
+
+def sitio_espejo():
+    """La clave del sitio espejo, o "" si no esta configurado en Secrets.
+
+    Se comprueba contra Secrets y no solo contra `SITE_CONFIGS`: el sitio esta
+    siempre declarado, pero sin `[shopify_sites.supermall]` no hay tienda a la
+    que cargar y ofrecerlo seria un boton que no puede funcionar.
+    """
+    for site_key, config in SITE_CONFIGS.items():
+        if not config.get("es_espejo"):
+            continue
+        if is_shopify_configured(get_shopify_config(site_key)):
+            return site_key
+    return ""
+
+
+def ir_a_carga_en_espejo(site_key, codigo=""):
+    """Deja la app en Carga completa del sitio espejo, con la misma solicitud.
+
+    Es el mismo mecanismo que `ir_a_carga_completa` usa despues de "Aceptar
+    carga", mas el cambio de sitio. El cambio va por `site_picker_pendiente`
+    porque el selector de la barra lateral ya se dibujo en este rerun.
+    """
+    st.session_state["site_picker_pendiente"] = clean_value(
+        SITE_CONFIGS.get(site_key, {}).get("site_label")
+    )
+    ir_a_carga_completa(codigo)
+
+
+def render_carga_tambien_en_espejo(brand_config):
+    """El segundo destino de la misma carga: el sitio espejo (Supermall.pe).
+
+    Supermall lleva el catalogo de TODOS los sitios. Que lo tenga completo no
+    puede depender de que alguien se acuerde de repetir la carga: aqui, recien
+    terminada la del sitio, queda a un boton.
+
+    **Son dos pasadas encadenadas, no una escritura doble simultanea**, y eso
+    es a proposito. Cada pasada tiene que armar su PROPIO Matrixify: el
+    catalogo contra el que se decide "crear o actualizar" es el de la tienda
+    destino, y los `Product Id` de Vans.pe no valen en Supermall.pe. Tener los
+    dos vivos a la vez son ~450 MB medidos de los 1.024 que Streamlit Cloud da
+    **por app** (seccion de memoria): con dos personas cargando, el contenedor
+    se muere. Encadenadas, en cambio, solo hay un Matrixify vivo cada vez.
+
+    La solicitud es la MISMA: `_ticket_matches_active_site` deja pasar las de
+    cualquier sitio cuando el destino es el espejo, asi que la segunda pasada
+    la encuentra ya elegida en el selector.
+    """
+    espejo_key = sitio_espejo()
+    if not espejo_key or clean_value(brand_config.get("site_key")) == espejo_key:
+        return
+    etiqueta = clean_value(SITE_CONFIGS[espejo_key].get("site_label")) or espejo_key
+    codigo = clean_value(st.session_state.get("carga_desde_solicitud"))
+    st.markdown(f"#### Cargar también en {etiqueta}")
+    st.caption(
+        f"{etiqueta} lleva el catálogo de todos los sitios. Este botón te deja en su Carga "
+        "completa con **la misma solicitud** ya elegida: solo queda pulsar Analizar y ejecutar. "
+        "Se hace en dos pasadas y no en una porque cada tienda decide *crear* o *actualizar* "
+        "contra su propio catálogo, y los Product Id de un sitio no valen en el otro."
+    )
+    if st.button(
+        f"Preparar esta carga para {etiqueta}",
+        key=f"cargar_en_espejo_{brand_config.get('site_key')}",
+    ):
+        log_user_activity(
+            "Carga en sitio espejo",
+            f"Se preparó la carga de {clean_value(brand_config.get('site_label'))} para {etiqueta}.",
+            module="Carga completa",
+            ticket=codigo,
+        )
+        ir_a_carga_en_espejo(espejo_key, codigo)
+        st.rerun()
 
 
 def _ejecutar_atajo_ticket(service, actor, codigo, atajo):
@@ -23972,6 +24198,13 @@ def main():
             st.session_state.pop("_activity_logged_user", None)
             st.rerun()
     site_options = {config["site_label"]: key for key, config in SITE_CONFIGS.items()}
+    # El cambio de sitio pedido desde el cuerpo de la pantalla se aplica AQUI,
+    # antes de dibujar el selector. Escribir `site_picker` despues de que el
+    # widget existe levanta StreamlitAPIException, y el boton que lo pide vive
+    # en el area principal, que se dibuja despues de la barra lateral.
+    sitio_pendiente = clean_value(st.session_state.pop("site_picker_pendiente", ""))
+    if sitio_pendiente in site_options:
+        st.session_state["site_picker"] = sitio_pendiente
     current_site_label = clean_value(st.session_state.get("site_picker")) or next(iter(site_options))
     if current_site_label not in site_options:
         current_site_label = next(iter(site_options))
@@ -25566,6 +25799,10 @@ api_version = "{DEFAULT_API_VERSION}"
                 # La funcion se protege sola: si la carga no salio de una
                 # solicitud, no dibuja nada.
                 _render_acciones_solicitud_tras_carga()
+
+                # El segundo destino va DESPUES del cierre, no antes: primero
+                # se termina lo que se estaba haciendo.
+                render_carga_tambien_en_espejo(brand_config)
             st.markdown("</div>", unsafe_allow_html=True)
         except MissingInputColumnError as exc:
             st.error(f"Falta una columna obligatoria en el input: {exc}")

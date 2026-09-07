@@ -630,14 +630,22 @@ class TestWorkflow(unittest.TestCase):
         self.assertIn("job_id", texto)
         self.assertIn("worker_carga_shopify.py", texto)
 
-    def test_hush_puppies_tiene_el_nombre_de_variable_que_espera_el_codigo(self):
-        """`catalog_engine._env_name` arma HUSH_PUPPIES_* desde el site_key
-        `hush_puppies`, pero el secreto guardado se llama HUSHPUPPIES_*. Sin el
-        mapeo, Hush Puppies falla con "faltan credenciales" y nada mas."""
+    def test_todos_los_sitios_tienen_el_nombre_de_variable_que_espera_el_codigo(self):
+        """`catalog_engine._env_name` arma la variable desde el site_key, y
+        tiene que coincidir con la del workflow. Ojo con Hush Puppies: su
+        site_key es `hush_puppies`, asi que la variable es HUSH_PUPPIES_*
+        mientras el secreto guardado se llama HUSHPUPPIES_*. Sin el mapeo,
+        falla con "faltan credenciales" y nada mas.
+
+        La lista sale de SITE_CONFIGS y NO esta escrita a mano: con la lista
+        fija, un sitio nuevo -- Supermall.pe fue el caso -- entraba en la app y
+        su carga remota fallaba sin que ninguna prueba lo dijera.
+        """
         from catalog_engine import _env_name
+        from generate_columbia_matrixify import SITE_CONFIGS
 
         texto = self.RUTA.read_text(encoding="utf-8")
-        for site_key in ("columbia", "rockford", "hush_puppies", "vans", "patagonia"):
+        for site_key in SITE_CONFIGS:
             for sufijo in ("SHOP_DOMAIN", "ADMIN_API_ACCESS_TOKEN"):
                 with self.subTest(site_key=site_key, sufijo=sufijo):
                     self.assertIn(f"{_env_name(site_key, sufijo)}:", texto)

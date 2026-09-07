@@ -2801,7 +2801,12 @@ def read_arti_source(
 
 def prepare_matrixify_context(matrixify_source, brand_config=None):
     if isinstance(matrixify_source, pd.DataFrame):
-        matrixify_df = matrixify_source.copy()
+        # Sin `.copy()`: el catalogo actual del sitio solo se LEE aqui
+        # (`build_existing_lookup`, `siblings_ya_publicados` y
+        # `matrixify_rows_for_handle`, que hace su propia copia del trozo que
+        # devuelve). Copiarlo eran 331 MB duplicados en CADA analisis, medidos
+        # sobre el catalogo de un sitio real.
+        matrixify_df = matrixify_source
         matrixify_columns = list(matrixify_df.columns)
     else:
         matrixify_df = pd.DataFrame()

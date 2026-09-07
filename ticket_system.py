@@ -274,6 +274,7 @@ def upgrade_ticket(ticket):
     upgraded.setdefault("price_load", {})
     upgraded.setdefault("price_check", {})
     upgraded.setdefault("job", {})
+    upgraded.setdefault("matrixify", {})
     upgraded.setdefault("result", {})
     upgraded.setdefault("public_result", {})
     for comment in upgraded["comments"]:
@@ -1143,6 +1144,57 @@ class TicketService:
         ticket["dry_run"] = self.jobs.dry_run(ticket)
         self._event(ticket, actor, "dry_run_completed", STATE_DRY_RUN, STATE_READY_EXECUTE, ticket["dry_run"].get("message"))
         ticket["status"] = STATE_READY_EXECUTE
+        return self._save(ticket)
+
+    def attach_matrixify(self, actor, code, *, filename, payload, product_keys=None,
+                         site_key="", mode="complete", note=""):
+        """Guarda el Matrixify generado como adjunto de la solicitud.
+
+        Es el paso que hace posible cargar sin la sesion abierta: el runner de
+        GitHub Actions no puede leer `st.session_state`, asi que el archivo a
+        cargar tiene que estar en el repositorio antes de disparar nada.
+
+        Se guarda tambien la lista de Modelo-Color. El worker la recalcula del
+        Excel --que es la fuente de verdad si el adjunto se reemplaza--, pero
+        tenerla aqui deja que la pantalla diga cuantos productos se van a
+        cargar sin bajar el archivo entero.
+
+        Si el contenido no cambio, no reescribe: cada escritura es un commit, y
+        pulsar "Ejecutar carga" dos veces con el mismo analisis no tiene por
+        que dejar dos.
+        """
+        if actor.get("role") not in {ROLE_OPERATOR, ROLE_ADMIN}:
+            raise TicketPermissionError("Tu rol no puede adjuntar el Matrixify.")
+        contenido = _payload_bytes(payload)
+        if not contenido:
+            raise TicketValidationError("El Matrixify llegó vacío.")
+        ticket = self.get_ticket(actor, code)
+        self._assert_internal_owner(actor, ticket, allow_take_unassigned=True)
+
+        digest = file_sha256(contenido)
+        actual = ticket.get("matrixify") if isinstance(ticket.get("matrixify"), dict) else {}
+        claves = [normalize_text(clave) for clave in (product_keys or []) if normalize_text(clave)]
+        claves = list(dict.fromkeys(claves))
+        if actual.get("hash") == digest and normalize_text(actual.get("path")):
+            return ticket
+
+        nombre = normalize_text(filename) or f"Matrixify_{code}.xlsx"
+        version = len(ticket.get("versions") or []) or 1
+        ruta = self.store.put_artifact(code, version, "matrixify", nombre, contenido)
+        ticket["matrixify"] = {
+            "path": ruta,
+            "filename": nombre,
+            "hash": digest,
+            "bytes": len(contenido),
+            "rows": len(claves),
+            "product_keys": claves,
+            "site_key": normalize_text(site_key) or normalize_text(ticket.get("site_key")),
+            "mode": normalize_text(mode) or "complete",
+            "created_at": utc_now(),
+            "created_by": actor.get("user"),
+        }
+        self._event(ticket, actor, "matrixify_attached", ticket.get("status"), ticket.get("status"),
+                    normalize_text(note) or f"Matrixify adjuntado ({len(claves):,} Modelo-Color)")
         return self._save(ticket)
 
     def start_load(self, actor, code):

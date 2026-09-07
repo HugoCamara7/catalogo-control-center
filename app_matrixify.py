@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -45,6 +45,13 @@ try:
     from engines import enrich as enriquecimiento
 except ImportError:  # engines/enrich.py todavia no subido
     enriquecimiento = None
+from engines.carga_remota import AdaptadorCargaActions as CargaActions
+from engines.carga_remota import AlmacenJobsGitHub as AlmacenJobs
+from engines.carga_remota import ErrorCargaRemota
+from engines.carga_remota import ESTADOS_JOB_VIVO as JOB_ESTADOS_VIVOS
+from engines.carga_remota import JOB_SIN_DISPARAR
+from engines.carga_remota import PRODUCTOS_POR_BLOQUE as JOB_PRODUCTOS_POR_BLOQUE
+from engines.carga_remota import resumen_job as job_resumen
 from engines.ticket_flow import acciones_disponibles as flujo_acciones
 from engines.ticket_flow import accion_principal as flujo_accion_principal
 from engines.ticket_flow import atajos_disponibles as flujo_atajos
@@ -19692,6 +19699,81 @@ def current_ticket_actor():
     return TicketService.actor(username, role, auth_allowed_brands(username, role))
 
 
+def _config_carga_remota():
+    try:
+        return dict(st.secrets.get("carga_remota", {}))
+    except Exception:
+        return {}
+
+
+def get_job_store(config_ticketing=None):
+    """El almacen donde vive el avance de las cargas remotas.
+
+    Es el MISMO repositorio privado que las solicitudes, en
+    `catalog_tickets/catalog_jobs/`. Devuelve None si el backend de solicitudes
+    es local: sin repositorio no hay donde publicar un avance que sobreviva al
+    contenedor, y montar un almacen a medias seria peor que no tenerlo.
+    """
+    if config_ticketing is None:
+        try:
+            config_ticketing = dict(st.secrets.get("ticketing", {}))
+        except Exception:
+            config_ticketing = {}
+    repositorio = clean_value(config_ticketing.get("repository") or os.getenv("CATALOG_TICKETS_REPOSITORY"))
+    owner = clean_value(config_ticketing.get("owner"))
+    repo = clean_value(config_ticketing.get("repo"))
+    if repositorio and "/" in repositorio:
+        owner, repo = repositorio.split("/", 1)
+    token = clean_value(config_ticketing.get("token") or os.getenv("CATALOG_TICKETS_GITHUB_TOKEN"))
+    if not all([owner, repo, token]):
+        return None
+    try:
+        return AlmacenJobs(
+            owner=owner,
+            repo=repo,
+            token=token,
+            branch=clean_value(config_ticketing.get("branch")) or "catalog-tickets",
+            prefix=clean_value(config_ticketing.get("prefix")) or "catalog_tickets",
+        )
+    except ErrorCargaRemota:
+        return None
+
+
+def get_job_adapter(config_ticketing=None):
+    """El adaptador que ejecuta las cargas fuera de la sesion.
+
+    Sin seccion `[carga_remota]` en Secrets --o sin token-- devuelve el
+    MockJobAdapter de siempre: la app sigue funcionando exactamente como antes
+    y la carga se hace a mano por bloques. Misma regla que el motor de correo,
+    que sin `[notificaciones]` cae a consola y no envia nada.
+
+    El token NO es el de `[ticketing]`. Aquel es de contenidos sobre el
+    repositorio privado; disparar un workflow necesita **Actions: write** sobre
+    el repositorio del codigo, que es otro permiso y otro repositorio.
+    """
+    config = _config_carga_remota()
+    activo = clean_value(config.get("enabled", "true")).casefold() not in {"false", "0", "no"}
+    token = clean_value(config.get("token") or os.getenv("CATALOG_ACTIONS_TOKEN"))
+    almacen = get_job_store(config_ticketing) if activo and token else None
+    if not (activo and token and almacen):
+        return MockJobAdapter()
+
+    repositorio = clean_value(config.get("repository")) or "HugoCamara7/catalogo-control-center"
+    owner, _, repo = repositorio.partition("/")
+    try:
+        return CargaActions(
+            almacen,
+            owner=owner,
+            repo=repo,
+            workflow=clean_value(config.get("workflow")) or "carga-shopify.yml",
+            ref=clean_value(config.get("ref")) or "main",
+            token=token,
+            batch_size=int(config.get("batch_size") or JOB_PRODUCTOS_POR_BLOQUE),
+        )
+    except (ErrorCargaRemota, TypeError, ValueError):
+        return MockJobAdapter()
+
+
 def get_ticket_service():
     try:
         config = dict(st.secrets.get("ticketing", {}))
@@ -19733,7 +19815,7 @@ def get_ticket_service():
     service = TicketService(
         store,
         notifier=notifier,
-        jobs=MockJobAdapter(),
+        jobs=get_job_adapter(config),
         sla_hours=sla,
         operator_users=ticket_operator_users(),
         product_area_users=area_producto_users(),
@@ -20518,6 +20600,113 @@ def _archivo_carga_sial(codigo, marca=""):
         return b"", ""
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def _job_remoto(_almacen, job_id):
+    """El registro de un job, cacheado 20 segundos.
+
+    Sin cache esto seria una llamada a GitHub por CADA rerun, y el panel se
+    dibuja en dos pantallas: es el mismo problema que tenian los adjuntos, que
+    se bajaban en cada clic y dejaban la pantalla en gris esperando la red.
+
+    20 segundos porque esto SI cambia solo: es el avance de una carga en curso.
+    Con el TTL de los adjuntos (inmutables) el usuario veria avance viejo y
+    creeria que el runner se colgo. El boton "Actualizar" limpia la cache.
+
+    `_almacen` va con guion bajo para que Streamlit no lo hashee: la clave es
+    solo el job_id. Sin eso, cada rerun crea un almacen nuevo, la clave cambia
+    y la cache no sirve de nada.
+    """
+    job, _ = _almacen.leer(job_id)
+    return job
+
+
+def render_carga_remota(ticket):
+    """Avance de la carga que corre en GitHub Actions. Devuelve True si dibujo.
+
+    Solo LEE y dibuja: quien decide que significa cada numero es
+    `engines.carga_remota.resumen_job`. Misma regla que
+    `render_seguimiento_carga`, que dibuja lo que le da `flujo.seguimiento_carga`.
+    """
+    job_ticket = ticket.get("job") if isinstance(ticket.get("job"), dict) else {}
+    if clean_value(job_ticket.get("mode")) != "github_actions":
+        return False
+
+    codigo = clean_value(ticket.get("code"))
+    estado_disparo = clean_value(job_ticket.get("status"))
+    if estado_disparo == JOB_SIN_DISPARAR or not clean_value(job_ticket.get("id")):
+        # El runner nunca arranco. Se dice por que, y se ofrece reintentar: la
+        # solicitud ya paso a "en ejecucion", asi que sin esto quedaria en un
+        # estado que dice que se esta cargando sin que nadie este cargando.
+        st.error(
+            "La carga no llegó a iniciarse en GitHub Actions. "
+            + (clean_value(job_ticket.get("message")) or "Sin detalle.")
+        )
+        st.caption(
+            "Revisa la sección `[carga_remota]` en Secrets: el token necesita permiso "
+            "«Actions: write» y el workflow tiene que estar en la rama configurada."
+        )
+        return True
+
+    almacen = get_job_store()
+    if almacen is None:
+        st.info(
+            f"Carga {clean_value(job_ticket.get('id'))} lanzada en GitHub Actions. "
+            "No puedo mostrar el avance porque el almacén de solicitudes no es GitHub."
+        )
+        return True
+
+    if st.button("Actualizar avance", key=f"job_refresh_{codigo}"):
+        _job_remoto.clear()
+
+    try:
+        job = _job_remoto(almacen, clean_value(job_ticket.get("id")))
+    except ErrorCargaRemota as exc:
+        st.warning(f"No pude leer el avance de la carga: {exc}")
+        return True
+
+    if not job:
+        # Normal durante los primeros segundos: el registro se escribe al crear
+        # el job, pero la cache puede haber guardado el hueco de antes.
+        st.info("La carga está en cola. El registro aparecerá en unos segundos.")
+        return True
+
+    datos = job_resumen(job)
+    st.markdown("#### Carga en GitHub Actions")
+    st.caption(
+        "Corre en un servidor de GitHub, no en esta sesión: puedes cerrar el "
+        "navegador o apagar la PC y la carga sigue hasta terminar."
+    )
+    st.progress(min(max(datos.get("porcentaje", 0.0), 0.0), 1.0))
+    columnas = st.columns(5)
+    columnas[0].metric("Procesados", f"{datos['procesados']:,}/{datos['total']:,}")
+    columnas[1].metric("Pendientes", f"{datos['pendientes']:,}")
+    columnas[2].metric("Sin observaciones", f"{datos['ok']:,}")
+    columnas[3].metric("Con observación", f"{datos['parciales']:,}")
+    columnas[4].metric("Errores", f"{datos['errores']:,}")
+
+    detalle = f"**{datos['etiqueta']}** · {datos['mensaje']}"
+    if datos.get("bloques"):
+        detalle += f" · bloque {datos['bloque']} de {datos['bloques']}"
+    if datos.get("actualizado"):
+        detalle += f" · actualizado {datos['actualizado']}"
+    if datos["estado"] == "failed":
+        st.error(detalle)
+    elif datos["estado"] == "completed_with_errors":
+        st.warning(detalle)
+    elif datos.get("terminado"):
+        st.success(detalle)
+    else:
+        st.info(detalle)
+
+    if datos.get("run_url"):
+        st.markdown(f"[Ver la ejecución en GitHub]({datos['run_url']})")
+    if datos.get("terminado"):
+        st.caption(
+            "La carga terminó. Revisa el resultado y sigue con el cierre por etapas."
+        )
+    return True
+
+
 def _render_acciones_solicitud_tras_carga():
     """Acciones sobre la solicitud sin salir de la pantalla de carga.
 
@@ -20569,6 +20758,10 @@ def _render_acciones_solicitud_tras_carga():
         con_comentario = render_barra_acciones(servicio, actor, ticket)
         render_acciones_con_comentario(servicio, actor, ticket, con_comentario)
         return
+
+    # Si la carga la esta ejecutando un runner, lo primero es su avance: los
+    # cuatro botones de cierre de abajo dan por hecho que la carga ya termino.
+    render_carga_remota(ticket)
 
     st.caption(f"Etapa actual: **{flujo_etiqueta(estado)}**. Elige como queda tras esta carga.")
     columnas = st.columns(4)
@@ -21332,6 +21525,89 @@ def _ticket_card_html(ticket, selected=False, con_controles=False):
     )
 
 
+CLAVE_MATRIXIFY_SESION = "carga_matrixify_pendiente"
+
+
+def recordar_matrixify_de_carga(codigo, matrixify_df, site_key, excel_path="", filename=""):
+    """Deja apuntado que Matrixify subir cuando se pulse "Ejecutar carga".
+
+    NO se guarda el DataFrame. `build_columbia_matrixify` no esta cacheada, asi
+    que el Matrixify se reconstruye en cada rerun y se libera solo; dejar una
+    referencia en `st.session_state` lo FIJARIA hasta cerrar la sesion, y el
+    contenedor de Streamlit Cloud da 1 GB por app --compartido entre todos los
+    que esten trabajando--. Es exactamente lo que se corrigio al bajar los
+    DataFrames gigantes a disco.
+
+    Tampoco se arma un Excel nuevo: la pantalla ya escribio uno en disco para
+    el boton de descarga, y su PRIMERA hoja es "Products", que es la que lee el
+    worker (`catalog_engine.read_matrixify_excel`). Se guarda esa ruta.
+
+    Lo unico que se calcula aqui son las claves Modelo-Color: una lista de
+    cadenas, para poder decir cuantos productos se van a cargar sin abrir el
+    archivo.
+    """
+    codigo = clean_value(codigo)
+    if not codigo or matrixify_df is None or matrixify_df.empty:
+        return
+    st.session_state[CLAVE_MATRIXIFY_SESION] = {
+        "codigo": codigo,
+        "excel_path": clean_value(excel_path),
+        "product_keys": _sync_job_product_keys(matrixify_df, mode="complete"),
+        "site_key": clean_value(site_key),
+        "filename": clean_value(filename) or f"Matrixify_{codigo}.xlsx",
+    }
+
+
+def _adjuntar_matrixify_antes_de_cargar(service, actor, codigo):
+    """Sube el Matrixify a la solicitud antes de que arranque el runner.
+
+    El runner de GitHub Actions no puede leer `st.session_state`: si el archivo
+    a cargar solo vive en la sesion, la carga remota no tiene nada que cargar.
+    Este es el puente entre las dos cosas.
+
+    Devuelve un aviso si no pudo, nunca levanta: el adaptador de carga ya
+    reporta la falta de Matrixify con un mensaje claro, y una excepcion aqui
+    impediria ejecutar la carga a mano, que sigue siendo un camino valido.
+    """
+    guardado = st.session_state.get(CLAVE_MATRIXIFY_SESION)
+    if not isinstance(guardado, dict):
+        return ""
+    if clean_value(guardado.get("codigo")) != clean_value(codigo):
+        return ""
+    payload = _leer_excel_de_disco(guardado.get("excel_path"))
+    if not payload:
+        # El contenedor se reinicio entre el analisis y el clic: el archivo de
+        # disco ya no esta. Si la solicitud YA tiene un Matrixify adjunto de un
+        # intento anterior, se sigue con ese en vez de cortar: bloquear aqui
+        # convertiria un reintento legitimo en un callejon sin salida.
+        try:
+            ticket = service.get_ticket(actor, codigo)
+        except TicketError:
+            ticket = {}
+        adjunto = ticket.get("matrixify") if isinstance(ticket.get("matrixify"), dict) else {}
+        if clean_value(adjunto.get("path")):
+            return ""
+        return (
+            "el Matrixify ya no está en disco (la app se reinició). "
+            "Vuelve a pulsar «Analizar input» antes de ejecutar la carga."
+        )
+    try:
+        service.attach_matrixify(
+            actor,
+            codigo,
+            filename=guardado.get("filename") or f"Matrixify_{codigo}.xlsx",
+            payload=payload,
+            product_keys=guardado.get("product_keys") or [],
+            site_key=guardado.get("site_key"),
+            mode="complete",
+        )
+        return ""
+    except TicketError as exc:
+        return f"No pude adjuntar el Matrixify a la solicitud: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return f"No pude adjuntar el Matrixify a la solicitud: {clean_value(exc)}"
+
+
 def _ejecutar_accion_ticket(service, actor, codigo, accion, comentario=""):
     """Ejecuta una accion del flujo. Devuelve (ok, mensaje).
 
@@ -21353,6 +21629,15 @@ def _ejecutar_accion_ticket(service, actor, codigo, accion, comentario=""):
         return False, f'"{accion["etiqueta"]}" necesita un comentario.'
     if accion.get("requiere_archivo"):
         return False, "Sube la versión corregida en la pestaña de archivos."
+    if accion.get("metodo") == "start_load":
+        # El Matrixify tiene que estar en el repositorio ANTES de que
+        # `start_load` dispare el runner: el adaptador lee `ticket["matrixify"]`
+        # para saber que cargar. Va aqui, en el despachador, y no en cada
+        # pantalla, para que las tres superficies --tarjeta, accion masiva y
+        # barra del detalle-- y los atajos lo hereden sin saber que existe.
+        aviso = _adjuntar_matrixify_antes_de_cargar(service, actor, codigo)
+        if aviso:
+            return False, f"{codigo}: {aviso}"
     try:
         metodo = getattr(service, accion["metodo"])
         if accion["clave"] == "tomar":
@@ -22195,6 +22480,11 @@ def render_ticket_detail(service, actor, code):
         render_seguimiento_carga(ticket)
     else:
         _render_ticket_stepper(status)
+    # El avance del runner va tambien en el detalle, no solo en Carga completa:
+    # quien vuelve al dia siguiente a ver como quedo la carga entra por la
+    # bandeja, no por la pantalla donde la lanzo. La funcion se protege sola y
+    # no dibuja nada si la carga no salio a Actions.
+    render_carga_remota(ticket)
     # Solo se avisa cuando hay algo que la insignia de estado y la barra de
     # etapas no digan ya. Antes salia siempre, repitiendo el estado con otras
     # palabras ("Asignada / La carga aun no se ha ejecutado").
@@ -25748,6 +26038,18 @@ api_version = "{DEFAULT_API_VERSION}"
                             activate_inventory_locations=True,
                             session_key=f"shopify_complete_job_{brand_config['site_key']}",
                         )
+
+                # El Matrixify recien analizado queda apuntado para la carga
+                # remota: la RUTA del Excel que ya esta en disco y las claves.
+                # Ni el DataFrame en la sesion ni un Excel de mas -- ver la
+                # seccion de memoria: el contenedor da 1 GB por app.
+                recordar_matrixify_de_carga(
+                    st.session_state.get("carga_desde_solicitud"),
+                    matrixify_df,
+                    brand_config.get("site_key"),
+                    excel_path=st.session_state.get("complete_excel_path"),
+                    filename=brand_config.get("output_filename"),
+                )
 
                 # Cerrar la solicitud va AQUI, no dentro del `if confirm_complete`
                 # de arriba. Estaba anidado tres niveles: hacia falta estar en

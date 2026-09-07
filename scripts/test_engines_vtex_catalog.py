@@ -257,12 +257,70 @@ class TestMapeoDeIds(unittest.TestCase):
         self.assertEqual(plan["resumen"]["Productos existentes"], 1)
         self.assertEqual(plan["resumen"]["Productos nuevos"], 0)
 
-    def test_un_producto_que_no_existe_va_con_el_id_en_blanco(self):
-        plan = vtex.plan_de_carga([entrada("HP999999999-000")], maestro())
+    def test_un_producto_que_no_existe_recibe_el_siguiente_id_del_catalogo(self):
+        """Sin ID, las otras tres planillas no pueden referenciar al producto.
+
+        El maestro de ejemplo llega hasta el Product ID 7, asi que el nuevo es
+        el 8. Y ojo: los SKU van por su PROPIA serie, que llega a 425933.
+        """
+        plan = vtex.plan_de_carga([entrada("HP999999999-000", categoria="Zapatos")], maestro())
+        producto = plan["productos"][0]
+        self.assertEqual(producto["producto_id"], "8")
+        self.assertTrue(producto["producto_id_asignado"])
+        self.assertEqual(producto["estado"], vtex.ESTADO_NUEVO)
+        self.assertEqual(plan["resumen"]["Product ID asignados desde"], 8)
+        self.assertEqual(plan["resumen"]["SKU ID asignados desde"], 425934)
+        # Existente/nuevo se sigue decidiendo por el MAESTRO, no por tener ID.
+        self.assertEqual(plan["resumen"]["Productos nuevos"], 1)
+        self.assertEqual(plan["resumen"]["Productos existentes"], 0)
+
+    def test_los_ids_nuevos_no_pisan_ninguno_del_catalogo(self):
+        datos = [entrada(f"NUEVO{numero}-000", categoria="Zapatos", skus=[{"talla": "39"}])
+                 for numero in range(5)]
+        m = maestro()
+        plan = vtex.plan_de_carga(datos, m, {"permitir_todo_nuevo": True})
+        asignados_producto = [producto["producto_id"] for producto in plan["productos"]]
+        asignados_sku = [sku["sku_id"] for producto in plan["productos"] for sku in producto["skus"]]
+        self.assertEqual(asignados_producto, ["8", "9", "10", "11", "12"])
+        self.assertEqual(asignados_sku, ["425934", "425935", "425936", "425937", "425938"])
+        # Ninguno choca con lo que ya existe en la tienda.
+        self.assertFalse(set(asignados_producto) & set(m.productos_por_id))
+        self.assertFalse(set(asignados_sku) & set(m.skus_por_id))
+        self.assertTrue(all(int(v) > m.maximo_product_id for v in asignados_producto))
+        self.assertTrue(all(int(v) > m.maximo_sku_id for v in asignados_sku))
+
+    def test_las_dos_series_de_id_no_se_mezclan(self):
+        # Verificado en la exportacion real: Product ID iba por 118 y SKU ID
+        # por 4.969.659. Mezclarlas pisaria productos existentes.
+        m = maestro()
+        self.assertEqual(m.maximo_product_id, 7)
+        self.assertEqual(m.maximo_sku_id, 425933)
+        plan = vtex.plan_de_carga([entrada("NUEVO-1", categoria="Zapatos", skus=[{"talla": "39"}])], m)
+        producto = plan["productos"][0]
+        self.assertEqual(producto["producto_id"], "8")
+        self.assertEqual(producto["skus"][0]["sku_id"], "425934")
+
+    def test_dos_corridas_con_la_misma_lista_dan_los_mismos_ids(self):
+        datos = [entrada(f"NUEVO{numero}-000", categoria="Zapatos") for numero in range(3)]
+        primera = vtex.plan_de_carga(datos, maestro(), {"permitir_todo_nuevo": True})
+        segunda = vtex.plan_de_carga(datos, maestro(), {"permitir_todo_nuevo": True})
+        self.assertEqual([p["producto_id"] for p in primera["productos"]],
+                         [p["producto_id"] for p in segunda["productos"]])
+
+    def test_se_puede_dejar_el_id_en_blanco_para_que_lo_asigne_vtex(self):
+        plan = vtex.plan_de_carga([entrada("HP999999999-000", categoria="Zapatos")], maestro(),
+                                  {"asignar_ids_nuevos": False})
         producto = plan["productos"][0]
         self.assertEqual(producto["producto_id"], "")
-        self.assertEqual(producto["estado"], vtex.ESTADO_NUEVO)
         self.assertTrue(any(alerta["Código"] == "producto_sin_id" for alerta in plan["alertas"]))
+
+    def test_un_producto_que_ya_existe_conserva_SU_id_no_uno_asignado(self):
+        # Lo esencial: esto solo rellena huecos, nunca reemplaza.
+        plan = vtex.plan_de_carga([entrada()], maestro())
+        producto = plan["productos"][0]
+        self.assertEqual(producto["producto_id"], "2")
+        self.assertNotIn("producto_id_asignado", producto)
+        self.assertEqual([sku["sku_id"] for sku in producto["skus"]], ["310669", "310670"])
 
     def test_los_skus_que_existen_reutilizan_su_sku_id(self):
         plan = vtex.plan_de_carga([entrada()], maestro())
@@ -276,10 +334,12 @@ class TestMapeoDeIds(unittest.TestCase):
         datos = entrada(skus=[{"talla": "39"}, {"talla": "41"}])
         plan = vtex.plan_de_carga([datos], maestro())
         por_talla = {sku["talla"]: sku for sku in plan["productos"][0]["skus"]}
-        self.assertEqual(por_talla["39"]["sku_id"], "310669")
-        self.assertEqual(por_talla["41"]["sku_id"], "")
-        self.assertEqual(por_talla["41"]["referencia"], "HP102011307-251-41")
-        self.assertEqual(plan["productos"][0]["producto_id"], "2")
+        self.assertEqual(por_talla["39"]["sku_id"], "310669", "la talla que ya existe no cambia")
+        self.assertEqual(por_talla["41"]["sku_id"], "425934", "la talla nueva recibe el siguiente")
+        # En esta tienda la referencia de un SKU ES su propio SKU ID: con el
+        # patron por defecto se respeta esa convencion tambien para los nuevos.
+        self.assertEqual(por_talla["41"]["referencia"], "425934")
+        self.assertEqual(plan["productos"][0]["producto_id"], "2", "el producto conserva SU id")
 
     def test_nunca_se_reemplaza_un_id_existente_por_uno_generado(self):
         plan = vtex.plan_de_carga([entrada()], maestro())
@@ -295,7 +355,8 @@ class TestMapeoDeIds(unittest.TestCase):
         datos = entrada(skus=[{"talla": "L", "referencia": "425933"}])
         plan = vtex.plan_de_carga([datos], maestro())
         sku = plan["productos"][0]["skus"][0]
-        self.assertEqual(sku["sku_id"], "")
+        self.assertNotEqual(sku["sku_id"], "425933", "no se roba el SKU de otro producto")
+        self.assertTrue(sku["sku_id_asignado"], "se le da uno nuevo")
         self.assertTrue(any(alerta["Código"] == "sku_inconsistente" for alerta in plan["alertas"]))
 
     def test_el_patron_de_referencia_de_sku_nuevo_es_configurable(self):
@@ -491,6 +552,59 @@ class TestArchivos(unittest.TestCase):
                 # Ni una columna de mas ni una de menos, y en el mismo orden.
                 self.assertEqual(list(fila), list(tabla["columnas"]))
 
+    def test_un_producto_NUEVO_lleva_su_id_en_las_cuatro_planillas(self):
+        """Es el motivo de asignar el ID.
+
+        Con el ID en blanco, las especificaciones y las imagenes de un producto
+        nuevo no tienen a que colgarse: las tres planillas de abajo se quedan
+        con "ID del producto" y "ID de SKU" vacios y no se pueden cargar.
+        """
+        m = maestro()
+        plan = vtex.plan_de_carga(
+            [entrada("HP999-251", nombre="ZAPATO NUEVO", categoria="Zapatos",
+                     skus=[{"talla": "39"}, {"talla": "40"}])], m)
+        archivos = vtex.construir_archivos(plan, m)
+        producto_id = plan["productos"][0]["producto_id"]
+        skus = {sku["sku_id"] for sku in plan["productos"][0]["skus"]}
+        self.assertEqual(producto_id, "8")
+        self.assertEqual(skus, {"425934", "425935"})
+
+        filas = archivos[vtex.ARCHIVO_PRODUCTOS]["filas"]
+        self.assertEqual({fila["Product ID"] for fila in filas}, {producto_id})
+        self.assertEqual({fila["SKU ID"] for fila in filas}, skus)
+
+        espec_producto = archivos[vtex.ARCHIVO_ESPEC_PRODUCTO]["filas"]
+        self.assertTrue(espec_producto, "un producto nuevo tiene que llevar especificaciones")
+        self.assertEqual({fila["ID del producto"] for fila in espec_producto}, {producto_id})
+
+        espec_sku = archivos[vtex.ARCHIVO_ESPEC_SKU]["filas"]
+        self.assertTrue(espec_sku)
+        self.assertEqual({fila["ID de SKU"] for fila in espec_sku}, skus)
+
+        imagenes = archivos[vtex.ARCHIVO_IMAGENES]["filas"]
+        self.assertTrue(imagenes)
+        self.assertEqual({fila["ID del producto"] for fila in imagenes}, {producto_id})
+        self.assertEqual({fila["ID de SKU"] for fila in imagenes}, skus)
+        # Y ni una sola celda de ID vacia en ninguna de las cuatro.
+        for nombre, columnas in ((vtex.ARCHIVO_PRODUCTOS, ("Product ID", "SKU ID")),
+                                 (vtex.ARCHIVO_ESPEC_PRODUCTO, ("ID del producto",)),
+                                 (vtex.ARCHIVO_ESPEC_SKU, ("ID de SKU",)),
+                                 (vtex.ARCHIVO_IMAGENES, ("ID del producto", "ID de SKU"))):
+            for fila in archivos[nombre]["filas"]:
+                for columna in columnas:
+                    self.assertTrue(fila[columna], f"{nombre}: {columna} vacio")
+
+    def test_una_carga_mixta_conserva_los_viejos_y_numera_los_nuevos(self):
+        m = maestro()
+        plan = vtex.plan_de_carga(
+            [entrada(), entrada("NUEVO-1", categoria="Zapatos", skus=[{"talla": "39"}])], m)
+        filas = vtex.construir_archivos(plan, m)[vtex.ARCHIVO_PRODUCTOS]["filas"]
+        por_referencia = {}
+        for fila in filas:
+            por_referencia.setdefault(fila["Product reference code"], set()).add(fila["Product ID"])
+        self.assertEqual(por_referencia["HP102011307-251"], {"2"}, "el que existia mantiene su ID")
+        self.assertEqual(por_referencia["NUEVO-1"], {"8"}, "el nuevo recibe el siguiente")
+
     def test_los_cuatro_archivos_usan_los_mismos_ids(self):
         productos = self.archivos[vtex.ARCHIVO_PRODUCTOS]["filas"]
         ids_producto = {fila["Product ID"] for fila in productos}
@@ -536,7 +650,7 @@ class TestArchivos(unittest.TestCase):
         plan = vtex.plan_de_carga(
             [entrada("HP999-251", nombre="ZAPATO NUEVO", categoria="Zapatos")], self.maestro)
         fila = vtex.construir_archivos(plan, self.maestro)[vtex.ARCHIVO_PRODUCTOS]["filas"][0]
-        self.assertEqual(fila["Product ID"], "")
+        self.assertEqual(fila["Product ID"], "8", "el siguiente de la numeracion del catalogo")
         self.assertEqual(fila["Product URL"], "zapato-nuevo-hp999-251")
         self.assertEqual(fila["Page Title"], "ZAPATO NUEVO 251")
         self.assertIn("HP999-251", fila["Meta description"])
@@ -554,7 +668,7 @@ class TestArchivos(unittest.TestCase):
         # cotizar el envio de ese SKU.
         plan = vtex.plan_de_carga([entrada(skus=[{"talla": "41"}])], self.maestro)
         fila = vtex.construir_archivos(plan, self.maestro)[vtex.ARCHIVO_PRODUCTOS]["filas"][0]
-        self.assertEqual(fila["SKU ID"], "")
+        self.assertEqual(fila["SKU ID"], "425934")
         self.assertEqual(fila["Package weight"], "800")
         self.assertEqual(fila["Cubic Weight"], "4.9088")
 
@@ -776,6 +890,21 @@ class TestVistaPrevia(unittest.TestCase):
         self.assertEqual(por_talla["39"], vtex.ESTADO_EXISTENTE)
         self.assertEqual(por_talla["41"], vtex.ESTADO_NUEVO)
 
+    def test_la_tabla_muestra_el_id_asignado_no_un_marcador(self):
+        """Lo encontro la prueba de humo con datos reales.
+
+        Las filas de la vista previa se armaban ANTES de asignar los ID, asi
+        que la tabla decia "(nuevo)" en la columna Product ID aunque el archivo
+        si llevara el numero. Es justo la columna que hay que revisar.
+        """
+        plan = vtex.plan_de_carga(
+            [entrada("NUEVO-1", categoria="Zapatos", skus=[{"talla": "39"}])], maestro())
+        fila = plan["filas"][0]
+        self.assertEqual(fila["Product ID"], "8")
+        self.assertEqual(fila["SKU ID"], "425934")
+        for columna in ("Product ID", "SKU ID"):
+            self.assertNotIn("nuevo", fila[columna])
+
     def test_el_estado_es_uno_de_los_cuatro(self):
         datos = [entrada(), entrada("NUEVO-1", categoria="Zapatos"), entrada("X-1", marca="Adidas")]
         plan = vtex.plan_de_carga(datos, maestro())
@@ -800,6 +929,11 @@ class TestIntegracionConLaPantalla(unittest.TestCase):
         self.assertTrue(pedidos, "La pantalla no usa el motor.")
         for nombre in sorted(pedidos):
             self.assertTrue(hasattr(vtex, nombre), f"El motor no expone {nombre}")
+
+    def test_los_rangos_de_id_asignados_se_dibujan(self):
+        # Es lo unico que permite revisarlos antes de subir.
+        self.assertIn("def render_vtex_rangos_asignados(", self.fuente)
+        self.assertIn("render_vtex_rangos_asignados(plan, maestro)", self.fuente)
 
     def test_el_diagnostico_del_cruce_se_dibuja(self):
         # Sin esto, "cruzaron 0 de 500" no se ve en ningun lado.

@@ -282,6 +282,17 @@ def nombre_de_sku(talla):
     return f"TALLA {talla}".strip() if talla else ""
 
 
+def _entero(valor):
+    """El valor como entero, o 0. Los IDs de VTEX son numeros de verdad."""
+    texto_valor = texto(valor)
+    if not texto_valor:
+        return 0
+    try:
+        return int(float(texto_valor))
+    except ValueError:
+        return 0
+
+
 def peso_cubico(ancho, alto, largo):
     try:
         valor = float(texto(ancho) or 0) * float(texto(alto) or 0) * float(texto(largo) or 0)
@@ -523,6 +534,16 @@ class CatalogoMaestroVTEX:
         self._conteo_configuracion = {}
         self._medidas_por_categoria = {}
         self._medidas_de_la_tienda = {}
+        # El ID mas alto de CADA serie en TODO el catalogo. Son dos series
+        # independientes y no se pueden mezclar: verificado en la exportacion
+        # real, los Product ID iban por 118 y los SKU ID por 4.969.659.
+        #
+        # Se siguen mientras se lee porque el maestro se guarda ACOTADO a los
+        # codigos pedidos: sacar el maximo de lo guardado daria el mayor de esos
+        # pocos productos, no el de la tienda, y los IDs nuevos chocarian con
+        # productos que ya existen.
+        self.maximo_product_id = 0
+        self.maximo_sku_id = 0
 
     # -- construccion ------------------------------------------------------
     @classmethod
@@ -665,6 +686,7 @@ class CatalogoMaestroVTEX:
             if nuevo_producto:
                 vistos_producto.add(producto_id)
                 self.total_productos += 1
+                self.maximo_product_id = max(self.maximo_product_id, _entero(producto_id))
                 marca = previa.get("Brand", "")
                 if marca:
                     self.marcas.setdefault(normalizar(marca), {
@@ -679,6 +701,7 @@ class CatalogoMaestroVTEX:
             if sku_id and sku_id not in vistos_sku:
                 vistos_sku.add(sku_id)
                 self.total_skus += 1
+                self.maximo_sku_id = max(self.maximo_sku_id, _entero(sku_id))
                 self._contar_medidas(previa)
             if self._interesa(referencia):
                 return True
@@ -881,6 +904,8 @@ class CatalogoMaestroVTEX:
             "Campos de SKU": len(self.campos_sku),
             "SKUs con imagenes": len(self.imagenes_por_sku),
             "Referencias duplicadas": len(self.referencias_duplicadas),
+            "Ultimo Product ID": self.maximo_product_id,
+            "Ultimo SKU ID": self.maximo_sku_id,
         }
 
 
@@ -909,6 +934,7 @@ ALERTAS = {
     "valor_fuera_de_lista": (NIVEL_AVISO, "Valor que no existe en la lista de la tienda"),
     "referencia_sku_repetida": (NIVEL_ERROR, "Referencia de SKU repetida en la carga"),
     "sku_sin_peso": (NIVEL_ERROR, "SKU sin peso ni medidas"),
+    "sin_numeracion_en_el_maestro": (NIVEL_ERROR, "El maestro no trae IDs numéricos"),
     "nada_cruzo_con_el_maestro": (NIVEL_ERROR, "Ningún código se encontró en el catálogo maestro"),
 }
 
@@ -989,6 +1015,11 @@ def _opciones(opciones=None):
         # vacia. Generar ahi duplicaria el catalogo entero, asi que se bloquea.
         # Esto lo desactiva a mano quien de verdad esta cargando todo nuevo.
         "permitir_todo_nuevo": False,
+        # Los productos y SKUs nuevos salen con un ID ASIGNADO, siguiendo la
+        # numeracion del catalogo. Sin ID, las otras tres planillas no pueden
+        # referenciar al producto nuevo: no hay con que rellenar "ID del
+        # producto" en especificaciones ni en imagenes.
+        "asignar_ids_nuevos": True,
     }
     base.update(opciones or {})
     return base
@@ -1042,9 +1073,15 @@ def plan_de_carga(entradas, maestro, opciones=None):
         _resolver_medidas(producto, maestro, alertas)
         _resolver_especificaciones(entrada, producto, maestro, alertas)
         productos.append(producto)
+    # Los ID se asignan ANTES de armar la vista previa. Al contrario, la tabla
+    # mostraba "(nuevo)" en la columna Product ID aunque el archivo si llevara
+    # el numero: justo lo que hay que poder revisar antes de subir.
+    asignados = _asignar_ids_nuevos(productos, maestro, opciones, alertas)
+    for producto in productos:
         filas.extend(_filas_de_vista_previa(producto))
     _revisar_cruce(productos, maestro, opciones, alertas)
     resumen = _resumen(productos, alertas)
+    resumen.update(asignados)
     bloqueado = any(alerta["Nivel"] == NIVEL_ERROR for alerta in alertas)
     return {
         "productos": productos,
@@ -1053,6 +1090,65 @@ def plan_de_carga(entradas, maestro, opciones=None):
         "resumen": resumen,
         "bloqueado": bloqueado,
         "opciones": opciones,
+    }
+
+
+def _asignar_ids_nuevos(productos, maestro, opciones, alertas):
+    """Da un Product ID y un SKU ID a lo que VTEX todavia no tiene.
+
+    Por que hace falta
+    ------------------
+    Un producto nuevo salia con el `Product ID` en blanco, que es como VTEX
+    entiende "crealo". Pero entonces las OTRAS TRES planillas se quedan sin
+    nada que poner en "ID del producto" y en "ID de SKU": las especificaciones
+    y las imagenes de un producto nuevo no tienen a que colgarse. Por eso el ID
+    se asigna aqui y las cuatro planillas salen del mismo plan.
+
+    Reglas:
+
+    - Se empieza en el ID MAS ALTO DE TODO EL CATALOGO + 1, por cada serie.
+    - **Product ID y SKU ID son dos series distintas.** En la tienda real los
+      Product ID iban por 118 y los SKU ID por 4.969.659: mezclarlas pisaria
+      productos existentes.
+    - Un ID que ya existe NUNCA se reemplaza. Esto solo rellena huecos.
+    - El orden es el de los codigos pedidos, asi que dos corridas con la misma
+      lista dan los mismos IDs.
+
+    Devuelve los rangos asignados, para poder revisarlos antes de subir.
+    """
+    if not opciones.get("asignar_ids_nuevos"):
+        return {}
+    siguiente_producto = maestro.maximo_product_id + 1
+    siguiente_sku = maestro.maximo_sku_id + 1
+    if maestro.maximo_product_id <= 0 or maestro.maximo_sku_id <= 0:
+        alertas.append(_alerta(
+            "sin_numeracion_en_el_maestro", "",
+            "El maestro no trae IDs numéricos, así que no se puede saber por dónde seguir "
+            "la numeración. Revisa que sea la exportación 'Products and SKUs' de VTEX.",
+        ))
+        return {}
+    primer_producto = siguiente_producto
+    primer_sku = siguiente_sku
+    for producto in productos:
+        if not producto["producto_id"]:
+            producto["producto_id"] = str(siguiente_producto)
+            producto["producto_id_asignado"] = True
+            siguiente_producto += 1
+        for sku in producto["skus"]:
+            if not sku["sku_id"]:
+                sku["sku_id"] = str(siguiente_sku)
+                sku["sku_id_asignado"] = True
+                # En esta tienda la referencia de un SKU ES su propio SKU ID.
+                # Si el patron no se toco, se respeta esa convencion tambien
+                # para los nuevos, que es lo que mantiene el catalogo coherente.
+                if opciones.get("patron_referencia_sku") == PATRON_REFERENCIA_SKU:
+                    sku["referencia"] = sku["sku_id"]
+                siguiente_sku += 1
+    return {
+        "Product ID asignados desde": primer_producto if siguiente_producto > primer_producto else 0,
+        "Product ID asignados hasta": siguiente_producto - 1 if siguiente_producto > primer_producto else 0,
+        "SKU ID asignados desde": primer_sku if siguiente_sku > primer_sku else 0,
+        "SKU ID asignados hasta": siguiente_sku - 1 if siguiente_sku > primer_sku else 0,
     }
 
 
@@ -1071,7 +1167,9 @@ def _revisar_cruce(productos, maestro, opciones, alertas):
         return
     if opciones.get("permitir_todo_nuevo"):
         return
-    cruzados = sum(1 for producto in productos if producto["producto_id"])
+    # Ojo: `producto_id` puede venir ASIGNADO por `_asignar_ids_nuevos`. Lo que
+    # se cuenta aqui es lo que de verdad cruzo contra el maestro.
+    cruzados = sum(1 for producto in productos if producto.get("existente"))
     if cruzados:
         return
     alertas.append(_alerta(
@@ -1387,11 +1485,13 @@ def _resumen(productos, alertas):
     imagenes = sum(len(sku.get("urls_imagenes") or []) for producto in productos for sku in producto["skus"])
     return {
         "Productos encontrados": len(productos),
-        "Productos existentes": sum(1 for producto in productos if producto["producto_id"]),
-        "Productos nuevos": sum(1 for producto in productos if not producto["producto_id"]),
+        # Existente/nuevo se decide por el MAESTRO, no por tener un ID puesto:
+        # los nuevos tambien llevan ID desde que se asigna la numeracion.
+        "Productos existentes": sum(1 for producto in productos if producto.get("existente")),
+        "Productos nuevos": sum(1 for producto in productos if not producto.get("existente")),
         "SKUs encontrados": len(skus),
-        "SKUs existentes": sum(1 for sku in skus if sku["sku_id"]),
-        "SKUs nuevos": sum(1 for sku in skus if not sku["sku_id"]),
+        "SKUs existentes": sum(1 for sku in skus if sku.get("existente")),
+        "SKUs nuevos": sum(1 for sku in skus if not sku.get("existente")),
         "Imagenes": imagenes,
         "SKUs sin peso": sum(1 for sku in skus if not (sku.get("paquete") or {}).get("weight")),
         "Errores": sum(1 for alerta in alertas if alerta["Nivel"] == NIVEL_ERROR),

@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -24208,6 +24208,46 @@ def vtex_registrar_auditoria(accion, detalle, brand_config, extra=None):
     )
 
 
+def render_vtex_rangos_asignados(plan, maestro):
+    """Los ID que la app va a crear, para poder revisarlos ANTES de subir.
+
+    El riesgo de asignar ID a mano es la ventana entre el export del maestro y
+    la subida: si alguien crea un producto en VTEX en ese rato, el numero ya
+    esta ocupado. No se puede eliminar sin conectarse a VTEX, pero si se puede
+    dejar a la vista para que se compruebe.
+    """
+    resumen = plan["resumen"]
+    desde_producto = safe_int_value(resumen.get("Product ID asignados desde"))
+    desde_sku = safe_int_value(resumen.get("SKU ID asignados desde"))
+    if not desde_producto and not desde_sku:
+        return
+    filas = []
+    if desde_producto:
+        filas.append({
+            "Serie": "Product ID",
+            "Último en el catálogo": maestro.maximo_product_id,
+            "Se asignan desde": desde_producto,
+            "Se asignan hasta": safe_int_value(resumen.get("Product ID asignados hasta")),
+            "Cuántos": resumen["Productos nuevos"],
+        })
+    if desde_sku:
+        filas.append({
+            "Serie": "SKU ID",
+            "Último en el catálogo": maestro.maximo_sku_id,
+            "Se asignan desde": desde_sku,
+            "Se asignan hasta": safe_int_value(resumen.get("SKU ID asignados hasta")),
+            "Cuántos": resumen["SKUs nuevos"],
+        })
+    st.markdown("**ID que se van a crear**")
+    st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+    st.caption(
+        "Son las dos series de VTEX, independientes entre sí: el `Product ID` no tiene nada que "
+        "ver con el `SKU ID`. Se numeran a partir del más alto del catálogo que subiste. "
+        "**Si alguien creó productos en VTEX después de exportar ese archivo, vuelve a "
+        "exportarlo**: esos números ya estarían ocupados."
+    )
+
+
 def render_vtex_diagnostico_cruce(plan, maestro, codigos):
     """Cuantos codigos cruzaron, y si fueron pocos, por que.
 
@@ -24411,7 +24451,15 @@ def render_vtex_export(brand_config, shopify_config):
         ),
     )
     columnas = st.columns(3)
-    patron_referencia = columnas[0].text_input(
+    asignar_ids = columnas[0].checkbox(
+        "Asignar ID a los productos y SKUs nuevos", value=True,
+        help=(
+            "Sigue la numeración del catálogo: el ID más alto de cada serie + 1. Product ID y "
+            "SKU ID son series distintas. Sin ID asignado, las planillas de especificaciones e "
+            "imágenes no tienen a qué colgar el producto nuevo y no se pueden cargar."
+        ),
+    )
+    patron_referencia = columnas[1].text_input(
         "Referencia de los SKUs nuevos", value=vtex_motor.PATRON_REFERENCIA_SKU,
         key="vtex_patron_referencia",
         help=(
@@ -24541,6 +24589,7 @@ def render_vtex_export(brand_config, shopify_config):
         "solo_sin_imagenes": solo_sin_imagenes,
         "patron_referencia_sku": patron_referencia,
         "permitir_todo_nuevo": permitir_todo_nuevo,
+        "asignar_ids_nuevos": asignar_ids,
     }
 
     if st.button("Analizar y mapear IDs", type="primary", key="vtex_analizar"):
@@ -24577,6 +24626,7 @@ def render_vtex_export(brand_config, shopify_config):
     st.markdown("### 3. Validación")
     render_vtex_resumen(plan["resumen"])
     render_vtex_diagnostico_cruce(plan, maestro, codigos)
+    render_vtex_rangos_asignados(plan, maestro)
     render_vtex_alertas(plan["alertas"])
 
     # --- Paso 4: vista previa --------------------------------------------

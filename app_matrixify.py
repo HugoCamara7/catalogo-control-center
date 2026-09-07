@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -170,8 +170,10 @@ from generate_columbia_matrixify import (
     strip_html,
     texto_plano_de_body,
     final_variant_filter,
+    get_sial_columns,
     is_zero_size,
     read_arti_source,
+    sial_tail_row,
 )
 try:
     from catalog_rules import (
@@ -5997,9 +5999,22 @@ def centry_bullets(row, vendor, product_type, color, gender):
     return ", ".join(f"{label} | {value}" for label, value in items if centry_value(value))
 
 
-def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
+def _filas_sial_desde_matrixify(matrixify_df, brand_config=None):
+    """El cuerpo de la hoja Carga Sial, sin las columnas que dependen del destino.
+
+    La hoja se emite en DOS formatos: el de Centry (Mod/Col/Tal y la cola de
+    Supermall) y el del SITIO (Cod. Modelo/Cod. Color/Talla y la cola de
+    `sial_tail_columns`, la misma de la carga completa). Las 40 columnas del
+    medio son identicas en los dos, asi que se arman aqui una sola vez: con dos
+    funciones completas, un arreglo en una se olvida en la otra y las dos hojas
+    se separan sin que nadie lo note.
+
+    Devuelve, por fila, `(identidad, cuerpo)`. La identidad trae lo que cambia
+    entre formatos -modelo, color, talla, Mod-Col, SKU y el ID del producto en
+    Shopify-; el cuerpo, las columnas compartidas.
+    """
     if matrixify_df is None or matrixify_df.empty:
-        return pd.DataFrame(columns=CENTRY_SIAL_COLUMNS)
+        return
     brand_config = brand_config or {}
     df = coalesce_duplicate_columns(matrixify_df).copy()
     for column in MATRIXIFY_COLUMNS:
@@ -6015,7 +6030,6 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
     df = forward_fill_product_block(df, product_fields)
     resolutor_sial = centry_resolutor(df)
 
-    rows = []
     for _, row in df.iterrows():
         sku = centry_value(row.get("Variant SKU"))
         if not sku:
@@ -6053,13 +6067,22 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
             centry_output_is_accessory(category_probe) and (is_one_size(raw_size) or is_zero_size(raw_size)),
         )
         tal_value = first_non_empty(row.get("__CENTRY_RAW_SIZE"), raw_size)
-        rows.append(
+        identidad = {
+            "modelo": model,
+            "color": color_code,
+            "talla": tal_value,
+            "mod_col": mod_col,
+            "sku": sku,
+            # Solo lo usa la hoja del sitio, para decir si el producto se crea
+            # o se actualiza y para devolver el Product Id a su tienda.
+            "shopify_id": clean_value(row.get("ID")),
+        }
+        yield (
+            identidad,
             {
-                "Mod": model,
-                "Col": color_code,
-                "Tal": tal_value,
-                # La hoja Sial ya identifica con Mod/Col/Tal: no lleva las
-                # columnas COD MOD/COD COL/TALLA, que son de la hoja Centry.
+                # La hoja Sial ya identifica con Mod/Col/Tal (o con Cod.
+                # Modelo/Cod. Color/Talla): no lleva las columnas COD MOD/COD
+                # COL/TALLA, que son de la hoja Centry.
                 "Product Name ": centry_value(row.get("Title")) or mod_col,
                 "Product Bullets": centry_bullets(row, vendor, product_type, color, gender),
                 "Product Description": texto_plano_de_body(row.get("Body HTML")),
@@ -6109,10 +6132,26 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
                 "Adicional 8 ": "",
                 "Adicional 9 ": "",
                 "Adicional 10": "",
-                "Mod-Col": mod_col,
-                "Sku - Sial": sku,
+            },
+        )
+
+
+def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
+    """La hoja Carga Sial de Centry: Mod/Col/Tal y la cola de Supermall."""
+    if matrixify_df is None or matrixify_df.empty:
+        return pd.DataFrame(columns=CENTRY_SIAL_COLUMNS)
+    rows = []
+    for identidad, cuerpo in _filas_sial_desde_matrixify(matrixify_df, brand_config):
+        rows.append(
+            {
+                "Mod": identidad["modelo"],
+                "Col": identidad["color"],
+                "Tal": identidad["talla"],
+                **cuerpo,
+                "Mod-Col": identidad["mod_col"],
+                "Sku - Sial": identidad["sku"],
                 "Nuevo o Actualizar (Rockford.pe)": "Crear",
-                "Sku - Supermall.pe": sku,
+                "Sku - Supermall.pe": identidad["sku"],
                 "Porduct Id - Supermall.pe": "",
             }
         )
@@ -6121,6 +6160,93 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
     if not sial_df.empty and "Talla Web " in sial_df.columns:
         sial_df["Talla Web "] = sial_df["Tal"].map(centry_display_size)
     return repair_mojibake_dataframe(sial_df)
+
+
+CARGA_SIAL_LABEL = "Carga Sial"
+
+
+def build_sial_de_sitio_from_matrixify(matrixify_df, brand_config=None):
+    """La hoja Carga Sial en el formato del SITIO, la misma de la carga completa.
+
+    Mismo cuerpo que la hoja de Centry y la cola de `sial_tail_columns`, que es
+    la que dice a que tienda va cada producto y en que bodega se prende. La cola
+    NO se escribe aqui: sale de `sial_tail_row`, la misma funcion que usa
+    `build_sial_row` en la carga completa, para que un sitio nuevo no entre en
+    una hoja y se olvide en la otra.
+
+    Un producto que YA esta en Shopify sale como "Actualizar" con su Product Id;
+    uno que no esta, como "Crear". Es el mismo criterio de la carga completa: la
+    diferencia esta en que aqui el producto se busca por el codigo Modelo-Color
+    que trae el Excel, no por el input comercial.
+    """
+    brand_config = brand_config or {}
+    columnas = get_sial_columns(brand_config)
+    if matrixify_df is None or matrixify_df.empty:
+        return pd.DataFrame(columns=columnas)
+    rows = []
+    for identidad, cuerpo in _filas_sial_desde_matrixify(matrixify_df, brand_config):
+        fila = {
+            "Cod. Modelo": identidad["modelo"],
+            "Cod. Color": identidad["color"],
+            "Talla": identidad["talla"],
+            **cuerpo,
+            "Mod-Col": identidad["mod_col"],
+            "Sku - Sial": identidad["sku"],
+        }
+        fila.update(sial_tail_row(brand_config, identidad["shopify_id"], identidad["sku"]))
+        rows.append(fila)
+    sial_df = pd.DataFrame(rows, columns=columnas).fillna("")
+    sial_df, _ = filter_centry_size_rows(sial_df, [], "Talla", key_column="Mod-Col", output_label="Carga Sial")
+    if not sial_df.empty and "Talla Web " in sial_df.columns:
+        sial_df["Talla Web "] = sial_df["Talla"].map(centry_display_size)
+    return repair_mojibake_dataframe(sial_df)
+
+
+def matrixify_desde_codigos_modelo_color(codes, brand_config, shopify_config):
+    """Shopify + BigQuery/ARTI para una lista de codigos Modelo-Color.
+
+    Es el primer tramo -identico- de las dos entregas por codigos de la carga
+    parcial: el Centry y la Carga Sial. Escrito dos veces, el arreglo siguiente
+    entraria en una y se olvidaria en la otra.
+
+    Devuelve `(matrixify_df, revision_df, arti_df, origen_del_maestro)`. El ARTI
+    sale tambien porque el Centry lo vuelve a mirar para completar el EAN, y
+    leerlo dos veces es leer el maestro dos veces.
+    """
+    shopify_products = session_shopify_products(brand_config["site_key"], shopify_config)
+    shopify_matrixify_df = shopify_products_to_matrixify_df(shopify_products)
+    arti_df, arti_source = session_arti_for_app(brand_config)
+    matrixify_df, master_issues_df = build_centry_matrixify_from_master(
+        codes,
+        shopify_matrixify_df,
+        arti_df,
+        brand_config,
+    )
+    return matrixify_df, master_issues_df, arti_df, arti_source
+
+
+def sial_codigos_sin_filas(codes, sial_df):
+    """Los codigos pedidos que no dejaron ni una fila en la hoja.
+
+    Sin esto, pedir 50 codigos y recibir 38 se ve igual de bien que recibir los
+    50: el Excel no dice cuales faltan y hay que cruzarlo a mano. Un codigo de
+    solo modelo (sin color) cuenta como presente si salio cualquiera de sus
+    colores.
+    """
+    presentes = set()
+    if sial_df is not None and not getattr(sial_df, "empty", True) and "Mod-Col" in sial_df.columns:
+        presentes = {clean_value(valor).upper() for valor in sial_df["Mod-Col"] if clean_value(valor)}
+    faltantes = []
+    for code in codes or []:
+        clave = clean_value(code).upper()
+        if not clave or clave in faltantes:
+            continue
+        if clave in presentes:
+            continue
+        if any(presente.startswith(f"{clave}-") for presente in presentes):
+            continue
+        faltantes.append(clave)
+    return faltantes
 
 
 def resumen_centry_para_pantalla(centry_df, filas_vista_previa=120):
@@ -6522,6 +6648,10 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             )
             rows.append(
                 {
+                    # El ID de Shopify no es columna de Matrixify: viaja para
+                    # que la hoja Carga Sial del sitio sepa si el producto se
+                    # crea o se actualiza y a que tienda devolver el Product Id.
+                    "ID": clean_value(product_row.get("ID")) if product_row is not None else "",
                     "Handle": clean_value(product_row.get("Handle")) if product_row is not None else key.lower(),
                     "Title": title,
                     "Body HTML": body_html,
@@ -24872,6 +25002,7 @@ api_version = "{DEFAULT_API_VERSION}"
     if operation_mode == "Carga parcial":
         operation_labels = {
             "Centry": "centry",
+            CARGA_SIAL_LABEL: "sial",
             "Tags": "tags",
             "Fotos 10 vistas": "photos",
             "Mantenedor Fotos PNG": "photos_png",
@@ -24935,14 +25066,18 @@ api_version = "{DEFAULT_API_VERSION}"
         png_origen = "Un código"
         png_extensiones = list(PNG_EXTENSIONES_BUSQUEDA)
 
-        if update_operation == "centry":
+        if update_operation in ("centry", "sial"):
+            entrega = "Centry" if update_operation == "centry" else CARGA_SIAL_LABEL
             update_file = st.file_uploader(
                 "2. Subir Excel con codigos modelo-color faltantes",
                 type=["xlsx", "xls"],
-                key="update_centry_codes",
+                key="update_centry_codes" if update_operation == "centry" else "update_sial_codes",
                 help="Puede venir con columna Mod-Col, Codigo Modelo Color, Cod Mod Col, SKU, o una sola columna con los codigos.",
             )
-            st.caption("La app toma esos codigos, cruza contra Shopify y devuelve el Excel Centry listo para enviar.")
+            st.caption(
+                f"La app toma esos codigos, cruza contra Shopify y BigQuery/ARTI y devuelve el Excel {entrega} "
+                "listo para enviar."
+            )
         elif update_operation == "tags":
             tag_mode = st.radio("Como aplicar tags", ["merge", "replace"], format_func=lambda v: "Agregar a los tags actuales" if v == "merge" else "Reemplazar todos los tags")
             update_file = st.file_uploader("2. Subir archivo con Mod-Col y Tags", type=["xlsx", "xls"], key="update_tags")
@@ -25168,6 +25303,10 @@ api_version = "{DEFAULT_API_VERSION}"
                 "centry_maintainer_issues_df",
                 "centry_maintainer_codes",
                 "centry_maintainer_excel_bytes",
+                "sial_maintainer_df",
+                "sial_maintainer_issues_df",
+                "sial_maintainer_codes",
+                "sial_maintainer_excel_bytes",
                 "png_maintainer_rows",
                 "png_maintainer_product",
                 "png_maintainer_result",
@@ -25200,6 +25339,12 @@ api_version = "{DEFAULT_API_VERSION}"
         if update_operation == "inventory_locations" and effective_update_source != "Shopify API":
             st.error("La activación de inventario en sucursales solo se puede ejecutar con Shopify API.")
             update_ready = False
+        if update_operation == "sial" and effective_update_source != "Shopify API":
+            # El respaldo Excel no sabe si el producto ya existe en la tienda, y
+            # de eso dependen las dos columnas que mandan en la hoja: "Nuevo o
+            # Actualizar" y el Product Id del sitio.
+            st.error(f"La {CARGA_SIAL_LABEL} por codigos solo se puede generar con Shopify API.")
+            update_ready = False
         if update_operation == "photos_png" and effective_update_source != "Shopify API":
             # Necesita leer las fotos actuales del producto y subir las nuevas:
             # el respaldo Excel no sirve para ninguna de las dos cosas.
@@ -25221,7 +25366,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     effective_update_file,
                     f"partial_{brand_config['site_key']}_{update_operation}",
                 ) if effective_update_file else None
-                if update_df is not None and update_operation != "centry":
+                if update_df is not None and update_operation not in ("centry", "sial"):
                     _, detected_brands, blocked_brands = input_brand_report(update_df, brand_config)
                     if blocked_brands:
                         st.error(
@@ -25229,6 +25374,96 @@ api_version = "{DEFAULT_API_VERSION}"
                             f"{', '.join(blocked_brands)}."
                         )
                         st.stop()
+
+                if update_operation == "sial":
+                    # Misma mecanica que Centry -- un Excel de codigos, un boton,
+                    # un Excel de vuelta -- porque es la misma pregunta con otra
+                    # hoja al final. Lo unico que cambia es el formato: aqui sale
+                    # la Carga Sial DEL SITIO, la misma hoja que arma la carga
+                    # completa, con su cola de tienda y bodega.
+                    if st.button(f"Generar {CARGA_SIAL_LABEL}", type="primary"):
+                        for state_key in (
+                            "sial_maintainer_df",
+                            "sial_maintainer_issues_df",
+                            "sial_maintainer_codes",
+                            "sial_maintainer_excel_bytes",
+                        ):
+                            st.session_state.pop(state_key, None)
+                        codes = model_codes_from_excel(update_df)
+                        if not codes:
+                            st.error("El Excel no tiene codigos modelo-color reconocibles. Usa una columna como Mod-Col, Codigo Modelo Color, Cod Mod Col, SKU, o una sola columna con los codigos.")
+                        else:
+                            with st.spinner(f"Leyendo Shopify, BigQuery y armando la {CARGA_SIAL_LABEL}..."):
+                                (
+                                    sial_matrixify_df,
+                                    master_issues_df,
+                                    _arti_df,
+                                    arti_source,
+                                ) = matrixify_desde_codigos_modelo_color(codes, brand_config, shopify_config)
+                                sial_df = build_sial_de_sitio_from_matrixify(sial_matrixify_df, brand_config)
+                                fuente_df = pd.DataFrame([{
+                                    "Mod-Col": "Base maestra",
+                                    "Problema": clean_value(arti_source) or "sin detalle",
+                                }])
+                                sial_issues_df = pd.concat(
+                                    [fuente_df, master_issues_df],
+                                    ignore_index=True,
+                                ).drop_duplicates()
+                            st.caption(f"Base maestra usada: {arti_source}")
+                            st.session_state["sial_maintainer_df"] = sial_df
+                            st.session_state["sial_maintainer_issues_df"] = sial_issues_df
+                            st.session_state["sial_maintainer_codes"] = codes
+                            st.session_state["sial_maintainer_excel_bytes"] = dataframe_to_excel_bytes(
+                                {
+                                    "Carga Sial": sial_df,
+                                    "Revision Carga Sial": sial_issues_df,
+                                }
+                            )
+
+                    sial_df = st.session_state.get("sial_maintainer_df")
+                    sial_issues_df = st.session_state.get("sial_maintainer_issues_df", pd.DataFrame())
+                    codes = st.session_state.get("sial_maintainer_codes", [])
+                    if sial_df is not None:
+                        faltantes = sial_codigos_sin_filas(codes, sial_df)
+                        if sial_df.empty:
+                            st.warning(
+                                "No se armo ninguna fila para los codigos indicados. Mira la hoja Revision: "
+                                "los codigos pueden no estar en BigQuery/ARTI o ser de una marca que este sitio no carga."
+                            )
+                        else:
+                            modelos = safe_int_value(
+                                sial_df["Mod-Col"].map(lambda valor: clean_value(valor).upper()).nunique()
+                            ) if "Mod-Col" in sial_df.columns else 0
+                            st.success(
+                                f"{CARGA_SIAL_LABEL} generada con {len(sial_df):,} filas de talla "
+                                f"({modelos:,} modelo-color) para {len(codes):,} codigos consultados."
+                            )
+                            st.dataframe(sial_df.head(200), use_container_width=True, height=380)
+                            st.download_button(
+                                f"Descargar {CARGA_SIAL_LABEL}",
+                                data=st.session_state.get("sial_maintainer_excel_bytes")
+                                or dataframe_to_excel_bytes(
+                                    {
+                                        "Carga Sial": sial_df,
+                                        "Revision Carga Sial": sial_issues_df if sial_issues_df is not None else pd.DataFrame(),
+                                    }
+                                ),
+                                file_name=f"carga_sial_{brand_config['site_key']}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key=f"download_sial_partial_{brand_config['site_key']}",
+                                on_click=log_descarga, args=(f"Descargar {CARGA_SIAL_LABEL}", "main"),
+                            )
+                        if faltantes:
+                            # Pedir 50 codigos y recibir 38 se ve igual de bien
+                            # que recibir los 50 si nadie dice cuales faltan.
+                            st.warning(
+                                f"{len(faltantes):,} codigos no dejaron ninguna fila: "
+                                f"{', '.join(faltantes[:20])}{' ...' if len(faltantes) > 20 else ''}"
+                            )
+                        if sial_issues_df is not None and not sial_issues_df.empty:
+                            with st.expander(f"Revision de la {CARGA_SIAL_LABEL}"):
+                                st.dataframe(sial_issues_df, use_container_width=True, height=280)
+                    return
 
                 if update_operation == "centry":
                     if st.button("Generar Centry", type="primary"):
@@ -25244,15 +25479,12 @@ api_version = "{DEFAULT_API_VERSION}"
                             st.error("El Excel no tiene codigos modelo-color reconocibles. Usa una columna como Mod-Col, Codigo Modelo Color, Cod Mod Col, SKU, o una sola columna con los codigos.")
                         else:
                             with st.spinner("Leyendo Shopify, BigQuery y armando Centry..."):
-                                shopify_products = session_shopify_products(brand_config["site_key"], shopify_config)
-                                shopify_matrixify_df = shopify_products_to_matrixify_df(shopify_products)
-                                arti_df, arti_source = session_arti_for_app(brand_config)
-                                centry_matrixify_df, master_issues_df = build_centry_matrixify_from_master(
-                                    codes,
-                                    shopify_matrixify_df,
+                                (
+                                    centry_matrixify_df,
+                                    master_issues_df,
                                     arti_df,
-                                    brand_config,
-                                )
+                                    arti_source,
+                                ) = matrixify_desde_codigos_modelo_color(codes, brand_config, shopify_config)
                                 centry_df, centry_issues_df = build_centry_from_matrixify(
                                     centry_matrixify_df,
                                     brand_config,

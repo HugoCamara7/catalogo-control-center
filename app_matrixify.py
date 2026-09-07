@@ -39,6 +39,7 @@ from engines.ticket_flow import ORDEN as FLUJO_ORDEN
 from engines import centry_map as centry_plantilla
 from engines import load_status as status_carga
 from engines import espejo_supermall as espejo
+from engines import orden_tallas
 from engines import video_media as video_motor
 
 try:
@@ -261,6 +262,7 @@ product_update = _shopify_attr("product_update")
 product_variants_bulk_create = _shopify_attr("product_variants_bulk_create")
 product_variants_bulk_update = _shopify_attr("product_variants_bulk_update", None)
 product_variants_bulk_reorder = _shopify_attr("product_variants_bulk_reorder")
+product_option_update = _shopify_attr("product_option_update", None)
 staged_upload_image = _shopify_attr("staged_upload_image")
 test_connection = _shopify_attr("test_connection")
 wait_file_statuses = _shopify_attr("wait_file_statuses")
@@ -865,11 +867,25 @@ def _row_by_size_keys(mapping, size):
 
 
 def size_sort_key(size):
+    """Orden de una talla. Las de LETRA por su escala; las de NUMERO por valor.
+
+    El numero va primero a proposito, antes de mirar `SIZE_ORDER`. Antes se
+    consultaba `SIZE_ORDER` para todo, y las tallas conocidas caian en el grupo
+    0 mientras las que no estaban en la tabla caian en el grupo 1: como
+    `SIZE_ORDER` no tiene las medias tallas, una curva de calzado PE quedaba
+    **36, 39, 42, 38.5, 40.5, 44.5** -- las medias, todas al final.
+
+    Se ve en el selector de tallas de la ficha, y es justo lo que el Mantenedor
+    de Tallas existe para arreglar. Ordenar los numeros por su valor tampoco
+    pierde nada: `SIZE_ORDER` tiene el mismo numero en dos escalas (el "40" de
+    vestuario y el "40" europeo), asi que cual ganaba ya dependia de cual se
+    asignara ultimo.
+    """
     normalized = normalize_size(size)
-    if normalized in SIZE_ORDER:
-        return (0, SIZE_ORDER[normalized], normalized)
     if re.fullmatch(r"\d+(\.\d+)?", normalized):
         return (1, float(normalized), normalized)
+    if normalized in SIZE_ORDER:
+        return (0, SIZE_ORDER[normalized], normalized)
     return (9, 9999, normalized)
 
 
@@ -23943,6 +23959,421 @@ def render_video_analisis(filas):
     )
 
 
+# =========================================================================
+# Mantenedor de Tallas (orden y escala)
+# =========================================================================
+# Dos cosas que se ven en la ficha y que hoy solo se arreglan al CREAR el
+# producto, o sea nunca para lo que ya esta cargado:
+#
+#   - El ORDEN de las tallas. Una curva ampliada despues deja la 44 entre la 38
+#     y la 39. La Carga completa ordena al crear (`_reorder_product_sizes`),
+#     pero nadie vuelve a mirarlo.
+#   - La ESCALA. Vans entrega el calzado en US y la tienda lo publica en PE/EU
+#     (41, 42...). Lo cargado antes de esa regla sigue diciendo "8".
+#
+# Trabaja en DOS TIEMPOS, como el mantenedor de fotos y el de videos: primero
+# revisa TODO sin escribir nada y solo despues, con confirmacion, aplica.
+#
+# El analisis es GRATIS: sale del catalogo que ya esta leido (`fetch_products`
+# trae las variantes en su orden y con sus opciones), asi que revisar el sitio
+# entero no cuesta un solo viaje extra a Shopify. Los viajes se pagan solo por
+# los productos que hay que arreglar, y en el momento de arreglarlos.
+TALLAS_LABEL = "Mantenedor de Tallas"
+
+# Cuantos productos se arreglan antes de refrescar la barra. Cada uno son entre
+# dos y cuatro viajes a Shopify (leer, renombrar, reordenar, verificar), asi que
+# el bloque es chico: igual que en los videos, un bloque que termina es avance
+# que ya no se repite.
+TALLAS_PRODUCTOS_POR_BLOQUE = 10
+
+
+def tallas_orden_clave(valor):
+    """El MISMO criterio de orden que usa la Carga completa.
+
+    No se escribe uno nuevo a proposito: un segundo criterio se separa del
+    primero sin que nadie lo note, y entonces la ficha queda en un orden y el
+    Matrixify en otro. Es lo que ya se paga con las dos `normalize_size`.
+    """
+    return master_size_sort_key(valor)
+
+
+def tallas_convertidor_para(producto, brand_config):
+    """El conversor de escala de este producto, o None si no le toca.
+
+    Decide por MARCA, no por sitio. `tallas_calzado_pe` es una bandera del
+    sitio y alcanzaba mientras Vans vivia solo en Vans.pe; con Supermall.pe --
+    que lleva Vans, Columbia y Hush Puppies en la misma tienda -- una bandera
+    de sitio convertiria todo el calzado del sitio o nada.
+
+    Solo CALZADO: en vestuario una talla "12" es de nino, no un US 12, y
+    convertirla destrozaria el dato.
+    """
+    marca = clean_value(producto.get("Marca")) or clean_value(brand_config.get("label"))
+    if not orden_tallas.marca_publica_en_pe(marca):
+        return None
+    tipo = clean_value(producto.get("Type"))
+    if not tipo or not es_calzado(tipo):
+        return None
+    genero = centry_gender(producto)
+    return lambda talla: talla_calzado_pe(talla, genero)
+
+
+def tallas_planificar_catalogo(productos, brand_config, marcas=(), codigos=()):
+    """El plan del catalogo, ya filtrado por marca y por lista de codigos."""
+    marcas_pedidas = {clean_value(m).upper() for m in marcas if clean_value(m)}
+    codigos_pedidos = {clean_value(c).upper() for c in codigos if clean_value(c)}
+    elegidos = []
+    for producto in productos or []:
+        if marcas_pedidas and clean_value(producto.get("Marca")).upper() not in marcas_pedidas:
+            continue
+        if codigos_pedidos and clean_value(producto.get("Mod-Col")).upper() not in codigos_pedidos:
+            continue
+        elegidos.append(producto)
+    return orden_tallas.planificar(
+        elegidos,
+        tallas_orden_clave,
+        convertir_de=lambda producto: tallas_convertidor_para(producto, brand_config),
+    )
+
+
+def tallas_producto_como_registro(product_data):
+    """Lo que devuelve `fetch_product_options_and_variants`, con la forma que
+    espera el motor.
+
+    Hace falta porque antes de ESCRIBIR se relee el producto: el plan salio del
+    catalogo cacheado, y entre el analisis y el arreglo alguien pudo tocarlo.
+    Escribir sobre una lectura vieja es como se duplican productos.
+    """
+    variantes = []
+    for variante in ((product_data or {}).get("variants") or {}).get("nodes") or []:
+        fila = {"Variant GID": clean_value(variante.get("id"))}
+        for numero, opcion in enumerate(variante.get("selectedOptions") or [], start=1):
+            fila[f"Option{numero} Name"] = clean_value(opcion.get("name"))
+            fila[f"Option{numero} Value"] = clean_value(opcion.get("value"))
+        variantes.append(fila)
+    return {"Variants": variantes}
+
+
+def tallas_aplicar_producto(shopify_config, plan, brand_config):
+    """Arregla UN producto. Devuelve (ok, pasos).
+
+    El orden importa: primero se renombra y despues se reordena. Ordenar
+    primero dejaria las etiquetas nuevas en las posiciones viejas.
+    """
+    pasos = []
+    product_gid = clean_value(plan.get("Product ID"))
+    if not product_gid:
+        return False, [{"Paso": "Leer producto", "Estado": "error",
+                        "Detalle": "El producto no trae Product ID."}]
+    try:
+        actual = fetch_product_options_and_variants(shopify_config, product_gid)
+    except Exception as exc:
+        return False, [{"Paso": "Leer producto", "Estado": "error", "Detalle": str(exc)[:300]}]
+    pasos.append({"Paso": "Leer producto", "Estado": "ok", "Detalle": product_gid})
+
+    # Se REPLANIFICA sobre lo que Shopify dice ahora, no sobre el plan viejo.
+    registro = tallas_producto_como_registro(actual)
+    registro.update({k: plan.get(k) for k in ("Mod-Col", "Handle", "Title", "Marca", "Product ID")})
+    registro["Type"] = plan.get("Type", "")
+    fresco = orden_tallas.plan_de_producto(
+        registro, tallas_orden_clave,
+        convertir=tallas_convertidor_para(
+            dict(registro, Marca=plan.get("Marca"), Type=plan.get("Type", "")), brand_config
+        ),
+    )
+    if not (fresco.get("Cambia_escala") or fresco.get("Cambia_orden")):
+        pasos.append({"Paso": "Comparar", "Estado": "aviso",
+                      "Detalle": "Ya estaba bien al releerlo. No se escribio nada."})
+        return True, pasos
+
+    # --- 1. Escala -------------------------------------------------------
+    if fresco.get("Cambia_escala"):
+        opcion = None
+        for candidata in actual.get("options") or []:
+            if clean_value(candidata.get("name")).casefold() == clean_value(fresco["Opcion"]).casefold():
+                opcion = candidata
+                break
+        if opcion is None:
+            pasos.append({"Paso": "Cambiar escala", "Estado": "error",
+                          "Detalle": f"No encontre la opcion '{fresco['Opcion']}' en el producto."})
+            return False, pasos
+        cambios = []
+        for valor in opcion.get("optionValues") or []:
+            nuevo = fresco["Renombrar"].get(clean_value(valor.get("name")))
+            if nuevo:
+                cambios.append({"id": clean_value(valor.get("id")), "name": nuevo})
+        if not cambios:
+            pasos.append({"Paso": "Cambiar escala", "Estado": "aviso",
+                          "Detalle": "Los valores a renombrar ya no estan en el producto."})
+        else:
+            try:
+                product_option_update(shopify_config, product_gid, opcion.get("id"), cambios)
+            except Exception as exc:
+                pasos.append({"Paso": "Cambiar escala", "Estado": "error", "Detalle": str(exc)[:300]})
+                return False, pasos
+            pasos.append({
+                "Paso": "Cambiar escala", "Estado": "ok",
+                "Detalle": ", ".join(f"{k} -> {v}" for k, v in fresco["Renombrar"].items()),
+            })
+
+    # --- 2. Orden --------------------------------------------------------
+    if fresco.get("Cambia_orden"):
+        indice = orden_tallas._indice_de_opcion(registro["Variants"], fresco["Opcion"])
+        # La talla de cada variante se lee del registro RELEIDO; si se acaba de
+        # renombrar, el nombre nuevo es el que corresponde a esa variante.
+        posicion_de = {}
+        for variante in registro["Variants"]:
+            valor = clean_value(variante.get(f"Option{indice} Value"))
+            valor = fresco["Renombrar"].get(valor, valor)
+            posicion_de.setdefault(valor, []).append(clean_value(variante.get("Variant GID")))
+        posiciones = []
+        numero = 1
+        for talla in fresco["Propuesto"]:
+            for gid in posicion_de.get(talla, []):
+                if gid:
+                    posiciones.append({"id": gid, "position": numero})
+                    numero += 1
+        if len(posiciones) < 2:
+            pasos.append({"Paso": "Ordenar", "Estado": "aviso",
+                          "Detalle": "No hay suficientes variantes con id para ordenar."})
+        else:
+            try:
+                product_variants_bulk_reorder(shopify_config, product_gid, posiciones)
+            except Exception as exc:
+                pasos.append({"Paso": "Ordenar", "Estado": "error", "Detalle": str(exc)[:300]})
+                return False, pasos
+            pasos.append({"Paso": "Ordenar", "Estado": "ok",
+                          "Detalle": ", ".join(fresco["Propuesto"])})
+            # Se VERIFICA: quedar mal ordenado sin que nadie lo diga es el peor
+            # error silencioso, igual que un video en la posicion equivocada.
+            try:
+                verificado = tallas_producto_como_registro(
+                    fetch_product_options_and_variants(shopify_config, product_gid)
+                )
+                quedaron = orden_tallas.tallas_en_orden_actual(
+                    verificado["Variants"], fresco["Opcion"]
+                )
+            except Exception as exc:
+                pasos.append({"Paso": "Verificar", "Estado": "aviso", "Detalle": str(exc)[:300]})
+                return True, pasos
+            if quedaron != fresco["Propuesto"]:
+                pasos.append({
+                    "Paso": "Verificar", "Estado": "error",
+                    "Detalle": f"Shopify dejo {', '.join(quedaron)} y se esperaba {', '.join(fresco['Propuesto'])}",
+                })
+                return False, pasos
+            pasos.append({"Paso": "Verificar", "Estado": "ok", "Detalle": ", ".join(quedaron)})
+    return True, pasos
+
+
+def render_tallas_resumen(resumen):
+    tarjetas = [
+        ("Productos revisados", resumen["Productos revisados"], "blue", "&#9633;"),
+        ("Ya están bien", resumen["Ya estan bien"], "green", "&#9711;"),
+        ("Fuera de orden", resumen["Fuera de orden"], "orange", "&#8645;"),
+        ("Escala equivocada", resumen["Escala equivocada"], "orange", "&#8644;"),
+        ("Por arreglar", resumen["Por arreglar"], "purple", "!"),
+    ]
+    render_html(
+        '<div class="kpi-card-grid">'
+        + "".join(
+            f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+            f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+            for titulo, valor, tono, icono in tarjetas
+        )
+        + "</div>"
+    )
+
+
+def render_mantenedor_tallas(brand_config, shopify_config):
+    """La pantalla del Mantenedor de Tallas, en DOS TIEMPOS.
+
+    Primero se revisa TODO sin escribir nada en Shopify y solo despues, con
+    confirmacion, se aplica. Sin eso, en un catalogo de 800 productos se
+    empieza a arreglar y uno se entera a mitad de camino de que la mitad tenia
+    dos opciones y no se podia reordenar.
+
+    El analisis sale del catalogo YA leido, asi que revisar el sitio entero no
+    cuesta un viaje extra: los viajes se pagan solo por lo que hay que
+    arreglar.
+    """
+    log_acceso_modulo(TALLAS_LABEL)
+    render_html(
+        """
+        <div class="kpi-hero">
+            <div class="kpi-title">
+                <h2>Mantenedor de Tallas</h2>
+                <p>Revisa que las tallas de cada producto estén en orden y en la escala que publica la tienda.</p>
+            </div>
+        </div>
+        """
+    )
+    if not is_shopify_configured(shopify_config):
+        st.error(
+            "Este sitio no tiene Shopify configurado en Secrets. "
+            "El mantenedor lee y escribe directamente sobre la tienda."
+        )
+        return
+    if product_option_update is None:
+        st.error(
+            "Falta actualizar `shopify_api.py`: no tiene `product_option_update`, "
+            "que es la que renombra los valores de la opción de talla."
+        )
+        return
+
+    site_key = clean_value(brand_config.get("site_key")) or "columbia"
+    estado_key = f"tallas_plan_{site_key}"
+
+    # --- 1. Que se revisa -------------------------------------------------
+    st.markdown('<div class="section-card"><h2>1. Qué se revisa</h2>', unsafe_allow_html=True)
+    st.caption(
+        "Por defecto se revisa el catálogo entero del sitio. El análisis no escribe nada "
+        "y sale del catálogo que la app ya tiene leído, así que no cuesta esperar."
+    )
+    catalogo = shopify_products_en_cache(site_key, shopify_config)
+    marcas_disponibles = sorted({
+        clean_value(producto.get("Marca"))
+        for producto in catalogo or []
+        if clean_value(producto.get("Marca"))
+    })
+    columna_marcas, columna_codigos = st.columns([1, 1], gap="large")
+    with columna_marcas:
+        marcas = st.multiselect(
+            "Marcas (vacío = todas)",
+            marcas_disponibles,
+            key=f"tallas_marcas_{site_key}",
+            help="Supermall.pe lleva varias marcas: aquí se puede revisar una sola.",
+        )
+    with columna_codigos:
+        excel_codigos = st.file_uploader(
+            "Excel de códigos (opcional)",
+            type=["xlsx", "xls"],
+            key=f"tallas_codigos_{site_key}",
+            help="Para revisar solo una lista. Sin archivo se revisa todo el sitio.",
+        )
+    codigos = []
+    if excel_codigos is not None:
+        df_codigos = read_uploaded_excel_cached(excel_codigos, f"tallas_codigos_df_{site_key}")
+        codigos, descartados = png_codigos_desde_excel(df_codigos)
+        st.caption(f"{len(codigos):,} códigos leídos del Excel.")
+        if descartados:
+            with st.expander(f"{len(descartados):,} filas descartadas del Excel"):
+                st.dataframe(pd.DataFrame(descartados), use_container_width=True, hide_index=True)
+
+    if st.button("Revisar tallas", type="primary", key=f"tallas_analizar_{site_key}"):
+        with st.spinner("Leyendo el catálogo del sitio..."):
+            productos = leer_catalogo_del_sitio(site_key, shopify_config)
+        with st.spinner("Revisando el orden y la escala de cada producto..."):
+            planes = tallas_planificar_catalogo(productos, brand_config, marcas, codigos)
+        st.session_state[estado_key] = planes
+        log_user_activity(
+            "Revision de tallas",
+            f"{len(planes):,} productos revisados en {clean_value(brand_config.get('site_label'))}.",
+            module=TALLAS_LABEL,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    planes = st.session_state.get(estado_key)
+    if planes is None:
+        return
+    if not planes:
+        st.info("Ningún producto coincide con el filtro.")
+        return
+
+    # --- 2. Que hay que arreglar -----------------------------------------
+    st.markdown('<div class="section-card"><h2>2. Qué hay que arreglar</h2>', unsafe_allow_html=True)
+    resumen = orden_tallas.resumen(planes)
+    render_tallas_resumen(resumen)
+    por_arreglar = orden_tallas.pendientes(planes)
+    tabla = pd.DataFrame(orden_tallas.filas_para_tabla(planes))
+    if not tabla.empty:
+        solo_pendientes = st.checkbox(
+            "Ver solo lo que hay que arreglar",
+            value=True,
+            key=f"tallas_solo_pendientes_{site_key}",
+        )
+        vista = tabla[tabla["Cambia escala"].eq("SI") | tabla["Cambia orden"].eq("SI")] if solo_pendientes else tabla
+        st.dataframe(vista.head(400), use_container_width=True, height=380, hide_index=True)
+        if len(vista) > 400:
+            st.caption(f"Se muestran 400 de {len(vista):,} filas. El Excel las lleva todas.")
+        st.download_button(
+            "Descargar la revisión",
+            data=dataframe_to_excel_bytes({"Revision tallas": tabla}),
+            file_name=f"revision_tallas_{site_key}_{datetime.now().strftime('%d%m%Y')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"tallas_descargar_{site_key}",
+            on_click=log_descarga, args=("Revision de tallas", "render_mantenedor_tallas"),
+        )
+    avisos = [plan for plan in planes if plan.get("Nota")]
+    if avisos:
+        with st.expander(f"{len(avisos):,} productos con aviso"):
+            st.dataframe(
+                pd.DataFrame([{"Mod-Col": p["Mod-Col"], "Producto": p["Title"], "Aviso": p["Nota"]} for p in avisos]),
+                use_container_width=True, hide_index=True,
+            )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if not por_arreglar:
+        st.success("Todas las tallas revisadas están en orden y en la escala correcta.")
+        return
+
+    # --- 3. Aplicar -------------------------------------------------------
+    st.markdown('<div class="section-card"><h2>3. Aplicar los cambios</h2>', unsafe_allow_html=True)
+    escala = sum(1 for plan in por_arreglar if plan["Cambia_escala"])
+    orden = sum(1 for plan in por_arreglar if plan["Cambia_orden"])
+    st.warning(
+        f"Se van a tocar **{len(por_arreglar):,} productos** en "
+        f"**{clean_value(brand_config.get('site_label'))}**: {escala:,} cambian de escala "
+        f"y {orden:,} cambian de orden. Se cambia la etiqueta de la talla y la posición "
+        "de las variantes; **no se tocan SKU, precios ni inventario**."
+    )
+    confirmar = st.checkbox(
+        "Confirmo que revisé la tabla de arriba y quiero aplicar estos cambios",
+        key=f"tallas_confirmar_{site_key}",
+    )
+    if not st.button("Aplicar", type="primary", disabled=not confirmar, key=f"tallas_aplicar_{site_key}"):
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    resultados = []
+    barra = st.progress(0.0, text="Arreglando...")
+    hechos = 0
+    # Por BLOQUES: cada bloque que termina es avance que ya no se repite si la
+    # pantalla se refresca a mitad de camino. Misma razon que en fotos y videos.
+    for bloque in png_bloques(por_arreglar, TALLAS_PRODUCTOS_POR_BLOQUE):
+        for plan in bloque:
+            ok, pasos = tallas_aplicar_producto(shopify_config, plan, brand_config)
+            resultados.append({
+                "Mod-Col": plan["Mod-Col"],
+                "Producto": plan["Title"],
+                "Resultado": "OK" if ok else "ERROR",
+                "Detalle": " | ".join(f"{p['Paso']}: {p['Detalle']}" for p in pasos),
+            })
+            hechos += 1
+        barra.progress(hechos / max(len(por_arreglar), 1), text=f"{hechos:,} de {len(por_arreglar):,}")
+        st.session_state[f"{estado_key}_resultados"] = resultados
+    barra.empty()
+
+    tabla_resultados = pd.DataFrame(resultados)
+    fallidos = int((tabla_resultados["Resultado"] == "ERROR").sum()) if not tabla_resultados.empty else 0
+    if fallidos:
+        st.error(f"{fallidos:,} productos no se pudieron arreglar. El detalle está en la tabla.")
+    else:
+        st.success(f"{len(resultados):,} productos arreglados.")
+    st.dataframe(tabla_resultados, use_container_width=True, height=320, hide_index=True)
+    log_user_activity(
+        "Mantenimiento de tallas",
+        f"{len(resultados):,} productos procesados, {fallidos:,} con error.",
+        module=TALLAS_LABEL,
+        resultado="error" if fallidos else "ok",
+    )
+    # El plan queda invalidado: lo que se acaba de arreglar ya no esta mal.
+    st.session_state.pop(estado_key, None)
+    clear_shopify_products_cache(site_key)
+    st.caption("Vuelve a pulsar **Revisar tallas** para comprobar cómo quedó.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_video_maintainer(brand_config, shopify_config):
     """La pantalla del Mantenedor de Videos, en DOS TIEMPOS.
 
@@ -24376,6 +24807,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Fotos 10 vistas": "photos",
             "Mantenedor Fotos PNG": "photos_png",
             "Mantenedor de Videos": "videos",
+            TALLAS_LABEL: "tallas",
             "Siblings": "siblings",
             "Titulo": "title",
             "Guías de talla": "size_guides",
@@ -24391,6 +24823,13 @@ api_version = "{DEFAULT_API_VERSION}"
             key=f"partial_operation_select_{brand_config['site_key']}_v3",
         )
         update_operation = operation_labels[update_label]
+        if update_operation == "tallas":
+            # Igual que el Mantenedor de Videos: no pasa por el analizar/
+            # ejecutar de la carga parcial, porque no hay vista previa que
+            # cruzar contra un Excel -- lo que se revisa es el catalogo.
+            st.markdown("</div>", unsafe_allow_html=True)
+            render_mantenedor_tallas(brand_config, shopify_config)
+            return
         if update_operation == "videos":
             # El Mantenedor de Videos NO pasa por el analizar/ejecutar de la
             # carga parcial: no hay vista previa que armar ni Excel que cruzar,

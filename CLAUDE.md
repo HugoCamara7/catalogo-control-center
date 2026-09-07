@@ -71,7 +71,7 @@ Fuentes de datos: **BigQuery** (maestro ARTI y stock), **Shopify Admin API**
 ## 2. Arquitectura
 
 ```
-app_matrixify.py        18.7xx lineas · 439 funciones · UI + routing + logica
+app_matrixify.py        25.6xx lineas · 595 funciones · UI + routing + logica
 ├── engines/            motores sin Streamlit, testeables
 │   ├── audit.py        535 lin · auditoria (2 backends, 45 pruebas)
 │   ├── notify.py       700 lin · correo transaccional (80 pruebas)
@@ -79,11 +79,10 @@ app_matrixify.py        18.7xx lineas · 439 funciones · UI + routing + logica
 │   ├── metrics.py      190 lin · metricas por Mod-Col (26 pruebas)
 │   ├── price_check.py  200 lin · validacion precio/stock (19 pruebas)
 │   ├── ticket_flow.py  562 lin · 23 estados -> 5 visibles (55 pruebas)
-│   ├── vtex_catalog.py 1.351 lin · carga manual a VTEX (62 pruebas)
 │   └── storage_check.py 176 lin · diagnostico de persistencia
 ├── ticket_system.py    1.093 lin · maquina de estados, 2 stores, 28 pruebas
 ├── generate_columbia_matrixify.py  3.319 lin · motor de catalogo
-├── shopify_api.py      1.421 lin · GraphQL Admin API
+├── shopify_api.py      2.382 lin · GraphQL Admin API (lectura masiva + paginada)
 ├── catalog_rules.py      632 lin · reglas de validacion
 ├── centry_static_masters.py 5.874 lin · datos estaticos (sin funciones)
 └── catalog_engine.py / job_store.py / sync_worker.py / api_main.py
@@ -679,110 +678,24 @@ dónde. Cada intento va a la auditoría, salga bien o mal.
 **Scopes de Shopify:** `read_products`, `write_products`. `write_files` NO hace
 falta: los videos van por `productCreateMedia` / `productReorderMedia`.
 
-## 5 sexies bis. Carga VTEX manual (septiembre 2026)
+## 5 sexies bis. La carga manual a VTEX se retiró (septiembre 2026)
 
-`engines/vtex_catalog.py` (sin Streamlit ni pandas) + `render_vtex_export()`.
-Entra como **una opción más de Carga parcial**, al lado del Mantenedor de
-Videos. Documento completo en `docs/CARGA_VTEX.md`.
+Supermall dejó VTEX y pasó a Shopify, así que la pantalla que armaba las cuatro
+planillas para subirlas a mano dejó de tener sentido. Se borró entera:
+`engines/vtex_catalog.py` (1.783 líneas), sus 90 pruebas, `docs/CARGA_VTEX.md`,
+`data/vtex_diccionario_supermallpe.json` y las 1.000 líneas de pantalla que
+vivían en `app_matrixify.py`.
 
-Forus también vende en VTEX (`supermallpe`) y ahí la carga **no va por API**: se
-suben cuatro planillas a mano. La app las arma y **no se conecta a VTEX** — hay
-un test que falla si aparece una llamada HTTP dentro de la pantalla.
+Medido: el import de la app pasó de **0,72 s y 146 MB** a **0,57 s y 131 MB**.
 
-**El dato que hace todo esto posible: la referencia de producto de VTEX ES el
-Mod-Col.** `HP102011307-251` en los dos lados, verificado contra la exportación
-real. No hay tabla de equivalencias que mantener.
+Lo que **no** se tocó: las columnas `Sku - Supermall.pe` y
+`Porduct Id - Supermall.pe` de la hoja **Carga Sial** siguen igual. Esas son del
+Excel operativo que se manda, no de VTEX, y las sigue necesitando quien recibe
+la carga.
 
-**El catálogo maestro es obligatorio y no es un capricho.** VTEX identifica por
-ID numérico: una fila con `Product ID` en blanco **crea**, una con el ID puesto
-**actualiza**. Generar sin mirar el maestro duplicaría cada producto que ya está
-cargado, con otro ID y otra URL. La regla del motor es que **un ID que sale del
-maestro nunca se reemplaza**.
-
-**Los productos y SKUs nuevos salen con un ID ASIGNADO, no en blanco.** Un
-`Product ID` vacío es como VTEX entiende "créalo", pero entonces las otras tres
-planillas se quedan sin nada que poner en `ID del producto` y `ID de SKU`: las
-especificaciones y las imágenes de un producto nuevo no tienen a qué colgarse y
-no se pueden cargar. Se numera desde el ID **más alto de todo el catálogo + 1**.
-
-**Product ID y SKU ID son dos series independientes** y mezclarlas pisaría
-productos que ya existen: en la exportación real los Product ID iban por 118 y
-los SKU ID por 4.969.659. Un ID que sale del maestro nunca se reemplaza — esto
-solo rellena huecos —, y el orden es el de los códigos pedidos, así que dos
-corridas con la misma lista dan los mismos ID.
-
-El máximo se sigue **mientras se lee** el maestro, no de lo guardado: el maestro
-se lee acotado a los códigos pedidos, así que el máximo de lo guardado sería el
-mayor de esos pocos productos y los ID nuevos chocarían con productos reales.
-
-El riesgo que queda y que no se puede cerrar sin conectarse a VTEX: si alguien
-crea un producto entre el export del maestro y la subida, ese número ya está
-ocupado. La pantalla muestra el rango asignado y avisa de volver a exportar.
-
-**El peso NUNCA sale vacío.** VTEX no puede cotizar el envío de un SKU sin peso.
-La cadena, de lo más fiable a lo menos: el propio SKU en VTEX, otra talla del
-mismo producto, la tabla de dimensiones por tipo de la app, las medidas que la
-tienda ya usa en esa CATEGORÍA de VTEX, y las de la tienda. Si tras las cinco
-sigue vacío, **bloquea**.
-
-**Los SKU se emparejan por TALLA, no por referencia.** En esta tienda el
-`SKU reference code` **es el propio `SKU ID`** (coinciden en las 499 filas de la
-muestra), así que la referencia no puede reconocer un SKU que todavía no existe
-— un ID que VTEX aún no asignó no se puede adivinar. El maestro trae
-`SKU name` = `TALLA 39` y de ahí sale la talla. Producto existente + talla que
-falta = SKU nuevo, que es el caso normal al ampliar una curva. La referencia de
-los SKU nuevos es **configurable** desde la pantalla (`{mod_col}-{talla}` por
-defecto): es una decisión de negocio, no del código.
-
-**Los ID de campo NO se inventan.** Las especificaciones se cargan con el ID del
-campo (24 = Género, 28 = Talla) y esos IDs son de cada cuenta de VTEX.
-Escribirlos en el código sería el hardcodeo que hay que evitar. Por eso las tres
-exportaciones opcionales del maestro son el **diccionario de la tienda**: qué
-campos tiene cada categoría y qué valores admite un Radio, con su ID. Sin ellas
-las planillas de especificaciones salen **vacías, a propósito**. El mapeo campo →
-dato empareja **por nombre**, sin tildes ni mayúsculas, y un valor que no está en
-la lista del campo **se avisa y no se emite**: un Radio con un valor que la
-tienda no conoce no se carga, y eso hay que saberlo antes de bajar el ZIP.
-
-**A un producto que ya existe no se le reescribe nada.** Se re-emite tal cual
-viene del maestro. Reescribirle nombre, URL o meta description a un producto
-publicado le cambia el SEO sin que nadie lo pida. La casilla "Actualizar los que
-ya existen" lo permite, y aun así la `Product URL` se conserva: VTEX le agrega un
-sufijo cuando la URL ya existe, así que recalcularla no daría la misma. Igual
-con categoría y marca: si la app propone una distinta de la que el producto
-tiene en VTEX, **gana VTEX** y se avisa — cambiarla movería el producto de sitio
-en la web.
-
-**El departamento es una suposición; la categoría es el dato.** El departamento
-sale del género; si la categoría existe en otro departamento del maestro, manda
-el maestro. Sin eso, una camisa de niño que en VTEX vive en Hombre se quedaba
-sin ID.
-
-**Los cuatro archivos salen del MISMO plan.** `construir_archivos()` recibe un
-plan y arma las cuatro tablas de ahí, así que el Product ID y el SKU ID de una
-son el mismo objeto que en las otras tres: no hay forma de que se
-desincronicen. Hay pruebas que lo recorren fila por fila.
-
-**Una talla nueva hereda las medidas de sus hermanas.** Se despacha en la misma
-caja; sin eso el SKU sale con peso vacío y VTEX no puede cotizar su envío.
-
-**Todo se escribe como TEXTO y la cabecera va en la fila 2**, con la primera en
-blanco, igual que el archivo que VTEX entrega. Un `Product ID` que Excel guarde
-como número vuelve como `310669.0` y deja de emparejar.
-
-**El maestro pasa de los 100 MB.** Se lee con **openpyxl en `read_only`**, fila
-por fila, no con `pd.read_excel`, y se guarda **partido en dos niveles**
-(producto y SKU): las 23 columnas de producto se repiten en cada talla y un
-catálogo de 300.000 SKUs no cabe en memoria de otra forma. El índice se cachea
-con `st.cache_resource`; `_archivos` lleva guion bajo (que Streamlit no hashee
-100 MB por rerun) y **`firma` NO lo lleva**, porque es la única parte de la
-clave: con guion bajo, subir un maestro nuevo devolvería el anterior con los IDs
-viejos. Hay un test que fija las dos cosas. Shopify y ARTI se leen **una vez**,
-antes del bucle de códigos.
-
-**No rompe nada del flujo actual.** Corte temprano en Carga parcial, el mismo
-patrón del Mantenedor de Videos: la pantalla solo LEE Shopify y no toca la
-maquinaria de analizar/ejecutar.
+Si Supermall vuelve a necesitar carga por planilla, esto está en el historial de
+git; pero con Supermall en Shopify el camino es el normal de la app —un sitio
+más en `SITE_CONFIGS`— y no una pantalla aparte.
 
 ---
 
@@ -946,28 +859,14 @@ Lo medido, y lo que se hizo con cada cosa:
 
 | Qué | Antes | Ahora |
 |---|---:|---:|
-| Leer el maestro de VTEX (300.000 filas) | **>2 GB** | **82 MB** |
 | DataFrames vivos tras una Carga completa | ~1.200 MB | **237 MB** |
 | Importar la app (antes de que entre nadie) | 251 MB · 6,1 s | 180 MB · 0,7 s |
 
-**El lector del maestro VTEX hacía `list(filas)` antes de indexar.** Medido con
-60.000 filas —una quinta parte de un maestro real— eran 242 MB solo la lista y
-464 MB con el índice. Pasó las 62 pruebas del motor porque **se probó con la
-muestra de 500 filas del ZIP**. Ahora `registros_en_streaming` no guarda ninguna
-fila, y el maestro se lee **acotado a los códigos pedidos**: de 300.000 filas
-interesan las del pedido, y guardar las otras 295.000 era todo el problema. Por
-eso **los códigos van ANTES del maestro en la pantalla**; no es cosmético.
-
-**`decidir(previa)` es lo que hace que además sea rápido.** Recibe 9 celdas de
-las 50 y dice si hace falta armar el registro completo. Armar los 295.000 que
-se tiran eran 15 millones de conversiones de celda: **73 s contra 8 s**. Los
-totales, las marcas y las categorías de toda la tienda se cuentan igual, con
-esas 9 celdas. Los valores por defecto (`Padrão`, `un`, `1, 4`) se aprenden de
-una **muestra de 2.000 productos**: la moda no necesita 30.000.
-
-**CSV contra xlsx, medido con el mismo maestro de 300.000 filas: 8 s contra
-168 s.** La misma memoria y el mismo resultado. La pantalla avisa cuando el
-archivo llega en Excel y pesa más de 5 MB.
+El lector del maestro de VTEX era el peor de los tres casos: hacía
+`list(filas)` antes de indexar y pedía más de 2 GB con un archivo real. Ese
+motor se retiró en septiembre de 2026 (sección 5 sexies bis), pero es de donde
+sale la regla: **pasó las 62 pruebas del motor porque se probó con una muestra
+de 500 filas**.
 
 **`CENTRY_COLUMNS` se calculaba en tiempo de import.** Leía
 `data/plantilla_centry_productos.xlsx` en CADA arranque solo para sacar los
@@ -1141,6 +1040,75 @@ final **nombra los campos** que bloquean en vez de solo contar filas.
 `scripts/test_tipos_vestido_y_bloqueos.py` (24 pruebas) fija las tres cosas; 20
 de ellas fallan con el codigo anterior. Una recorre cada causa de bloqueo y
 exige que ninguna fila bloqueada se quede sin explicacion en el reporte.
+
+---
+
+## 5 decies. La lectura del catálogo de Shopify (septiembre 2026)
+
+La queja era literal: *"antes ponía a cargar en Vans 1000 productos y sí me
+dejó, cargó todo; ahora ni termina de leerlo"*. No estaba roto: estaba pagando
+el **costo de consulta** de Shopify.
+
+`fetch_products` pedía 250 productos por página, cada uno con
+`variants(first: 100)` y `media(first: 10)`. Eso a Shopify le cuesta unos **430
+puntos por producto** —una variante son cuatro objetos (la variante, sus
+`selectedOptions`, su `image` y su `inventoryItem`)— y el **máximo de una sola
+consulta son 1.000 puntos**. Con esa consulta la única forma de que entre es
+bajar `products_page_size` a dos o tres productos; y entonces un catálogo de
+3.000 productos son **mil viajes**, cada uno pagando además espera de balde: el
+balde se recarga a 50 puntos por segundo. Son horas.
+
+**Ahora la lectura normal es una bulk operation.** No paga costo por consulta:
+se le entrega la consulta a Shopify, la corre de su lado y deja el catálogo
+entero en un JSONL. Un catálogo que tardaba horas se lee en minutos.
+
+Lo que hay que saber para no romperlo:
+
+- **Los campos se escriben UNA vez** (`CAMPOS_PRODUCTO`, `CAMPOS_MEDIA`,
+  `CAMPOS_VARIANTE`) y los usan las dos lecturas. Si una trajera un campo que
+  la otra no, el catálogo cambiaría según por dónde se leyó — es exactamente lo
+  que ya se paga con las dos `normalize_size`. Hay un test que lo fija.
+- **Una bulk operation no admite variables ni argumentos de paginación.** Nada
+  de `first:`, `after:` ni `$publicationId`: el id de la publicación va escrito
+  DENTRO de la consulta. Hay un test que falla si vuelve a aparecer alguno.
+- **El JSONL trae una línea por objeto.** Las variantes y las fotos vienen
+  aparte con `__parentId`, y hay que volver a armarlas. **No se asume que el
+  hijo venga después del padre**: se guardan aparte y se cuelgan al final.
+- **El archivo va a DISCO, no a memoria**, y el reensamblado va soltando los
+  nodos (`productos.pop`) a medida que arma los registros: sin eso el catálogo
+  queda dos veces en RAM, y son cientos de MB. Es la regla de la sección 5
+  nonies.
+- **La paginada sigue existiendo, de respaldo.** Shopify admite **una sola**
+  bulk operation por app y tienda a la vez: si dos personas leen el mismo sitio
+  a la vez, la segunda no puede quedarse sin catálogo. Cualquier fallo de la
+  masiva —ya hay una corriendo, la tienda la rechaza, el token no la permite—
+  cae a la paginada y lo dice. Se puede apagar del todo con
+  `bulk_products = "no"` en Secrets.
+- **`variants_page_size` es nuevo** y solo afecta a la paginada. Por defecto
+  sigue pidiendo 100 variantes, o sea que el respaldo es exactamente lo de
+  antes.
+
+**El catálogo se guarda en DISCO, no solo en la sesión.** Antes vivía únicamente
+en `st.session_state`: un reinicio del contenedor, o una persona nueva, volvían
+a pagar la lectura entera. Ahora `outputs/sesion/catalogo_<sitio>.pkl` la
+conserva 2 horas. Se descarta solo si es de otra tienda o de otra versión de la
+API —devolver el catálogo de Rockford cuando se pidió el de Vans sería peor que
+no tener caché, porque es el dato que decide si un producto se **crea** o se
+**actualiza**.
+
+Y por eso mismo **la caché se ve**: `render_catalogo_leido` dice cuándo se leyó
+y trae al lado el botón **"Volver a leer"**, que borra la de sesión **y la de
+disco**. Una caché invisible sobre el dato que decide crear/actualizar es una
+trampa.
+
+**La lectura ahora cuenta por dónde va.** Un spinner mudo durante minutos se lee
+como "se colgó". El aviso sale del propio motor (`progreso`), que es el que sabe
+si está esperando a que Shopify prepare la lectura o bajando páginas; la
+pantalla solo lo dibuja. El aviso **nunca** puede tumbar la lectura: va dentro
+de `_avisar`, con su `try`.
+
+`scripts/test_lectura_catalogo.py` (27 pruebas) fija todo esto, con un Shopify
+falso: no sale a la red.
 
 ---
 
@@ -1422,13 +1390,9 @@ python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 55
 python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
-<<<<<<< HEAD
-python scripts/test_engines_vtex_catalog.py            # 90
-=======
-python scripts/test_engines_vtex_catalog.py            # 69
 python scripts/test_carga_sial_parcial.py               # 28
->>>>>>> origin/main
-python scripts/test_memoria.py                        # 20
+python scripts/test_lectura_catalogo.py                # 27
+python scripts/test_memoria.py                         # 14
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 20
 python scripts/test_bandeja_solicitudes.py             # 57

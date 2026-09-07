@@ -1,4 +1,7 @@
+import gzip
 import json
+import os
+import tempfile
 import uuid
 import time
 from urllib.error import HTTPError, URLError
@@ -271,32 +274,15 @@ def _product_node_to_record(node):
     }
 
 
-def fetch_products(config, max_products=5000):
-    shop_domain, api_version, token = _client(config)
-    # Cuantos productos pedir por pagina. Shopify cobra por costo de consulta y
-    # una pagina de 250 productos con sus variantes y fotos es muy cara: si el
-    # balde se vacia, cada pagina paga una espera. Se puede bajar desde Secrets
-    # con products_page_size si el catalogo del sitio hace throttling.
-    try:
-        page_size = int(clean(config.get("products_page_size")) or 250)
-    except (TypeError, ValueError):
-        page_size = 250
-    page_size = max(1, min(page_size, 250))
-    publication_id = ""
-    try:
-        publication_id = online_store_publication_id(config)
-    except Exception:
-        publication_id = ""
-    publication_field = "publishedOnOnlineStore: publishedOnPublication(publicationId: $publicationId)" if publication_id else ""
-    publication_variable = ", $publicationId: ID!" if publication_id else ""
-    query = """
-    query ProductsForMatrixify($first: Int!, $after: String__PUBLICATION_VARIABLE__) {
-      products(first: $first, after: $after) {
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
-        nodes {
+# Los campos del producto, escritos UNA vez. Los usan las dos lecturas -la
+# masiva y la paginada- para que no puedan separarse: si una trajera un campo
+# que la otra no, el catalogo cambiaria segun por donde se leyo. Es el mismo
+# criterio que las dos `normalize_size` que ya se pagan en este repositorio.
+#
+# `__PUBLICATION_FIELD__` se rellena solo si la tienda expone el canal Online
+# Store; sin el, `Published Online Store` llega vacio y quien lee lo reporta
+# como "Activo sin publicar", nunca como publicado.
+CAMPOS_PRODUCTO = """
           id
           legacyResourceId
           handle
@@ -335,18 +321,18 @@ def fetch_products(config, max_products=5000):
           customSiblingsColor: metafield(namespace: "custom", key: "siblings_color") {
             value
           }
-          media(first: 10) {
-            nodes {
+"""
+
+CAMPOS_MEDIA = """
               id
               ... on MediaImage {
                 image {
                   url
                 }
               }
-            }
-          }
-          variants(first: 100) {
-            nodes {
+"""
+
+CAMPOS_VARIANTE = """
               id
               legacyResourceId
               sku
@@ -365,13 +351,120 @@ def fetch_products(config, max_products=5000):
                 id
                 legacyResourceId
               }
+"""
+
+
+def _publication_field(config):
+    """El fragmento del canal Online Store, o vacio si la tienda no lo expone.
+
+    Va aparte porque las dos lecturas lo necesitan y porque preguntarlo cuesta
+    un viaje: si falla, se sigue sin el en vez de tumbar la lectura entera.
+    """
+    try:
+        publication_id = online_store_publication_id(config)
+    except Exception:
+        publication_id = ""
+    if not publication_id:
+        return "", ""
+    return publication_id, "publishedOnOnlineStore: publishedOnPublication(publicationId: $publicationId)"
+
+
+def _avisar(progreso, mensaje):
+    """Avisa por donde va la lectura. Nunca puede tumbarla."""
+    if not progreso:
+        return
+    try:
+        progreso(mensaje)
+    except Exception:
+        pass
+
+
+def fetch_products(config, max_products=5000, progreso=None):
+    """El catalogo del sitio.
+
+    Por defecto va por **bulk operation**, que es lo que cambia el orden de
+    magnitud. La lectura paginada pide 250 productos con sus 100 variantes y
+    sus 10 fotos en una sola consulta, y eso a Shopify le cuesta ~430 puntos
+    POR PRODUCTO: una pagina entera pasa de 100.000 y el maximo de una consulta
+    son 1.000. Con eso, la unica forma de que la consulta entre es bajar
+    `products_page_size` a dos o tres productos, y entonces un catalogo de
+    3.000 productos son 1.000 viajes que ademas pagan espera de balde en cada
+    uno -el balde se recarga a 50 puntos por segundo-. Eso es lo que se sentia
+    como "no termina de leer".
+
+    Una bulk operation no tiene limite de costo: se le entrega la consulta a
+    Shopify, la corre en su lado y devuelve un JSONL con el catalogo entero.
+
+    Si la operacion masiva no se puede usar -ya hay una corriendo para esta
+    app y esta tienda, la tienda la rechaza, o el token no la permite- se cae
+    a la lectura paginada de siempre, que es exactamente la de antes.
+    """
+    if _bulk_habilitado(config):
+        try:
+            return fetch_products_bulk(config, max_products=max_products, progreso=progreso)
+        except ShopifyApiError as exc:
+            _avisar(progreso, f"Lectura masiva no disponible ({exc}). Se sigue pagina por pagina.")
+    return fetch_products_paginado(config, max_products=max_products, progreso=progreso)
+
+
+def _bulk_habilitado(config):
+    valor = clean((config or {}).get("bulk_products"))
+    if not valor:
+        return True
+    return valor.lower() not in ("0", "false", "no", "off")
+
+
+def fetch_products_paginado(config, max_products=5000, progreso=None):
+    """La lectura pagina por pagina. Es el respaldo, no el camino normal.
+
+    `products_page_size` existe porque el costo por pagina depende de cuantas
+    variantes tenga el catalogo del sitio: si Shopify rechaza la consulta por
+    costo, se baja desde Secrets.
+    """
+    shop_domain, api_version, token = _client(config)
+    try:
+        page_size = int(clean(config.get("products_page_size")) or 250)
+    except (TypeError, ValueError):
+        page_size = 250
+    page_size = max(1, min(page_size, 250))
+    try:
+        variantes_por_producto = int(clean(config.get("variants_page_size")) or 100)
+    except (TypeError, ValueError):
+        variantes_por_producto = 100
+    variantes_por_producto = max(1, min(variantes_por_producto, 250))
+    publication_id, publication_field = _publication_field(config)
+    publication_variable = ", $publicationId: ID!" if publication_id else ""
+    query = """
+    query ProductsForMatrixify($first: Int!, $after: String__PUBLICATION_VARIABLE__) {
+      products(first: $first, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+__CAMPOS_PRODUCTO__
+          media(first: 10) {
+            nodes {
+__CAMPOS_MEDIA__
+            }
+          }
+          variants(first: __VARIANTES__) {
+            nodes {
+__CAMPOS_VARIANTE__
             }
           }
         }
       }
     }
     """
-    query = query.replace("__PUBLICATION_VARIABLE__", publication_variable).replace("__PUBLICATION_FIELD__", publication_field)
+    query = (
+        query.replace("__CAMPOS_PRODUCTO__", CAMPOS_PRODUCTO.strip("\n"))
+        .replace("__CAMPOS_MEDIA__", CAMPOS_MEDIA.strip("\n"))
+        .replace("__CAMPOS_VARIANTE__", CAMPOS_VARIANTE.strip("\n"))
+        .replace("__VARIANTES__", str(variantes_por_producto))
+        .replace("__PUBLICATION_VARIABLE__", publication_variable)
+        .replace("__PUBLICATION_FIELD__", publication_field)
+    )
     records = []
     after = None
     while len(records) < max_products:
@@ -381,6 +474,7 @@ def fetch_products(config, max_products=5000):
         data = graphql_request(shop_domain, token, query, variables=variables, api_version=api_version, timeout=45)
         products = data.get("products") or {}
         records.extend(_product_node_to_record(node) for node in products.get("nodes") or [])
+        _avisar(progreso, f"{len(records):,} productos leídos...")
         page_info = products.get("pageInfo") or {}
         if not page_info.get("hasNextPage"):
             break
@@ -388,6 +482,264 @@ def fetch_products(config, max_products=5000):
         if not after:
             break
     return records
+
+
+# --- Lectura masiva (bulk operation) -------------------------------------
+#
+# Una bulk operation NO paga costo por consulta: se le entrega la consulta a
+# Shopify, la ejecuta de su lado y deja el resultado en un JSONL. Es la unica
+# forma razonable de bajarse un catalogo entero; la paginada, con 100 variantes
+# por producto, cuesta ~430 puntos por producto y el maximo de una consulta son
+# 1.000, asi que obliga a paginas de dos o tres productos.
+#
+# El JSONL trae una linea por objeto. Las variantes y las fotos vienen como
+# lineas aparte con `__parentId` apuntando al producto: hay que volver a
+# armarlas. Se reensambla con la MISMA forma que devuelve la consulta paginada
+# para poder reusar `_product_node_to_record` y que no existan dos lecturas que
+# se separen.
+BULK_ESPERA_INICIAL = 2.0
+BULK_ESPERA_MAXIMA = 15.0
+BULK_MINUTOS_MAXIMOS = 20
+
+
+def _bulk_query(config):
+    """La consulta que corre Shopify de su lado.
+
+    Las bulk operation NO admiten variables ni argumentos de paginacion, asi
+    que el id de la publicacion va escrito dentro de la consulta y las
+    conexiones van sin `first`.
+    """
+    publication_id, publication_field = _publication_field(config)
+    if publication_id:
+        publication_field = (
+            'publishedOnOnlineStore: publishedOnPublication(publicationId: "%s")' % publication_id
+        )
+    consulta = """
+    {
+      products {
+        edges {
+          node {
+__CAMPOS_PRODUCTO__
+            media {
+              edges {
+                node {
+__CAMPOS_MEDIA__
+                }
+              }
+            }
+            variants {
+              edges {
+                node {
+__CAMPOS_VARIANTE__
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    return (
+        consulta.replace("__CAMPOS_PRODUCTO__", CAMPOS_PRODUCTO.strip("\n"))
+        .replace("__CAMPOS_MEDIA__", CAMPOS_MEDIA.strip("\n"))
+        .replace("__CAMPOS_VARIANTE__", CAMPOS_VARIANTE.strip("\n"))
+        .replace("__PUBLICATION_FIELD__", publication_field)
+    )
+
+
+def _bulk_lanzar(shop_domain, token, api_version, consulta):
+    mutation = """
+    mutation IniciarLecturaMasiva($query: String!) {
+      bulkOperationRunQuery(query: $query) {
+        bulkOperation {
+          id
+          status
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain, token, mutation, variables={"query": consulta},
+        api_version=api_version, timeout=45,
+    )
+    resultado = (data or {}).get("bulkOperationRunQuery") or {}
+    errores = resultado.get("userErrors") or []
+    if errores:
+        raise ShopifyApiError(
+            "Shopify no aceptó la lectura masiva: "
+            + "; ".join(clean(error.get("message")) for error in errores)
+        )
+    operacion = resultado.get("bulkOperation") or {}
+    identificador = clean(operacion.get("id"))
+    if not identificador:
+        raise ShopifyApiError("Shopify no devolvió el identificador de la lectura masiva.")
+    return identificador
+
+
+def _bulk_estado(shop_domain, token, api_version, identificador):
+    query = """
+    query EstadoLecturaMasiva($id: ID!) {
+      node(id: $id) {
+        ... on BulkOperation {
+          id
+          status
+          errorCode
+          objectCount
+          url
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain, token, query, variables={"id": identificador},
+        api_version=api_version, timeout=45,
+    )
+    return (data or {}).get("node") or {}
+
+
+def _bulk_esperar(shop_domain, token, api_version, identificador, progreso=None,
+                  minutos_maximos=BULK_MINUTOS_MAXIMOS, dormir=time.sleep):
+    """Espera a que Shopify termine y devuelve la URL del JSONL.
+
+    La espera crece: preguntar cada dos segundos por un catalogo que tarda
+    cinco minutos son 150 viajes que no aportan nada.
+    """
+    limite = time.time() + minutos_maximos * 60
+    espera = BULK_ESPERA_INICIAL
+    while True:
+        estado = _bulk_estado(shop_domain, token, api_version, identificador)
+        situacion = clean(estado.get("status")).upper()
+        if situacion == "COMPLETED":
+            url = clean(estado.get("url"))
+            if not url:
+                # Catalogo vacio: Shopify termina sin dejar archivo.
+                return ""
+            return url
+        if situacion in ("FAILED", "CANCELED", "CANCELING", "EXPIRED"):
+            raise ShopifyApiError(
+                f"La lectura masiva terminó en {situacion or 'estado desconocido'}"
+                + (f" ({clean(estado.get('errorCode'))})" if estado.get("errorCode") else "")
+            )
+        leidos = estado.get("objectCount")
+        _avisar(progreso, f"Shopify está preparando el catálogo... {clean(leidos) or 0} objetos")
+        if time.time() > limite:
+            raise ShopifyApiError(
+                f"La lectura masiva pasó de {minutos_maximos} minutos y se abandonó."
+            )
+        dormir(espera)
+        espera = min(espera * 1.5, BULK_ESPERA_MAXIMA)
+
+
+def _bulk_descargar(url, destino, timeout=120):
+    """Baja el JSONL a disco, por trozos.
+
+    A disco y no a memoria a proposito: el resultado de un catalogo grande son
+    decenas de MB y la regla del proyecto es que ningun archivo se materialice
+    entero. Lo que se guarda en memoria es solo el catalogo ya reensamblado,
+    que es lo mismo que devolvia la lectura paginada.
+    """
+    peticion = Request(url, headers={"Accept-Encoding": "gzip"})
+    try:
+        with urlopen(peticion, timeout=timeout) as respuesta:
+            comprimido = clean(respuesta.headers.get("Content-Encoding")).lower() == "gzip"
+            with open(destino, "wb") as archivo:
+                while True:
+                    trozo = respuesta.read(1024 * 256)
+                    if not trozo:
+                        break
+                    archivo.write(trozo)
+    except HTTPError as exc:
+        raise ShopifyApiError(f"No se pudo bajar el resultado de la lectura masiva: HTTP {exc.code}") from exc
+    except URLError as exc:
+        raise ShopifyApiError(f"No se pudo bajar el resultado de la lectura masiva: {exc.reason}") from exc
+    return comprimido
+
+
+def _bulk_abrir(ruta, comprimido):
+    if comprimido:
+        return gzip.open(ruta, "rt", encoding="utf-8")
+    with open(ruta, "rb") as archivo:
+        firma = archivo.read(2)
+    if firma == b"\x1f\x8b":
+        return gzip.open(ruta, "rt", encoding="utf-8")
+    return open(ruta, "r", encoding="utf-8")
+
+
+def _bulk_reensamblar(lineas, max_products=5000):
+    """Del JSONL a la misma lista de registros que devuelve la paginada.
+
+    Las lineas hijas traen `__parentId`. No se asume que vengan despues de su
+    padre: se guardan aparte y se cuelgan al final. Los registros se van
+    armando a medida que se sacan los nodos del diccionario para no tener el
+    catalogo dos veces en memoria.
+    """
+    productos = {}
+    hijos = {}
+    for linea in lineas:
+        linea = linea.strip()
+        if not linea:
+            continue
+        try:
+            objeto = json.loads(linea)
+        except ValueError:
+            continue
+        padre = clean(objeto.get("__parentId"))
+        identificador = clean(objeto.get("id"))
+        if not padre:
+            if identificador.startswith("gid://shopify/Product/"):
+                objeto.setdefault("media", {"nodes": []})
+                objeto.setdefault("variants", {"nodes": []})
+                productos[identificador] = objeto
+            continue
+        objeto.pop("__parentId", None)
+        clave = "variants" if identificador.startswith("gid://shopify/ProductVariant/") else "media"
+        hijos.setdefault(padre, {"variants": [], "media": []})[clave].append(objeto)
+    for padre, contenido in hijos.items():
+        nodo = productos.get(padre)
+        if nodo is None:
+            continue
+        nodo["variants"]["nodes"].extend(contenido["variants"])
+        nodo["media"]["nodes"].extend(contenido["media"])
+    hijos.clear()
+    registros = []
+    for identificador in list(productos.keys()):
+        if len(registros) >= max_products:
+            break
+        registros.append(_product_node_to_record(productos.pop(identificador)))
+    productos.clear()
+    return registros
+
+
+def fetch_products_bulk(config, max_products=5000, progreso=None):
+    """El catalogo entero por bulk operation. Levanta ShopifyApiError si no se puede."""
+    shop_domain, api_version, token = _client(config)
+    _avisar(progreso, "Pidiendo el catálogo completo a Shopify (lectura masiva)...")
+    identificador = _bulk_lanzar(shop_domain, token, api_version, _bulk_query(config))
+    url = _bulk_esperar(shop_domain, token, api_version, identificador, progreso=progreso)
+    if not url:
+        return []
+    _avisar(progreso, "Bajando el catálogo...")
+    carpeta = tempfile.mkdtemp(prefix="shopify_bulk_")
+    ruta = os.path.join(carpeta, "catalogo.jsonl")
+    try:
+        comprimido = _bulk_descargar(url, ruta)
+        with _bulk_abrir(ruta, comprimido) as archivo:
+            registros = _bulk_reensamblar(archivo, max_products=max_products)
+    finally:
+        try:
+            os.remove(ruta)
+        except OSError:
+            pass
+        try:
+            os.rmdir(carpeta)
+        except OSError:
+            pass
+    _avisar(progreso, f"{len(registros):,} productos leídos.")
+    return registros
 
 
 def fetch_metaobjects(config, metaobject_type, max_items=1000):

@@ -699,6 +699,32 @@ ID numérico: una fila con `Product ID` en blanco **crea**, una con el ID puesto
 cargado, con otro ID y otra URL. La regla del motor es que **un ID que sale del
 maestro nunca se reemplaza**.
 
+**Los productos y SKUs nuevos salen con un ID ASIGNADO, no en blanco.** Un
+`Product ID` vacío es como VTEX entiende "créalo", pero entonces las otras tres
+planillas se quedan sin nada que poner en `ID del producto` y `ID de SKU`: las
+especificaciones y las imágenes de un producto nuevo no tienen a qué colgarse y
+no se pueden cargar. Se numera desde el ID **más alto de todo el catálogo + 1**.
+
+**Product ID y SKU ID son dos series independientes** y mezclarlas pisaría
+productos que ya existen: en la exportación real los Product ID iban por 118 y
+los SKU ID por 4.969.659. Un ID que sale del maestro nunca se reemplaza — esto
+solo rellena huecos —, y el orden es el de los códigos pedidos, así que dos
+corridas con la misma lista dan los mismos ID.
+
+El máximo se sigue **mientras se lee** el maestro, no de lo guardado: el maestro
+se lee acotado a los códigos pedidos, así que el máximo de lo guardado sería el
+mayor de esos pocos productos y los ID nuevos chocarían con productos reales.
+
+El riesgo que queda y que no se puede cerrar sin conectarse a VTEX: si alguien
+crea un producto entre el export del maestro y la subida, ese número ya está
+ocupado. La pantalla muestra el rango asignado y avisa de volver a exportar.
+
+**El peso NUNCA sale vacío.** VTEX no puede cotizar el envío de un SKU sin peso.
+La cadena, de lo más fiable a lo menos: el propio SKU en VTEX, otra talla del
+mismo producto, la tabla de dimensiones por tipo de la app, las medidas que la
+tienda ya usa en esa CATEGORÍA de VTEX, y las de la tienda. Si tras las cinco
+sigue vacío, **bloquea**.
+
 **Los SKU se emparejan por TALLA, no por referencia.** En esta tienda el
 `SKU reference code` **es el propio `SKU ID`** (coinciden en las 499 filas de la
 muestra), así que la referencia no puede reconocer un SKU que todavía no existe
@@ -1396,8 +1422,12 @@ python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 55
 python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
+<<<<<<< HEAD
+python scripts/test_engines_vtex_catalog.py            # 90
+=======
 python scripts/test_engines_vtex_catalog.py            # 69
 python scripts/test_carga_sial_parcial.py               # 28
+>>>>>>> origin/main
 python scripts/test_memoria.py                        # 20
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 20

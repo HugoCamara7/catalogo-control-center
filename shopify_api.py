@@ -1868,6 +1868,59 @@ def product_variants_bulk_reorder(config, product_id, positions):
     return payload.get("product") or {}
 
 
+def product_option_update(config, product_id, option_id, values_to_update):
+    """Renombra valores de una opcion de producto (por ejemplo Talla).
+
+    Se renombra el VALOR de la opcion, no la opcion de cada variante: un solo
+    cambio alcanza a todas las variantes que lo usan. Renombrar variante por
+    variante con `productVariantsBulkUpdate` dejaria dos variantes con el mismo
+    valor a medio camino, y Shopify rechaza el duplicado.
+
+    `variantStrategy` se queda en el valor por defecto (LEAVE_AS_IS): esto
+    cambia la etiqueta, no crea ni borra variantes. El SKU, el precio y el
+    inventario no se tocan.
+    """
+    values_to_update = [
+        {"id": clean(value.get("id")), "name": clean(value.get("name"))}
+        for value in values_to_update or []
+        if clean(value.get("id")) and clean(value.get("name"))
+    ]
+    if not values_to_update:
+        return {}
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation ProductOptionUpdateForSizes($productId: ID!, $option: OptionUpdateInput!, $optionValuesToUpdate: [OptionValueUpdateInput!]) {
+      productOptionUpdate(productId: $productId, option: $option, optionValuesToUpdate: $optionValuesToUpdate) {
+        product {
+          id
+        }
+        userErrors {
+          field
+          message
+          code
+        }
+      }
+    }
+    """
+    data = graphql_request(
+        shop_domain,
+        token,
+        mutation,
+        {
+            "productId": product_id,
+            "option": {"id": clean(option_id)},
+            "optionValuesToUpdate": values_to_update,
+        },
+        api_version=api_version,
+        timeout=45,
+    )
+    payload = data.get("productOptionUpdate") or {}
+    errors = payload.get("userErrors") or []
+    if errors:
+        raise ShopifyApiError(json.dumps(errors, ensure_ascii=False))
+    return payload.get("product") or {}
+
+
 def fetch_media_statuses(config, media_ids):
     media_ids = [clean(media_id) for media_id in media_ids if clean(media_id)]
     if not media_ids:

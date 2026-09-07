@@ -82,6 +82,8 @@ app_matrixify.py        25.6xx lineas · 595 funciones · UI + routing + logica
 │   ├── ticket_flow.py  562 lin · 23 estados -> 5 visibles (55 pruebas)
 │   ├── load_status.py   diagnostico de carga de todos los sitios (37 pruebas)
 │   ├── espejo_supermall.py  que le falta al espejo (35 pruebas)
+│   ├── orden_tallas.py  orden y escala de las tallas (34 pruebas)
+│   ├── tallas_calzado.py conversion US -> PE con la guia oficial de Vans
 │   └── storage_check.py 176 lin · diagnostico de persistencia
 ├── ticket_system.py    1.093 lin · maquina de estados, 2 stores, 28 pruebas
 ├── generate_columbia_matrixify.py  3.319 lin · motor de catalogo
@@ -1220,6 +1222,85 @@ sitios y es una decisión de negocio.
 
 ---
 
+## 5 duodecies. Mantenedor de Tallas: orden y escala (septiembre 2026)
+
+`engines/orden_tallas.py` (sin Streamlit ni pandas) + `render_mantenedor_tallas()`.
+Entra como **una opción más de Carga parcial**, al lado del Mantenedor de Videos.
+
+Dos cosas que se ven en la ficha y que **solo se arreglaban al CREAR** el
+producto, o sea nunca para el catálogo que ya está cargado:
+
+1. **El orden.** Una curva ampliada después deja la 44 entre la 38 y la 39. La
+   Carga completa ordena al crear (`_reorder_product_sizes`), pero nadie vuelve
+   a mirarlo.
+2. **La escala.** Vans entrega el calzado en **US** y la tienda lo publica en
+   **PE/EU** (41, 42...). Lo cargado antes de esa regla sigue diciendo "8".
+
+### El fallo que destapó: las medias tallas quedaban al final
+
+`size_sort_key` miraba `SIZE_ORDER` ANTES que el número. Como esa tabla **no
+tiene medias tallas**, las conocidas caían en el grupo 0 y las medias en el 1,
+que va detrás: una curva de calzado PE quedaba
+
+```
+36, 39, 42, 38.5, 40.5, 44.5
+```
+
+Ordenar los números por su valor no pierde nada, porque `SIZE_ORDER` ya tenía el
+mismo número en dos escalas (el "40" de vestuario y el "40" europeo) y cuál
+ganaba dependía de cuál se asignara último. Las de letra siguen saliendo por su
+escala. Hay dos pruebas que lo fijan, y una que exige que los dos criterios de
+orden de la app coincidan en los números.
+
+### Lo que hay que saber para no romperlo
+
+- **El análisis es GRATIS y no escribe nada.** Sale del catálogo que la app ya
+  tiene leído (`fetch_products` trae las variantes en su orden y con sus
+  opciones), así que revisar el sitio entero no cuesta un viaje extra. Los
+  viajes se pagan solo por lo que hay que arreglar. Hay un test que falla si
+  aparece cualquier mutación dentro del análisis.
+- **Antes de escribir se RELEE el producto** y se replanifica sobre eso. El plan
+  salió del catálogo cacheado y entre el análisis y el arreglo alguien pudo
+  tocarlo; escribir sobre una lectura vieja es como se duplican productos. Si al
+  releerlo ya estaba bien, no se escribe nada.
+- **Primero renombrar, después ordenar.** Ordenar primero dejaría las etiquetas
+  nuevas en las posiciones viejas. Hay un test que compara las posiciones.
+- **El orden se VERIFICA releyendo.** Quedar mal ordenado sin que nadie lo diga
+  es el peor error silencioso — el mismo criterio que el video en la posición 2.
+- **Se renombra el VALOR de la opción** (`product_option_update`), no la opción
+  de cada variante. Un solo cambio alcanza a todas las variantes que lo usan;
+  variante por variante dejaría dos con el mismo valor a medio camino y Shopify
+  rechaza el duplicado. No toca SKU, precios ni inventario.
+- **Dos tallas que caen en la misma PE no se renombran.** Serían dos valores
+  iguales en la misma opción. No se elige cuál sobra: se avisa.
+- **Un producto con más de una opción (Talla y Color) NO se reordena.** Las
+  variantes van en matriz y reordenarlas solo por talla las mezclaría. La
+  escala sí se cambia, que es un renombre y no mueve nada de sitio.
+- **El motor no trae su propia tabla ni su propio criterio de orden**: los dos
+  se le **inyectan**, para que sean exactamente los mismos que usa la Carga
+  completa (`master_size_sort_key` y `engines/tallas_calzado`). Un segundo
+  criterio se separa del primero sin que nadie lo note.
+- Se procesa **por bloques** de 10 con `png_bloques`, la misma de fotos y
+  videos, y se guarda dentro del bucle.
+
+### La escala va por MARCA, no por sitio
+
+`tallas_calzado_pe` es una bandera del SITIO, y alcanzaba mientras Vans vivía
+solo en Vans.pe. Con **Supermall.pe** —que lleva Vans, Columbia y Hush Puppies
+en la misma tienda— una bandera de sitio convertiría todo el calzado del sitio o
+nada. El mantenedor decide con `orden_tallas.MARCAS_TALLA_PE`, y solo sobre
+**calzado**: en vestuario una talla "12" es de niño, no un US 12.
+
+**La carga sigue usando la bandera de sitio.** No se cambió porque
+`display_size_for_site` no recibe la marca y pasársela toca a todos sus
+llamadores. En la práctica no hace falta: se carga y después se pasa el
+mantenedor, que es justamente para lo que existe. Queda anotado en Pendientes.
+
+`scripts/test_mantenedor_tallas.py` (34 pruebas) fija todo esto, incluida la
+conversión contra la guía oficial de Vans.
+
+---
+
 ## 5 nonies. La carga sigue con la sesión cerrada (septiembre 2026)
 
 `engines/carga_remota.py` (sin Streamlit) + `scripts/worker_carga_shopify.py` +
@@ -1386,7 +1467,14 @@ archivos.
    septiembre de 2026 (sección 5 nonies), y de paso arregla la inversión de
    `catalog_engine.py`.
 
-8. **Rotar las credenciales del código.** `get_auth_users()` tiene un
+8. **Pasar la marca a `display_size_for_site`.** Hoy la conversión de tallas
+   de calzado a PE en la CARGA depende de la bandera de sitio
+   `tallas_calzado_pe`, así que Vans cargado en Supermall.pe sale en US. El
+   Mantenedor de Tallas lo arregla después, pero lo limpio es decidirlo por
+   marca también al cargar. Toca a todos los llamadores de
+   `display_size_for_site`.
+
+9. **Rotar las credenciales del código.** `get_auth_users()` tiene un
    diccionario de usuarios y contraseñas como fallback, y está en un repo
    público.
 
@@ -1508,6 +1596,7 @@ python scripts/test_engines_video_media.py             # 106
 python scripts/test_carga_sial_parcial.py               # 28
 python scripts/test_lectura_catalogo.py                # 27
 python scripts/test_espejo_supermall.py                # 35
+python scripts/test_mantenedor_tallas.py               # 34
 python scripts/test_memoria.py                         # 14
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 20

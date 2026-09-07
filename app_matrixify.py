@@ -26043,27 +26043,12 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.session_state["complete_template_source"] = template_source
                 st.session_state["complete_detected_brands"] = detected_brands
                 st.session_state["complete_data_context"] = complete_context
-            left_col, right_col = st.columns([2, 1], gap="large")
-            analyze_clicked = False
-            with left_col:
-                render_preview_table(input_df)
-                with st.container(key="action_panel"):
-                    render_analyze_card(ui_config)
-                    analyze_clicked = st.button("Analizar input", type="primary", key=f"analyze_input_{brand_config['site_key']}")
-                render_validations_card()
-                if complete_source == "Shopify API":
-                    render_catalogo_leido(brand_config["site_key"])
-            with right_col:
-                render_summary_metrics(
-                    [
-                        ("Columnas base", safe_int_value(st.session_state.get("complete_template_cols"))),
-                        ("Filas ARTI BigQuery", safe_int_value(st.session_state.get("arti_row_count"))),
-                        ("Productos input", len(input_df)),
-                        ("Marcas detectadas", len(detected_brands)),
-                    ]
-                )
-                render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
-
+            # El analisis va ANTES de dibujar la pagina. Asi la pantalla se
+            # dibuja UNA vez, ya con el resultado, en vez de quedarse a medias
+            # con la version anterior en gris debajo.
+            analyze_clicked = (
+                st.session_state.pop("complete_analisis_pedido", None) == complete_context
+            )
             if analyze_clicked:
                 if template_df is None or arti_df is None:
                     # Aqui SI se leen: es el unico momento en que hacen falta.
@@ -26119,6 +26104,36 @@ api_version = "{DEFAULT_API_VERSION}"
                 # se aplicaron arriba. Retenerlo era decenas de MB por sesion.
                 st.session_state.pop("complete_shopify_products", None)
                 gc.collect()
+
+            left_col, right_col = st.columns([2, 1], gap="large")
+            with left_col:
+                render_preview_table(input_df)
+                with st.container(key="action_panel"):
+                    render_analyze_card(ui_config)
+                    if st.button("Analizar input", type="primary",
+                                 key=f"analyze_input_{brand_config['site_key']}"):
+                        # El boton solo PIDE el analisis y relanza. Analizar
+                        # aqui dentro dejaba la pantalla anterior en gris
+                        # DEBAJO de la nueva mientras corria: el usuario veia la
+                        # vista previa, el resumen y el checklist DOS VECES.
+                        # Streamlit conserva lo ya dibujado mientras el script
+                        # sigue, asi que el trabajo largo tiene que ir ANTES de
+                        # dibujar, no en medio.
+                        st.session_state["complete_analisis_pedido"] = complete_context
+                        st.rerun()
+                render_validations_card()
+                if complete_source == "Shopify API":
+                    render_catalogo_leido(brand_config["site_key"])
+            with right_col:
+                render_summary_metrics(
+                    [
+                        ("Columnas base", safe_int_value(st.session_state.get("complete_template_cols"))),
+                        ("Filas ARTI BigQuery", safe_int_value(st.session_state.get("arti_row_count"))),
+                        ("Productos input", len(input_df)),
+                        ("Marcas detectadas", len(detected_brands)),
+                    ]
+                )
+                render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
 
             matrixify_df = st.session_state.get("complete_matrixify_df")
             if matrixify_df is not None:

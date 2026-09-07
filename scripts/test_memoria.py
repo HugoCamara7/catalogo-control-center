@@ -202,6 +202,28 @@ class TestReglasDelCodigo(unittest.TestCase):
             self.assertNotIn(prohibido, cuerpo,
                              "se evalua en cada rerun: no puede tocar el disco")
 
+    def test_el_analisis_corre_ANTES_de_dibujar_la_pagina(self):
+        """Si no, la pantalla se ve DOS VECES mientras corre.
+
+        Streamlit conserva lo ya dibujado mientras el script sigue ejecutandose.
+        Con el analisis en medio del dibujado, el usuario veia la vista previa,
+        el resumen de bases y el checklist una vez en color y otra en gris
+        debajo, durante todo lo que durara el analisis.
+
+        El boton solo PIDE el analisis y relanza; el trabajo largo va arriba,
+        antes de la primera columna.
+        """
+        pedido = self.app.index('st.session_state["complete_analisis_pedido"] = complete_context')
+        self.assertIn("st.rerun()", self.app[pedido:pedido + 200],
+                      "el boton tiene que relanzar, no analizar en linea")
+        analisis = self.app.index("            if analyze_clicked:")
+        columnas = self.app.index('left_col, right_col = st.columns([2, 1], gap="large")')
+        self.assertLess(analisis, columnas,
+                        "el analisis tiene que correr ANTES de dibujar la pagina")
+        resultados = self.app.index('matrixify_df = st.session_state.get("complete_matrixify_df")',
+                                    columnas)
+        self.assertLess(columnas, resultados)
+
     def test_el_panel_no_cuenta_filas_leyendo_el_disco(self):
         # El PANEL de Carga completa, no la funcion que lo dibuja.
         inicio = self.app.index('("Columnas base"')

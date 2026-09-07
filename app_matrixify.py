@@ -13783,17 +13783,24 @@ def render_persistent_sync_job_panel(
     site_key = brand_config["site_key"]
     session_key = session_key or f"sync_job_{site_key}_{mode}"
     product_total = len(_sync_job_product_keys(source_df, mode=mode))
-    st.markdown("#### Sincronizacion recuperable por bloques")
+    st.markdown("#### Sincronización con Shopify")
     st.caption(
-        "La app procesa un bloque por ejecucion y guarda avance en disco. Si Streamlit se refresca, puedes continuar desde el ultimo pendiente."
+        "**«Cargar todo sin parar»** encadena los bloques solo: se pulsa una vez y sigue hasta el "
+        "último producto. Los bloques no son un límite, son la red: cada uno que termina queda "
+        "guardado, así que si la pestaña se refresca o la app se reinicia a mitad de camino se "
+        "retoma donde iba en vez de empezar de cero."
     )
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
+        # "Todos pendientes" va PRIMERO y por defecto. Estaba la ultima de seis y
+        # el valor por defecto era 50, asi que la carga completa existia pero no
+        # la encontraba nadie: se veia como que la app solo sabia cargar de 50 en
+        # 50. Los tamanos chicos siguen ahi para reintentar una tanda concreta.
         batch_choice = st.selectbox(
             "Productos por bloque",
-            ["10", "20", "30", "50", "Otro", "Todos pendientes"],
-            index=3,
-            key=f"{session_key}_batch_choice_v2",
+            ["Todos pendientes", "10", "20", "30", "50", "Otro"],
+            index=0,
+            key=f"{session_key}_batch_choice_v3",
         )
         if batch_choice == "Otro":
             batch_size = int(
@@ -13838,6 +13845,58 @@ def render_persistent_sync_job_panel(
         else:
             return
 
+    # --- Cargar todo sin parar ------------------------------------------
+    #
+    # Lo que molestaba de los bloques no eran los bloques: era tener que pulsar
+    # "Continuar siguiente bloque" veinte veces. Con esto se pulsa UNA y la
+    # pantalla encadena los bloques sola, con su avance a la vista y su boton
+    # para parar. Se conserva la red: cada bloque que termina sigue guardado.
+    #
+    # El bucle TERMINA siempre: `process_sync_job_next_block` saca el producto
+    # de `pending_keys` aunque falle -pasa a `error_keys`-, asi que los
+    # pendientes bajan en cada vuelta. Aun asi se comprueba que de verdad
+    # avanzo: un bloque que no mueve el contador para el bucle en vez de
+    # repetirlo para siempre.
+    auto_key = f"{session_key}_auto"
+    if st.session_state.get(auto_key):
+        pendientes_ahora = list(job.get("pending_keys") or [])
+        if not pendientes_ahora:
+            st.session_state.pop(auto_key, None)
+        else:
+            # El boton de parar se dibuja ANTES de procesar el bloque, y NO
+            # despues: durante el bloque el script sigue corriendo y todo lo
+            # que venga detras todavia no existe en pantalla. Dibujado antes,
+            # ya esta ahi mientras se carga. La bandera se limpia en el
+            # `on_click`, que corre antes del cuerpo del script en el rerun
+            # siguiente, asi que parar no depende de acertar el momento.
+            st.button(
+                "Detener la carga",
+                key=f"{session_key}_auto_stop",
+                on_click=lambda clave=auto_key: st.session_state.pop(clave, None),
+                help="Se detiene al terminar el bloque en curso. Lo hecho queda guardado.",
+            )
+            completados_antes = len(job.get("completed_keys") or [])
+            with st.spinner(f"Cargando sin parar... quedan {len(pendientes_ahora):,} productos"):
+                job = _update_sync_job_batch_size(
+                    job["id"], min(max(1, int(batch_size or 20)), max(len(pendientes_ahora), 1))
+                ) or job
+                job = process_sync_job_next_block(
+                    job["id"], shopify_config, progress_callback=make_sync_progress_callback(label)
+                )
+                _auditar_bloque_carga(job, site_key, label, marca=clean_value(brand_config.get("label")))
+                clear_shopify_products_cache(site_key)
+            if len(job.get("completed_keys") or []) <= completados_antes:
+                st.session_state.pop(auto_key, None)
+                st.error(
+                    "El último bloque no avanzó ningún producto, así que se detuvo en vez de "
+                    "repetirlo en vano. Revisa el detalle de abajo."
+                )
+            elif job.get("pending_keys"):
+                st.rerun()
+            else:
+                st.session_state.pop(auto_key, None)
+                st.success("Carga terminada: no quedan productos pendientes.")
+
     total = int(job.get("total_products") or 0)
     processed = int(job.get("processed_products") or 0)
     pending = max(total - processed, 0)
@@ -13864,19 +13923,26 @@ def render_persistent_sync_job_panel(
             + (f" | Proximos pendientes: {', '.join(pending_preview)}" if pending_preview else "")
         )
 
-    action_cols = st.columns([1, 1, 1, 2])
-    if pending and action_cols[0].button("Continuar siguiente bloque", type="primary", key=f"{session_key}_continue"):
+    action_cols = st.columns([1.4, 1, 1, 1, 1.6])
+    if pending and action_cols[0].button(
+        "Cargar todo sin parar", type="primary", key=f"{session_key}_auto_start",
+        help="Encadena los bloques hasta terminar. Puedes detenerlo cuando quieras.",
+    ):
+        st.session_state[auto_key] = True
+        st.rerun()
+    if pending and action_cols[1].button("Solo el siguiente bloque", key=f"{session_key}_continue"):
         job = _update_sync_job_batch_size(job["id"], min(max(1, int(batch_size or 20)), max(pending, 1))) or job
         progress_callback = make_sync_progress_callback(label)
         job = process_sync_job_next_block(job["id"], shopify_config, progress_callback=progress_callback)
         _auditar_bloque_carga(job, site_key, label, marca=clean_value(brand_config.get("label")))
         clear_shopify_products_cache(site_key)
         st.success("Bloque procesado y avance guardado.")
-    if job.get("error_keys") and action_cols[1].button("Reintentar errores", key=f"{session_key}_retry"):
+    if job.get("error_keys") and action_cols[2].button("Reintentar errores", key=f"{session_key}_retry"):
         job = _reset_sync_job_errors(job["id"])
         st.warning("Errores devueltos a pendiente. Presiona Continuar siguiente bloque para reintentarlos.")
-    if action_cols[2].button("Crear nuevo proceso", key=f"{session_key}_new"):
+    if action_cols[3].button("Crear nuevo proceso", key=f"{session_key}_new"):
         st.session_state.pop(session_key, None)
+        st.session_state.pop(auto_key, None)
         st.rerun()
 
     result_df = _sync_job_result_df(job)
@@ -19949,6 +20015,97 @@ def _audit_detalle(evento):
     st.markdown(f'<div class="audit-detail">{cuerpo}</div>', unsafe_allow_html=True)
 
 
+AUDITORIA_MESES_A_CONSERVAR = 12
+
+
+def render_limpieza_auditoria(servicio):
+    """Borrar meses viejos del registro, para que no crezca sin techo.
+
+    El registro se guarda **un archivo por mes** en el repositorio de datos, asi
+    que limpiar es borrar meses enteros: no hay forma de que quede a medias ni
+    de que se borre "la accion de alguien" por separado.
+
+    Tres cosas que no son negociables aqui:
+
+    - **El mes en curso nunca se ofrece.** Se estaria borrando lo que se acaba
+      de registrar, incluida la propia limpieza.
+    - **Se conservan los ultimos 12 meses completos** por defecto. Esto es una
+      limpieza, no un borron: el registro existe para poder mirar atras.
+    - **La limpieza queda registrada**, con quien la hizo y que meses se llevo.
+      Un borrado que no deja rastro convierte la auditoria en un adorno.
+    """
+    st.caption(
+        "El registro se guarda un archivo por mes. Aquí se borran meses enteros de los "
+        "**más viejos**: las acciones, los errores y los usuarios de ese periodo se van juntos. "
+        "El mes en curso nunca se puede borrar, y la propia limpieza queda registrada."
+    )
+    if not servicio.persistente:
+        st.info(
+            "Este almacén es **efímero**: el registro ya se pierde solo al reiniciarse la app, "
+            "así que no hay nada que limpiar. Configura `[auditoria]` en Secrets para conservarlo."
+        )
+        return
+
+    meses = st.slider(
+        "Meses completos a conservar",
+        min_value=1, max_value=36, value=AUDITORIA_MESES_A_CONSERVAR,
+        key="auditoria_meses_conservar",
+        help="Todo lo anterior a esto se puede borrar. El mes en curso queda fuera siempre.",
+    )
+    try:
+        limpiables = servicio.periodos_limpiables(conservar_meses=meses)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"No pude leer los periodos guardados: {clean_value(exc)}")
+        return
+    if not limpiables:
+        st.success(f"No hay nada que limpiar: no existen meses anteriores a los últimos {meses}.")
+        return
+
+    elegidos = st.multiselect(
+        "Meses a borrar",
+        limpiables,
+        default=limpiables,
+        key="auditoria_periodos_a_borrar",
+    )
+    if not elegidos:
+        st.caption("No has elegido ningún mes.")
+        return
+    st.warning(
+        f"Se van a borrar **{len(elegidos)} meses** del registro: {', '.join(elegidos)}. "
+        "**Esto no se puede deshacer.**"
+    )
+    confirmado = st.checkbox(
+        "Confirmo que quiero borrar el registro de esos meses",
+        key="auditoria_confirmar_limpieza",
+    )
+    if not st.button("Borrar esos meses", type="primary", disabled=not confirmado,
+                     key="auditoria_limpiar"):
+        return
+
+    with st.spinner("Limpiando el registro..."):
+        resultados = servicio.limpiar_periodos(elegidos)
+    borrados = [(p, n) for p, n, err in resultados if not err]
+    fallidos = [(p, err) for p, _, err in resultados if err]
+    eventos = sum(n for _, n in borrados)
+    if borrados:
+        # La limpieza SE REGISTRA. Sin esto, el registro no puede explicar por
+        # que le falta un tramo.
+        log_user_activity(
+            "Limpieza de auditoria",
+            f"Se borraron {len(borrados)} meses ({eventos:,} eventos): "
+            + ", ".join(p for p, _ in borrados),
+            module="Auditoría",
+            resultado="error" if fallidos else "ok",
+        )
+        st.success(f"Se borraron {len(borrados)} meses y {eventos:,} eventos.")
+    if fallidos:
+        st.error(
+            "No se pudieron borrar: "
+            + "; ".join(f"{p} ({err})" for p, err in fallidos)
+        )
+    st.cache_data.clear()
+
+
 def render_audit_center():
     """Centro de auditoria: KPIs, filtros, buscador, paginacion y descarga."""
     if not can_view_user_activity_log():
@@ -19969,6 +20126,8 @@ def render_audit_center():
         render_panel_memoria()
     with st.expander("¿La carga sobrevive al cierre de sesión?", expanded=False):
         render_aviso_carga_remota()
+    with st.expander("Limpiar histórico de auditoría", expanded=False):
+        render_limpieza_auditoria(servicio)
     with st.spinner("Leyendo auditoria..."):
         eventos = servicio.all_events()
 

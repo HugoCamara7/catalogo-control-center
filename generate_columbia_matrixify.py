@@ -1416,6 +1416,33 @@ def sial_short_features(value, max_words=45):
     return limit_words(value, max_words)
 
 
+def sial_tail_row(brand_config=None, existing_id="", sku=""):
+    """Las columnas de cola de la hoja Carga Sial, que dependen del SITIO.
+
+    Estan aparte porque la hoja se emite desde dos sitios: la carga completa
+    (`build_sial_row`) y la Carga Sial por codigos de la carga parcial. Con la
+    regla escrita dos veces, un sitio nuevo entra en una cola y se olvida en la
+    otra, y eso no revienta: sale un Excel con la columna de bodega vacia.
+    """
+    brand_config = brand_config or get_brand_config()
+    existing_id = clean(existing_id)
+    store_domain = clean(brand_config.get("store_domain"))
+    activas = brand_config.get("sial_active_columns", [])
+    valores = {}
+    for column in brand_config.get("sial_tail_columns", []):
+        if column.startswith("Nuevo o Actualizar"):
+            valores[column] = "Actualizar" if existing_id else "Crear"
+        elif column.startswith("Porduct Id"):
+            valores[column] = existing_id if store_domain and store_domain in column else ""
+        elif column.startswith("Sku -"):
+            valores[column] = clean(sku)
+        elif column in activas:
+            valores[column] = 1
+        else:
+            valores[column] = ""
+    return valores
+
+
 def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None, brand_label=""):
     brand_config = brand_config or get_brand_config()
     brand_label = clean(brand_label) or brand_config["label"]
@@ -1478,17 +1505,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Mod-Col": key,
         "Sku - Sial": clean(variant.get("CODINT_MA")),
     }
-    for column in brand_config.get("sial_tail_columns", []):
-        if column.startswith("Nuevo o Actualizar"):
-            row[column] = "Actualizar" if existing_id else "Crear"
-        elif column.startswith("Porduct Id"):
-            row[column] = existing_id if brand_config["store_domain"] in column else ""
-        elif column.startswith("Sku -"):
-            row[column] = clean(variant.get("CODINT_MA"))
-        elif column in brand_config.get("sial_active_columns", []):
-            row[column] = 1
-        else:
-            row[column] = ""
+    row.update(sial_tail_row(brand_config, existing_id, variant.get("CODINT_MA")))
     return row
 
 

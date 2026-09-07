@@ -760,6 +760,58 @@ maquinaria de analizar/ejecutar.
 
 ---
 
+## 5 sexies ter. Carga Sial por codigos Modelo-Color (septiembre 2026)
+
+`build_sial_de_sitio_from_matrixify` + una opcion mas en Carga parcial,
+**"Carga Sial"**, al lado de Centry. Se sube un Excel con codigos Modelo-Color
+y devuelve la hoja Carga Sial lista para enviar. Nada mas: no escribe en
+Shopify, hay un test que falla si aparece cualquier mutacion en la rama.
+
+**Por que.** El Centry ya se pedia asi -codigos y Excel de vuelta- pero la
+Carga Sial solo salia de una **carga completa**, que exige el input comercial
+entero. Para diez modelos sueltos eso es armar toda la carga para llegar a una
+hoja.
+
+**Sale en el formato DEL SITIO, no en el de Centry.** El Excel de Centry ya
+traia una hoja "Carga Sial", pero es la de Centry: cabecera `Mod/Col/Tal` y una
+cola con `Nuevo o Actualizar (Rockford.pe)` y Supermall **escritos a mano**, o
+sea la hoja equivocada en cuatro de los cinco sitios. La nueva usa
+`get_sial_columns(brand_config)` y `sial_tail_row`, las mismas de la carga
+completa, asi que Columbia recibe su cola y sus bodegas `4/13/6`, Vans la `103`
+y Hush Puppies la `2/13`.
+
+**Las dos hojas comparten el cuerpo.** Las 40 columnas del medio son identicas,
+asi que se arman una sola vez en `_filas_sial_desde_matrixify`, que entrega
+`(identidad, cuerpo)` por fila: la identidad es lo unico que cambia entre
+formatos. Con dos funciones completas, el arreglo siguiente entra en una hoja y
+se olvida en la otra -- es lo que ya pasa con las dos `normalize_size`. La cola
+tambien se saco de `build_sial_row` a `sial_tail_row` por lo mismo: un sitio
+nuevo se agrega en un solo lugar. Hay pruebas que comparan las dos hojas columna
+a columna y que exigen que las dos llamen al nucleo.
+
+**"Crear" o "Actualizar" es un dato de Shopify, no del Excel.** Un producto que
+ya esta en la tienda sale como `Actualizar` con su `Porduct Id` en la columna de
+**su** tienda; uno que no esta, como `Crear`. Por eso la opcion **exige Shopify
+API** (con Respaldo Excel se corta con un aviso) y por eso el ID del producto
+viaja ahora en el Matrixify que arma `build_centry_matrixify_from_master`: no es
+columna Matrixify, viaja solo para esto.
+
+**El tramo comun no esta escrito dos veces.** Centry y Carga Sial cruzan lo
+mismo -- Shopify + BigQuery/ARTI para una lista de codigos -- y ese tramo es
+`matrixify_desde_codigos_modelo_color`. Hay un test que exige que
+`build_centry_matrixify_from_master` se llame en **un solo** lugar.
+
+**Los codigos que no dejaron ninguna fila se avisan** (`sial_codigos_sin_filas`).
+Pedir 50 y recibir 38 se ve igual de bien que recibir los 50 si nadie dice
+cuales faltan. Un codigo de solo modelo cuenta como presente si salio cualquiera
+de sus colores. El detalle -- codigo que no esta en el maestro, marca que el
+sitio no carga, tallas descartadas -- va en la hoja **Revision Carga Sial**, la
+misma que ya arma el Centry.
+
+`scripts/test_carga_sial_parcial.py` (28 pruebas) fija todo esto.
+
+---
+
 ## 5 septies. Rendimiento: el peso de cada rerun (septiembre 2026)
 
 Streamlit vuelve a ejecutar el script entero en cada clic, así que lo que
@@ -1345,6 +1397,7 @@ python scripts/test_engines_ticket_flow.py             # 55
 python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
 python scripts/test_engines_vtex_catalog.py            # 69
+python scripts/test_carga_sial_parcial.py               # 28
 python scripts/test_memoria.py                        # 20
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 20

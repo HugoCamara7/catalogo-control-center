@@ -21481,19 +21481,31 @@ def _ticket_card_html(ticket, selected=False, con_controles=False):
 CLAVE_MATRIXIFY_SESION = "carga_matrixify_pendiente"
 
 
-def recordar_matrixify_de_carga(codigo, matrixify_df, site_key, filename=""):
-    """Guarda en la sesion el Matrixify recien analizado, para poder adjuntarlo.
+def recordar_matrixify_de_carga(codigo, matrixify_df, site_key, excel_path="", filename=""):
+    """Deja apuntado que Matrixify subir cuando se pulse "Ejecutar carga".
 
-    No se adjunta aqui: subirlo en cada rerun seria un commit por clic. Se
-    guarda la REFERENCIA al DataFrame --que no cuesta nada-- y el Excel se arma
-    una sola vez, cuando se pulsa "Ejecutar carga".
+    NO se guarda el DataFrame. `build_columbia_matrixify` no esta cacheada, asi
+    que el Matrixify se reconstruye en cada rerun y se libera solo; dejar una
+    referencia en `st.session_state` lo FIJARIA hasta cerrar la sesion, y el
+    contenedor de Streamlit Cloud da 1 GB por app --compartido entre todos los
+    que esten trabajando--. Es exactamente lo que se corrigio al bajar los
+    DataFrames gigantes a disco.
+
+    Tampoco se arma un Excel nuevo: la pantalla ya escribio uno en disco para
+    el boton de descarga, y su PRIMERA hoja es "Products", que es la que lee el
+    worker (`catalog_engine.read_matrixify_excel`). Se guarda esa ruta.
+
+    Lo unico que se calcula aqui son las claves Modelo-Color: una lista de
+    cadenas, para poder decir cuantos productos se van a cargar sin abrir el
+    archivo.
     """
     codigo = clean_value(codigo)
     if not codigo or matrixify_df is None or matrixify_df.empty:
         return
     st.session_state[CLAVE_MATRIXIFY_SESION] = {
         "codigo": codigo,
-        "df": matrixify_df,
+        "excel_path": clean_value(excel_path),
+        "product_keys": _sync_job_product_keys(matrixify_df, mode="complete"),
         "site_key": clean_value(site_key),
         "filename": clean_value(filename) or f"Matrixify_{codigo}.xlsx",
     }
@@ -21515,19 +21527,30 @@ def _adjuntar_matrixify_antes_de_cargar(service, actor, codigo):
         return ""
     if clean_value(guardado.get("codigo")) != clean_value(codigo):
         return ""
-    matrixify_df = guardado.get("df")
-    if matrixify_df is None or matrixify_df.empty:
-        return ""
+    payload = _leer_excel_de_disco(guardado.get("excel_path"))
+    if not payload:
+        # El contenedor se reinicio entre el analisis y el clic: el archivo de
+        # disco ya no esta. Si la solicitud YA tiene un Matrixify adjunto de un
+        # intento anterior, se sigue con ese en vez de cortar: bloquear aqui
+        # convertiria un reintento legitimo en un callejon sin salida.
+        try:
+            ticket = service.get_ticket(actor, codigo)
+        except TicketError:
+            ticket = {}
+        adjunto = ticket.get("matrixify") if isinstance(ticket.get("matrixify"), dict) else {}
+        if clean_value(adjunto.get("path")):
+            return ""
+        return (
+            "el Matrixify ya no está en disco (la app se reinició). "
+            "Vuelve a pulsar «Analizar input» antes de ejecutar la carga."
+        )
     try:
-        payload = dataframe_to_excel_bytes({"Products": matrixify_df})
-        if hasattr(payload, "getvalue"):
-            payload = payload.getvalue()
         service.attach_matrixify(
             actor,
             codigo,
             filename=guardado.get("filename") or f"Matrixify_{codigo}.xlsx",
             payload=payload,
-            product_keys=_sync_job_product_keys(matrixify_df, mode="complete"),
+            product_keys=guardado.get("product_keys") or [],
             site_key=guardado.get("site_key"),
             mode="complete",
         )
@@ -25880,13 +25903,15 @@ api_version = "{DEFAULT_API_VERSION}"
                             session_key=f"shopify_complete_job_{brand_config['site_key']}",
                         )
 
-                # El Matrixify recien analizado queda a mano para la carga
-                # remota. Solo se GUARDA la referencia: el Excel se arma y se
-                # sube cuando se pulsa "Ejecutar carga", no en cada rerun.
+                # El Matrixify recien analizado queda apuntado para la carga
+                # remota: la RUTA del Excel que ya esta en disco y las claves.
+                # Ni el DataFrame en la sesion ni un Excel de mas -- ver la
+                # seccion de memoria: el contenedor da 1 GB por app.
                 recordar_matrixify_de_carga(
                     st.session_state.get("carga_desde_solicitud"),
                     matrixify_df,
                     brand_config.get("site_key"),
+                    excel_path=st.session_state.get("complete_excel_path"),
                     filename=brand_config.get("output_filename"),
                 )
 

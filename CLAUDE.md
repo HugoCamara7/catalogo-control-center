@@ -1120,6 +1120,22 @@ ofrece revisar. Misma regla que los correos.
 **El dry run sigue siendo local.** Mandarlo a un runner solo agregaría cola a un
 paso que hoy es inmediato y que no llama a Shopify.
 
+**El Matrixify NO se queda en la sesión.** `recordar_matrixify_de_carga`
+guarda la **ruta** del Excel que la pantalla ya escribió en disco para el botón
+de descarga —su primera hoja es `Products`, que es la que lee el worker— y las
+claves Modelo-Color, que son cadenas. Guardar el DataFrame en
+`st.session_state` lo **fijaría hasta cerrar la sesión**: `build_columbia_matrixify`
+no está cacheada, así que hoy se reconstruye en cada rerun y se libera solo. Es
+el mismo error que se corrigió bajando los DataFrames gigantes a disco, y el
+contenedor da 1 GB **por app**, compartido. Tampoco se arma un Excel nuevo al
+pulsar: duplicaría en memoria justo en el peor momento. Hay 4 pruebas que lo
+fijan y fallan con el código anterior.
+
+Si el contenedor se reinicia entre el análisis y el clic, el archivo de disco
+desaparece. En ese caso, **si la solicitud ya tiene un Matrixify adjunto** de un
+intento anterior se sigue con ese: cortar ahí convertiría un reintento legítimo
+en un callejón sin salida.
+
 **Deuda que NO se pagó aquí:** el worker importa `app_matrixify` para reusar
 `process_sync_job_next_block` —que ya tiene pruebas y está en producción—, así
 que arrastra Streamlit al runner. Es la deuda de la sección 2 (extraer

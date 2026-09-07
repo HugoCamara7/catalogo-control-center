@@ -869,7 +869,7 @@ Lo medido, y lo que se hizo con cada cosa:
 | Qué | Antes | Ahora |
 |---|---:|---:|
 | Leer el maestro de VTEX (300.000 filas) | **>2 GB** | **82 MB** |
-| DataFrames vivos tras una Carga completa | ~1.230 MB | ~430 MB |
+| DataFrames vivos tras una Carga completa | ~1.200 MB | **237 MB** |
 | Importar la app (antes de que entre nadie) | 251 MB · 6,1 s | 180 MB · 0,7 s |
 
 **El lector del maestro VTEX hacía `list(filas)` antes de indexar.** Medido con
@@ -899,13 +899,49 @@ existiendo con un `__getattr__` de módulo (PEP 562) para quien lo lea de fuera;
 **los usos de dentro llaman a la función**, porque una búsqueda de global NO
 pasa por `__getattr__`.
 
-**Los dos DataFrames gigantes de Carga completa van a DISCO**, no a
-`session_state`: el respaldo del catálogo (330 MB) y el maestro ARTI (167 MB).
-Solo se guardaban para reanalizar sin volver a leer Shopify y BigQuery, y eso se
-sigue cumpliendo leyéndolos de `outputs/sesion/*.pkl`. En `session_state`
-quedaban residentes toda la sesión, aunque nadie los estuviera usando. Los
-`.pkl` **se borran al limpiar**: si no, cada carga deja otro de cientos de MB en
-el contenedor.
+**Cuatro DataFrames de Carga completa salen de `session_state`.** Medido en una
+carga de 40.000 filas: el respaldo del catálogo (330 MB), el maestro ARTI
+(167 MB), el Centry (277 MB) y el Sial (191 MB). Quedaban residentes toda la
+sesión aunque nadie los estuviera usando.
+
+| Qué | Dónde vive ahora | Por qué |
+|---|---|---|
+| Respaldo del catálogo · ARTI | disco (`outputs/sesion/*.pkl`) | solo sirven para reanalizar sin volver a leer Shopify y BigQuery |
+| Sial | disco + 100 filas y dos conteos en sesión | se necesita ENTERO en un solo momento: el adjunto del cierre |
+| Centry | resumen en sesión, nada más | solo se usa para dibujar su pestaña |
+| Matrixify | **se queda** (224 MB) | lo necesita la sincronización con Shopify |
+
+Lo que queda vivo son **237 MB**; con los 180 del arranque, 417 MB de 1.024, o
+sea sitio para dos o tres personas a la vez. La primera versión de este arreglo
+dejaba 731 MB y se publicó como "430 MB", que era una cuenta mal hecha.
+
+**El Centry es el caso interesante.** `render_centry_preview` se dibuja dentro
+de una pestaña, y Streamlit ejecuta el contenido de TODAS las pestañas en cada
+rerun: para sacar sus números recorría el Centry entero, así que el DataFrame
+tenía que seguir vivo. Ahora `resumen_centry_para_pantalla` calcula los siete
+números UNA vez, al analizar, y en sesión queda eso más 120 filas de muestra.
+Mismos números en pantalla, tres órdenes de magnitud menos de memoria.
+
+**Del Sial se guardan los CONTEOS aparte** (`complete_sial_filas`,
+`complete_sial_modelos`), porque el panel de cierre los dibuja en cada rerun y
+leer 191 MB de disco para contar filas es peor que el problema original.
+
+**Si el disco no es escribible, todo se queda en la sesión.** Cuesta memoria,
+pero perder el respaldo del catálogo obliga a releer Shopify y BigQuery en cada
+clic, y perder el Sial deja el correo al Área de Producto **sin adjunto**, que
+es el error de agosto de 2026. La corrección manda sobre el ahorro.
+
+Los `.pkl` **se borran al limpiar**: si no, cada carga deja otro de cientos de
+MB en el contenedor.
+
+**Cuidado con lo que se lee en cada rerun.** El primer intento de este arreglo
+dejó la condición que decide si hay datos cargados (`data_ready`) LEYENDO los
+dos temporales de disco. Esa condición se evalúa en cada clic: eran 500 MB de
+disco por interacción y, si la escritura había fallado, el `else` volvía a leer
+Shopify y BigQuery. Se sintió como "no carga y está lentísimo", y fue una
+regresión de un día. Ahora la condición solo comprueba que los archivos ESTÉN,
+y los DataFrames se leen únicamente dentro del análisis. Hay cinco pruebas que
+lo fijan.
 
 **`render_centry_preview` hacía `centry_df.copy()`** y ahí solo se lee. Eran
 277 MB duplicados en cada rerun que dibujara esa pestaña.
@@ -1309,7 +1345,7 @@ python scripts/test_engines_ticket_flow.py             # 55
 python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
 python scripts/test_engines_vtex_catalog.py            # 69
-python scripts/test_memoria.py                        # 10
+python scripts/test_memoria.py                        # 20
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 20
 python scripts/test_bandeja_solicitudes.py             # 57

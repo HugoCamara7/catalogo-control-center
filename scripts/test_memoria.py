@@ -295,6 +295,68 @@ class TestReglasDelCodigo(unittest.TestCase):
             finally:
                 os.chdir(anterior)
 
+    def test_centry_y_sial_no_se_quedan_en_la_sesion(self):
+        """277 MB y 191 MB medidos en una carga de 40.000 filas.
+
+        Centry solo se usa para dibujar su pestana, y Streamlit ejecuta el
+        contenido de TODAS las pestanas en cada rerun: por eso el DataFrame
+        tenia que seguir vivo. Ahora los numeros se calculan una vez y en
+        sesion queda el resumen. El Sial se necesita entero en un solo momento,
+        al adjuntarlo en el cierre, y para eso vive en disco.
+        """
+        self.assertNotIn('st.session_state["complete_centry_df"] =', self.app)
+        # La UNICA escritura del Sial a la sesion es el respaldo de
+        # `_guardar_resumen_sial` para cuando el disco no es escribible.
+        self.assertEqual(self.app.count('st.session_state["complete_sial_df"] = sial_df'), 1)
+        inicio = self.app.index("def _guardar_resumen_sial(")
+        fin = self.app.index("def _leer_sial_de_disco(")
+        self.assertIn('st.session_state["complete_sial_df"] = sial_df', self.app[inicio:fin])
+        self.assertIn('st.session_state["complete_centry_resumen"] = resumen_centry_para_pantalla(', self.app)
+        self.assertIn("_guardar_resumen_sial(sial_df, brand_config)", self.app)
+
+    def test_el_resumen_de_centry_no_arrastra_el_dataframe(self):
+        import app_matrixify as app
+        import pandas as pd
+        filas = 500
+        centry = pd.DataFrame({
+            "SKU del producto": [f"A-{i//5}" for i in range(filas)],
+            "Código de barra variante (EAN/UPC/ISBN)": ["779" + str(i) for i in range(filas)],
+            "URL imagen principal": ["" if i % 10 == 0 else "http://x/1.jpg" for i in range(filas)],
+        }, dtype=object)
+        resumen = app.resumen_centry_para_pantalla(centry, filas_vista_previa=120)
+        self.assertEqual(resumen["total_rows"], filas)
+        self.assertEqual(resumen["total_products"], 100)
+        self.assertEqual(resumen["no_image"], 50)
+        self.assertEqual(resumen["no_barcode"], 0)
+        # Lo que queda en sesion son 120 filas, no las 500.
+        self.assertEqual(len(resumen["muestra"]), 120)
+        peso_resumen = app.peso_de_objeto_mb(resumen["muestra"])
+        peso_completo = app.peso_de_objeto_mb(centry)
+        self.assertLess(peso_resumen, peso_completo,
+                        "la muestra tiene que pesar menos que el Centry entero")
+
+    def test_el_panel_de_cierre_no_cuenta_filas_del_sial_en_memoria(self):
+        inicio = self.app.index("def _conteo_carga_sial(")
+        fin = self.app.index("def _archivo_carga_sial(")
+        cuerpo = self.app[inicio:fin]
+        self.assertNotIn("len(sial_df)", cuerpo,
+                         "se dibuja en cada rerun: los conteos van guardados")
+        self.assertIn("complete_sial_filas", cuerpo)
+
+    def test_el_adjunto_del_cierre_sigue_llevando_el_sial_completo(self):
+        # Perder esto dejaria el correo al Area de Producto SIN archivo, que es
+        # el error que se corrigio en agosto de 2026.
+        inicio = self.app.index("def _archivo_carga_sial(")
+        fin = self.app.index("def _render_acciones_solicitud_tras_carga(")
+        cuerpo = self.app[inicio:fin]
+        self.assertIn("_leer_sial_de_disco()", cuerpo)
+        self.assertIn('dataframe_to_excel_bytes({"Carga Sial": sial_df})', cuerpo)
+
+    def test_si_el_disco_falla_el_sial_se_queda_en_la_sesion(self):
+        inicio = self.app.index("def _guardar_resumen_sial(")
+        fin = self.app.index("def _leer_sial_de_disco(")
+        self.assertIn('st.session_state["complete_sial_df"] = sial_df', self.app[inicio:fin])
+
     def test_la_vista_previa_de_centry_no_copia_el_dataframe(self):
         inicio = self.app.index("def render_centry_preview(")
         fin = self.app.index("def model_codes_from_text(")

@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -1778,6 +1778,44 @@ def _guardar_datos_de_carga(template_df, arti_df, brand_config):
             # Sin disco escribible no queda otra que la sesion. Cuesta memoria,
             # pero perderlos obligaria a releer Shopify y BigQuery en cada clic.
             st.session_state[clave_sesion] = df
+
+
+# El Sial se necesita ENTERO en un solo momento -- al cerrar la solicitud, para
+# adjuntarlo al correo del Area de Producto -- y en pantalla solo se dibujan 100
+# filas. Guardarlo en la sesion eran 191 MB residentes para eso.
+SIAL_FILAS_VISTA_PREVIA = 100
+
+
+def _guardar_resumen_sial(sial_df, brand_config):
+    """Deja el Sial en disco y en la sesion solo lo que la pantalla dibuja."""
+    _borrar_temporal(st.session_state.get("complete_sial_path"))
+    if sial_df is None or sial_df.empty:
+        for clave in ("complete_sial_path", "complete_sial_muestra",
+                      "complete_sial_filas", "complete_sial_modelos", "complete_sial_df"):
+            st.session_state.pop(clave, None)
+        return
+    ruta = _guardar_df_en_disco("sial", sial_df, brand_config)
+    st.session_state["complete_sial_path"] = ruta
+    st.session_state["complete_sial_muestra"] = sial_df.head(SIAL_FILAS_VISTA_PREVIA)
+    st.session_state["complete_sial_filas"] = len(sial_df)
+    st.session_state["complete_sial_modelos"] = (
+        int(sial_df["Mod-Col"].map(lambda valor: clean_value(valor).upper()).nunique())
+        if "Mod-Col" in sial_df.columns else 0
+    )
+    if ruta:
+        st.session_state.pop("complete_sial_df", None)
+    else:
+        # Sin disco escribible se queda en la sesion: perderlo dejaria el correo
+        # al Area de Producto SIN el archivo adjunto, que es lo que no puede pasar.
+        st.session_state["complete_sial_df"] = sial_df
+
+
+def _leer_sial_de_disco():
+    """El Sial completo. Solo se lee cuando hay que adjuntarlo o rearmar el Excel."""
+    df = st.session_state.get("complete_sial_df")
+    if df is not None:
+        return df
+    return _leer_df_de_disco(st.session_state.get("complete_sial_path"))
 
 
 def _hay_datos_de_carga():
@@ -6085,23 +6123,59 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
     return repair_mojibake_dataframe(sial_df)
 
 
-def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"):
+def resumen_centry_para_pantalla(centry_df, filas_vista_previa=120):
+    """Todo lo que la vista previa de Centry necesita, sin el DataFrame.
+
+    Por que existe
+    --------------
+    `render_centry_preview` se dibuja dentro de una pestana, y Streamlit ejecuta
+    el contenido de TODAS las pestanas en cada rerun. Para sacar sus numeros
+    recorria el Centry entero, asi que el DataFrame tenia que seguir vivo en
+    `st.session_state`: 277 MB medidos en una carga de 40.000 filas, residentes
+    toda la sesion en un contenedor de 1 GB compartido.
+
+    Los numeros se calculan UNA vez, al analizar, y lo que queda en sesion es
+    este resumen: cinco enteros, la tabla de validacion y 120 filas de muestra.
+    Mismos numeros en pantalla, tres ordenes de magnitud menos de memoria.
+    """
     if centry_df is None or centry_df.empty:
-        return
-    # Sin `.copy()`: aqui solo se LEE (`df.get`, `df.head`). Copiar duplicaba
-    # el Centry entero -277 MB medidos en una carga de 40.000 filas- en CADA
-    # rerun que dibujara esta pestana.
-    df = centry_df
-    total_rows = len(df)
-    total_products = df.get("SKU del producto", pd.Series(dtype=object)).map(clean_value).nunique()
-    no_barcode = safe_int_value((df.get("Código de barra variante (EAN/UPC/ISBN)", pd.Series(dtype=object)).map(clean_value) == "").sum())
-    no_image = safe_int_value((df.get("URL imagen principal", pd.Series(dtype=object)).map(clean_value) == "").sum())
-    # El precio no es obligatorio en Centry: ya no se cuenta ni se muestra.
+        return None
     validacion_df = centry_df.attrs.get("validacion")
     estados = centry_estado_por_producto(centry_df, validacion_df)
-    listos = sum(1 for v in estados.values() if v == "Listo")
-    con_obs = sum(1 for v in estados.values() if v == "Con observaciones")
-    bloqueados = sum(1 for v in estados.values() if v == "Bloqueado")
+    vacios = lambda columna: safe_int_value(
+        (centry_df.get(columna, pd.Series(dtype=object)).map(clean_value) == "").sum())
+    return {
+        "total_rows": len(centry_df),
+        "total_products": centry_df.get("SKU del producto", pd.Series(dtype=object)).map(clean_value).nunique(),
+        # El precio no es obligatorio en Centry: no se cuenta ni se muestra.
+        "no_barcode": vacios("Código de barra variante (EAN/UPC/ISBN)"),
+        "no_image": vacios("URL imagen principal"),
+        "listos": sum(1 for estado in estados.values() if estado == "Listo"),
+        "con_obs": sum(1 for estado in estados.values() if estado == "Con observaciones"),
+        "bloqueados": sum(1 for estado in estados.values() if estado == "Bloqueado"),
+        "validacion": validacion_df,
+        "muestra": centry_df.head(filas_vista_previa),
+    }
+
+
+def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"):
+    """Dibuja la vista previa a partir del DataFrame. Para quien lo tenga a mano."""
+    render_centry_preview_desde_resumen(
+        resumen_centry_para_pantalla(centry_df), issues_df, title)
+
+
+def render_centry_preview_desde_resumen(resumen, issues_df=None, title="Vista previa Centry"):
+    if not resumen:
+        return
+    total_rows = resumen["total_rows"]
+    total_products = resumen["total_products"]
+    no_barcode = resumen["no_barcode"]
+    no_image = resumen["no_image"]
+    validacion_df = resumen["validacion"]
+    listos = resumen["listos"]
+    con_obs = resumen["con_obs"]
+    bloqueados = resumen["bloqueados"]
+    df = resumen["muestra"]
     render_html(
         f"""
         <div class="combo-card">
@@ -6162,7 +6236,7 @@ def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"
             )
 
     with st.expander(f"Vista previa del archivo ({format_kpi_number(total_rows)} filas)", expanded=False):
-        st.dataframe(df.head(120), use_container_width=True, height=360)
+        st.dataframe(df, use_container_width=True, height=360)
 
     if issues_df is not None and not issues_df.empty:
         with st.expander(f"Cómo se generó ({len(issues_df):,} notas del proceso)", expanded=False):
@@ -17400,6 +17474,11 @@ def clear_complete_load_state():
         "complete_type_warnings_df",
         "complete_skipped_df",
         "complete_sial_df",
+        "complete_sial_path",
+        "complete_sial_muestra",
+        "complete_sial_filas",
+        "complete_sial_modelos",
+        "complete_centry_resumen",
         "complete_centry_df",
         "complete_centry_issues_df",
         "complete_apply_result_df",
@@ -20568,13 +20647,10 @@ def _conteo_carga_sial():
     Sale de lo que quedo en pantalla tras generar el catalogo. Si no hay nada
     en sesion devuelve ceros y quien llama cae al resumen de la solicitud.
     """
-    filas = 0
-    modelos = 0
-    sial_df = st.session_state.get("complete_sial_df")
-    if isinstance(sial_df, pd.DataFrame) and not sial_df.empty:
-        filas = len(sial_df)
-        if "Mod-Col" in sial_df.columns:
-            modelos = int(sial_df["Mod-Col"].map(lambda v: clean_value(v).upper()).nunique())
+    # De los CONTEOS guardados al analizar, no del DataFrame: esto se dibuja en
+    # cada rerun del panel de cierre y el Sial vive en disco.
+    filas = safe_int_value(st.session_state.get("complete_sial_filas"))
+    modelos = safe_int_value(st.session_state.get("complete_sial_modelos"))
     if not modelos:
         matrixify_df = st.session_state.get("complete_matrixify_df")
         if isinstance(matrixify_df, pd.DataFrame) and not matrixify_df.empty and "Handle" in matrixify_df.columns:
@@ -20589,7 +20665,10 @@ def _archivo_carga_sial(codigo, marca=""):
     sesion en el momento del cierre. Devuelve (bytes, nombre); si no hay hoja
     Carga Sial en pantalla devuelve (b"", "") y el aviso sale sin adjunto.
     """
-    sial_df = st.session_state.get("complete_sial_df")
+    # El unico momento en que hace falta el Sial ENTERO. Se lee de disco aqui y
+    # se suelta al salir: tenerlo en la sesion eran 191 MB residentes para un
+    # adjunto que se arma una vez.
+    sial_df = _leer_sial_de_disco()
     if not isinstance(sial_df, pd.DataFrame) or sial_df.empty:
         return b"", ""
     etiqueta = fold_accents(clean_value(marca)).upper().replace(" ", "_") or "CATALOGO"
@@ -20598,6 +20677,9 @@ def _archivo_carga_sial(codigo, marca=""):
         return dataframe_to_excel_bytes({"Carga Sial": sial_df}), nombre
     except Exception:
         return b"", ""
+    finally:
+        del sial_df
+        gc.collect()
 
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -25927,9 +26009,14 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.session_state["complete_issues_df"] = issues_df
                 st.session_state["complete_type_warnings_df"] = type_warnings_df
                 st.session_state["complete_skipped_df"] = skipped_df
-                st.session_state["complete_sial_df"] = sial_df
-                st.session_state["complete_centry_df"] = centry_df
                 st.session_state["complete_centry_issues_df"] = centry_issues_df
+                # Centry y Sial NO se quedan en la sesion: 277 MB y 191 MB
+                # medidos en una carga de 40.000 filas. Lo que queda es lo que
+                # la pantalla dibuja de verdad -numeros y 120 filas de muestra-
+                # y, del Sial, la ruta en disco para poder adjuntarlo al cerrar
+                # la solicitud. El Excel completo ya se escribio en disco.
+                st.session_state["complete_centry_resumen"] = resumen_centry_para_pantalla(centry_df)
+                _guardar_resumen_sial(sial_df, brand_config)
                 st.session_state["complete_analysis_message"] = (
                     f"Analisis terminado: {len(matrixify_df):,} filas Matrixify, "
                     f"{len(issues_df):,} observaciones, {len(skipped_df):,} omitidos sin cambios."
@@ -25951,16 +26038,14 @@ api_version = "{DEFAULT_API_VERSION}"
                 issues_df = st.session_state.get("complete_issues_df", pd.DataFrame())
                 type_warnings_df = st.session_state.get("complete_type_warnings_df", pd.DataFrame())
                 skipped_df = st.session_state.get("complete_skipped_df", pd.DataFrame())
-                sial_df = st.session_state.get("complete_sial_df", pd.DataFrame())
-                centry_df = st.session_state.get("complete_centry_df", pd.DataFrame())
+                sial_muestra = st.session_state.get("complete_sial_muestra", pd.DataFrame())
+                centry_resumen = st.session_state.get("complete_centry_resumen")
                 centry_issues_df = st.session_state.get("complete_centry_issues_df", pd.DataFrame())
                 matrixify_df = coalesce_duplicate_columns(matrixify_df)
                 summary_df = coalesce_duplicate_columns(summary_df)
                 issues_df = coalesce_duplicate_columns(issues_df)
                 type_warnings_df = coalesce_duplicate_columns(type_warnings_df)
                 skipped_df = coalesce_duplicate_columns(skipped_df)
-                sial_df = coalesce_duplicate_columns(sial_df)
-                centry_df = coalesce_duplicate_columns(centry_df)
                 centry_issues_df = coalesce_duplicate_columns(centry_issues_df)
 
                 analysis_message = st.session_state.get("complete_analysis_message")
@@ -25982,8 +26067,8 @@ api_version = "{DEFAULT_API_VERSION}"
                         st.dataframe(summary_df, use_container_width=True)
                         st.dataframe(matrixify_df.head(100), use_container_width=True, height=360)
                     with centry_tab:
-                        if centry_df is not None and not centry_df.empty:
-                            render_centry_preview(centry_df, centry_issues_df)
+                        if centry_resumen:
+                            render_centry_preview_desde_resumen(centry_resumen, centry_issues_df)
                         else:
                             st.warning("No se genero vista previa Centry. Revisa si Matrixify tiene filas validas con SKU, Vendor y talla.")
                     with revision_tab:
@@ -26001,19 +26086,28 @@ api_version = "{DEFAULT_API_VERSION}"
                         if skipped_df is not None and not skipped_df.empty:
                             st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
                             st.dataframe(skipped_df, use_container_width=True)
-                        if sial_df is not None and not sial_df.empty:
+                        if sial_muestra is not None and not sial_muestra.empty:
                             st.write("Vista previa Carga Sial")
-                            st.dataframe(sial_df.head(100), use_container_width=True, height=320)
+                            st.dataframe(sial_muestra, use_container_width=True, height=320)
 
                 excel_bytes = _leer_excel_de_disco(st.session_state.get("complete_excel_path"))
                 if excel_bytes is None:
+                    # El contenedor se reinicio y se llevo el Excel. Se rearma
+                    # leyendo el Sial de disco; el Centry se recalcula, que es
+                    # mas barato que haberlo tenido en memoria toda la sesion.
+                    sial_completo = _leer_sial_de_disco()
+                    centry_rearmado, _ = build_centry_from_matrixify(matrixify_df, brand_config)
                     st.session_state["complete_excel_path"] = _guardar_excel_en_disco(
                         columbia_to_excel_bytes(
-                            matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df, centry_df, centry_issues_df
+                            matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df,
+                            sial_completo if sial_completo is not None else pd.DataFrame(),
+                            centry_rearmado, centry_issues_df
                         ),
                         brand_config,
                     )
                     excel_bytes = _leer_excel_de_disco(st.session_state.get("complete_excel_path"))
+                    del sial_completo, centry_rearmado
+                    gc.collect()
                 st.download_button(
                     "Descargar estructura Matrixify",
                     data=excel_bytes,

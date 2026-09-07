@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -1755,6 +1755,50 @@ def render_panel_memoria():
         "El límite es POR APP, no por usuario: dos personas cargando a la vez "
         "comparten este mismo gigabyte."
     )
+
+
+# Los dos DataFrames grandes de la carga: a disco si se puede, y a la sesion
+# si el disco falla. La correccion manda sobre el ahorro de memoria: sin ellos
+# la pantalla vuelve a leer Shopify y BigQuery en cada clic.
+CLAVES_DATOS_DE_CARGA = (
+    ("template", "complete_template_path", "complete_template_df"),
+    ("arti", "complete_arti_path", "complete_arti_df"),
+)
+
+
+def _guardar_datos_de_carga(template_df, arti_df, brand_config):
+    """Guarda el catalogo y el ARTI para poder reanalizar sin volver a leerlos."""
+    for (clave, clave_ruta, clave_sesion), df in zip(CLAVES_DATOS_DE_CARGA, (template_df, arti_df)):
+        _borrar_temporal(st.session_state.get(clave_ruta))
+        ruta = _guardar_df_en_disco(clave, df, brand_config)
+        st.session_state[clave_ruta] = ruta
+        if ruta:
+            st.session_state.pop(clave_sesion, None)
+        else:
+            # Sin disco escribible no queda otra que la sesion. Cuesta memoria,
+            # pero perderlos obligaria a releer Shopify y BigQuery en cada clic.
+            st.session_state[clave_sesion] = df
+
+
+def _hay_datos_de_carga():
+    """Si estan guardados, sin leerlos. Se llama en cada rerun."""
+    for _clave, clave_ruta, clave_sesion in CLAVES_DATOS_DE_CARGA:
+        ruta = clean_value(st.session_state.get(clave_ruta))
+        en_disco = bool(ruta) and Path(ruta).exists()
+        if not en_disco and st.session_state.get(clave_sesion) is None:
+            return False
+    return True
+
+
+def _leer_datos_de_carga():
+    """(template_df, arti_df). Solo se llama al analizar, no en cada rerun."""
+    resultado = []
+    for _clave, clave_ruta, clave_sesion in CLAVES_DATOS_DE_CARGA:
+        df = st.session_state.get(clave_sesion)
+        if df is None:
+            df = _leer_df_de_disco(st.session_state.get(clave_ruta))
+        resultado.append(df)
+    return resultado[0], resultado[1]
 
 
 def _borrar_temporal(ruta):
@@ -17363,6 +17407,9 @@ def clear_complete_load_state():
         "complete_input_df",
         "complete_template_path",
         "complete_arti_path",
+        "complete_template_df",
+        "complete_arti_df",
+        "complete_template_cols",
         "complete_template_source",
         "complete_detected_brands",
         "complete_data_context",
@@ -24079,6 +24126,66 @@ def vtex_registrar_auditoria(accion, detalle, brand_config, extra=None):
     )
 
 
+def render_vtex_diagnostico_cruce(plan, maestro, codigos):
+    """Cuantos codigos cruzaron, y si fueron pocos, por que.
+
+    Origen: se generaron las planillas con el Product ID en blanco en TODAS las
+    filas. Leido asi parecia que la tienda no tenia esos productos; en realidad
+    ninguna referencia habia cruzado. Y cada fila sin ID crea un producto, asi
+    que eso duplica en VTEX todo lo que ya estaba.
+
+    Un aviso por codigo no servia de nada: con 500 codigos son 500 avisos
+    iguales y ninguno dice lo unico que importa, que es cuantos cruzaron.
+    """
+    resumen = plan["resumen"]
+    encontrados = resumen["Productos existentes"]
+    total = resumen["Productos encontrados"] or 1
+    proporcion = encontrados / total
+    texto_cruce = (
+        f"**{encontrados:,} de {total:,} códigos** encontrados en el catálogo maestro "
+        f"({proporcion:.0%}). Los otros {total - encontrados:,} se van a **crear**."
+    )
+    if encontrados == 0:
+        st.error("Ningún código cruzó con el maestro. " + texto_cruce)
+    elif proporcion < 0.5:
+        st.warning(texto_cruce)
+    else:
+        st.success(texto_cruce)
+    if proporcion >= 0.9:
+        return
+    # Con pocas coincidencias hay que poder COMPARAR, no adivinar. Se ponen
+    # lado a lado unas referencias del maestro y unos codigos pedidos: un
+    # desajuste de formato se ve de un golpe.
+    with st.expander("¿Por qué no cruzaron? Compara los formatos", expanded=encontrados == 0):
+        st.caption(
+            f"El maestro tiene {maestro.total_productos:,} productos y "
+            f"{maestro.total_skus:,} SKUs. La referencia de producto de VTEX tiene que ser "
+            "igual al código Modelo-Color, carácter por carácter."
+        )
+        del_maestro = [
+            datos.get("Product reference code", "")
+            for datos in list(maestro.productos_por_id.values())[:10]
+        ]
+        faltan = [
+            producto["referencia"] for producto in plan["productos"]
+            if not producto["producto_id"]
+        ][:10]
+        st.dataframe(
+            pd.DataFrame({
+                "Referencias que SÍ están en el maestro": del_maestro + [""] * (10 - len(del_maestro)),
+                "Códigos que no se encontraron": faltan + [""] * (10 - len(faltan)),
+            }),
+            use_container_width=True, hide_index=True,
+        )
+        columnas_maestro = maestro.faltantes.get("productos") or []
+        if columnas_maestro:
+            st.warning(
+                "Al maestro le faltan columnas de la exportación 'Products and SKUs': "
+                + ", ".join(columnas_maestro[:8])
+                + ". Puede que no sea el archivo correcto."
+            )
+
+
 def render_vtex_alertas(alertas):
     """Los errores primero. Un aviso arriba de un bloqueo hace perder el tiempo
     a quien mira: lo que impide bajar el ZIP tiene que verse sin bajar."""
@@ -24109,7 +24216,7 @@ def render_vtex_resumen(resumen):
         ("SKUs existentes", resumen["SKUs existentes"]),
         ("SKUs nuevos", resumen["SKUs nuevos"]),
         ("Imágenes", resumen["Imagenes"]),
-        ("Alertas", resumen["Errores"] + resumen["Avisos"]),
+        ("SKUs sin peso", resumen.get("SKUs sin peso", 0)),
     ]
     columnas = st.columns(4)
     for numero, (etiqueta, valor) in enumerate(filas):
@@ -24213,7 +24320,16 @@ def render_vtex_export(brand_config, shopify_config):
         "Solo fotos de SKUs que no tienen", value=False,
         help="Necesita la exportación de Imágenes del maestro.",
     )
-    patron_referencia = columnas[2].text_input(
+    permitir_todo_nuevo = columnas[2].checkbox(
+        "Carga inicial: todos son nuevos", value=False,
+        help=(
+            "Normalmente, que NINGÚN código esté en el maestro significa que el archivo o el "
+            "formato no cuadran, y generar así duplicaría el catálogo. Marca esto solo si de "
+            "verdad estás cargando productos que VTEX no tiene."
+        ),
+    )
+    columnas = st.columns(3)
+    patron_referencia = columnas[0].text_input(
         "Referencia de los SKUs nuevos", value=vtex_motor.PATRON_REFERENCIA_SKU,
         key="vtex_patron_referencia",
         help=(
@@ -24342,6 +24458,7 @@ def render_vtex_export(brand_config, shopify_config):
         "actualizar_existentes": actualizar_existentes,
         "solo_sin_imagenes": solo_sin_imagenes,
         "patron_referencia_sku": patron_referencia,
+        "permitir_todo_nuevo": permitir_todo_nuevo,
     }
 
     if st.button("Analizar y mapear IDs", type="primary", key="vtex_analizar"):
@@ -24377,6 +24494,7 @@ def render_vtex_export(brand_config, shopify_config):
     # --- Paso 3: validacion ----------------------------------------------
     st.markdown("### 3. Validación")
     render_vtex_resumen(plan["resumen"])
+    render_vtex_diagnostico_cruce(plan, maestro, codigos)
     render_vtex_alertas(plan["alertas"])
 
     # --- Paso 4: vista previa --------------------------------------------
@@ -25670,12 +25788,18 @@ api_version = "{DEFAULT_API_VERSION}"
     can_process_complete = input_file and (complete_source == "Shopify API" or template_file)
     if can_process_complete:
         try:
-            data_ready = False
-            if st.session_state.get("complete_data_context") == complete_context \
-                    and st.session_state.get("complete_input_df") is not None:
-                template_df = _leer_df_de_disco(st.session_state.get("complete_template_path"))
-                arti_df = _leer_df_de_disco(st.session_state.get("complete_arti_path"))
-                data_ready = template_df is not None and arti_df is not None
+            # OJO con esta condicion: se evalua en CADA rerun, o sea en cada
+            # clic de la pantalla. Solo comprueba que los temporales ESTEN; no
+            # los lee. Leerlos aqui -330 MB del catalogo y 167 MB del ARTI- era
+            # medio segundo de disco por clic, y si la escritura habia fallado
+            # el `else` volvia a leer Shopify y BigQuery en cada interaccion.
+            data_ready = (
+                st.session_state.get("complete_data_context") == complete_context
+                and st.session_state.get("complete_input_df") is not None
+                and _hay_datos_de_carga()
+            )
+            template_df = None
+            arti_df = None
             if data_ready:
                 input_df = st.session_state["complete_input_df"]
                 template_source = st.session_state.get("complete_template_source", "")
@@ -25743,10 +25867,11 @@ api_version = "{DEFAULT_API_VERSION}"
                 # respaldo del catalogo y 167 MB el maestro ARTI, medidos. Solo
                 # se usan para reanalizar sin volver a leer Shopify y BigQuery,
                 # y eso se sigue cumpliendo leyendolos de disco.
-                st.session_state["complete_template_path"] = _guardar_df_en_disco(
-                    "template", template_df, brand_config)
-                st.session_state["complete_arti_path"] = _guardar_df_en_disco(
-                    "arti", arti_df, brand_config)
+                _guardar_datos_de_carga(template_df, arti_df, brand_config)
+                # Los conteos se guardan aparte: el panel de la derecha los
+                # muestra en cada rerun y no vale la pena leer 500 MB de disco
+                # para contar filas y columnas.
+                st.session_state["complete_template_cols"] = len(template_df.columns)
                 st.session_state["complete_template_source"] = template_source
                 st.session_state["complete_detected_brands"] = detected_brands
                 st.session_state["complete_data_context"] = complete_context
@@ -25761,8 +25886,8 @@ api_version = "{DEFAULT_API_VERSION}"
             with right_col:
                 render_summary_metrics(
                     [
-                        ("Columnas base", len(template_df.columns)),
-                        ("Filas ARTI BigQuery", len(arti_df)),
+                        ("Columnas base", safe_int_value(st.session_state.get("complete_template_cols"))),
+                        ("Filas ARTI BigQuery", safe_int_value(st.session_state.get("arti_row_count"))),
                         ("Productos input", len(input_df)),
                         ("Marcas detectadas", len(detected_brands)),
                     ]
@@ -25770,6 +25895,17 @@ api_version = "{DEFAULT_API_VERSION}"
                 render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
 
             if analyze_clicked:
+                if template_df is None or arti_df is None:
+                    # Aqui SI se leen: es el unico momento en que hacen falta.
+                    with st.spinner("Recuperando el catálogo y el maestro ARTI..."):
+                        template_df, arti_df = _leer_datos_de_carga()
+                if template_df is None or arti_df is None:
+                    st.error(
+                        "Se perdieron los datos de la carga. Vuelve a pulsar **Analizar input**: "
+                        "se leerán otra vez desde Shopify y BigQuery."
+                    )
+                    st.session_state.pop("complete_data_context", None)
+                    st.stop()
                 with st.spinner("Analizando input y cruzando contra Shopify/BigQuery..."):
                     matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
                         input_df, arti_df, template_df, brand_config=brand_config

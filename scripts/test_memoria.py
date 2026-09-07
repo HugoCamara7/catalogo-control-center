@@ -224,12 +224,76 @@ class TestReglasDelCodigo(unittest.TestCase):
                              f"'{prohibido}' vuelve a cargar el archivo entero en memoria")
 
     def test_los_dataframes_gigantes_de_carga_completa_van_a_disco(self):
-        # 330 MB el respaldo del catalogo y 167 MB el maestro ARTI, medidos.
+        """330 MB el respaldo del catalogo y 167 MB el maestro ARTI, medidos.
+
+        Con nombre fijo no pueden guardarse en la sesion. La unica escritura a
+        `session_state` permitida es la de `_guardar_datos_de_carga`, cuando el
+        disco no es escribible: ahi la correccion manda sobre el ahorro.
+        """
         for clave in ("complete_template_df", "complete_arti_df"):
             self.assertNotIn(f'st.session_state["{clave}"] =', self.app,
                              f"{clave} no puede vivir en session_state")
-        self.assertIn('_guardar_df_en_disco(\n                    "template"', self.app)
-        self.assertIn('_guardar_df_en_disco(\n                    "arti"', self.app)
+        self.assertIn('_guardar_datos_de_carga(template_df, arti_df, brand_config)', self.app)
+        self.assertIn('_guardar_df_en_disco(clave, df, brand_config)', self.app)
+
+    def test_data_ready_no_lee_los_dataframes_en_cada_rerun(self):
+        """La regresion que hubo que arreglar el mismo dia.
+
+        `data_ready` se evalua en CADA rerun, o sea en cada clic. Leer ahi los
+        temporales -330 MB del catalogo y 167 MB del ARTI- era medio segundo de
+        disco por clic; y si la escritura habia fallado, `data_ready` daba False
+        y la pantalla volvia a leer Shopify y BigQuery en cada interaccion. Se
+        sentia como "no carga y esta lentisimo".
+        """
+        inicio = self.app.index("            data_ready = (")
+        fin = self.app.index("            if data_ready:", inicio)
+        condicion = self.app[inicio:fin]
+        self.assertNotIn("_leer_df_de_disco", condicion,
+                         "data_ready no puede leer los DataFrames: se evalua en cada rerun")
+        self.assertIn("_hay_datos_de_carga()", condicion)
+
+    def test_los_dataframes_solo_se_leen_al_analizar(self):
+        self.assertIn("_leer_datos_de_carga()", self.app)
+        inicio = self.app.index("            if analyze_clicked:")
+        fin = self.app.index("build_columbia_matrixify(", inicio)
+        self.assertIn("_leer_datos_de_carga()", self.app[inicio:fin],
+                      "los datos se leen dentro del analisis, que es cuando hacen falta")
+
+    def test_si_el_disco_falla_los_datos_se_quedan_en_la_sesion(self):
+        # Correccion antes que ahorro: perderlos obliga a releer Shopify y
+        # BigQuery en cada clic, que es peor que gastar la memoria.
+        inicio = self.app.index("def _guardar_datos_de_carga(")
+        fin = self.app.index("def _hay_datos_de_carga(")
+        cuerpo = self.app[inicio:fin]
+        self.assertIn("st.session_state[clave_sesion] = df", cuerpo)
+
+    def test_el_panel_no_cuenta_filas_leyendo_el_disco(self):
+        # El PANEL de Carga completa, no la funcion que lo dibuja.
+        inicio = self.app.index('("Columnas base"')
+        fin = self.app.index("render_operational_status(", inicio)
+        cuerpo = self.app[inicio:fin]
+        for prohibido in ("len(template_df", "len(arti_df"):
+            self.assertNotIn(prohibido, cuerpo,
+                             f"'{prohibido}' obliga a tener el DataFrame en memoria en cada rerun")
+
+    def test_guardar_y_leer_un_dataframe_de_disco_conserva_los_datos(self):
+        import app_matrixify as app
+        import pandas as pd
+        original = pd.DataFrame({"Mod-Col": ["A-1", "B-2"], "Talla": ["39", "40"]}, dtype=object)
+        with tempfile.TemporaryDirectory() as carpeta:
+            import os
+            anterior = os.getcwd()
+            try:
+                os.chdir(carpeta)
+                ruta = app._guardar_df_en_disco("prueba", original, {"site_key": "columbia"})
+                self.assertTrue(ruta, "no se pudo escribir el temporal")
+                pd.testing.assert_frame_equal(app._leer_df_de_disco(ruta), original)
+                app._borrar_temporal(ruta)
+                self.assertIsNone(app._leer_df_de_disco(ruta))
+                # Borrar dos veces no revienta: no existir ya es el objetivo.
+                app._borrar_temporal(ruta)
+            finally:
+                os.chdir(anterior)
 
     def test_la_vista_previa_de_centry_no_copia_el_dataframe(self):
         inicio = self.app.index("def render_centry_preview(")

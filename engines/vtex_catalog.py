@@ -521,6 +521,8 @@ class CatalogoMaestroVTEX:
         self.total_productos = 0
         self.total_skus = 0
         self._conteo_configuracion = {}
+        self._medidas_por_categoria = {}
+        self._medidas_de_la_tienda = {}
 
     # -- construccion ------------------------------------------------------
     @classmethod
@@ -599,11 +601,53 @@ class CatalogoMaestroVTEX:
     COLUMNAS_PREVIAS = (
         "Product ID", "Product reference code", "SKU ID",
         "Brand ID", "Brand", "Department ID", "Department", "Category ID", "Category",
+        # Las medidas van aqui para poder aprender las de CADA CATEGORIA sin
+        # armar el registro completo de las 300.000 filas. Un SKU sin peso no
+        # se puede despachar, asi que hace falta un respaldo real.
+        "Package weight", "Package width", "Package height", "Package length",
     )
+    # Tope de combinaciones de medidas por categoria. Sin tope, una categoria
+    # con medidas distintas en cada producto haria crecer el contador como el
+    # catalogo.
+    MAXIMO_MEDIDAS_POR_CATEGORIA = 200
     # De cuantos productos se aprenden los valores por defecto. La moda de
     # "Commercial condition" no necesita 30.000 muestras, y cada muestra cuesta
     # armar el registro entero.
     MUESTRA_DE_CONFIGURACION = 2000
+
+    def _contar_medidas(self, previa):
+        """Aprende las medidas que la tienda ya usa, por categoria.
+
+        Un SKU nuevo de una categoria conocida se despacha como sus vecinos.
+        Es el ultimo respaldo antes de dejar el peso vacio, que es lo que no
+        puede pasar: VTEX no cotiza el envio de un SKU sin peso.
+        """
+        medidas = (
+            texto(previa.get("Package weight")), texto(previa.get("Package width")),
+            texto(previa.get("Package height")), texto(previa.get("Package length")),
+        )
+        if not medidas[0]:
+            return
+        clave = (texto(previa.get("Department ID")), texto(previa.get("Category ID")))
+        for destino, llave in ((self._medidas_por_categoria, clave),
+                               (self._medidas_de_la_tienda, "")):
+            conteo = destino.setdefault(llave, {})
+            if medidas in conteo:
+                conteo[medidas] += 1
+            elif len(conteo) < self.MAXIMO_MEDIDAS_POR_CATEGORIA:
+                conteo[medidas] = 1
+
+    def medidas_de_categoria(self, departamento_id="", categoria_id=""):
+        """{weight, width, height, length} de lo que mas se repite en esa
+        categoria; si la categoria no tiene, lo de la tienda; si no, vacios."""
+        for destino, llave in ((self._medidas_por_categoria,
+                                (texto(departamento_id), texto(categoria_id))),
+                               (self._medidas_de_la_tienda, "")):
+            conteo = destino.get(llave) or {}
+            if conteo:
+                peso, ancho, alto, largo = max(conteo.items(), key=lambda item: item[1])[0]
+                return {"weight": peso, "width": ancho, "height": alto, "length": largo}
+        return {"weight": "", "width": "", "height": "", "length": ""}
 
     def _cargar_productos(self, filas):
         reporte = {}
@@ -635,6 +679,7 @@ class CatalogoMaestroVTEX:
             if sku_id and sku_id not in vistos_sku:
                 vistos_sku.add(sku_id)
                 self.total_skus += 1
+                self._contar_medidas(previa)
             if self._interesa(referencia):
                 return True
             # Una muestra de filas ajenas, solo para los valores por defecto.
@@ -863,7 +908,13 @@ ALERTAS = {
     "sku_inconsistente": (NIVEL_AVISO, "SKU existente con información inconsistente"),
     "valor_fuera_de_lista": (NIVEL_AVISO, "Valor que no existe en la lista de la tienda"),
     "referencia_sku_repetida": (NIVEL_ERROR, "Referencia de SKU repetida en la carga"),
+    "sku_sin_peso": (NIVEL_ERROR, "SKU sin peso ni medidas"),
+    "nada_cruzo_con_el_maestro": (NIVEL_ERROR, "Ningún código se encontró en el catálogo maestro"),
 }
+
+# Con menos codigos que esto, que ninguno cruce contra el maestro es
+# perfectamente normal y no se sospecha nada.
+MINIMO_PARA_SOSPECHAR_DESAJUSTE = 5
 
 ESTADO_EXISTENTE = "EXISTENTE"
 ESTADO_NUEVO = "NUEVO"
@@ -933,6 +984,11 @@ def _opciones(opciones=None):
         "maximo_imagenes": 10,
         "activar_producto": "Yes",
         "activar_sku": "Yes",
+        # Cuando NINGUN codigo cruza contra el maestro casi siempre es un
+        # desajuste (otro archivo, otro formato de referencia), no una tienda
+        # vacia. Generar ahi duplicaria el catalogo entero, asi que se bloquea.
+        # Esto lo desactiva a mano quien de verdad esta cargando todo nuevo.
+        "permitir_todo_nuevo": False,
     }
     base.update(opciones or {})
     return base
@@ -983,9 +1039,11 @@ def plan_de_carga(entradas, maestro, opciones=None):
         producto = _resolver_producto(entrada, mod_col, maestro, opciones, alertas)
         _resolver_skus(entrada, producto, maestro, opciones, alertas, referencias_sku)
         _resolver_imagenes(entrada, producto, maestro, opciones, alertas)
+        _resolver_medidas(producto, maestro, alertas)
         _resolver_especificaciones(entrada, producto, maestro, alertas)
         productos.append(producto)
         filas.extend(_filas_de_vista_previa(producto))
+    _revisar_cruce(productos, maestro, opciones, alertas)
     resumen = _resumen(productos, alertas)
     bloqueado = any(alerta["Nivel"] == NIVEL_ERROR for alerta in alertas)
     return {
@@ -996,6 +1054,34 @@ def plan_de_carga(entradas, maestro, opciones=None):
         "bloqueado": bloqueado,
         "opciones": opciones,
     }
+
+
+def _revisar_cruce(productos, maestro, opciones, alertas):
+    """Si NINGUN codigo cruzo, casi siempre es un desajuste, no una tienda vacia.
+
+    Origen: se generaron las planillas con el Product ID en blanco en todas las
+    filas. Leido asi parecia que la tienda no tenia esos productos; en realidad
+    ninguna referencia habia cruzado. Cada fila sin ID CREA un producto, asi que
+    eso duplica en VTEX todo lo que ya estaba cargado, con otra URL y otro ID.
+
+    Un aviso por codigo no servia: con 500 codigos son 500 avisos iguales y
+    ninguno dice lo que importa, que es que cruzaron CERO.
+    """
+    if not productos or len(productos) < MINIMO_PARA_SOSPECHAR_DESAJUSTE:
+        return
+    if opciones.get("permitir_todo_nuevo"):
+        return
+    cruzados = sum(1 for producto in productos if producto["producto_id"])
+    if cruzados:
+        return
+    alertas.append(_alerta(
+        "nada_cruzo_con_el_maestro", "",
+        f"{len(productos):,} códigos y NINGUNO está en el maestro. El maestro tiene "
+        f"{maestro.total_productos:,} productos. Antes de generar: comprueba que el archivo sea "
+        "la exportación 'Products and SKUs' de VTEX y que los códigos tengan el mismo formato "
+        "que su 'Product reference code'. Si de verdad son todos nuevos, marca la casilla "
+        "de carga inicial.",
+    ))
 
 
 def _resolver_producto(entrada, mod_col, maestro, opciones, alertas):
@@ -1172,6 +1258,55 @@ def _resolver_imagenes(entrada, producto, maestro, opciones, alertas):
             producto["estado"] = ESTADO_WARNING
 
 
+def _resolver_medidas(producto, maestro, alertas):
+    """El peso y las medidas de cada SKU. NUNCA pueden quedar vacios.
+
+    VTEX no puede cotizar el envio de un SKU sin peso, asi que un SKU sin
+    medidas es una fila que no sirve. La cadena, de lo mas fiable a lo menos:
+
+    1. Las del propio SKU en VTEX, si ya existe.
+    2. Las de otra talla del MISMO producto: se despacha en la misma caja.
+    3. Las que trae la app para ese tipo de prenda (tabla de dimensiones).
+    4. Las que la tienda ya usa en esa CATEGORIA de VTEX.
+    5. Las que la tienda usa en general.
+
+    Si despues de las cinco sigue vacio, se bloquea. Antes salia la fila con el
+    peso en blanco y el problema aparecia al subir el archivo.
+    """
+    hermano = _sku_hermano_con_medidas(producto, maestro)
+    del_tipo = producto["entrada"].get("paquete") or {}
+    categoria = producto["categoria"]
+    de_la_categoria = maestro.medidas_de_categoria(
+        categoria.get("Department ID"), categoria.get("Category ID"))
+    for sku in producto["skus"]:
+        existente = sku.get("existente") or {}
+        paquete = {}
+        for llave, columna in (("weight", "Package weight"), ("width", "Package width"),
+                               ("height", "Package height"), ("length", "Package length")):
+            paquete[llave] = (
+                texto(existente.get(columna))
+                or texto(hermano.get(columna))
+                or texto(del_tipo.get(llave))
+                or texto(de_la_categoria.get(llave))
+            )
+        paquete["origen"] = (
+            "VTEX (el propio SKU)" if texto(existente.get("Package weight"))
+            else "VTEX (otra talla del producto)" if texto(hermano.get("Package weight"))
+            else "tabla de dimensiones por tipo" if texto(del_tipo.get("weight"))
+            else "VTEX (promedio de la categoría)" if texto(de_la_categoria.get("weight"))
+            else ""
+        )
+        sku["paquete"] = paquete
+        if not paquete["weight"]:
+            alertas.append(_alerta(
+                "sku_sin_peso", producto["mod_col"],
+                f"Talla {sku['talla']}: no hay peso ni en VTEX, ni en la tabla de dimensiones "
+                f"de '{producto['entrada'].get('tipo_prenda') or 'sin tipo'}', ni en la categoría "
+                f"{categoria.get('Category') or 'sin categoría'}. VTEX no puede cotizar su envío.",
+            ))
+            producto["estado"] = ESTADO_ERROR
+
+
 def _resolver_especificaciones(entrada, producto, maestro, alertas):
     """Que especificaciones lleva el producto y cada SKU, RESUELTAS.
 
@@ -1258,6 +1393,7 @@ def _resumen(productos, alertas):
         "SKUs existentes": sum(1 for sku in skus if sku["sku_id"]),
         "SKUs nuevos": sum(1 for sku in skus if not sku["sku_id"]),
         "Imagenes": imagenes,
+        "SKUs sin peso": sum(1 for sku in skus if not (sku.get("paquete") or {}).get("weight")),
         "Errores": sum(1 for alerta in alertas if alerta["Nivel"] == NIVEL_ERROR),
         "Avisos": sum(1 for alerta in alertas if alerta["Nivel"] == NIVEL_AVISO),
     }
@@ -1308,16 +1444,15 @@ def _filas_productos_y_skus(productos, maestro, opciones):
     mostrar_sin_stock = maestro.valor_por_defecto("Show when out of stock", "No")
     for producto in productos:
         cabecera = _cabecera_producto(producto, maestro, opciones, canales, mostrar_sin_stock)
-        hermano = _sku_hermano_con_medidas(producto, maestro)
         for sku in producto["skus"]:
             fila = _fila_vacia(COLUMNAS_PRODUCTOS_Y_SKUS)
             fila.update(cabecera)
             existente = sku.get("existente") or {}
-            paquete = producto["entrada"].get("paquete") or {}
-            peso = texto(existente.get("Package weight")) or texto(hermano.get("Package weight")) or texto(paquete.get("weight"))
-            ancho = texto(existente.get("Package width")) or texto(hermano.get("Package width")) or texto(paquete.get("width"))
-            alto = texto(existente.get("Package height")) or texto(hermano.get("Package height")) or texto(paquete.get("height"))
-            largo = texto(existente.get("Package length")) or texto(hermano.get("Package length")) or texto(paquete.get("length"))
+            # Ya resueltas en el plan por `_resolver_medidas`, con su cadena de
+            # respaldos y su bloqueo si quedan vacias.
+            paquete = sku.get("paquete") or {}
+            peso, ancho = texto(paquete.get("weight")), texto(paquete.get("width"))
+            alto, largo = texto(paquete.get("height")), texto(paquete.get("length"))
             fila.update({
                 "SKU ID": sku["sku_id"],
                 "SKU name": sku["nombre"],

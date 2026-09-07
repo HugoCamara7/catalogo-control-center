@@ -1301,6 +1301,149 @@ conversión contra la guía oficial de Vans.
 
 ---
 
+## 5 terdecies. La pantalla duplicada, y el analisis 2,4 veces mas rapido (septiembre 2026)
+
+### La pantalla se dibujaba dos veces
+
+Al pulsar **Analizar input** aparecia media pantalla DUPLICADA: la vista previa,
+el panel de accion y el checklist otra vez debajo, la copia vieja en gris,
+durante todo el analisis.
+
+**Regresion mia**, del aviso de progreso de la lectura del catalogo.
+`leer_catalogo_del_sitio` creaba su propio `st.empty()`, y esa funcion solo se
+llama en la rama que LEE. O sea: el hueco existia en unos reruns y no en otros.
+Eso cambia la **forma del arbol de elementos** entre un rerun y el siguiente:
+Streamlit deja de poder reemplazar el bloque de abajo en su sitio y lo **agrega**
+debajo del viejo.
+
+Reproducido con Chromium sobre un repro minimo de 20 lineas —una rama que crea
+un `st.empty()`, un bloque de columnas y un trabajo lento—:
+
+```
+hueco creado DENTRO de la rama:  el bloque aparece 2 veces durante el trabajo
+hueco creado SIEMPRE:            1 vez
+```
+
+Un `st.empty()` **vaciado sigue ocupando su nodo** en el arbol: `.empty()` borra
+el contenido, no el hueco.
+
+Ahora el hueco lo crea el LLAMADOR, antes de decidir si toca leer, y se le pasa.
+Sin `aviso` no se dibuja avance, pero **nunca** se crea un hueco condicional.
+Hay tres pruebas que lo fijan, una de ellas comparando la sangria para que el
+hueco no vuelva a caer dentro de una rama.
+
+> Regla general: **no crees elementos de Streamlit dentro de una rama que no se
+> ejecuta siempre, si despues hay contenido que tarda.** No falla, se duplica.
+
+### El analisis: 79 s a 33 s, con la misma salida
+
+Medido con cProfile sobre 1.000 productos, 10.000 filas de ARTI y un catalogo de
+33.000 filas. Lo que quedaba despues del arreglo del bucle cuadratico:
+
+| | |
+|---|---:|
+| antes | **79,1 s** |
+| el catalogo se corta una vez, no una por producto | 63,5 s |
+| el bucle recorre dicts y no `Series` | 38,2 s |
+| el indice acotado a lo que la carga usa | **32,6 s** |
+
+Las tres cosas, y por que:
+
+1. **`filas_por_handle`**: el catalogo pasa a `{handle: [fila como dict]}` en UNA
+   pasada. Antes cada producto hacia `matrixify_df.loc[lista]`, y pandas
+   reindexa las 107 columnas y las materializa: mil cortes.
+2. **El bucle recorre dicts.** `iterrows()` crea un `Series` por fila y entonces
+   **cada `.get()` pasa por el indice de pandas**: en el perfil eran 1,58
+   millones de accesos y 20 segundos. Igual el maestro ARTI, que ademas se
+   barria entero (`arti[arti["__KEY"] == key]`) una vez por producto.
+3. **`claves_de_fila`**: varias funciones leian las columnas de la fila con
+   `getattr(row, "index")`. Con un dict eso devuelve `[]` **sin fallar**, o sea
+   que el respaldo por nombre normalizado dejaba de encontrar la columna y el
+   campo salia vacio. Es el peor tipo de error, el que no revienta. Hay una
+   prueba que exige que "Descripción " se encuentre pidiendo "Descripcion", en
+   `Series` y en dict.
+
+**La salida es IDENTICA.** Comparadas las 6 hojas (Matrixify, resumen,
+observaciones, tipos nuevos, omitidos y Sial) en tres sitios, antes y despues:
+misma forma y mismos valores.
+
+**Y no se pago con memoria.** Guardar el catalogo entero como dicts costaba
+**82 MB** medidos para un catalogo de 28 MB, y eso crece con la tienda mientras
+el contenedor sigue dando 1 GB POR APP. Por eso el indice se acota a **los
+handles que la carga toca** (1.000 de 3.000) y a **las columnas que se leen de
+verdad** (46 de 98, via `columnas_leidas_del_catalogo`): **18 MB**. Lo vigila
+`scripts/test_memoria.py`, con las columnas REALES del export — con un juego de
+metacampos inventado el numero no se parece al de produccion.
+
+Si alguien agrega una lectura de una columna nueva del catalogo, tiene que
+agregarla a `columnas_leidas_del_catalogo` o llegara vacia. Hay una prueba que
+exige que esten todas las de `comparable_columns`: si faltara una,
+`product_is_unchanged` dejaria de compararla y un producto que SI cambio se
+reportaria como omitido.
+
+---
+
+## 5 quaterdecies. El ticket se bajaba de GitHub en cada clic (septiembre 2026)
+
+`get_ticket` **no esta cacheada, y es a proposito**: de ahi sale el `_revision`
+con el que se guarda, y servirlo de una copia vieja haria fallar cada guardado
+con "cambio en otra sesion".
+
+Pero eso no justifica pagar el viaje **para pintar un titulo**. Tres pantallas
+lo pedian solo para DIBUJAR, y las tres se redibujan en cada rerun:
+
+- `_render_acciones_solicitud_tras_carga` (Carga completa, tras el analisis)
+- `render_full_load_ticket_queue` (el panel de Cargas pendientes)
+- `render_ticket_detail` (el detalle de la bandeja)
+
+O sea **tres viajes a la API de GitHub por cada clic**. Medido con 250 ms de
+latencia —lo que tarda desde Streamlit Cloud—: **0,75 s por clic** que no
+hacian nada.
+
+`ticket_para_pantalla` lo saca de la **bandeja, que ya esta cacheada** (25 s) y
+que **toda escritura invalida** (`invalidate_cache` en create/update/delete).
+Es el mismo dato sin el viaje, y despues de cualquier accion la siguiente
+lectura ya es fresca. Si el ticket no esta en la bandeja —va filtrada por rol,
+y una solicitud recien creada puede no aparecer— cae a `get_ticket`, o la
+pantalla se quedaria vacia. Si la bandeja falla, tambien.
+
+**Para ESCRIBIR se sigue usando `get_ticket`.** `_adjuntar_matrixify_antes_de_cargar`
+lo hace asi y hay un test que lo exige: ahi el `_revision` tiene que venir de
+GitHub.
+
+### "Subir el input a mano" soltaba la solicitud
+
+El aviso decia *"La carga quedará asociada a CAT-..."* y el codigo hacia
+`pop("carga_desde_solicitud")` en la linea de al lado. Las dos consecuencias
+eran silenciosas:
+
+- `recordar_matrixify_de_carga` recibia el codigo vacio y **no apuntaba nada**,
+  asi que el Matrixify no se adjuntaba a la solicitud y **la carga por GitHub
+  Actions se quedaba sin archivo que cargar**.
+- `_render_acciones_solicitud_tras_carga` corta cuando no hay codigo: al
+  terminar el analisis **desaparecian los botones de cierre**.
+
+Ahora la solicitud se conserva y solo cambia el archivo, que es lo que el aviso
+prometia. Una carga que de verdad no sale de ninguna solicitud sigue soltandola.
+
+### La cadena de la carga por Actions, para no volver a dudar
+
+```
+elegir solicitud   -> carga_desde_solicitud = CAT-...
+Analizar input     -> recordar_matrixify_de_carga (ruta del Excel + claves)
+Ejecutar carga     -> _ejecutar_accion_ticket ve metodo == "start_load"
+                      -> _adjuntar_matrixify_antes_de_cargar -> attach_matrixify
+                      -> start_load() -> jobs.start(ticket) -> workflow_dispatch
+```
+
+**Sin solicitud no hay carga remota**: el job cuelga del ticket, y un archivo
+subido suelto no tiene donde colgarse. Ese caso se queda con la sincronizacion
+por bloques de la propia pantalla. Y sin `[carga_remota]` en Secrets,
+`get_job_adapter` cae al `MockJobAdapter` y tampoco dispara nada — eso se ve en
+**Auditoría → "¿La carga sobrevive al cierre de sesión?"**.
+
+---
+
 ## 5 nonies. La carga sigue con la sesión cerrada (septiembre 2026)
 
 `engines/carga_remota.py` (sin Streamlit) + `scripts/worker_carga_shopify.py` +
@@ -1583,8 +1726,8 @@ escrita a mano y por eso no atrapó a Supermall.
 
 ```bash
 python scripts/test_brand_commercial_input.py          # 6
-python scripts/test_carga_desde_solicitud.py           # 28
-python scripts/test_carga_remota.py                    # 34
+python scripts/test_carga_desde_solicitud.py           # 31
+python scripts/test_carga_remota.py                    # 40
 python scripts/test_engines_audit.py                   # 45
 python scripts/test_engines_metrics.py                 # 26
 python scripts/test_engines_notify.py                  # 88
@@ -1594,12 +1737,12 @@ python scripts/test_engines_ticket_flow.py             # 55
 python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
 python scripts/test_carga_sial_parcial.py               # 28
-python scripts/test_lectura_catalogo.py                # 27
+python scripts/test_lectura_catalogo.py                # 30
 python scripts/test_espejo_supermall.py                # 35
 python scripts/test_mantenedor_tallas.py               # 34
-python scripts/test_memoria.py                         # 14
+python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33
-python scripts/test_rendimiento.py                     # 20
+python scripts/test_rendimiento.py                     # 47
 python scripts/test_bandeja_solicitudes.py             # 57
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24

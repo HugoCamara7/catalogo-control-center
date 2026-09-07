@@ -133,6 +133,81 @@ class TestArranque(unittest.TestCase):
         self.assertEqual(app.CENTRY_COLUMNS, columnas, "el nombre de siempre sigue sirviendo")
 
 
+PRESUPUESTO_INDICE_CATALOGO_MB = 40  # medido acotado: ~15; sin acotar eran 82
+
+
+class TestIndiceDelCatalogo(unittest.TestCase):
+    """El analisis pasa el catalogo a dicts para no cortarlo por producto.
+
+    Eso es lo que lo hizo 2,4 veces mas rapido, pero guardar el catalogo ENTERO
+    como dicts costaba **82 MB medidos** para un DataFrame de 33 MB -- y crece
+    con la tienda, mientras el contenedor sigue dando 1 GB POR APP. Acotado a
+    los handles que la carga toca y a las columnas que se leen, son ~15 MB.
+
+    Sin esta prueba, quitar el acotado no rompe nada visible: solo vuelve a
+    llenar la memoria, que es como se cayo la app en septiembre de 2026.
+    """
+
+    def test_el_indice_acotado_cabe_en_el_presupuesto(self):
+        pico, datos = medir(f"""
+            import pandas as pd
+            import generate_columbia_matrixify as g
+
+            # Las columnas REALES del export de Matrixify, no inventadas: de
+            # cuantas se descartan depende el ahorro, y un juego inventado de
+            # metacampos daria un numero que no se parece al de produccion.
+            import app_matrixify as app
+            COLUMNAS = list(pd.read_excel(app.DEFAULT_MATRIXIFY_PATH, sheet_name=0, nrows=0).columns)
+            cuerpo = "<p>Zapatilla de cuero con suela de goma.</p>" * 4
+            filas = []
+            for i in range(3000):
+                h = f"zapatilla-modelo-{{i}}"
+                cab = {{c: "" for c in COLUMNAS}}
+                cab.update({{"Handle": h, "Top Row": "TRUE", "Title": f"Zapatilla {{i}}",
+                            "Body HTML": cuerpo, "Tags": "hombre, calzado, negro"}})
+                filas.append(cab)
+                for j in range(10):
+                    v = {{c: "" for c in COLUMNAS}}
+                    v.update({{"Handle": h, "Variant SKU": f"SKU{{i}}{{j}}",
+                               "Option1 Value": str(380 + j * 10), "Variant Price": "199.90"}})
+                    filas.append(v)
+            base = pd.DataFrame(filas, columns=COLUMNAS)
+            salida["catalogo_mb"] = round(base.memory_usage(deep=True).sum() / 1e6)
+
+            # Las filas con las que se armo el DataFrame se sueltan antes de
+            # medir: si no, lo que se mide es el andamio y no el indice.
+            del filas
+            import gc
+            gc.collect()
+
+            def rss():
+                with open("/proc/self/statm") as f:
+                    return int(f.read().split()[1]) * 4096 / 1e6
+            antes = rss()
+            handles = {{f"zapatilla-modelo-{{i}}" for i in range(1000)}}
+            columnas = g.columnas_leidas_del_catalogo(list(base.columns))
+            agrupadas = g.filas_por_handle(base, handles=handles, columnas=columnas)
+            salida["indice_mb"] = round(rss() - antes)
+            salida["handles"] = len(agrupadas)
+            # Lo que importa es cuantas se GUARDAN, no cuantas se piden:
+            # `filas_por_handle` descarta las que el catalogo no tiene.
+            primera = agrupadas[next(iter(agrupadas))][0]
+            salida["columnas_guardadas"] = len(primera)
+            salida["columnas_catalogo"] = len(base.columns)
+        """)
+        self.assertEqual(datos["handles"], 1000, "tiene que quedarse solo con los pedidos")
+        self.assertLess(datos["columnas_guardadas"], datos["columnas_catalogo"],
+                        "tiene que descartar las columnas que no se leen")
+        print(f"      [indice del catalogo: {datos['indice_mb']} MB para un catalogo de "
+              f"{datos['catalogo_mb']} MB, {datos['columnas_guardadas']} de "
+              f"{datos['columnas_catalogo']} columnas]")
+        self.assertLess(
+            datos["indice_mb"], PRESUPUESTO_INDICE_CATALOGO_MB,
+            f"el indice del catalogo cuesta {datos['indice_mb']} MB "
+            f"(techo {PRESUPUESTO_INDICE_CATALOGO_MB}); el catalogo son {datos['catalogo_mb']} MB",
+        )
+
+
 class TestReglasDelCodigo(unittest.TestCase):
     """Lo que no se puede volver a hacer, comprobado sobre el codigo."""
 
@@ -201,28 +276,6 @@ class TestReglasDelCodigo(unittest.TestCase):
         for prohibido in ("read_pickle", "Path(", ".exists()"):
             self.assertNotIn(prohibido, cuerpo,
                              "se evalua en cada rerun: no puede tocar el disco")
-
-    def test_el_analisis_corre_ANTES_de_dibujar_la_pagina(self):
-        """Si no, la pantalla se ve DOS VECES mientras corre.
-
-        Streamlit conserva lo ya dibujado mientras el script sigue ejecutandose.
-        Con el analisis en medio del dibujado, el usuario veia la vista previa,
-        el resumen de bases y el checklist una vez en color y otra en gris
-        debajo, durante todo lo que durara el analisis.
-
-        El boton solo PIDE el analisis y relanza; el trabajo largo va arriba,
-        antes de la primera columna.
-        """
-        pedido = self.app.index('st.session_state["complete_analisis_pedido"] = complete_context')
-        self.assertIn("st.rerun()", self.app[pedido:pedido + 200],
-                      "el boton tiene que relanzar, no analizar en linea")
-        analisis = self.app.index("            if analyze_clicked:")
-        columnas = self.app.index('left_col, right_col = st.columns([2, 1], gap="large")')
-        self.assertLess(analisis, columnas,
-                        "el analisis tiene que correr ANTES de dibujar la pagina")
-        resultados = self.app.index('matrixify_df = st.session_state.get("complete_matrixify_df")',
-                                    columnas)
-        self.assertLess(columnas, resultados)
 
     def test_el_panel_no_cuenta_filas_leyendo_el_disco(self):
         # El PANEL de Carga completa, no la funcion que lo dibuja.

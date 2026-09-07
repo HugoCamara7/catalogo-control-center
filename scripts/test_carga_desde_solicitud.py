@@ -306,5 +306,55 @@ class TestAceptarCargaLlevaSoloALaPantalla(unittest.TestCase):
         self.assertIn('st.session_state["carga_solicitud_preseleccionada"] = codigo', cuerpo)
         self.assertIn('st.session_state["operation_mode_choice"] = "Carga completa"', cuerpo)
 
+class TestSubirElInputAMano(unittest.TestCase):
+    """"Subir el input a mano" prometia conservar la solicitud y no lo hacia.
+
+    El aviso decia "La carga quedará asociada a CAT-...", pero el codigo hacia
+    `pop("carga_desde_solicitud")` justo antes. Consecuencias, las dos
+    silenciosas:
+
+    - `recordar_matrixify_de_carga` recibia el codigo vacio y no apuntaba nada,
+      asi que **el Matrixify no se adjuntaba a la solicitud** y la carga por
+      GitHub Actions se quedaba sin archivo que cargar.
+    - `_render_acciones_solicitud_tras_carga` corta cuando no hay codigo, o sea
+      que al terminar el analisis **desaparecian los botones de cierre**.
+    """
+
+    def setUp(self):
+        self.fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+
+    def test_la_solicitud_se_conserva_al_subir_el_archivo_a_mano(self):
+        inicio = self.fuente.index("if forzar_manual:")
+        fin = self.fuente.index("if archivo_solicitud is None and not forzar_manual:", inicio)
+        rama = self.fuente[inicio:fin]
+        self.assertIn('st.session_state["carga_desde_solicitud"] = ticket_elegido.get("code")', rama)
+        self.assertNotIn('pop("carga_desde_solicitud"', rama,
+                         "soltar la solicitud deja la carga remota sin archivo")
+
+    def test_sin_solicitud_elegida_si_se_suelta(self):
+        """Una carga que de verdad no sale de ninguna solicitud no puede
+        quedar asociada a la anterior."""
+        self.assertIn(
+            "if archivo_solicitud is None and not forzar_manual:\n"
+            '            st.session_state.pop("carga_desde_solicitud", None)',
+            self.fuente,
+        )
+
+    def test_el_matrixify_solo_se_apunta_con_codigo(self):
+        """Es la condicion que hacia que el caso anterior fallara en silencio."""
+        import app_matrixify as app
+        import pandas as pd
+        sesion_previa = app.st.session_state
+        app.st.session_state = {}
+        try:
+            df = pd.DataFrame([{"Handle": "h", "Top Row": "TRUE", "Metafield: custom.codigo_modelo_color [id]": "VN1-001"}])
+            app.recordar_matrixify_de_carga("", df, "vans", excel_path="/tmp/x.xlsx")
+            self.assertNotIn(app.CLAVE_MATRIXIFY_SESION, app.st.session_state)
+            app.recordar_matrixify_de_carga("CAT-1", df, "vans", excel_path="/tmp/x.xlsx")
+            self.assertIn(app.CLAVE_MATRIXIFY_SESION, app.st.session_state)
+        finally:
+            app.st.session_state = sesion_previa
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

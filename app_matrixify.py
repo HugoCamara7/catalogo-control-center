@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -1182,23 +1182,35 @@ def render_catalogo_leido(site_key):
             st.rerun()
 
 
-def leer_catalogo_del_sitio(site_key, shopify_config, force_refresh=False):
+def leer_catalogo_del_sitio(site_key, shopify_config, force_refresh=False, aviso=None):
     """El catalogo del sitio, contando en pantalla por donde va.
 
     La lectura de un catalogo grande son minutos, y un spinner mudo durante
     minutos se lee como "se colgo": la queja era literalmente "ni termina de
     leerlo". El aviso viene del propio motor -que sabe si esta esperando a que
     Shopify prepare la lectura masiva o bajando paginas- y aqui solo se dibuja.
+
+    **`aviso` lo crea el LLAMADOR, y no esta funcion.** Un `st.empty()` creado
+    aqui solo existe en el rerun que LEE el catalogo, y eso cambia la FORMA del
+    arbol de elementos de un rerun al siguiente: Streamlit deja de poder
+    reemplazar el bloque de abajo en su sitio y lo AGREGA debajo del viejo. En
+    pantalla se ve la mitad de la pagina DUPLICADA -la copia vieja en gris-
+    mientras dura el analisis.
+
+    Medido con Chromium sobre un repro minimo: con el hueco creado dentro de la
+    rama, el bloque aparece 2 veces durante el trabajo lento; creado siempre,
+    1 vez. Por eso el llamador lo crea antes de decidir si toca leer.
+
+    Sin `aviso` no se dibuja avance, pero NUNCA se crea un hueco condicional.
     """
-    aviso = st.empty()
+    progreso = (lambda mensaje: aviso.caption(mensaje)) if aviso is not None else None
     try:
-        productos = session_shopify_products(
-            site_key, shopify_config, force_refresh=force_refresh,
-            progreso=lambda mensaje: aviso.caption(mensaje),
+        return session_shopify_products(
+            site_key, shopify_config, force_refresh=force_refresh, progreso=progreso,
         )
     finally:
-        aviso.empty()
-    return productos
+        if aviso is not None:
+            aviso.empty()
 
 
 def clear_shopify_products_cache(site_key):
@@ -21226,6 +21238,38 @@ def render_carga_remota(ticket):
     return True
 
 
+def ticket_para_pantalla(service, actor, codigo):
+    """El ticket para DIBUJAR, sacado de la bandeja ya cacheada.
+
+    `get_ticket` va a GitHub **siempre**, y es a proposito: de ahi sale el
+    `_revision` con el que se guarda, y servirlo de una copia vieja haria
+    fallar cada guardado con "cambio en otra sesion".
+
+    Pero las pantallas que solo lo DIBUJAN pagaban ese viaje en CADA rerun, o
+    sea en cada clic: en Carga completa eran uno o dos viajes a GitHub por
+    interaccion, y desde Streamlit Cloud eso se siente.
+
+    La bandeja ya esta cacheada (25 s) y **toda escritura la invalida**
+    (`invalidate_cache` en create/update/delete), asi que para dibujar es el
+    mismo dato sin el viaje: despues de cualquier accion la siguiente lectura
+    ya es fresca.
+
+    Para ESCRIBIR se sigue usando `get_ticket`. No cambies esto sin leer el
+    primer parrafo.
+    """
+    codigo = clean_value(codigo)
+    if not codigo:
+        return None
+    try:
+        for ticket in service.list_tickets(actor) or []:
+            if clean_value(ticket.get("code")) == codigo:
+                return ticket
+    except Exception:  # noqa: BLE001 - la bandeja no puede tumbar la pantalla
+        pass
+    # No esta en la bandeja (filtrada por rol, recien creada): se pide.
+    return service.get_ticket(actor, codigo)
+
+
 def _render_acciones_solicitud_tras_carga():
     """Acciones sobre la solicitud sin salir de la pantalla de carga.
 
@@ -21244,8 +21288,11 @@ def _render_acciones_solicitud_tras_carga():
         return
     try:
         servicio, _ = get_ticket_service()
-        ticket = servicio.get_ticket(actor, codigo)
+        # Para dibujar, no para escribir: ver `ticket_para_pantalla`.
+        ticket = ticket_para_pantalla(servicio, actor, codigo)
     except TicketError:
+        return
+    if not ticket:
         return
 
     estado = clean_value(ticket.get("status"))
@@ -21794,7 +21841,8 @@ def render_full_load_ticket_queue(brand_config):
             key=f"full_load_ticket_{brand_config.get('site_key')}",
         )
         try:
-            ticket = service.get_ticket(actor, selected_code)
+            # Para dibujar, no para escribir: ver `ticket_para_pantalla`.
+            ticket = ticket_para_pantalla(service, actor, selected_code)
         except TicketError as exc:
             st.error(str(exc))
             return
@@ -23029,7 +23077,8 @@ def render_acciones_con_comentario(service, actor, ticket, con_comentario, prefi
 
 def render_ticket_detail(service, actor, code):
     try:
-        ticket = service.get_ticket(actor, code)
+        # Para dibujar, no para escribir: ver `ticket_para_pantalla`.
+        ticket = ticket_para_pantalla(service, actor, code)
     except TicketError as exc:
         _mostrar_error_ticket(exc, code)
         return
@@ -25876,7 +25925,13 @@ api_version = "{DEFAULT_API_VERSION}"
                 )
                 if forzar_manual:
                     archivo_solicitud = None
-                    st.session_state.pop("carga_desde_solicitud", None)
+                    # La solicitud NO se suelta: solo cambia el archivo. El
+                    # aviso de abajo promete justo eso, y antes el codigo la
+                    # soltaba -- con lo que el Matrixify no se adjuntaba a la
+                    # solicitud (o sea que la carga por GitHub Actions se
+                    # quedaba sin nada que cargar) y encima desaparecian los
+                    # botones de cierre al terminar el analisis.
+                    st.session_state["carga_desde_solicitud"] = ticket_elegido.get("code")
                     st.caption(
                         f'La carga quedará asociada a {clean_value(ticket_elegido.get("code"))}, '
                         "pero con el archivo que subas aquí."
@@ -25961,6 +26016,13 @@ api_version = "{DEFAULT_API_VERSION}"
             # los lee. Leerlos aqui -330 MB del catalogo y 167 MB del ARTI- era
             # medio segundo de disco por clic, y si la escritura habia fallado
             # el `else` volvia a leer Shopify y BigQuery en cada interaccion.
+            # El hueco donde la lectura cuenta por donde va. Se crea SIEMPRE,
+            # aunque no toque leer: si solo existiera dentro del `else`, el
+            # arbol de elementos cambiaria de forma entre un rerun y el
+            # siguiente y Streamlit dibujaria todo el bloque de abajo DOS
+            # veces -- la copia vieja en gris debajo de la nueva- mientras
+            # dura el analisis. Ver `leer_catalogo_del_sitio`.
+            aviso_lectura = st.empty()
             data_ready = (
                 st.session_state.get("complete_data_context") == complete_context
                 and st.session_state.get("complete_input_df") is not None
@@ -25978,7 +26040,9 @@ api_version = "{DEFAULT_API_VERSION}"
                         st.error("Este sitio no tiene Shopify API configurada en Secrets.")
                         st.stop()
                     with st.spinner("Leyendo productos y variantes actuales desde Shopify..."):
-                        shopify_products = leer_catalogo_del_sitio(brand_config["site_key"], shopify_config)
+                        shopify_products = leer_catalogo_del_sitio(
+                            brand_config["site_key"], shopify_config, aviso=aviso_lectura
+                        )
                     st.session_state["shopify_product_count"] = len(shopify_products)
                     st.session_state["complete_shopify_products"] = shopify_products
                     template_df = shopify_products_to_matrixify_df(shopify_products)
@@ -26043,12 +26107,27 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.session_state["complete_template_source"] = template_source
                 st.session_state["complete_detected_brands"] = detected_brands
                 st.session_state["complete_data_context"] = complete_context
-            # El analisis va ANTES de dibujar la pagina. Asi la pantalla se
-            # dibuja UNA vez, ya con el resultado, en vez de quedarse a medias
-            # con la version anterior en gris debajo.
-            analyze_clicked = (
-                st.session_state.pop("complete_analisis_pedido", None) == complete_context
-            )
+            left_col, right_col = st.columns([2, 1], gap="large")
+            analyze_clicked = False
+            with left_col:
+                render_preview_table(input_df)
+                with st.container(key="action_panel"):
+                    render_analyze_card(ui_config)
+                    analyze_clicked = st.button("Analizar input", type="primary", key=f"analyze_input_{brand_config['site_key']}")
+                render_validations_card()
+                if complete_source == "Shopify API":
+                    render_catalogo_leido(brand_config["site_key"])
+            with right_col:
+                render_summary_metrics(
+                    [
+                        ("Columnas base", safe_int_value(st.session_state.get("complete_template_cols"))),
+                        ("Filas ARTI BigQuery", safe_int_value(st.session_state.get("arti_row_count"))),
+                        ("Productos input", len(input_df)),
+                        ("Marcas detectadas", len(detected_brands)),
+                    ]
+                )
+                render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
+
             if analyze_clicked:
                 if template_df is None or arti_df is None:
                     # Aqui SI se leen: es el unico momento en que hacen falta.
@@ -26104,36 +26183,6 @@ api_version = "{DEFAULT_API_VERSION}"
                 # se aplicaron arriba. Retenerlo era decenas de MB por sesion.
                 st.session_state.pop("complete_shopify_products", None)
                 gc.collect()
-
-            left_col, right_col = st.columns([2, 1], gap="large")
-            with left_col:
-                render_preview_table(input_df)
-                with st.container(key="action_panel"):
-                    render_analyze_card(ui_config)
-                    if st.button("Analizar input", type="primary",
-                                 key=f"analyze_input_{brand_config['site_key']}"):
-                        # El boton solo PIDE el analisis y relanza. Analizar
-                        # aqui dentro dejaba la pantalla anterior en gris
-                        # DEBAJO de la nueva mientras corria: el usuario veia la
-                        # vista previa, el resumen y el checklist DOS VECES.
-                        # Streamlit conserva lo ya dibujado mientras el script
-                        # sigue, asi que el trabajo largo tiene que ir ANTES de
-                        # dibujar, no en medio.
-                        st.session_state["complete_analisis_pedido"] = complete_context
-                        st.rerun()
-                render_validations_card()
-                if complete_source == "Shopify API":
-                    render_catalogo_leido(brand_config["site_key"])
-            with right_col:
-                render_summary_metrics(
-                    [
-                        ("Columnas base", safe_int_value(st.session_state.get("complete_template_cols"))),
-                        ("Filas ARTI BigQuery", safe_int_value(st.session_state.get("arti_row_count"))),
-                        ("Productos input", len(input_df)),
-                        ("Marcas detectadas", len(detected_brands)),
-                    ]
-                )
-                render_operational_status(ui_config, shopify_config, bigquery_ready, input_loaded=True)
 
             matrixify_df = st.session_state.get("complete_matrixify_df")
             if matrixify_df is not None:

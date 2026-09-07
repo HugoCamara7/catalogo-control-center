@@ -410,5 +410,224 @@ class TestAnalisisNoEsCuadratico(unittest.TestCase):
                                  "justo lo que hacia esto lento")
 
 
+class TestElCatalogoSeCortaUnaVez(unittest.TestCase):
+    """El analisis cortaba el catalogo una vez POR PRODUCTO.
+
+    `indice_de_handles` ya habia quitado el bucle cuadratico, pero cada
+    producto seguia haciendo `matrixify_df.loc[lista]`: pandas reindexa las 107
+    columnas del catalogo y las materializa. Con 1.000 productos y 33.000 filas
+    de catalogo, esos cortes y los `iterrows()` que venian detras eran ~40 de
+    los 79 segundos del analisis. Medido con cProfile:
+
+        antes   79,1 s   (1,58 M accesos a `Series.__getitem__`)
+        ahora   38,2 s
+
+    Y la salida es IDENTICA: comparadas las 6 hojas en tres sitios.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalogo = pd.DataFrame([
+            {"Handle": "zapato-a", "Variant SKU": "A1", "Option1 Value": "40", "Variant Price": "10"},
+            {"Handle": "", "Variant SKU": "A2", "Option1 Value": "41", "Variant Price": "20"},
+            {"Handle": "zapato-b", "Variant SKU": "B1", "Option1 Value": "38", "Variant Price": "30"},
+        ])
+
+    def test_devuelve_las_mismas_filas_que_el_corte_de_antes(self):
+        agrupadas = motor.filas_por_handle(self.catalogo)
+        for handle in ("zapato-a", "zapato-b"):
+            trozo = motor.matrixify_rows_for_handle(self.catalogo, handle)
+            self.assertEqual(
+                [fila.get("Variant SKU") for fila in agrupadas[handle]],
+                list(trozo["Variant SKU"]),
+                handle,
+            )
+
+    def test_arrastra_el_handle_a_las_variantes(self):
+        """En un export Matrixify solo la primera fila trae el Handle."""
+        agrupadas = motor.filas_por_handle(self.catalogo)
+        self.assertEqual(len(agrupadas["zapato-a"]), 2)
+
+    def test_un_catalogo_vacio_no_revienta(self):
+        self.assertEqual(motor.filas_por_handle(None), {})
+        self.assertEqual(motor.filas_por_handle(pd.DataFrame()), {})
+
+    def test_los_consumidores_dan_lo_mismo_con_dataframe_y_con_dicts(self):
+        """Se aceptan las dos formas para no romper a quien llame desde fuera."""
+        trozo = motor.matrixify_rows_for_handle(self.catalogo, "zapato-a")
+        dicts = motor.filas_por_handle(self.catalogo)["zapato-a"]
+        self.assertEqual(
+            motor.build_product_variant_lookup(trozo),
+            motor.build_product_variant_lookup(dicts),
+        )
+        self.assertEqual(
+            motor.first_valid_product_price(trozo),
+            motor.first_valid_product_price(dicts),
+        )
+        generadas = [{"Variant SKU": "A1"}, {"Variant SKU": "A2"}]
+        self.assertEqual(
+            motor.product_is_unchanged(generadas, trozo, list(self.catalogo.columns)),
+            motor.product_is_unchanged(generadas, dicts, list(self.catalogo.columns)),
+        )
+
+    def test_solo_guarda_los_handles_pedidos(self):
+        """El catalogo ENTERO como dicts costaba 82 MB medidos para 33 MB de
+        DataFrame, y eso crece con la tienda. Una carga toca sus handles."""
+        agrupadas = motor.filas_por_handle(self.catalogo, handles=["zapato-b"])
+        self.assertEqual(list(agrupadas), ["zapato-b"])
+
+    def test_solo_guarda_las_columnas_que_se_leen(self):
+        columnas = motor.columnas_leidas_del_catalogo(list(self.catalogo.columns))
+        agrupadas = motor.filas_por_handle(self.catalogo, columnas=columnas)
+        guardadas = set(agrupadas["zapato-a"][0])
+        self.assertIn("Variant SKU", guardadas)
+        self.assertIn("Handle", guardadas)
+        self.assertNotIn("Option1 Name", guardadas,
+                         "esa columna no se lee del catalogo y ocupa memoria")
+
+    def test_las_columnas_leidas_traen_las_que_compara_el_sin_cambios(self):
+        """Si faltara una, `product_is_unchanged` dejaria de compararla y un
+        producto que SI cambio se reportaria como omitido."""
+        columnas = list(self.catalogo.columns) + ["Title", "Body HTML"]
+        leidas = set(motor.columnas_leidas_del_catalogo(columnas))
+        for columna in motor.comparable_columns(columnas):
+            self.assertIn(columna, leidas, columna)
+        for columna in motor.COLUMNAS_VARIANTE_EXISTENTE:
+            self.assertIn(columna, leidas, columna)
+
+    def test_el_analisis_acota_el_indice(self):
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8")
+        inicio = fuente.index("def build_columbia_matrixify(")
+        cuerpo = fuente[inicio:]
+        self.assertIn("handles=handles_de_la_carga", cuerpo)
+        self.assertIn("columnas=columnas_leidas_del_catalogo(", cuerpo)
+
+    def test_el_analisis_ya_no_corta_el_catalogo_dentro_del_bucle(self):
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8")
+        inicio = fuente.index("def build_columbia_matrixify(")
+        cuerpo = fuente[inicio:]
+        self.assertNotIn("matrixify_rows_for_handle(", cuerpo,
+                         "cortar el catalogo por producto es lo que costaba los segundos")
+        self.assertIn("filas_del_catalogo.get(", cuerpo)
+
+    def test_el_maestro_arti_no_se_barre_una_vez_por_producto(self):
+        """`arti[arti["__KEY"] == key]` dentro del bucle son 1.000 barridos
+        del maestro entero."""
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8")
+        inicio = fuente.index("def build_columbia_matrixify(")
+        cuerpo = fuente[inicio:]
+        # Se mira la ASIGNACION, no el texto suelto: el comentario que explica
+        # el arreglo tambien contiene la expresion vieja.
+        self.assertNotIn('variants = arti[arti["__KEY"] == key]', cuerpo)
+        self.assertIn("variantes_por_clave", cuerpo)
+
+    def test_el_bucle_recorre_dicts_y_no_series(self):
+        """Con `iterrows()` cada `.get()` pasa por el indice de pandas: eran
+        1,47 millones de accesos y 20 segundos."""
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8")
+        inicio = fuente.index("def build_columbia_matrixify(")
+        cuerpo = fuente[inicio:]
+        self.assertNotIn("in input_df.iterrows()", cuerpo)
+        self.assertNotIn("variants.iterrows()", cuerpo)
+        self.assertIn('input_df.to_dict("records")', cuerpo)
+
+
+class TestClavesDeFila(unittest.TestCase):
+    """El respaldo por nombre normalizado tiene que seguir funcionando.
+
+    Varias funciones leian las columnas de la fila con `getattr(row, "index")`.
+    Con un dict eso devuelve `[]` **sin fallar**: el respaldo dejaba de
+    encontrar la columna y el campo salia vacio. Es el peor tipo de error, el
+    que no revienta.
+    """
+
+    def test_funciona_con_series_y_con_dict(self):
+        fila = {"Nombre de Producto": "Zapato", "Descripcion": "x"}
+        self.assertEqual(set(motor.claves_de_fila(fila)), set(fila))
+        self.assertEqual(set(motor.claves_de_fila(pd.Series(fila))), set(fila))
+        self.assertEqual(motor.claves_de_fila(None), ())
+
+    def test_el_respaldo_por_nombre_encuentra_la_columna_en_un_dict(self):
+        """"Descripción" con tilde tiene que encontrarse pidiendo "Descripcion"."""
+        for fila in ({"Descripción ": "texto"}, pd.Series({"Descripción ": "texto"})):
+            self.assertEqual(motor.row_alias_value(fila, ["Descripcion"]), "texto",
+                             type(fila).__name__)
+            self.assertEqual(motor.row_first_existing(fila, ["Descripcion"]), "texto",
+                             type(fila).__name__)
+
+
+class TestElTicketNoSeBajaEnCadaClic(unittest.TestCase):
+    """Las pantallas que solo DIBUJAN el ticket iban a GitHub en cada rerun.
+
+    `get_ticket` no esta cacheada a proposito: de ahi sale el `_revision` con
+    el que se guarda, y servirlo viejo haria fallar cada guardado. Pero eso no
+    justifica pagar el viaje para pintar un titulo: en Carga completa eran
+    tres pantallas pidiendolo, o sea tres viajes a GitHub POR CLIC.
+
+    Medido con 250 ms de latencia -lo que tarda la API de GitHub desde
+    Streamlit Cloud-: **0,75 s por clic** que ya no se pagan.
+    """
+
+    class _Servicio:
+        def __init__(self, tickets):
+            self.tickets = tickets
+            self.viajes_get = 0
+        def get_ticket(self, actor, codigo):
+            self.viajes_get += 1
+            return next((t for t in self.tickets if t["code"] == codigo), None)
+        def list_tickets(self, actor, **kwargs):
+            return self.tickets
+
+    def test_dibujar_no_cuesta_un_viaje_a_github(self):
+        servicio = self._Servicio([{"code": "CAT-1", "status": "loading"}])
+        for _ in range(3):
+            ticket = app.ticket_para_pantalla(servicio, {}, "CAT-1")
+            self.assertEqual(ticket["code"], "CAT-1")
+        self.assertEqual(servicio.viajes_get, 0, "sigue bajando el ticket en cada rerun")
+
+    def test_si_no_esta_en_la_bandeja_se_pide(self):
+        """La bandeja va filtrada por rol y una solicitud recien creada puede
+        no estar: ahi si hay que ir a buscarla, o la pantalla se queda vacia."""
+        servicio = self._Servicio([{"code": "CAT-1", "status": "loading"}])
+        servicio.tickets.append({"code": "CAT-2", "status": "draft"})
+        del servicio.tickets[1]
+        self.assertIsNone(app.ticket_para_pantalla(servicio, {}, "CAT-2"))
+        self.assertEqual(servicio.viajes_get, 1)
+
+    def test_un_fallo_de_la_bandeja_no_tumba_la_pantalla(self):
+        class Rota(self._Servicio):
+            def list_tickets(self, actor, **kwargs):
+                raise RuntimeError("GitHub caido")
+        servicio = Rota([{"code": "CAT-1", "status": "loading"}])
+        self.assertEqual(app.ticket_para_pantalla(servicio, {}, "CAT-1")["code"], "CAT-1")
+        self.assertEqual(servicio.viajes_get, 1, "tiene que caer al camino de siempre")
+
+    def test_sin_codigo_no_pregunta_nada(self):
+        servicio = self._Servicio([])
+        self.assertIsNone(app.ticket_para_pantalla(servicio, {}, ""))
+        self.assertEqual(servicio.viajes_get, 0)
+
+    def test_las_pantallas_que_dibujan_ya_no_llaman_a_get_ticket(self):
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        arbol = ast.parse(fuente)
+        for nombre in ("_render_acciones_solicitud_tras_carga",
+                       "render_full_load_ticket_queue", "render_ticket_detail"):
+            cuerpo = ast.get_source_segment(fuente, next(
+                n for n in ast.walk(arbol)
+                if isinstance(n, ast.FunctionDef) and n.name == nombre))
+            self.assertNotIn(".get_ticket(", cuerpo,
+                             f"{nombre} vuelve a bajar el ticket en cada rerun")
+            self.assertIn("ticket_para_pantalla(", cuerpo, nombre)
+
+    def test_escribir_sigue_pidiendo_el_ticket_fresco(self):
+        """El `_revision` con el que se guarda TIENE que venir de GitHub."""
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        arbol = ast.parse(fuente)
+        cuerpo = ast.get_source_segment(fuente, next(
+            n for n in ast.walk(arbol)
+            if isinstance(n, ast.FunctionDef) and n.name == "_adjuntar_matrixify_antes_de_cargar"))
+        self.assertIn("service.get_ticket(", cuerpo)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

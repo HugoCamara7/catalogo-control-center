@@ -566,7 +566,7 @@ def photo_links_from_row(row, columns=None):
     if row is None:
         return []
     if columns is None:
-        columns = list(row.index) if hasattr(row, "index") else list(row.keys())
+        columns = list(claves_de_fila(row))
     marcadas = [column for column in columns if is_photo_link_column(column)]
     revisar = marcadas or list(columns)
     links = []
@@ -1434,7 +1434,7 @@ def final_variant_filter(output_df, sial_df, issues_df):
                 " ".join(
                     clean(row.get(column))
                     for column in ("Categoria ", "Sub Categoria", "Tipo de Producto")
-                    if column in row.index
+                    if column in claves_de_fila(row)
                 )
             )
             return "calzado" in text or "vestuario" in text
@@ -1653,7 +1653,7 @@ def short_text_metafield(product, columnas_propias, columnas_derivadas):
     `columnas_derivadas`, que es como venia funcionando para las marcas que no
     envian estos campos.
     """
-    indice = tuple(getattr(product, "index", []))
+    indice = claves_de_fila(product)
     propias = {clave_columna_corta(nombre) for nombre in columnas_propias}
     for columna in indice:
         if clave_columna_corta(columna) in propias:
@@ -1761,12 +1761,32 @@ def _column_key_maps(columns):
     return exacto, flexible
 
 
+def claves_de_fila(row):
+    """Los nombres de columna de una fila, sea un `Series` o un dict.
+
+    Existe porque el bucle del analisis dejo de recorrer el input con
+    `iterrows()` -- que crea un `Series` por fila y hace que cada `.get()`
+    pase por el indice de pandas -- y ahora recorre dicts. `Series` expone sus
+    nombres en `.index` y un dict en `.keys()`, y varias funciones se apoyaban
+    solo en `.index`: con un dict devolvian `[]` **sin fallar**, o sea que los
+    respaldos por nombre normalizado dejaban de encontrar la columna y el campo
+    salia vacio. Es el peor tipo de error, el que no revienta.
+    """
+    if row is None:
+        return ()
+    indice = getattr(row, "index", None)
+    if indice is not None:
+        return tuple(indice)
+    claves = getattr(row, "keys", None)
+    return tuple(claves()) if callable(claves) else ()
+
+
 def row_alias_value(row, columns):
     for column in columns:
         value = clean(row.get(column))
         if value:
             return value
-    by_normalized, by_loose = _column_key_maps(tuple(getattr(row, "index", [])))
+    by_normalized, by_loose = _column_key_maps(claves_de_fila(row))
     for column in columns:
         found = by_normalized.get(normalize_header_key(column))
         if found is not None:
@@ -3018,6 +3038,88 @@ def indice_de_handles(matrixify_df):
     return indice
 
 
+def filas_por_handle(matrixify_df, indice=None, handles=None, columnas=None):
+    """{handle: [fila como dict]} del catalogo actual, en UNA sola pasada.
+
+    Por que existe
+    --------------
+    `indice_de_handles` ya evito el bucle cuadratico, pero el analisis seguia
+    cortando el DataFrame **una vez por producto** con `.loc[lista]`. Cortar es
+    caro: pandas reindexa las 107 columnas del catalogo y las materializa en un
+    array. Medido con 1.000 productos y un catalogo de 33.000 filas, esos
+    cortes y los `iterrows()` que venian detras eran ~50 de los 79 segundos del
+    analisis.
+
+    Aqui se recorre el catalogo UNA vez y cada fila queda como diccionario. A
+    partir de ahi, leer un campo es una busqueda en dict y no un acceso a un
+    `Series` -- que es la operacion que aparecia 1,58 millones de veces en el
+    perfil.
+
+    Se apoya en `indice_de_handles`, que ya sabe arrastrar el Handle hacia
+    abajo: en una exportacion Matrixify solo la primera fila de cada producto
+    lo trae.
+    """
+    if matrixify_df is None or matrixify_df.empty or "Handle" not in matrixify_df.columns:
+        return {}
+    if indice is None:
+        indice = indice_de_handles(matrixify_df)
+    if handles is not None:
+        # SOLO los handles que la carga va a mirar. Sin acotar se guardaria el
+        # catalogo ENTERO como dicts, y eso crece con la tienda mientras el
+        # contenedor sigue dando 1 GB POR APP. Medido con un catalogo de 3.000
+        # productos (33.000 filas, 28 MB) y una carga de 1.000: acotado a esos
+        # handles y a las columnas que se leen son **18 MB**; sin acotar, 82.
+        buscados = {clean(handle) for handle in handles if clean(handle)}
+        indice = {handle: etiquetas for handle, etiquetas in indice.items() if handle in buscados}
+        if not indice:
+            return {}
+    # `to_dict("records")` una vez sobre el trozo es mucho mas barato que
+    # cortar el DataFrame mil veces. La clave es la POSICION, no la etiqueta:
+    # `indice_de_handles` guarda etiquetas, asi que se traducen aqui.
+    # Se corta por POSICION y no por etiqueta: `.loc[lista]` con etiquetas
+    # repetidas devuelve mas filas de las pedidas, y el indice del catalogo no
+    # garantiza etiquetas unicas.
+    posicion_de_etiqueta = {}
+    for numero, etiqueta in enumerate(matrixify_df.index):
+        posicion_de_etiqueta.setdefault(etiqueta, numero)
+    posiciones = []
+    orden_por_handle = {}
+    for handle, etiquetas in indice.items():
+        propias = []
+        for etiqueta in etiquetas:
+            numero = posicion_de_etiqueta.get(etiqueta)
+            if numero is None:
+                continue
+            propias.append(len(posiciones))
+            posiciones.append(numero)
+        orden_por_handle[handle] = propias
+    if not posiciones:
+        return {handle: [] for handle in indice}
+    trozo = matrixify_df.iloc[posiciones]
+    if columnas is not None:
+        presentes = [columna for columna in columnas if columna in trozo.columns]
+        trozo = trozo[presentes]
+    registros = trozo.to_dict("records")
+    return {
+        handle: [registros[numero] for numero in propias]
+        for handle, propias in orden_por_handle.items()
+    }
+
+
+def _filas_como_dicts(filas):
+    """Las filas como lista de dicts, vengan como vengan.
+
+    El analisis las pasa ya como dicts (camino rapido). Un DataFrame se acepta
+    igual para no romper a quien llame a estas funciones desde fuera ni a las
+    pruebas que las ejercitan con un trozo de catalogo.
+    """
+    if filas is None:
+        return []
+    if isinstance(filas, pd.DataFrame):
+        return [] if filas.empty else filas.to_dict("records")
+    return list(filas)
+
+
 def matrixify_rows_for_handle(matrixify_df, handle, indice=None):
     """Las filas del catalogo que pertenecen a ese handle.
 
@@ -3076,14 +3178,14 @@ def variant_size_lookup_keys(value):
 def build_product_variant_lookup(existing_rows):
     variant_by_product_sku = {}
     variant_by_product_size = {}
-    if existing_rows is None or existing_rows.empty:
+    existing_rows = _filas_como_dicts(existing_rows)
+    if not existing_rows:
         return variant_by_product_sku, variant_by_product_size
 
-    # Aqui SI conviene `iterrows()`: el trozo es de una decena de filas y
-    # `to_dict("records")` sobre un slice pequeno resulta MAS caro (medido:
-    # 14,3 s -> 17,5 s en el analisis completo). El ahorro de los dicts esta en
-    # las pasadas grandes de una sola vez, no en las de por producto.
-    for _, existing_row in existing_rows.iterrows():
+    # Las filas llegan como DICTS desde `filas_por_handle`, no como un trozo de
+    # DataFrame. `iterrows()` sobre un corte por producto era lo caro: creaba un
+    # `Series` por fila y cada `.get()` pasaba por el indice de pandas.
+    for existing_row in existing_rows:
         payload = variant_payload_from_existing_row(existing_row)
         sku = clean(existing_row.get("Variant SKU"))
         if sku and sku not in variant_by_product_sku:
@@ -3103,10 +3205,8 @@ def variant_without_sku_by_size(variant_by_product_size, value):
 
 
 def first_valid_product_price(existing_rows):
-    if existing_rows is None or existing_rows.empty or "Variant Price" not in existing_rows.columns:
-        return ""
-    for value in existing_rows["Variant Price"]:
-        price = valid_price(value)
+    for fila in _filas_como_dicts(existing_rows):
+        price = valid_price(fila.get("Variant Price"))
         if price:
             return price
     return ""
@@ -3117,7 +3217,7 @@ def product_publication_date(product):
         value = clean(product.get(column))
         if value:
             return value
-    by_normalized = {normalize_header_key(column): column for column in getattr(product, "index", [])}
+    by_normalized = {normalize_header_key(column): column for column in claves_de_fila(product)}
     for column in PUBLICATION_DATE_CANDIDATES:
         found = by_normalized.get(normalize_header_key(column))
         if found is not None:
@@ -3132,7 +3232,7 @@ def row_first_existing(product, candidates):
         value = clean(product.get(column))
         if value:
             return value
-    by_normalized, by_loose = _column_key_maps(tuple(getattr(product, "index", [])))
+    by_normalized, by_loose = _column_key_maps(claves_de_fila(product))
     for column in candidates:
         found = by_normalized.get(normalize_header_key(column))
         if found is not None:
@@ -3327,6 +3427,32 @@ SKIP_COMPARE_EXCLUDED_COLUMNS = {
 }
 
 
+# Lo que `variant_payload_from_existing_row` lee de una fila del catalogo.
+COLUMNAS_VARIANTE_EXISTENTE = (
+    "Variant Inventory Item ID",
+    "Variant ID",
+    "Variant SKU",
+    "Variant Image",
+    "Variant Price",
+    "Variant Compare At Price",
+    "Option1 Value",
+)
+
+
+def columnas_leidas_del_catalogo(columns):
+    """Las columnas que el analisis LEE de las filas del catalogo.
+
+    Guardar las 107 como dicts cuesta memoria que no hace falta: lo que se lee
+    son las de la variante y las que compara `product_is_unchanged`. Se deja
+    "Handle" porque es la llave del agrupamiento.
+    """
+    leidas = ["Handle"]
+    leidas.extend(COLUMNAS_VARIANTE_EXISTENTE)
+    leidas.extend(comparable_columns(columns))
+    vistas = set()
+    return [c for c in leidas if not (c in vistas or vistas.add(c))]
+
+
 def comparable_columns(columns):
     return [
         column
@@ -3340,13 +3466,14 @@ def comparable_columns(columns):
 
 
 def product_is_unchanged(product_rows, existing_rows, columns):
-    if existing_rows.empty:
+    existing_rows = _filas_como_dicts(existing_rows)
+    if not existing_rows:
         return False
 
     generated_skus = [clean(row.get("Variant SKU")) for row in product_rows]
     existing_by_sku = {
         clean(row.get("Variant SKU")): row
-        for _, row in existing_rows.iterrows()
+        for row in existing_rows
         if clean(row.get("Variant SKU"))
     }
 
@@ -3354,10 +3481,11 @@ def product_is_unchanged(product_rows, existing_rows, columns):
         return False
 
     # Las columnas presentes se resuelven UNA vez, no dentro del doble bucle:
-    # `column not in existing.index` se preguntaba por cada columna y cada
-    # variante, y `Series.index` no es gratis.
+    # preguntarlo por cada columna y cada variante no es gratis. Con las filas
+    # ya como dict, "estar presente" son las claves de la primera.
     compare_cols = comparable_columns(columns)
-    presentes = [columna for columna in compare_cols if columna in existing_rows.columns]
+    columnas_del_catalogo = set(existing_rows[0])
+    presentes = [columna for columna in compare_cols if columna in columnas_del_catalogo]
     for generated in product_rows:
         sku = clean(generated.get("Variant SKU"))
         existing = existing_by_sku.get(sku)
@@ -3849,6 +3977,32 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         or normalize_handle(row.get("Handle Input") or row.get("Handle"), row.get("Mod-Col")),
         axis=1,
     )
+    # Las filas del catalogo que esta carga va a mirar, ya como dicts y de UNA
+    # sola pasada. Cortar el DataFrame dentro del bucle reindexaba sus 107
+    # columnas una vez POR PRODUCTO; guardarlo ENTERO como dicts costaba 82 MB
+    # medidos, y eso crece con la tienda mientras el contenedor sigue dando
+    # 1 GB POR APP. Acotado a los handles que la carga toca y a las columnas que
+    # se leen de verdad son 18 MB. Lo vigila `scripts/test_memoria.py`.
+    handles_de_la_carga = set(input_df["__HANDLE"].map(clean))
+    handles_de_la_carga.update(
+        clean(producto.get("Handle"))
+        for clave in input_df["__KEY"]
+        for producto in (product_by_key.get(clave),)
+        if producto
+    )
+    handles_de_la_carga.update(
+        clean(producto.get("Handle"))
+        for handle in input_df["__HANDLE"]
+        for producto in (product_by_handle.get(clean(handle)),)
+        if producto
+    )
+    filas_del_catalogo = filas_por_handle(
+        matrixify_df,
+        indice=handles_del_catalogo,
+        handles=handles_de_la_carga,
+        columnas=columnas_leidas_del_catalogo(matrixify_columns),
+    )
+
     # Los siblings se recalculan en CADA carga completa, uniendo los colores que
     # trae el input con los que ya estan publicados para el mismo modelo. Nunca
     # se reemplaza la relacion por lo que traiga el input del dia: eso borraria
@@ -3891,6 +4045,13 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     arti = arti[arti["__SIZE"] != ""].copy()
     arti = arti.sort_values(by=["__KEY", "__SIZE"], key=lambda series: series.map(size_sort_key))
 
+    # Las variantes de cada codigo, agrupadas de UNA pasada. Antes era
+    # `arti[arti["__KEY"] == key]` DENTRO del bucle: un barrido del maestro
+    # entero por cada producto -- 1.000 barridos de 10.000 filas.
+    variantes_por_clave = {
+        clean(clave): grupo for clave, grupo in arti.groupby("__KEY", sort=False)
+    } if len(arti) else {}
+
     tech_col = find_technology_column(input_df)
     rows = []
     sial_rows = []
@@ -3900,7 +4061,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     runtime_type_warning_keys = set()
     runtime_type_warning_rows = []
 
-    for input_index, product in input_df.iterrows():
+    # `iterrows()` crea un `Series` por fila y entonces CADA `.get()` pasa por
+    # el indice de pandas: en el perfil eran 1,47 millones de accesos y 20 de
+    # los 63 segundos del analisis. Con dicts, leer un campo es una busqueda en
+    # dict. Se conserva la etiqueta original del indice porque los mensajes de
+    # error dicen el numero de fila del Excel.
+    for input_index, product in zip(input_df.index, input_df.to_dict("records")):
         key = product["__KEY"]
         invalid_sizes_for_key = invalid_size_rows[invalid_size_rows["__KEY"] == key] if not invalid_size_rows.empty else pd.DataFrame()
         if not invalid_sizes_for_key.empty:
@@ -3912,7 +4078,8 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                     "Cantidad": safe_int(len(invalid_sizes_for_key)),
                 }
             )
-        variants = arti[arti["__KEY"] == key].copy()
+        variants = variantes_por_clave.get(clean(key))
+        variants = variants.copy() if variants is not None else arti.iloc[0:0].copy()
         if "__SIZE" in variants.columns:
             one_size_mask = boolean_mask(variants["__SIZE"], is_one_size)
             zero_size_mask = boolean_mask(variants["__SIZE"], is_zero_size)
@@ -4102,14 +4269,15 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         image_alt = build_image_alt_text(title, len(product_images))
         existing_product = product_by_key.get(key) or product_by_handle.get(handle) or {}
         existing_handle = existing_product.get("Handle") or handle
-        existing_rows = matrixify_rows_for_handle(
-            matrixify_df, existing_handle, indice=handles_del_catalogo)
+        # Del indice ya armado: cortar el DataFrame aqui costaba una reindexacion
+        # de las 107 columnas POR PRODUCTO. Ver `filas_por_handle`.
+        existing_rows = filas_del_catalogo.get(clean(existing_handle), [])
         existing_variant_by_sku, existing_variant_by_size = build_product_variant_lookup(existing_rows)
         product_price_fallback = first_valid_product_price(existing_rows)
         product_rows = []
         product_sial_rows = []
 
-        for position, (_, variant) in enumerate(variants.iterrows(), start=1):
+        for position, variant in enumerate(variants.to_dict("records"), start=1):
             if is_internal_k_size(variant.get("__SIZE")) or is_internal_k_size(variant.get("TALNUM_MA")):
                 continue
             if should_block_zero_size and (

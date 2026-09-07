@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -1757,44 +1757,6 @@ def _guardar_excel_en_disco(buffer, brand_config):
         return ""
 
 
-def _guardar_df_en_disco(clave, df, brand_config):
-    """Deja un DataFrame grande en disco y devuelve la ruta. "" si no se pudo.
-
-    Mismo motivo que `_guardar_excel_en_disco`, con numeros medidos: el
-    respaldo del catalogo (`template_df`) son 330 MB y el maestro ARTI 167 MB
-    para una carga normal. Guardados en `st.session_state` se quedan residentes
-    mientras dure la sesion, en un contenedor de 1 GB que Streamlit comparte
-    entre todos los usuarios: dos personas cargando a la vez lo revientan.
-
-    En disco cuestan RAM solo mientras se usan. No se pierde nada: se guardan
-    para no volver a leer Shopify y BigQuery al reanalizar, y eso se sigue
-    cumpliendo.
-    """
-    if df is None:
-        return ""
-    try:
-        destino = Path("outputs") / "sesion"
-        destino.mkdir(parents=True, exist_ok=True)
-        sitio = clean_value((brand_config or {}).get("site_key")) or "sitio"
-        ruta = destino / f"{sitio}_{clean_value(clave) or 'df'}.pkl"
-        df.to_pickle(ruta)
-        return str(ruta)
-    except Exception:
-        return ""
-
-
-def _leer_df_de_disco(ruta):
-    """Lee un DataFrame guardado con `_guardar_df_en_disco`. None si no esta."""
-    ruta = clean_value(ruta)
-    if not ruta:
-        return None
-    try:
-        archivo = Path(ruta)
-        return pd.read_pickle(archivo) if archivo.exists() else None
-    except Exception:
-        return None
-
-
 # =========================================================================
 # Medidor de memoria
 # =========================================================================
@@ -1906,17 +1868,22 @@ CLAVES_DATOS_DE_CARGA = (
 
 
 def _guardar_datos_de_carga(template_df, arti_df, brand_config):
-    """Guarda el catalogo y el ARTI para poder reanalizar sin volver a leerlos."""
-    for (clave, clave_ruta, clave_sesion), df in zip(CLAVES_DATOS_DE_CARGA, (template_df, arti_df)):
+    """Guarda el catalogo y el ARTI para poder reanalizar sin volver a leerlos.
+
+    EN MEMORIA, no en disco. Estuvieron en disco un dia y fue un mal negocio:
+    ahorraban ~500 MB de RAM a cambio de **9 segundos de I/O en cada analisis**
+    -medidos: 5,6 s de escritura y 3,3 s de lectura para el catalogo del sitio,
+    el ARTI y el Sial-, y en Streamlit Cloud el disco es mas lento que en local.
+    Una carga de Vans que antes entraba dejo de terminar de leerse.
+
+    El ahorro de verdad no estaba ahi: estaba en no COPIAR el catalogo en cada
+    analisis (`prepare_matrixify_context`) y en no retener el Centry entero solo
+    para dibujar su pestana. Esos dos no cuestan un segundo.
+    """
+    for (_clave, clave_ruta, clave_sesion), df in zip(CLAVES_DATOS_DE_CARGA, (template_df, arti_df)):
         _borrar_temporal(st.session_state.get(clave_ruta))
-        ruta = _guardar_df_en_disco(clave, df, brand_config)
-        st.session_state[clave_ruta] = ruta
-        if ruta:
-            st.session_state.pop(clave_sesion, None)
-        else:
-            # Sin disco escribible no queda otra que la sesion. Cuesta memoria,
-            # pero perderlos obligaria a releer Shopify y BigQuery en cada clic.
-            st.session_state[clave_sesion] = df
+        st.session_state.pop(clave_ruta, None)
+        st.session_state[clave_sesion] = df
 
 
 # El Sial se necesita ENTERO en un solo momento -- al cerrar la solicitud, para
@@ -1926,56 +1893,44 @@ SIAL_FILAS_VISTA_PREVIA = 100
 
 
 def _guardar_resumen_sial(sial_df, brand_config):
-    """Deja el Sial en disco y en la sesion solo lo que la pantalla dibuja."""
+    """El Sial, mas los dos conteos y las 100 filas que la pantalla dibuja.
+
+    Los CONTEOS se guardan aparte a proposito: el panel de cierre los dibuja en
+    cada rerun y recorrer el Sial entero para contar filas en cada clic es caro
+    sin necesidad.
+    """
     _borrar_temporal(st.session_state.get("complete_sial_path"))
+    st.session_state.pop("complete_sial_path", None)
     if sial_df is None or sial_df.empty:
-        for clave in ("complete_sial_path", "complete_sial_muestra",
-                      "complete_sial_filas", "complete_sial_modelos", "complete_sial_df"):
+        for clave in ("complete_sial_muestra", "complete_sial_filas",
+                      "complete_sial_modelos", "complete_sial_df"):
             st.session_state.pop(clave, None)
         return
-    ruta = _guardar_df_en_disco("sial", sial_df, brand_config)
-    st.session_state["complete_sial_path"] = ruta
+    st.session_state["complete_sial_df"] = sial_df
     st.session_state["complete_sial_muestra"] = sial_df.head(SIAL_FILAS_VISTA_PREVIA)
     st.session_state["complete_sial_filas"] = len(sial_df)
     st.session_state["complete_sial_modelos"] = (
         int(sial_df["Mod-Col"].map(lambda valor: clean_value(valor).upper()).nunique())
         if "Mod-Col" in sial_df.columns else 0
     )
-    if ruta:
-        st.session_state.pop("complete_sial_df", None)
-    else:
-        # Sin disco escribible se queda en la sesion: perderlo dejaria el correo
-        # al Area de Producto SIN el archivo adjunto, que es lo que no puede pasar.
-        st.session_state["complete_sial_df"] = sial_df
 
 
-def _leer_sial_de_disco():
-    """El Sial completo. Solo se lee cuando hay que adjuntarlo o rearmar el Excel."""
-    df = st.session_state.get("complete_sial_df")
-    if df is not None:
-        return df
-    return _leer_df_de_disco(st.session_state.get("complete_sial_path"))
+
+def _sial_completo():
+    """El Sial entero, para el adjunto del cierre y para rearmar el Excel."""
+    return st.session_state.get("complete_sial_df")
 
 
 def _hay_datos_de_carga():
-    """Si estan guardados, sin leerlos. Se llama en cada rerun."""
-    for _clave, clave_ruta, clave_sesion in CLAVES_DATOS_DE_CARGA:
-        ruta = clean_value(st.session_state.get(clave_ruta))
-        en_disco = bool(ruta) and Path(ruta).exists()
-        if not en_disco and st.session_state.get(clave_sesion) is None:
-            return False
-    return True
+    """Si estan guardados. Se evalua en CADA rerun, asi que no toca nada caro."""
+    return all(st.session_state.get(clave_sesion) is not None
+               for _clave, _clave_ruta, clave_sesion in CLAVES_DATOS_DE_CARGA)
 
 
 def _leer_datos_de_carga():
-    """(template_df, arti_df). Solo se llama al analizar, no en cada rerun."""
-    resultado = []
-    for _clave, clave_ruta, clave_sesion in CLAVES_DATOS_DE_CARGA:
-        df = st.session_state.get(clave_sesion)
-        if df is None:
-            df = _leer_df_de_disco(st.session_state.get(clave_ruta))
-        resultado.append(df)
-    return resultado[0], resultado[1]
+    """(template_df, arti_df) tal cual quedaron. No se copian ni se releen."""
+    return (st.session_state.get("complete_template_df"),
+            st.session_state.get("complete_arti_df"))
 
 
 def _borrar_temporal(ruta):
@@ -21084,7 +21039,7 @@ def _archivo_carga_sial(codigo, marca=""):
     # El unico momento en que hace falta el Sial ENTERO. Se lee de disco aqui y
     # se suelta al salir: tenerlo en la sesion eran 191 MB residentes para un
     # adjunto que se arma una vez.
-    sial_df = _leer_sial_de_disco()
+    sial_df = _sial_completo()
     if not isinstance(sial_df, pd.DataFrame) or sial_df.empty:
         return b"", ""
     etiqueta = fold_accents(clean_value(marca)).upper().replace(" ", "_") or "CATALOGO"
@@ -25739,7 +25694,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     # El contenedor se reinicio y se llevo el Excel. Se rearma
                     # leyendo el Sial de disco; el Centry se recalcula, que es
                     # mas barato que haberlo tenido en memoria toda la sesion.
-                    sial_completo = _leer_sial_de_disco()
+                    sial_completo = _sial_completo()
                     centry_rearmado, _ = build_centry_from_matrixify(matrixify_df, brand_config)
                     st.session_state["complete_excel_path"] = _guardar_excel_en_disco(
                         columbia_to_excel_bytes(

@@ -71,24 +71,116 @@ def medir(codigo):
     raise AssertionError(f"el fragmento no imprimio la medida:\n{proceso.stdout[-2000:]}")
 
 
+# Presupuesto del arranque. Sale de repartir 1 GB con holgura para dos usuarios
+# a la vez; no es una aspiracion, es el techo por encima del cual la app muere.
+PRESUPUESTO_IMPORT_MB = 220
+
+
+def medir(codigo):
+    """(pico de RSS en MB, valores) de un fragmento en OTRO interprete.
+
+    En subproceso porque el pico de RSS es del proceso entero: medir varias
+    cosas en el mismo interprete las mezclaria.
+    """
+    guion = "\n".join([
+        "import json, resource, sys",
+        f"sys.path.insert(0, {str(ROOT)!r})",
+        "def pico(): return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024",
+        "salida = {}",
+        textwrap.dedent(codigo).strip(),
+        'salida["pico_mb"] = round(pico(), 1)',
+        'print("__MEDIDA__" + json.dumps(salida))',
+    ])
+    proceso = subprocess.run([sys.executable, "-c", guion], capture_output=True, text=True, timeout=600)
+    if proceso.returncode != 0:
+        raise AssertionError(f"el fragmento fallo:\n{proceso.stderr[-2000:]}")
+    for linea in reversed(proceso.stdout.splitlines()):
+        if linea.startswith("__MEDIDA__"):
+            datos = json.loads(linea[len("__MEDIDA__"):])
+            return datos.pop("pico_mb"), datos
+    raise AssertionError(f"el fragmento no imprimio la medida:\n{proceso.stdout[-2000:]}")
+
+
+class TestArranque(unittest.TestCase):
+    """Lo que cuesta la app antes de que entre nadie.
+
+    Aqui vivia `CENTRY_COLUMNS = _centry_columns_desde_plantilla()`, que leia un
+    Excel en tiempo de import para sacar nombres de columna: 5,5 s y ~35 MB en
+    CADA arranque, se usara Centry o no.
+    """
+
+    def test_importar_la_app_cabe_en_el_presupuesto(self):
+        pico, _ = medir("import app_matrixify  # noqa: F401")
+        self.assertLess(pico, PRESUPUESTO_IMPORT_MB,
+                        f"importar la app cuesta {pico:.0f} MB (techo {PRESUPUESTO_IMPORT_MB})")
+
+    def test_importar_no_lee_ningun_excel(self):
+        pico, datos = medir("""
+            import time
+            comienzo = time.time()
+            import app_matrixify  # noqa: F401
+            salida["segundos"] = round(time.time() - comienzo, 2)
+        """)
+        self.assertLess(datos["segundos"], 3.0,
+                        f"importar tarda {datos['segundos']}s: algo esta leyendo un archivo")
+
+    def test_las_columnas_de_centry_se_calculan_al_usarlas(self):
+        import app_matrixify as app
+        self.assertIsNone(app._CENTRY_COLUMNS, "no debe calcularse al importar")
+        columnas = app.centry_columns()
+        self.assertGreater(len(columnas), 20)
+        self.assertIs(app.centry_columns(), columnas, "tiene que quedar cacheado")
+        self.assertEqual(app.CENTRY_COLUMNS, columnas, "el nombre de siempre sigue sirviendo")
+
+
 class TestReglasDelCodigo(unittest.TestCase):
     """Lo que no se puede volver a hacer, comprobado sobre el codigo."""
 
     def setUp(self):
         self.app = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
 
-    def test_los_dataframes_gigantes_de_carga_completa_van_a_disco(self):
-        """330 MB el respaldo del catalogo y 167 MB el maestro ARTI, medidos.
+    def test_los_datos_de_carga_no_pasan_por_disco(self):
+        """El disco fue un mal negocio y hay que impedir que vuelva.
 
-        Con nombre fijo no pueden guardarse en la sesion. La unica escritura a
-        `session_state` permitida es la de `_guardar_datos_de_carga`, cuando el
-        disco no es escribible: ahi la correccion manda sobre el ahorro.
+        Estuvieron en `outputs/sesion/*.pkl` un dia: ahorraban ~500 MB de RAM a
+        cambio de 9 SEGUNDOS de I/O en cada analisis -medidos: 5,6 s de
+        escritura y 3,3 s de lectura del catalogo del sitio, el ARTI y el Sial-,
+        y en Streamlit Cloud el disco es mas lento que en local. Una carga de
+        Vans de 1.009 productos que antes entraba dejo de terminar de leerse.
         """
-        for clave in ("complete_template_df", "complete_arti_df"):
-            self.assertNotIn(f'st.session_state["{clave}"] =', self.app,
-                             f"{clave} no puede vivir en session_state")
-        self.assertIn('_guardar_datos_de_carga(template_df, arti_df, brand_config)', self.app)
-        self.assertIn('_guardar_df_en_disco(clave, df, brand_config)', self.app)
+        for prohibido in ("_guardar_df_en_disco", "_leer_df_de_disco"):
+            self.assertNotIn(prohibido, self.app,
+                             f"{prohibido} mete disco en el camino de cada analisis")
+        inicio = self.app.index("def _guardar_datos_de_carga(")
+        fin = self.app.index("def _hay_datos_de_carga(")
+        self.assertIn("st.session_state[clave_sesion] = df", self.app[inicio:fin])
+
+    def test_el_catalogo_del_sitio_no_se_copia_en_cada_analisis(self):
+        """331 MB duplicados por analisis, medidos sobre un catalogo real.
+
+        `prepare_matrixify_context` hacia `.copy()` del catalogo actual, y ahi
+        solo se LEE: `build_existing_lookup`, `siblings_ya_publicados` y
+        `matrixify_rows_for_handle`, que hace su propia copia del trozo que
+        devuelve. Ese era el ahorro de verdad, y no cuesta un segundo.
+        """
+        motor = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8")
+        inicio = motor.index("def prepare_matrixify_context(")
+        fin = motor.index("\ndef ", inicio + 10)
+        self.assertNotIn("matrixify_source.copy()", motor[inicio:fin])
+
+    def test_el_adjunto_del_cierre_sigue_llevando_el_sial_completo(self):
+        # Perder esto dejaria el correo al Area de Producto SIN archivo, que es
+        # el error que se corrigio en agosto de 2026.
+        inicio = self.app.index("def _archivo_carga_sial(")
+        fin = self.app.index("def _render_acciones_solicitud_tras_carga(")
+        cuerpo = self.app[inicio:fin]
+        self.assertIn("_sial_completo()", cuerpo)
+        self.assertIn('dataframe_to_excel_bytes({"Carga Sial": sial_df})', cuerpo)
+
+    def test_el_centry_no_se_queda_entero_en_la_sesion(self):
+        # 277 MB medidos. Este ahorro SI se conserva: es gratis.
+        self.assertNotIn('st.session_state["complete_centry_df"] =', self.app)
+        self.assertIn('st.session_state["complete_centry_resumen"] = resumen_centry_para_pantalla(', self.app)
 
     def test_data_ready_no_lee_los_dataframes_en_cada_rerun(self):
         """La regresion que hubo que arreglar el mismo dia.
@@ -102,24 +194,13 @@ class TestReglasDelCodigo(unittest.TestCase):
         inicio = self.app.index("            data_ready = (")
         fin = self.app.index("            if data_ready:", inicio)
         condicion = self.app[inicio:fin]
-        self.assertNotIn("_leer_df_de_disco", condicion,
-                         "data_ready no puede leer los DataFrames: se evalua en cada rerun")
         self.assertIn("_hay_datos_de_carga()", condicion)
-
-    def test_los_dataframes_solo_se_leen_al_analizar(self):
-        self.assertIn("_leer_datos_de_carga()", self.app)
-        inicio = self.app.index("            if analyze_clicked:")
-        fin = self.app.index("build_columbia_matrixify(", inicio)
-        self.assertIn("_leer_datos_de_carga()", self.app[inicio:fin],
-                      "los datos se leen dentro del analisis, que es cuando hacen falta")
-
-    def test_si_el_disco_falla_los_datos_se_quedan_en_la_sesion(self):
-        # Correccion antes que ahorro: perderlos obliga a releer Shopify y
-        # BigQuery en cada clic, que es peor que gastar la memoria.
-        inicio = self.app.index("def _guardar_datos_de_carga(")
-        fin = self.app.index("def _hay_datos_de_carga(")
+        inicio = self.app.index("def _hay_datos_de_carga(")
+        fin = self.app.index("def _leer_datos_de_carga(")
         cuerpo = self.app[inicio:fin]
-        self.assertIn("st.session_state[clave_sesion] = df", cuerpo)
+        for prohibido in ("read_pickle", "Path(", ".exists()"):
+            self.assertNotIn(prohibido, cuerpo,
+                             "se evalua en cada rerun: no puede tocar el disco")
 
     def test_el_panel_no_cuenta_filas_leyendo_el_disco(self):
         # El PANEL de Carga completa, no la funcion que lo dibuja.
@@ -129,44 +210,6 @@ class TestReglasDelCodigo(unittest.TestCase):
         for prohibido in ("len(template_df", "len(arti_df"):
             self.assertNotIn(prohibido, cuerpo,
                              f"'{prohibido}' obliga a tener el DataFrame en memoria en cada rerun")
-
-    def test_guardar_y_leer_un_dataframe_de_disco_conserva_los_datos(self):
-        import app_matrixify as app
-        import pandas as pd
-        original = pd.DataFrame({"Mod-Col": ["A-1", "B-2"], "Talla": ["39", "40"]}, dtype=object)
-        with tempfile.TemporaryDirectory() as carpeta:
-            import os
-            anterior = os.getcwd()
-            try:
-                os.chdir(carpeta)
-                ruta = app._guardar_df_en_disco("prueba", original, {"site_key": "columbia"})
-                self.assertTrue(ruta, "no se pudo escribir el temporal")
-                pd.testing.assert_frame_equal(app._leer_df_de_disco(ruta), original)
-                app._borrar_temporal(ruta)
-                self.assertIsNone(app._leer_df_de_disco(ruta))
-                # Borrar dos veces no revienta: no existir ya es el objetivo.
-                app._borrar_temporal(ruta)
-            finally:
-                os.chdir(anterior)
-
-    def test_centry_y_sial_no_se_quedan_en_la_sesion(self):
-        """277 MB y 191 MB medidos en una carga de 40.000 filas.
-
-        Centry solo se usa para dibujar su pestana, y Streamlit ejecuta el
-        contenido de TODAS las pestanas en cada rerun: por eso el DataFrame
-        tenia que seguir vivo. Ahora los numeros se calculan una vez y en
-        sesion queda el resumen. El Sial se necesita entero en un solo momento,
-        al adjuntarlo en el cierre, y para eso vive en disco.
-        """
-        self.assertNotIn('st.session_state["complete_centry_df"] =', self.app)
-        # La UNICA escritura del Sial a la sesion es el respaldo de
-        # `_guardar_resumen_sial` para cuando el disco no es escribible.
-        self.assertEqual(self.app.count('st.session_state["complete_sial_df"] = sial_df'), 1)
-        inicio = self.app.index("def _guardar_resumen_sial(")
-        fin = self.app.index("def _leer_sial_de_disco(")
-        self.assertIn('st.session_state["complete_sial_df"] = sial_df', self.app[inicio:fin])
-        self.assertIn('st.session_state["complete_centry_resumen"] = resumen_centry_para_pantalla(', self.app)
-        self.assertIn("_guardar_resumen_sial(sial_df, brand_config)", self.app)
 
     def test_el_resumen_de_centry_no_arrastra_el_dataframe(self):
         import app_matrixify as app
@@ -196,20 +239,6 @@ class TestReglasDelCodigo(unittest.TestCase):
         self.assertNotIn("len(sial_df)", cuerpo,
                          "se dibuja en cada rerun: los conteos van guardados")
         self.assertIn("complete_sial_filas", cuerpo)
-
-    def test_el_adjunto_del_cierre_sigue_llevando_el_sial_completo(self):
-        # Perder esto dejaria el correo al Area de Producto SIN archivo, que es
-        # el error que se corrigio en agosto de 2026.
-        inicio = self.app.index("def _archivo_carga_sial(")
-        fin = self.app.index("def _render_acciones_solicitud_tras_carga(")
-        cuerpo = self.app[inicio:fin]
-        self.assertIn("_leer_sial_de_disco()", cuerpo)
-        self.assertIn('dataframe_to_excel_bytes({"Carga Sial": sial_df})', cuerpo)
-
-    def test_si_el_disco_falla_el_sial_se_queda_en_la_sesion(self):
-        inicio = self.app.index("def _guardar_resumen_sial(")
-        fin = self.app.index("def _leer_sial_de_disco(")
-        self.assertIn('st.session_state["complete_sial_df"] = sial_df', self.app[inicio:fin])
 
     def test_la_vista_previa_de_centry_no_copia_el_dataframe(self):
         inicio = self.app.index("def render_centry_preview(")

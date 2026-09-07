@@ -387,6 +387,96 @@ class TestValidaciones(unittest.TestCase):
                          resumen["SKUs encontrados"])
 
 
+class TestPesoObligatorio(unittest.TestCase):
+    """Un SKU sin peso es una fila que VTEX no puede despachar.
+
+    Origen: las planillas salian con el peso en blanco y el problema aparecia
+    al subir el archivo a VTEX, no antes. La cadena de respaldos es: el propio
+    SKU en VTEX, otra talla del mismo producto, la tabla de dimensiones por
+    tipo, las medidas que la tienda usa en esa categoria, y las de la tienda.
+    """
+
+    def test_el_peso_de_un_sku_existente_sale_de_vtex(self):
+        plan = vtex.plan_de_carga([entrada()], maestro())
+        for sku in plan["productos"][0]["skus"]:
+            self.assertEqual(sku["paquete"]["weight"], "800")
+            self.assertEqual(sku["paquete"]["origen"], "VTEX (el propio SKU)")
+
+    def test_una_talla_nueva_hereda_el_peso_de_sus_hermanas(self):
+        plan = vtex.plan_de_carga([entrada(skus=[{"talla": "41"}])], maestro())
+        sku = plan["productos"][0]["skus"][0]
+        self.assertEqual(sku["paquete"]["weight"], "800")
+        self.assertEqual(sku["paquete"]["origen"], "VTEX (otra talla del producto)")
+
+    def test_un_producto_nuevo_usa_la_tabla_de_dimensiones_de_la_app(self):
+        datos = entrada("HP999-251", categoria="Zapatos",
+                        paquete={"weight": "950", "width": "30", "height": "20", "length": "40"})
+        plan = vtex.plan_de_carga([datos], maestro())
+        sku = plan["productos"][0]["skus"][0]
+        self.assertEqual(sku["paquete"]["weight"], "950")
+        self.assertEqual(sku["paquete"]["origen"], "tabla de dimensiones por tipo")
+
+    def test_sin_tabla_de_dimensiones_se_usan_las_de_la_categoria_en_vtex(self):
+        # Lo que la tienda ya usa para los Zapatos de Hombre.
+        plan = vtex.plan_de_carga([entrada("HP999-251", categoria="Zapatos")], maestro())
+        sku = plan["productos"][0]["skus"][0]
+        self.assertEqual(sku["paquete"]["weight"], "800")
+        self.assertEqual(sku["paquete"]["origen"], "VTEX (promedio de la categoría)")
+        self.assertFalse(plan["bloqueado"])
+
+    def test_un_sku_que_se_queda_sin_peso_BLOQUEA(self):
+        # Un maestro sin ninguna medida: no hay de donde sacarla.
+        sin_medidas = _hoja(vtex.COLUMNAS_PRODUCTOS_Y_SKUS, [
+            _fila_maestro("2", "HP102011307-251", "310669", "TALLA 39",
+                          **{"Package weight": "", "Package width": "", "Package height": "",
+                             "Package length": "", "Cubic Weight": ""}),
+        ])
+        plan = vtex.plan_de_carga([entrada("NUEVO-1", categoria="Zapatos")],
+                                  maestro(productos=sin_medidas))
+        self.assertTrue(any(a["Código"] == "sku_sin_peso" for a in plan["alertas"]))
+        self.assertTrue(plan["bloqueado"], "sin peso no se puede generar el archivo")
+
+    def test_el_resumen_cuenta_los_skus_sin_peso(self):
+        plan = vtex.plan_de_carga([entrada()], maestro())
+        self.assertEqual(plan["resumen"]["SKUs sin peso"], 0)
+
+    def test_la_planilla_lleva_el_peso_resuelto_y_su_peso_cubico(self):
+        m = maestro()
+        plan = vtex.plan_de_carga([entrada(skus=[{"talla": "41"}])], m)
+        fila = vtex.construir_archivos(plan, m)[vtex.ARCHIVO_PRODUCTOS]["filas"][0]
+        self.assertEqual(fila["Package weight"], "800")
+        self.assertEqual(fila["Package width"], "34")
+        self.assertEqual(fila["Cubic Weight"], "4.9088")
+
+
+class TestCruceConElMaestro(unittest.TestCase):
+    """Que ningun codigo cruce casi siempre es un desajuste, no una tienda vacia."""
+
+    def test_si_ningun_codigo_cruza_se_bloquea(self):
+        codigos = [entrada(f"XX{numero}-000", categoria="Zapatos") for numero in range(6)]
+        plan = vtex.plan_de_carga(codigos, maestro())
+        self.assertTrue(any(a["Código"] == "nada_cruzo_con_el_maestro" for a in plan["alertas"]))
+        self.assertTrue(plan["bloqueado"])
+
+    def test_con_pocos_codigos_no_se_sospecha_nada(self):
+        # Preparar dos productos nuevos es normalisimo.
+        codigos = [entrada(f"XX{numero}-000", categoria="Zapatos") for numero in range(2)]
+        plan = vtex.plan_de_carga(codigos, maestro())
+        self.assertFalse(any(a["Código"] == "nada_cruzo_con_el_maestro" for a in plan["alertas"]))
+        self.assertFalse(plan["bloqueado"])
+
+    def test_la_carga_inicial_se_puede_autorizar_a_mano(self):
+        codigos = [entrada(f"XX{numero}-000", categoria="Zapatos") for numero in range(6)]
+        plan = vtex.plan_de_carga(codigos, maestro(), {"permitir_todo_nuevo": True})
+        self.assertFalse(any(a["Código"] == "nada_cruzo_con_el_maestro" for a in plan["alertas"]))
+        self.assertFalse(plan["bloqueado"])
+
+    def test_con_uno_solo_que_cruce_ya_no_se_bloquea(self):
+        codigos = [entrada()] + [entrada(f"XX{numero}-000", categoria="Zapatos") for numero in range(6)]
+        plan = vtex.plan_de_carga(codigos, maestro())
+        self.assertFalse(any(a["Código"] == "nada_cruzo_con_el_maestro" for a in plan["alertas"]))
+
+
 class TestArchivos(unittest.TestCase):
     def setUp(self):
         self.maestro = maestro()
@@ -710,6 +800,11 @@ class TestIntegracionConLaPantalla(unittest.TestCase):
         self.assertTrue(pedidos, "La pantalla no usa el motor.")
         for nombre in sorted(pedidos):
             self.assertTrue(hasattr(vtex, nombre), f"El motor no expone {nombre}")
+
+    def test_el_diagnostico_del_cruce_se_dibuja(self):
+        # Sin esto, "cruzaron 0 de 500" no se ve en ningun lado.
+        self.assertIn("def render_vtex_diagnostico_cruce(", self.fuente)
+        self.assertIn("render_vtex_diagnostico_cruce(plan, maestro, codigos)", self.fuente)
 
     def test_la_pantalla_tiene_llamador(self):
         # Ya paso dos veces: se define un panel y nunca se invoca.

@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -1609,6 +1609,156 @@ def _guardar_excel_en_disco(buffer, brand_config):
         return str(ruta)
     except Exception:
         return ""
+
+
+def _guardar_df_en_disco(clave, df, brand_config):
+    """Deja un DataFrame grande en disco y devuelve la ruta. "" si no se pudo.
+
+    Mismo motivo que `_guardar_excel_en_disco`, con numeros medidos: el
+    respaldo del catalogo (`template_df`) son 330 MB y el maestro ARTI 167 MB
+    para una carga normal. Guardados en `st.session_state` se quedan residentes
+    mientras dure la sesion, en un contenedor de 1 GB que Streamlit comparte
+    entre todos los usuarios: dos personas cargando a la vez lo revientan.
+
+    En disco cuestan RAM solo mientras se usan. No se pierde nada: se guardan
+    para no volver a leer Shopify y BigQuery al reanalizar, y eso se sigue
+    cumpliendo.
+    """
+    if df is None:
+        return ""
+    try:
+        destino = Path("outputs") / "sesion"
+        destino.mkdir(parents=True, exist_ok=True)
+        sitio = clean_value((brand_config or {}).get("site_key")) or "sitio"
+        ruta = destino / f"{sitio}_{clean_value(clave) or 'df'}.pkl"
+        df.to_pickle(ruta)
+        return str(ruta)
+    except Exception:
+        return ""
+
+
+def _leer_df_de_disco(ruta):
+    """Lee un DataFrame guardado con `_guardar_df_en_disco`. None si no esta."""
+    ruta = clean_value(ruta)
+    if not ruta:
+        return None
+    try:
+        archivo = Path(ruta)
+        return pd.read_pickle(archivo) if archivo.exists() else None
+    except Exception:
+        return None
+
+
+# =========================================================================
+# Medidor de memoria
+# =========================================================================
+# Streamlit Community Cloud da 1 GB POR APP, no por usuario: dos personas
+# cargando a la vez comparten el mismo contenedor. Cuando se pasa, el proceso
+# muere sin dejar rastro ni traza, asi que sin esto no hay forma de saber que
+# lo lleno. Ya paso una vez y hubo que reproducirlo con archivos sinteticos
+# para descubrirlo.
+MEMORIA_LIMITE_MB = 1024
+# Por debajo de esto no se avisa. Un objeto de 5 MB no es el problema.
+MEMORIA_OBJETO_MINIMO_MB = 5
+
+
+def memoria_del_proceso():
+    """(MB en uso, MB de pico). (0, 0) si el sistema no lo expone.
+
+    Se lee de /proc, que en Linux es exacto y no cuesta nada. `psutil` no esta
+    en requirements y no vale la pena agregarlo por esto.
+    """
+    actual = pico = 0.0
+    try:
+        with open("/proc/self/statm", encoding="utf-8") as archivo:
+            actual = int(archivo.read().split()[1]) * 4096 / 1024 / 1024
+    except Exception:
+        actual = 0.0
+    try:
+        import resource
+        pico = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    except Exception:
+        pico = 0.0
+    return round(actual, 1), round(pico, 1)
+
+
+def peso_de_objeto_mb(valor):
+    """Cuanto ocupa DE VERDAD. Para un DataFrame, con el texto incluido.
+
+    `sys.getsizeof` de un DataFrame devuelve el tamano del envoltorio, no el de
+    los datos: un df de 250 MB reportaba 130 bytes. Por eso hace falta
+    `memory_usage(deep=True)`.
+    """
+    try:
+        if isinstance(valor, pd.DataFrame):
+            return round(float(valor.memory_usage(deep=True).sum()) / 1024 / 1024, 1)
+        if isinstance(valor, pd.Series):
+            return round(float(valor.memory_usage(deep=True)) / 1024 / 1024, 1)
+        if isinstance(valor, (bytes, bytearray)):
+            return round(len(valor) / 1024 / 1024, 1)
+        if isinstance(valor, (list, tuple, dict, set)):
+            import sys as _sys
+            return round(_sys.getsizeof(valor) / 1024 / 1024, 1)
+    except Exception:
+        return 0.0
+    return 0.0
+
+
+def inventario_de_memoria():
+    """Que hay en la sesion y cuanto pesa, de mayor a menor."""
+    filas = []
+    for clave in list(st.session_state.keys()):
+        try:
+            valor = st.session_state[clave]
+        except Exception:
+            continue
+        peso = peso_de_objeto_mb(valor)
+        if peso < MEMORIA_OBJETO_MINIMO_MB:
+            continue
+        detalle = ""
+        if isinstance(valor, pd.DataFrame):
+            detalle = f"{len(valor):,} filas x {len(valor.columns)} columnas"
+        elif isinstance(valor, (bytes, bytearray)):
+            detalle = "bytes en memoria"
+        filas.append({"Objeto": clave, "MB": peso, "Detalle": detalle})
+    return sorted(filas, key=lambda item: item["MB"], reverse=True)
+
+
+def render_panel_memoria():
+    """Cuanta RAM usa el proceso y quien se la esta comiendo."""
+    actual, pico = memoria_del_proceso()
+    columnas = st.columns(3)
+    columnas[0].metric("RAM en uso", f"{actual:,.0f} MB")
+    columnas[1].metric("Pico de la sesión", f"{pico:,.0f} MB")
+    columnas[2].metric("Límite del plan", f"{MEMORIA_LIMITE_MB:,} MB")
+    if actual and actual > MEMORIA_LIMITE_MB * 0.8:
+        st.error(
+            f"La app va por {actual:,.0f} MB de {MEMORIA_LIMITE_MB:,}. Usa "
+            "**Limpiar y empezar de nuevo** antes de lanzar otra carga."
+        )
+    elif actual and actual > MEMORIA_LIMITE_MB * 0.6:
+        st.warning(f"La app va por {actual:,.0f} MB de {MEMORIA_LIMITE_MB:,}.")
+    filas = inventario_de_memoria()
+    if filas:
+        st.caption(f"Lo que ocupa la sesión (desde {MEMORIA_OBJETO_MINIMO_MB} MB):")
+        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+    else:
+        st.caption(f"Nada en la sesión pesa más de {MEMORIA_OBJETO_MINIMO_MB} MB.")
+    st.caption(
+        "El límite es POR APP, no por usuario: dos personas cargando a la vez "
+        "comparten este mismo gigabyte."
+    )
+
+
+def _borrar_temporal(ruta):
+    """Borra un temporal de disco. Silencioso: no existir ya es el objetivo."""
+    ruta = clean_value(ruta)
+    if not ruta:
+        return
+    try:
+        Path(ruta).unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _leer_excel_de_disco(ruta):
@@ -3745,7 +3895,37 @@ def _centry_columns_desde_plantilla():
     return list(dict.fromkeys(columnas))
 
 
-CENTRY_COLUMNS = _centry_columns_desde_plantilla()
+# Se calcula la PRIMERA VEZ QUE SE USA, no al importar.
+#
+# Estaba como `CENTRY_COLUMNS = _centry_columns_desde_plantilla()` a nivel de
+# modulo, asi que cada arranque de la app leia `data/plantilla_centry_productos.xlsx`
+# solo para sacar 26 nombres de columna. Medido: 5,5 s y ~35 MB retenidos en
+# CADA arranque, se usara Centry o no. El archivo pesa 1,5 MB pero trae el
+# rango usado inflado, que es lo que lo hace lento.
+_CENTRY_COLUMNS = None
+
+
+def centry_columns():
+    """Las columnas de Centry, leidas de la plantilla oficial una sola vez."""
+    global _CENTRY_COLUMNS
+    if _CENTRY_COLUMNS is None:
+        _CENTRY_COLUMNS = _centry_columns_desde_plantilla()
+    return _CENTRY_COLUMNS
+
+
+def __getattr__(nombre):
+    """`app_matrixify.CENTRY_COLUMNS` sigue existiendo para quien lo pida de fuera.
+
+    PEP 562: esto solo se ejecuta al pedir un atributo que el modulo no tiene,
+    asi que no cuesta nada y las pruebas que lo leen no se enteran del cambio.
+    Los usos de DENTRO del modulo llaman a `centry_columns()`: una busqueda de
+    global no pasa por aqui.
+    """
+    if nombre == "CENTRY_COLUMNS":
+        return centry_columns()
+    raise AttributeError(f"module {__name__!r} has no attribute {nombre!r}")
+
+
 CENTRY_SIAL_COLUMNS = [
     "Mod", "Col", "Tal", "Product Name ", "Product Bullets", "Product Description", "Image URL",
     "Product Weight", "Product Length", "Product Width", "Product Height",
@@ -5010,7 +5190,7 @@ def centry_columnas_con_diccionario():
     bucle eran 94 consultas por producto.
     """
     restringidas = {}
-    for columna in CENTRY_COLUMNS:
+    for columna in centry_columns():
         permitidos = _centry_motor("valores_permitidos", [], columna)
         if permitidos:
             restringidas[columna] = permitidos
@@ -5165,7 +5345,7 @@ def centry_resumen_validacion(validacion_df):
 
 def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None, arti_df=None):
     if matrixify_df is None or matrixify_df.empty:
-        return pd.DataFrame(columns=CENTRY_COLUMNS), pd.DataFrame(columns=["Mod-Col", "Problema"])
+        return pd.DataFrame(columns=centry_columns()), pd.DataFrame(columns=["Mod-Col", "Problema"])
     brand_config = brand_config or {}
     df = coalesce_duplicate_columns(matrixify_df).copy()
     for column in MATRIXIFY_COLUMNS:
@@ -5413,7 +5593,7 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         )
         advertencia_centry = " | ".join(a for a in avisos_centry if a)
 
-        centry_row = {column: "" for column in CENTRY_COLUMNS}
+        centry_row = {column: "" for column in centry_columns()}
         centry_row.update(
             {
                 "Nombre del Producto": title,
@@ -5512,7 +5692,7 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         {repair_mojibake_text(clave): valor for clave, valor in fila.items()}
         for fila in rows
     ]
-    centry_df = pd.DataFrame(rows, columns=CENTRY_COLUMNS).fillna("")
+    centry_df = pd.DataFrame(rows, columns=centry_columns()).fillna("")
     centry_df = centry_df.replace({"#N/D": "", "#ND": "", "#N/A": ""})
     centry_df, issues = filter_centry_size_rows(centry_df, issues, "Talla", key_column="SKU del producto", output_label="Centry")
     if not centry_df.empty:
@@ -5857,7 +6037,10 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
 def render_centry_preview(centry_df, issues_df=None, title="Vista previa Centry"):
     if centry_df is None or centry_df.empty:
         return
-    df = centry_df.copy()
+    # Sin `.copy()`: aqui solo se LEE (`df.get`, `df.head`). Copiar duplicaba
+    # el Centry entero -277 MB medidos en una carga de 40.000 filas- en CADA
+    # rerun que dibujara esta pestana.
+    df = centry_df
     total_rows = len(df)
     total_products = df.get("SKU del producto", pd.Series(dtype=object)).map(clean_value).nunique()
     no_barcode = safe_int_value((df.get("Código de barra variante (EAN/UPC/ISBN)", pd.Series(dtype=object)).map(clean_value) == "").sum())
@@ -17171,14 +17354,18 @@ def clear_complete_load_state():
         "complete_apply_result_df",
         "complete_analysis_message",
         "complete_input_df",
-        "complete_template_df",
-        "complete_arti_df",
+        "complete_template_path",
+        "complete_arti_path",
         "complete_template_source",
         "complete_detected_brands",
         "complete_data_context",
         "complete_excel_bytes",
         "complete_excel_path",
     ):
+        if key.endswith("_path"):
+            # Los temporales se borran del disco, no solo de la sesion: si no,
+            # cada carga deja otro .pkl de cientos de MB en el contenedor.
+            _borrar_temporal(st.session_state.get(key))
         st.session_state.pop(key, None)
 
 
@@ -19252,6 +19439,8 @@ def render_audit_center():
     servicio = get_audit_service()
     with st.expander("Estado del almacenamiento", expanded=not servicio.persistente):
         render_storage_diagnostico()
+    with st.expander("Memoria de la app", expanded=False):
+        render_panel_memoria()
     with st.spinner("Leyendo auditoria..."):
         eventos = servicio.all_events()
 
@@ -23098,6 +23287,9 @@ def render_video_maintainer(brand_config, shopify_config):
 # dibuja. Shopify no se toca en ningun momento: esta pantalla solo LEE.
 VTEX_LABEL = "Carga VTEX (manual)"
 
+# El diccionario de la tienda vive en el repositorio: no cambia con las cargas.
+VTEX_DICCIONARIO_PATH = "data/vtex_diccionario_supermallpe.json"
+
 # Los cuatro archivos del catalogo maestro. Solo el primero es obligatorio:
 # sin el no hay IDs y no se puede decidir que existe. Los otros tres son el
 # DICCIONARIO de la tienda (que campos tiene cada categoria, que valores admite
@@ -23178,50 +23370,88 @@ def vtex_firma_de_archivo(archivo):
     )
 
 
-def vtex_hojas_de_archivo(archivo):
-    """Las filas del archivo, hoja por hoja. Lista de listas de listas.
+def vtex_filas_de_archivo(archivo):
+    """GENERA las filas del archivo, una a una. No guarda ninguna.
 
-    Se lee con openpyxl en modo `read_only`: el maestro de VTEX pasa de los
-    100 MB y `pd.read_excel` lo carga entero en un DataFrame con las 50
-    columnas, incluidas las descripciones largas que aqui no se usan. En modo
-    read_only openpyxl entrega fila por fila y no guarda nada.
+    Por que asi
+    -----------
+    La primera version devolvia una lista con todas las filas. Medido con un
+    maestro de 300.000 filas -uno real- esa lista sola pasa de 1 GB, y con el
+    indice encima de 2 GB, en un contenedor de 1 GB. La app se moria con
+    "over its resource limits" sin decir de que.
 
-    Se devuelven las hojas por separado porque VTEX parte los archivos grandes
-    en varias, y cada una repite la cabecera.
+    Tampoco se llama a `getvalue()`: eso copia los 60 MB del archivo a un bytes
+    aparte, teniendolo ya en memoria. openpyxl y csv leen del propio objeto.
+
+    Las hojas salen pegadas una tras otra a proposito: VTEX parte los archivos
+    grandes en varias y repite la cabecera en cada una, y el motor ya sabe
+    saltarse esa cabecera repetida.
     """
     if archivo is None:
-        return []
+        return
     nombre = clean_value(getattr(archivo, "name", "")).lower()
-    datos = archivo.getvalue()
+    try:
+        archivo.seek(0)
+    except Exception:
+        pass
     if nombre.endswith(".csv") or nombre.endswith(".txt"):
         import csv as _csv
-        texto = datos.decode("utf-8-sig", errors="replace")
-        return [[list(fila) for fila in _csv.reader(io.StringIO(texto))]]
+        envoltorio = io.TextIOWrapper(archivo, encoding="utf-8-sig", errors="replace", newline="")
+        try:
+            for fila in _csv.reader(envoltorio):
+                yield fila
+        finally:
+            # `detach` para no cerrar el archivo subido: Streamlit lo reutiliza
+            # en el siguiente rerun y cerrarlo dejaria la pantalla rota.
+            try:
+                envoltorio.detach()
+            except Exception:
+                pass
+        return
     if nombre.endswith(".xls"):
-        # Formato viejo: openpyxl no lo abre. pandas si, con el motor que haya.
-        hojas = pd.read_excel(io.BytesIO(datos), sheet_name=None, header=None, dtype=object)
-        return [tabla.values.tolist() for tabla in hojas.values()]
+        # Formato viejo: openpyxl no lo abre y pandas lo carga entero. Es el
+        # unico camino que no se puede hacer en streaming; la pantalla avisa.
+        hojas = pd.read_excel(archivo, sheet_name=None, header=None, dtype=object)
+        for tabla in hojas.values():
+            for fila in tabla.itertuples(index=False, name=None):
+                yield list(fila)
+        return
     import openpyxl
-    libro = openpyxl.load_workbook(io.BytesIO(datos), read_only=True, data_only=True)
+    libro = openpyxl.load_workbook(archivo, read_only=True, data_only=True)
     try:
-        return [
-            [list(fila) for fila in hoja.iter_rows(values_only=True)]
-            for hoja in libro.worksheets
-        ]
+        for hoja in libro.worksheets:
+            for fila in hoja.iter_rows(values_only=True):
+                yield fila
     finally:
         libro.close()
 
 
-def vtex_filas_de_archivo(archivo):
-    """Todas las hojas pegadas. Las cabeceras repetidas las salta el motor."""
-    filas = []
-    for hoja in vtex_hojas_de_archivo(archivo):
-        filas.extend(hoja)
-    return filas
+def vtex_tamano_de_archivo_mb(archivo):
+    """Cuanto pesa el archivo subido, en MB."""
+    return round(int(getattr(archivo, "size", 0) or 0) / 1024 / 1024, 1)
+
+
+def vtex_aviso_de_formato(archivo):
+    """El aviso que se muestra segun el formato y el peso. "" si no hace falta.
+
+    Medido con un maestro de 300.000 filas: 8 s en CSV contra 168 s en xlsx,
+    con la misma memoria. Es la misma informacion y el mismo resultado; lo
+    unico que cambia es esperar tres minutos o no.
+    """
+    nombre = clean_value(getattr(archivo, "name", "")).lower()
+    peso = vtex_tamano_de_archivo_mb(archivo)
+    if nombre.endswith(".xls"):
+        return ("El formato `.xls` antiguo no se puede leer por partes: se carga entero en "
+                "memoria. Vuelve a guardarlo como `.xlsx` o, mejor, como `.csv`.")
+    if nombre.endswith(".xlsx") and peso >= 5:
+        return (f"Este maestro pesa {peso:,.0f} MB en Excel. Leerlo puede tardar varios "
+                "minutos; **guardándolo como CSV tarda unos segundos** y da exactamente "
+                "el mismo resultado.")
+    return ""
 
 
 @st.cache_resource(show_spinner=False, max_entries=2)
-def vtex_maestro_cacheado(firma, _archivos):
+def vtex_maestro_cacheado(firma, referencias, _archivos):
     """El catalogo maestro indexado. Se arma UNA vez por archivo subido.
 
     `_archivos` va con guion bajo a proposito, igual que `artefacto_de_solicitud`:
@@ -23234,12 +23464,57 @@ def vtex_maestro_cacheado(firma, _archivos):
     clave seria siempre la misma y subir un maestro nuevo devolveria el
     anterior, con los IDs viejos. Hay una prueba que lo fija.
     """
-    return vtex_motor.CatalogoMaestroVTEX.desde_filas(
+    maestro = vtex_motor.CatalogoMaestroVTEX.desde_filas(
         vtex_filas_de_archivo(_archivos.get("productos")),
         vtex_filas_de_archivo(_archivos.get("especificaciones_producto")),
         vtex_filas_de_archivo(_archivos.get("especificaciones_sku")),
         vtex_filas_de_archivo(_archivos.get("imagenes")),
+        referencias=list(referencias or ()),
     )
+    # El diccionario guardado rellena lo que no venga en las exportaciones. Va
+    # DESPUES a proposito: lo que se sube en la sesion manda sobre lo guardado.
+    vtex_motor.aplicar_diccionario(maestro, vtex_diccionario_guardado())
+    return maestro
+
+
+@st.cache_data(show_spinner=False)
+def vtex_diccionario_guardado():
+    """El diccionario de la tienda que vive en el repositorio.
+
+    Que campos tiene cada categoria y que valores admite cada Radio o CheckBox,
+    con sus IDs. Se guarda porque el catalogo y el diccionario cambian a ritmos
+    MUY distintos: el catalogo con cada carga, el diccionario solo cuando
+    alguien crea un campo en el admin de VTEX. 34 KB contra 90 MB de Excel.
+    """
+    try:
+        ruta = Path(VTEX_DICCIONARIO_PATH)
+        if not ruta.exists():
+            return {}
+        return json.loads(ruta.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def vtex_guardar_diccionario(maestro):
+    """Reescribe el diccionario del repositorio con lo que traiga el maestro.
+
+    Devuelve (ok, datos). Los datos se ofrecen para descargar aunque el disco
+    no sea persistente: en Streamlit Cloud el contenedor se reinicia y se lleva
+    el archivo, asi que la copia buena es la que se sube al repositorio.
+    """
+    datos = vtex_motor.diccionario_de(maestro)
+    datos = {
+        "cuenta": "supermallpe",
+        "actualizado": datetime.now(timezone.utc).date().isoformat(),
+        **datos,
+    }
+    try:
+        Path(VTEX_DICCIONARIO_PATH).write_text(
+            json.dumps(datos, ensure_ascii=False, indent=1), encoding="utf-8")
+        vtex_diccionario_guardado.clear()
+        return True, datos
+    except Exception:
+        return False, datos
 
 
 def vtex_indice_shopify(productos):
@@ -23598,66 +23873,12 @@ def render_vtex_export(brand_config, shopify_config):
         unsafe_allow_html=True,
     )
 
-    # --- Paso 1: catalogo maestro ---------------------------------------
-    st.markdown("### 1. Catálogo maestro VTEX")
-    st.caption(
-        "El último catálogo general descargado de VTEX. Es obligatorio: sin él no se sabe "
-        "qué productos y qué SKUs ya existen, y todo se cargaría duplicado con IDs nuevos."
-    )
-    archivos = {}
-    columnas = st.columns(2)
-    for numero, (clave, etiqueta, _columnas, obligatorio, ayuda) in enumerate(VTEX_MAESTRO_ARCHIVOS):
-        archivos[clave] = columnas[numero % 2].file_uploader(
-            etiqueta + (" *" if obligatorio else ""),
-            type=["xlsx", "xls", "csv"],
-            key=f"vtex_maestro_{clave}",
-            help=ayuda,
-        )
-    if archivos.get("productos") is None:
-        st.info("Sube al menos **Products and SKUs** para continuar.")
-        return
-
-    firma = tuple(vtex_firma_de_archivo(archivos.get(clave)) for clave, *_ in VTEX_MAESTRO_ARCHIVOS)
-    with st.spinner("Leyendo el catálogo maestro de VTEX..."):
-        try:
-            maestro = vtex_maestro_cacheado(firma, archivos)
-        except Exception as error:  # el archivo puede venir de cualquier lado
-            st.error(f"No se pudo leer el catálogo maestro: {error}")
-            return
-    if maestro.vacio:
-        st.error(
-            "El archivo no tiene filas reconocibles. Se esperan las columnas de la exportación "
-            "'Products and SKUs' de VTEX (Product ID, Product reference code, SKU ID...)."
-        )
-        return
-    resumen_maestro = maestro.resumen()
-    columnas = st.columns(4)
-    for numero, (etiqueta, valor) in enumerate(resumen_maestro.items()):
-        columnas[numero % 4].metric(etiqueta, f"{valor:,}")
-    faltantes = [
-        f"{etiqueta}: {', '.join(maestro.faltantes.get(clave) or [])}"
-        for clave, etiqueta in (("productos", "Products and SKUs"),
-                                ("especificaciones_producto", "Especificaciones de productos"),
-                                ("especificaciones_sku", "Especificaciones de SKUs"),
-                                ("imagenes", "Imágenes"))
-        if maestro.faltantes.get(clave)
-    ]
-    if faltantes:
-        st.warning("Columnas que no se encontraron en el maestro:\n\n- " + "\n- ".join(faltantes))
-    if not maestro.campos_producto:
-        st.info(
-            "Sin la exportación de **especificaciones de productos** el archivo "
-            "Product_Specifications sale vacío: los ID de campo son propios de tu cuenta de VTEX "
-            "y no se pueden inventar."
-        )
-    if not maestro.campos_sku:
-        st.info(
-            "Sin la exportación de **especificaciones de SKUs** el archivo SKU_Specifications "
-            "sale vacío (ahí van Talla y Color)."
-        )
-
-    # --- Paso 2: que se va a cargar -------------------------------------
-    st.markdown("### 2. Productos a preparar")
+    # --- Paso 1: que se va a cargar --------------------------------------
+    #
+    # Los codigos van ANTES del maestro, y no es cosmetico: el maestro se lee
+    # acotado a estos codigos. De 300.000 filas interesan las del pedido, y
+    # guardar las otras 295.000 son los 2 GB que tumbaron la app.
+    st.markdown("### 1. Productos a preparar")
     codigos_texto = st.text_area(
         "Códigos Modelo-Color (uno por línea)",
         key="vtex_codigos_texto",
@@ -23732,6 +23953,97 @@ def render_vtex_export(brand_config, shopify_config):
         st.info("Escribe o sube los códigos Modelo-Color que quieres preparar.")
         return
     st.caption(f"{len(codigos):,} código(s) para preparar.")
+
+    # --- Paso 2: catalogo maestro ----------------------------------------
+    st.markdown("### 2. Catálogo maestro VTEX")
+    st.caption(
+        "El último catálogo general descargado de VTEX. Es obligatorio: sin él no se sabe "
+        "qué productos y qué SKUs ya existen, y todo se cargaría duplicado con IDs nuevos."
+    )
+    archivos = {"productos": st.file_uploader(
+        "Products and SKUs *", type=["xlsx", "xls", "csv"], key="vtex_maestro_productos",
+        help="La exportación general del catálogo. De aquí salen los Product ID y los SKU ID.",
+    )}
+    if archivos["productos"] is None:
+        st.info("Sube **Products and SKUs** para continuar.")
+        return
+    aviso = vtex_aviso_de_formato(archivos["productos"])
+    if aviso:
+        st.warning(aviso)
+
+    # El diccionario de la tienda NO se vuelve a pedir: vive en el repositorio
+    # porque solo cambia cuando alguien crea un campo o un valor en el admin de
+    # VTEX, y eso no pasa con cada carga.
+    diccionario = vtex_diccionario_guardado()
+    with st.expander("Actualizar el diccionario de la tienda (solo si cambió algo en VTEX)"):
+        st.caption(
+            "Los ID de campo y los valores que admite cada Radio son propios de tu cuenta. "
+            "Ya están guardados: "
+            f"{len(diccionario.get('campos_producto') or [])} campos de producto y "
+            f"{len(diccionario.get('campos_sku') or [])} de SKU"
+            + (f", actualizados el {diccionario['actualizado']}." if diccionario.get("actualizado") else ".")
+            + " Solo hace falta volver a subir las exportaciones si creaste un campo o un valor nuevo."
+        )
+        for clave, etiqueta, _columnas, _obligatorio, ayuda in VTEX_MAESTRO_ARCHIVOS[1:]:
+            archivos[clave] = st.file_uploader(
+                etiqueta, type=["xlsx", "xls", "csv"], key=f"vtex_maestro_{clave}", help=ayuda)
+
+    firma = tuple(vtex_firma_de_archivo(archivos.get(clave)) for clave, *_ in VTEX_MAESTRO_ARCHIVOS)
+    with st.spinner(f"Leyendo el catálogo maestro y buscando {len(codigos):,} código(s)..."):
+        try:
+            maestro = vtex_maestro_cacheado(firma, tuple(codigos), archivos)
+        except Exception as error:  # el archivo puede venir de cualquier lado
+            st.error(f"No se pudo leer el catálogo maestro: {error}")
+            return
+    if maestro.vacio:
+        st.error(
+            "El archivo no tiene filas reconocibles. Se esperan las columnas de la exportación "
+            "'Products and SKUs' de VTEX (Product ID, Product reference code, SKU ID...)."
+        )
+        return
+    columnas = st.columns(4)
+    for numero, (etiqueta, valor) in enumerate(maestro.resumen().items()):
+        columnas[numero % 4].metric(etiqueta, f"{valor:,}")
+    faltantes = [
+        f"{etiqueta}: {', '.join(maestro.faltantes.get(clave) or [])}"
+        for clave, etiqueta in (("productos", "Products and SKUs"),
+                                ("especificaciones_producto", "Especificaciones de productos"),
+                                ("especificaciones_sku", "Especificaciones de SKUs"),
+                                ("imagenes", "Imágenes"))
+        if maestro.faltantes.get(clave)
+    ]
+    if faltantes:
+        st.warning("Columnas que no se encontraron en el maestro:\n\n- " + "\n- ".join(faltantes))
+    if archivos.get("especificaciones_producto") is not None or \
+            archivos.get("especificaciones_sku") is not None:
+        if st.button("Guardar este diccionario para las próximas cargas", key="vtex_guardar_dicc"):
+            guardado, datos = vtex_guardar_diccionario(maestro)
+            if guardado:
+                st.success(
+                    f"Diccionario actualizado: {len(datos['campos_producto'])} campos de producto "
+                    f"y {len(datos['campos_sku'])} de SKU."
+                )
+            st.download_button(
+                "Descargar el diccionario para subirlo al repositorio",
+                data=json.dumps(datos, ensure_ascii=False, indent=1).encode("utf-8"),
+                file_name="vtex_diccionario_supermallpe.json",
+                mime="application/json",
+            )
+            st.caption(
+                "El contenedor de Streamlit se reinicia y se lleva el archivo: la copia que "
+                "dura es la que se sube al repositorio, en `data/`."
+            )
+    if not maestro.campos_producto:
+        st.info(
+            "No hay diccionario de **especificaciones de productos**: el archivo "
+            "Product_Specifications saldrá vacío. Los ID de campo son propios de tu cuenta de VTEX "
+            "y no se pueden inventar."
+        )
+    if not maestro.campos_sku:
+        st.info(
+            "No hay diccionario de **especificaciones de SKUs**: el archivo SKU_Specifications "
+            "saldrá vacío (ahí van Talla y Color)."
+        )
 
     opciones = {
         "usar_shopify": usar_shopify,
@@ -25068,16 +25380,14 @@ api_version = "{DEFAULT_API_VERSION}"
     can_process_complete = input_file and (complete_source == "Shopify API" or template_file)
     if can_process_complete:
         try:
-            data_ready = (
-                st.session_state.get("complete_data_context") == complete_context
-                and st.session_state.get("complete_input_df") is not None
-                and st.session_state.get("complete_template_df") is not None
-                and st.session_state.get("complete_arti_df") is not None
-            )
+            data_ready = False
+            if st.session_state.get("complete_data_context") == complete_context \
+                    and st.session_state.get("complete_input_df") is not None:
+                template_df = _leer_df_de_disco(st.session_state.get("complete_template_path"))
+                arti_df = _leer_df_de_disco(st.session_state.get("complete_arti_path"))
+                data_ready = template_df is not None and arti_df is not None
             if data_ready:
                 input_df = st.session_state["complete_input_df"]
-                template_df = st.session_state["complete_template_df"]
-                arti_df = st.session_state["complete_arti_df"]
                 template_source = st.session_state.get("complete_template_source", "")
                 detected_brands = st.session_state.get("complete_detected_brands", [])
             else:
@@ -25139,8 +25449,14 @@ api_version = "{DEFAULT_API_VERSION}"
 
                 st.session_state["arti_row_count"] = len(arti_df)
                 st.session_state["complete_input_df"] = input_df
-                st.session_state["complete_template_df"] = template_df
-                st.session_state["complete_arti_df"] = arti_df
+                # Los dos grandes van a DISCO, no a session_state: 330 MB el
+                # respaldo del catalogo y 167 MB el maestro ARTI, medidos. Solo
+                # se usan para reanalizar sin volver a leer Shopify y BigQuery,
+                # y eso se sigue cumpliendo leyendolos de disco.
+                st.session_state["complete_template_path"] = _guardar_df_en_disco(
+                    "template", template_df, brand_config)
+                st.session_state["complete_arti_path"] = _guardar_df_en_disco(
+                    "arti", arti_df, brand_config)
                 st.session_state["complete_template_source"] = template_source
                 st.session_state["complete_detected_brands"] = detected_brands
                 st.session_state["complete_data_context"] = complete_context

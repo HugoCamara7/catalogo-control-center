@@ -735,14 +735,25 @@ class TestIntegracionConLaPantalla(unittest.TestCase):
                       if isinstance(nodo, _ast.FunctionDef) and nodo.name == "vtex_maestro_cacheado"]
         self.assertEqual(len(definicion), 1)
         nombres = [argumento.arg for argumento in definicion[0].args.args]
-        self.assertEqual(nombres, ["firma", "_archivos"])
+        self.assertEqual(nombres, ["firma", "referencias", "_archivos"])
+        # `referencias` tampoco lleva guion bajo: el maestro se lee ACOTADO a
+        # esos codigos, asi que con otros codigos hay que releerlo. Si Streamlit
+        # la ignorara, cambiar la lista devolveria el maestro de la lista
+        # anterior y faltarian justo los productos nuevos.
 
     def test_el_maestro_se_lee_sin_cargar_el_excel_entero(self):
-        # 100 MB con `pd.read_excel` no caben en Streamlit Cloud.
-        inicio = self.fuente.index("def vtex_hojas_de_archivo(")
-        fin = self.fuente.index("def vtex_filas_de_archivo(")
+        # 100 MB con `pd.read_excel` no caben en Streamlit Cloud. El detalle
+        # completo, con presupuesto medido, esta en scripts/test_memoria.py.
+        inicio = self.fuente.index("def vtex_filas_de_archivo(")
+        fin = self.fuente.index("def vtex_tamano_de_archivo_mb(")
         cuerpo = self.fuente[inicio:fin]
         self.assertIn("read_only=True", cuerpo)
+        self.assertIn("yield", cuerpo)
+
+    def test_el_maestro_se_lee_acotado_a_los_codigos_pedidos(self):
+        """Guardar los 30.000 productos de la tienda eran los 2 GB del fallo."""
+        self.assertIn("referencias=list(referencias or ())", self.fuente)
+        self.assertIn("vtex_maestro_cacheado(firma, tuple(codigos), archivos)", self.fuente)
 
     def test_el_motor_no_importa_streamlit_ni_pandas(self):
         fuente = (ROOT / "engines" / "vtex_catalog.py").read_text(encoding="utf-8")

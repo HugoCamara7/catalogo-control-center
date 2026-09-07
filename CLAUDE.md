@@ -1383,6 +1383,67 @@ reportaria como omitido.
 
 ---
 
+## 5 quaterdecies. El ticket se bajaba de GitHub en cada clic (septiembre 2026)
+
+`get_ticket` **no esta cacheada, y es a proposito**: de ahi sale el `_revision`
+con el que se guarda, y servirlo de una copia vieja haria fallar cada guardado
+con "cambio en otra sesion".
+
+Pero eso no justifica pagar el viaje **para pintar un titulo**. Tres pantallas
+lo pedian solo para DIBUJAR, y las tres se redibujan en cada rerun:
+
+- `_render_acciones_solicitud_tras_carga` (Carga completa, tras el analisis)
+- `render_full_load_ticket_queue` (el panel de Cargas pendientes)
+- `render_ticket_detail` (el detalle de la bandeja)
+
+O sea **tres viajes a la API de GitHub por cada clic**. Medido con 250 ms de
+latencia —lo que tarda desde Streamlit Cloud—: **0,75 s por clic** que no
+hacian nada.
+
+`ticket_para_pantalla` lo saca de la **bandeja, que ya esta cacheada** (25 s) y
+que **toda escritura invalida** (`invalidate_cache` en create/update/delete).
+Es el mismo dato sin el viaje, y despues de cualquier accion la siguiente
+lectura ya es fresca. Si el ticket no esta en la bandeja —va filtrada por rol,
+y una solicitud recien creada puede no aparecer— cae a `get_ticket`, o la
+pantalla se quedaria vacia. Si la bandeja falla, tambien.
+
+**Para ESCRIBIR se sigue usando `get_ticket`.** `_adjuntar_matrixify_antes_de_cargar`
+lo hace asi y hay un test que lo exige: ahi el `_revision` tiene que venir de
+GitHub.
+
+### "Subir el input a mano" soltaba la solicitud
+
+El aviso decia *"La carga quedará asociada a CAT-..."* y el codigo hacia
+`pop("carga_desde_solicitud")` en la linea de al lado. Las dos consecuencias
+eran silenciosas:
+
+- `recordar_matrixify_de_carga` recibia el codigo vacio y **no apuntaba nada**,
+  asi que el Matrixify no se adjuntaba a la solicitud y **la carga por GitHub
+  Actions se quedaba sin archivo que cargar**.
+- `_render_acciones_solicitud_tras_carga` corta cuando no hay codigo: al
+  terminar el analisis **desaparecian los botones de cierre**.
+
+Ahora la solicitud se conserva y solo cambia el archivo, que es lo que el aviso
+prometia. Una carga que de verdad no sale de ninguna solicitud sigue soltandola.
+
+### La cadena de la carga por Actions, para no volver a dudar
+
+```
+elegir solicitud   -> carga_desde_solicitud = CAT-...
+Analizar input     -> recordar_matrixify_de_carga (ruta del Excel + claves)
+Ejecutar carga     -> _ejecutar_accion_ticket ve metodo == "start_load"
+                      -> _adjuntar_matrixify_antes_de_cargar -> attach_matrixify
+                      -> start_load() -> jobs.start(ticket) -> workflow_dispatch
+```
+
+**Sin solicitud no hay carga remota**: el job cuelga del ticket, y un archivo
+subido suelto no tiene donde colgarse. Ese caso se queda con la sincronizacion
+por bloques de la propia pantalla. Y sin `[carga_remota]` en Secrets,
+`get_job_adapter` cae al `MockJobAdapter` y tampoco dispara nada — eso se ve en
+**Auditoría → "¿La carga sobrevive al cierre de sesión?"**.
+
+---
+
 ## 5 nonies. La carga sigue con la sesión cerrada (septiembre 2026)
 
 `engines/carga_remota.py` (sin Streamlit) + `scripts/worker_carga_shopify.py` +
@@ -1665,8 +1726,8 @@ escrita a mano y por eso no atrapó a Supermall.
 
 ```bash
 python scripts/test_brand_commercial_input.py          # 6
-python scripts/test_carga_desde_solicitud.py           # 28
-python scripts/test_carga_remota.py                    # 34
+python scripts/test_carga_desde_solicitud.py           # 31
+python scripts/test_carga_remota.py                    # 40
 python scripts/test_engines_audit.py                   # 45
 python scripts/test_engines_metrics.py                 # 26
 python scripts/test_engines_notify.py                  # 88
@@ -1681,7 +1742,7 @@ python scripts/test_espejo_supermall.py                # 35
 python scripts/test_mantenedor_tallas.py               # 34
 python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33
-python scripts/test_rendimiento.py                     # 41
+python scripts/test_rendimiento.py                     # 47
 python scripts/test_bandeja_solicitudes.py             # 57
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24

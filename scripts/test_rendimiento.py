@@ -556,5 +556,78 @@ class TestClavesDeFila(unittest.TestCase):
                              type(fila).__name__)
 
 
+class TestElTicketNoSeBajaEnCadaClic(unittest.TestCase):
+    """Las pantallas que solo DIBUJAN el ticket iban a GitHub en cada rerun.
+
+    `get_ticket` no esta cacheada a proposito: de ahi sale el `_revision` con
+    el que se guarda, y servirlo viejo haria fallar cada guardado. Pero eso no
+    justifica pagar el viaje para pintar un titulo: en Carga completa eran
+    tres pantallas pidiendolo, o sea tres viajes a GitHub POR CLIC.
+
+    Medido con 250 ms de latencia -lo que tarda la API de GitHub desde
+    Streamlit Cloud-: **0,75 s por clic** que ya no se pagan.
+    """
+
+    class _Servicio:
+        def __init__(self, tickets):
+            self.tickets = tickets
+            self.viajes_get = 0
+        def get_ticket(self, actor, codigo):
+            self.viajes_get += 1
+            return next((t for t in self.tickets if t["code"] == codigo), None)
+        def list_tickets(self, actor, **kwargs):
+            return self.tickets
+
+    def test_dibujar_no_cuesta_un_viaje_a_github(self):
+        servicio = self._Servicio([{"code": "CAT-1", "status": "loading"}])
+        for _ in range(3):
+            ticket = app.ticket_para_pantalla(servicio, {}, "CAT-1")
+            self.assertEqual(ticket["code"], "CAT-1")
+        self.assertEqual(servicio.viajes_get, 0, "sigue bajando el ticket en cada rerun")
+
+    def test_si_no_esta_en_la_bandeja_se_pide(self):
+        """La bandeja va filtrada por rol y una solicitud recien creada puede
+        no estar: ahi si hay que ir a buscarla, o la pantalla se queda vacia."""
+        servicio = self._Servicio([{"code": "CAT-1", "status": "loading"}])
+        servicio.tickets.append({"code": "CAT-2", "status": "draft"})
+        del servicio.tickets[1]
+        self.assertIsNone(app.ticket_para_pantalla(servicio, {}, "CAT-2"))
+        self.assertEqual(servicio.viajes_get, 1)
+
+    def test_un_fallo_de_la_bandeja_no_tumba_la_pantalla(self):
+        class Rota(self._Servicio):
+            def list_tickets(self, actor, **kwargs):
+                raise RuntimeError("GitHub caido")
+        servicio = Rota([{"code": "CAT-1", "status": "loading"}])
+        self.assertEqual(app.ticket_para_pantalla(servicio, {}, "CAT-1")["code"], "CAT-1")
+        self.assertEqual(servicio.viajes_get, 1, "tiene que caer al camino de siempre")
+
+    def test_sin_codigo_no_pregunta_nada(self):
+        servicio = self._Servicio([])
+        self.assertIsNone(app.ticket_para_pantalla(servicio, {}, ""))
+        self.assertEqual(servicio.viajes_get, 0)
+
+    def test_las_pantallas_que_dibujan_ya_no_llaman_a_get_ticket(self):
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        arbol = ast.parse(fuente)
+        for nombre in ("_render_acciones_solicitud_tras_carga",
+                       "render_full_load_ticket_queue", "render_ticket_detail"):
+            cuerpo = ast.get_source_segment(fuente, next(
+                n for n in ast.walk(arbol)
+                if isinstance(n, ast.FunctionDef) and n.name == nombre))
+            self.assertNotIn(".get_ticket(", cuerpo,
+                             f"{nombre} vuelve a bajar el ticket en cada rerun")
+            self.assertIn("ticket_para_pantalla(", cuerpo, nombre)
+
+    def test_escribir_sigue_pidiendo_el_ticket_fresco(self):
+        """El `_revision` con el que se guarda TIENE que venir de GitHub."""
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        arbol = ast.parse(fuente)
+        cuerpo = ast.get_source_segment(fuente, next(
+            n for n in ast.walk(arbol)
+            if isinstance(n, ast.FunctionDef) and n.name == "_adjuntar_matrixify_antes_de_cargar"))
+        self.assertIn("service.get_ticket(", cuerpo)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

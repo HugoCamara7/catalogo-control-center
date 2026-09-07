@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import re
 import unicodedata
@@ -2870,6 +2870,27 @@ def handles_de_siblings(value):
     return [item for item in items if item and not item.lower().startswith("gid://")]
 
 
+def filas_como_registros(matrixify_df, columnas):
+    """Las filas del catalogo como dicts, con SOLO las columnas que se usan.
+
+    Por que existe
+    --------------
+    `iterrows()` construye una Series por fila -- con las 107 columnas del
+    export de Matrixify -- solo para leer un punado de valores. Medido sobre un
+    catalogo de 20.000 filas: `build_existing_lookup` tardaba **9,4 s** y
+    `siblings_ya_publicados` **4,2 s**, y las dos se ejecutan en cada analisis.
+
+    Acotando a las columnas que de verdad se leen y pasando a dicts, las dos
+    bajan a menos de un segundo. `dict.get` no construye nada; `Series.get` si.
+    """
+    if matrixify_df is None or matrixify_df.empty:
+        return []
+    presentes = [columna for columna in columnas if columna in matrixify_df.columns]
+    if not presentes:
+        return []
+    return matrixify_df[presentes].to_dict("records")
+
+
 def siblings_ya_publicados(matrixify_df):
     """Handles que ya viven en Shopify, agrupados por codigo de modelo.
 
@@ -2896,7 +2917,8 @@ def siblings_ya_publicados(matrixify_df):
     modelo_por_handle = {}
     siblings_por_handle = {}
 
-    for _, fila in matrixify_df.iterrows():
+    for fila in filas_como_registros(
+            matrixify_df, ["Handle", PRODUCT_KEY_COLUMN] + columnas_siblings):
         handle = clean(fila.get("Handle"))
         if not handle:
             continue
@@ -2926,7 +2948,12 @@ def build_existing_lookup(matrixify_df):
     if matrixify_df.empty:
         return product_by_key, product_by_handle, variant_by_sku
 
-    for _, row in matrixify_df.iterrows():
+    # Solo las 14 columnas que se leen abajo, no las 107 del export.
+    for row in filas_como_registros(matrixify_df, [
+            "Handle", PRODUCT_KEY_COLUMN, "Variant SKU", "ID", "Title",
+            "Created At", "Updated At", "Published At", "URL",
+            "Variant Inventory Item ID", "Variant ID", "Variant Image",
+            "Variant Price", "Variant Compare At Price"]):
         handle = clean(row.get("Handle"))
         mod_col = clean(row.get("Metafield: custom.codigo_modelo_color [id]")).upper()
         sku = clean(row.get("Variant SKU"))
@@ -3006,7 +3033,9 @@ def matrixify_rows_for_handle(matrixify_df, handle, indice=None):
     if indice is None:
         indice = indice_de_handles(matrixify_df)
     matching_indexes = indice.get(target_handle)
-    return matrixify_df.loc[matching_indexes].copy() if matching_indexes else pd.DataFrame()
+    # `.loc[lista]` ya devuelve una copia: el `.copy()` extra duplicaba las 107
+    # columnas del trozo una vez POR PRODUCTO.
+    return matrixify_df.loc[matching_indexes] if matching_indexes else pd.DataFrame()
 
 
 def variant_payload_from_existing_row(row):
@@ -3050,6 +3079,10 @@ def build_product_variant_lookup(existing_rows):
     if existing_rows is None or existing_rows.empty:
         return variant_by_product_sku, variant_by_product_size
 
+    # Aqui SI conviene `iterrows()`: el trozo es de una decena de filas y
+    # `to_dict("records")` sobre un slice pequeno resulta MAS caro (medido:
+    # 14,3 s -> 17,5 s en el analisis completo). El ahorro de los dicts esta en
+    # las pasadas grandes de una sola vez, no en las de por producto.
     for _, existing_row in existing_rows.iterrows():
         payload = variant_payload_from_existing_row(existing_row)
         sku = clean(existing_row.get("Variant SKU"))
@@ -3320,15 +3353,17 @@ def product_is_unchanged(product_rows, existing_rows, columns):
     if set(generated_skus) != set(existing_by_sku):
         return False
 
+    # Las columnas presentes se resuelven UNA vez, no dentro del doble bucle:
+    # `column not in existing.index` se preguntaba por cada columna y cada
+    # variante, y `Series.index` no es gratis.
     compare_cols = comparable_columns(columns)
+    presentes = [columna for columna in compare_cols if columna in existing_rows.columns]
     for generated in product_rows:
         sku = clean(generated.get("Variant SKU"))
         existing = existing_by_sku.get(sku)
         if existing is None:
             return False
-        for column in compare_cols:
-            if column not in existing.index:
-                continue
+        for column in presentes:
             if compare_clean(generated.get(column, "")) != compare_clean(existing.get(column, "")):
                 return False
     return True

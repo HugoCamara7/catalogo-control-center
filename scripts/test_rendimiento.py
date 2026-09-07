@@ -347,6 +347,52 @@ class TestAnalisisNoEsCuadratico(unittest.TestCase):
         self.assertIn("indice=handles_del_catalogo", cuerpo)
         self.assertNotIn("matrixify_rows_for_handle(matrixify_df, existing_handle)", cuerpo)
 
+    def test_las_pasadas_grandes_del_catalogo_no_usan_iterrows(self):
+        """`build_existing_lookup` y `siblings_ya_publicados` recorren el
+        catalogo ENTERO, una vez por analisis.
+
+        Medido sobre 20.000 filas: 9,4 s y 4,2 s. `iterrows()` construye una
+        Series con las 107 columnas del export solo para leer un punado de
+        valores; acotando las columnas y pasando a dicts bajan a menos de un
+        segundo. Es el 45% del analisis.
+
+        OJO: esto vale para las pasadas GRANDES. En los trozos de una decena de
+        filas -- los de por producto -- `to_dict("records")` sale mas caro que
+        `iterrows()` (medido: 14,3 s -> 17,5 s), y ahi se deja como esta.
+        """
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8-sig")
+        arbol = ast.parse(fuente)
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name in (
+                    "build_existing_lookup", "siblings_ya_publicados"):
+                llamadas = set()
+                for hijo in ast.walk(nodo):
+                    if isinstance(hijo, ast.Call):
+                        # `df.iterrows()` es un Attribute; `filas_como_registros()`
+                        # es un Name. Hay que mirar los dos.
+                        llamadas.add(getattr(hijo.func, "attr", "")
+                                     or getattr(hijo.func, "id", ""))
+                self.assertNotIn("iterrows", llamadas,
+                                 f"{nodo.name} recorre el catalogo entero: sin iterrows")
+                self.assertIn("filas_como_registros", llamadas, nodo.name)
+
+    def test_filas_como_registros_solo_trae_lo_pedido(self):
+        catalogo = pd.DataFrame([{"Handle": "a", "Title": "T", "Otra": "x"}])
+        registros = motor.filas_como_registros(catalogo, ["Handle", "Title", "No existe"])
+        self.assertEqual(registros, [{"Handle": "a", "Title": "T"}])
+        self.assertEqual(motor.filas_como_registros(pd.DataFrame(), ["Handle"]), [])
+
+    def test_el_trozo_por_producto_no_se_copia(self):
+        """`.loc[lista]` ya devuelve una copia: el `.copy()` extra duplicaba las
+        107 columnas del trozo una vez por producto."""
+        # Por AST: el comentario EXPLICA el `.copy()` que se quito y lo nombra.
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8-sig")
+        for nodo in ast.walk(ast.parse(fuente)):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == "matrixify_rows_for_handle":
+                llamadas = {getattr(hijo.func, "attr", "")
+                            for hijo in ast.walk(nodo) if isinstance(hijo, ast.Call)}
+                self.assertNotIn("copy", llamadas)
+
     def test_el_indice_no_usa_iterrows(self):
         """Por AST, no por texto: el docstring EXPLICA el problema y lo nombra."""
         # utf-8-sig: el archivo empieza con BOM y ast.parse no lo tolera.

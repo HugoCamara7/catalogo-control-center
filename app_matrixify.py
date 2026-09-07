@@ -1,4 +1,4 @@
-import io
+﻿import io
 import base64
 import hmac
 import json
@@ -1182,23 +1182,35 @@ def render_catalogo_leido(site_key):
             st.rerun()
 
 
-def leer_catalogo_del_sitio(site_key, shopify_config, force_refresh=False):
+def leer_catalogo_del_sitio(site_key, shopify_config, force_refresh=False, aviso=None):
     """El catalogo del sitio, contando en pantalla por donde va.
 
     La lectura de un catalogo grande son minutos, y un spinner mudo durante
     minutos se lee como "se colgo": la queja era literalmente "ni termina de
     leerlo". El aviso viene del propio motor -que sabe si esta esperando a que
     Shopify prepare la lectura masiva o bajando paginas- y aqui solo se dibuja.
+
+    **`aviso` lo crea el LLAMADOR, y no esta funcion.** Un `st.empty()` creado
+    aqui solo existe en el rerun que LEE el catalogo, y eso cambia la FORMA del
+    arbol de elementos de un rerun al siguiente: Streamlit deja de poder
+    reemplazar el bloque de abajo en su sitio y lo AGREGA debajo del viejo. En
+    pantalla se ve la mitad de la pagina DUPLICADA -la copia vieja en gris-
+    mientras dura el analisis.
+
+    Medido con Chromium sobre un repro minimo: con el hueco creado dentro de la
+    rama, el bloque aparece 2 veces durante el trabajo lento; creado siempre,
+    1 vez. Por eso el llamador lo crea antes de decidir si toca leer.
+
+    Sin `aviso` no se dibuja avance, pero NUNCA se crea un hueco condicional.
     """
-    aviso = st.empty()
+    progreso = (lambda mensaje: aviso.caption(mensaje)) if aviso is not None else None
     try:
-        productos = session_shopify_products(
-            site_key, shopify_config, force_refresh=force_refresh,
-            progreso=lambda mensaje: aviso.caption(mensaje),
+        return session_shopify_products(
+            site_key, shopify_config, force_refresh=force_refresh, progreso=progreso,
         )
     finally:
-        aviso.empty()
-    return productos
+        if aviso is not None:
+            aviso.empty()
 
 
 def clear_shopify_products_cache(site_key):
@@ -25961,6 +25973,13 @@ api_version = "{DEFAULT_API_VERSION}"
             # los lee. Leerlos aqui -330 MB del catalogo y 167 MB del ARTI- era
             # medio segundo de disco por clic, y si la escritura habia fallado
             # el `else` volvia a leer Shopify y BigQuery en cada interaccion.
+            # El hueco donde la lectura cuenta por donde va. Se crea SIEMPRE,
+            # aunque no toque leer: si solo existiera dentro del `else`, el
+            # arbol de elementos cambiaria de forma entre un rerun y el
+            # siguiente y Streamlit dibujaria todo el bloque de abajo DOS
+            # veces -- la copia vieja en gris debajo de la nueva- mientras
+            # dura el analisis. Ver `leer_catalogo_del_sitio`.
+            aviso_lectura = st.empty()
             data_ready = (
                 st.session_state.get("complete_data_context") == complete_context
                 and st.session_state.get("complete_input_df") is not None
@@ -25978,7 +25997,9 @@ api_version = "{DEFAULT_API_VERSION}"
                         st.error("Este sitio no tiene Shopify API configurada en Secrets.")
                         st.stop()
                     with st.spinner("Leyendo productos y variantes actuales desde Shopify..."):
-                        shopify_products = leer_catalogo_del_sitio(brand_config["site_key"], shopify_config)
+                        shopify_products = leer_catalogo_del_sitio(
+                            brand_config["site_key"], shopify_config, aviso=aviso_lectura
+                        )
                     st.session_state["shopify_product_count"] = len(shopify_products)
                     st.session_state["complete_shopify_products"] = shopify_products
                     template_df = shopify_products_to_matrixify_df(shopify_products)

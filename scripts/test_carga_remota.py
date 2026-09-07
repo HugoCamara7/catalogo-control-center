@@ -647,6 +647,14 @@ class TestWorkflow(unittest.TestCase):
         self.assertIn("concurrency:", texto)
         self.assertIn("cancel-in-progress: false", texto)
 
+    def test_respeta_el_secreto_de_version_de_la_api(self):
+        """Con la version escrita a mano, cambiarla en el secreto del
+        repositorio no tenia efecto y la carga remota se quedaba en la
+        anterior sin que nada lo dijera."""
+        texto = self.RUTA.read_text(encoding="utf-8")
+        self.assertIn("secrets.API_VERSION", texto)
+        self.assertNotIn('API_VERSION: "2026-04"', texto)
+
     def test_no_sube_el_resultado_como_artifact_publico(self):
         """El repositorio es publico: un artifact con el detalle de la carga
         seria publicar el catalogo. El resultado va al repositorio privado."""

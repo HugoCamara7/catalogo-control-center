@@ -21238,6 +21238,38 @@ def render_carga_remota(ticket):
     return True
 
 
+def ticket_para_pantalla(service, actor, codigo):
+    """El ticket para DIBUJAR, sacado de la bandeja ya cacheada.
+
+    `get_ticket` va a GitHub **siempre**, y es a proposito: de ahi sale el
+    `_revision` con el que se guarda, y servirlo de una copia vieja haria
+    fallar cada guardado con "cambio en otra sesion".
+
+    Pero las pantallas que solo lo DIBUJAN pagaban ese viaje en CADA rerun, o
+    sea en cada clic: en Carga completa eran uno o dos viajes a GitHub por
+    interaccion, y desde Streamlit Cloud eso se siente.
+
+    La bandeja ya esta cacheada (25 s) y **toda escritura la invalida**
+    (`invalidate_cache` en create/update/delete), asi que para dibujar es el
+    mismo dato sin el viaje: despues de cualquier accion la siguiente lectura
+    ya es fresca.
+
+    Para ESCRIBIR se sigue usando `get_ticket`. No cambies esto sin leer el
+    primer parrafo.
+    """
+    codigo = clean_value(codigo)
+    if not codigo:
+        return None
+    try:
+        for ticket in service.list_tickets(actor) or []:
+            if clean_value(ticket.get("code")) == codigo:
+                return ticket
+    except Exception:  # noqa: BLE001 - la bandeja no puede tumbar la pantalla
+        pass
+    # No esta en la bandeja (filtrada por rol, recien creada): se pide.
+    return service.get_ticket(actor, codigo)
+
+
 def _render_acciones_solicitud_tras_carga():
     """Acciones sobre la solicitud sin salir de la pantalla de carga.
 
@@ -21256,8 +21288,11 @@ def _render_acciones_solicitud_tras_carga():
         return
     try:
         servicio, _ = get_ticket_service()
-        ticket = servicio.get_ticket(actor, codigo)
+        # Para dibujar, no para escribir: ver `ticket_para_pantalla`.
+        ticket = ticket_para_pantalla(servicio, actor, codigo)
     except TicketError:
+        return
+    if not ticket:
         return
 
     estado = clean_value(ticket.get("status"))
@@ -21806,7 +21841,8 @@ def render_full_load_ticket_queue(brand_config):
             key=f"full_load_ticket_{brand_config.get('site_key')}",
         )
         try:
-            ticket = service.get_ticket(actor, selected_code)
+            # Para dibujar, no para escribir: ver `ticket_para_pantalla`.
+            ticket = ticket_para_pantalla(service, actor, selected_code)
         except TicketError as exc:
             st.error(str(exc))
             return
@@ -23041,7 +23077,8 @@ def render_acciones_con_comentario(service, actor, ticket, con_comentario, prefi
 
 def render_ticket_detail(service, actor, code):
     try:
-        ticket = service.get_ticket(actor, code)
+        # Para dibujar, no para escribir: ver `ticket_para_pantalla`.
+        ticket = ticket_para_pantalla(service, actor, code)
     except TicketError as exc:
         _mostrar_error_ticket(exc, code)
         return
@@ -25888,7 +25925,13 @@ api_version = "{DEFAULT_API_VERSION}"
                 )
                 if forzar_manual:
                     archivo_solicitud = None
-                    st.session_state.pop("carga_desde_solicitud", None)
+                    # La solicitud NO se suelta: solo cambia el archivo. El
+                    # aviso de abajo promete justo eso, y antes el codigo la
+                    # soltaba -- con lo que el Matrixify no se adjuntaba a la
+                    # solicitud (o sea que la carga por GitHub Actions se
+                    # quedaba sin nada que cargar) y encima desaparecian los
+                    # botones de cierre al terminar el analisis.
+                    st.session_state["carga_desde_solicitud"] = ticket_elegido.get("code")
                     st.caption(
                         f'La carga quedará asociada a {clean_value(ticket_elegido.get("code"))}, '
                         "pero con el archivo que subas aquí."

@@ -117,6 +117,23 @@ SIAL_TAIL_PATAGONIA = [
     "13",
 ]
 
+# Supermall.pe es el marketplace: lleva el catalogo de TODOS los sitios, no el
+# de una marca. Su cola es la misma de los demas mas su propia columna de
+# Product Id, que es la que hace que el ID vuelva al sitio correcto — igual
+# que se hizo con Patagonia.
+#
+# OJO: "13" es el codigo de bodega SIAL heredado del resto de los sitios (esta
+# en cuatro de los cinco). Si Supermall despacha desde otra bodega hay que
+# cambiar `sial_active_columns`; el resto del sitio funciona igual.
+SIAL_TAIL_SUPERMALL = [
+    "Nuevo o Actualizar (Columbia.pe)",
+    "Sku - Supermall.pe",
+    "Porduct Id - Columbia.pe",
+    "Nuevo o Actualizar (Supermall.pe)",
+    "Porduct Id - Supermall.pe",
+    "13",
+]
+
 SIAL_TAIL_VANS = [
     "Nuevo o Actualizar (Columbia.pe)",
     "Sku - Supermall.pe",
@@ -198,7 +215,39 @@ SITE_CONFIGS = {
         "sial_tail_columns": SIAL_TAIL_VANS,
         "sial_active_columns": ["103"],
     },
+    "supermall": {
+        "label": "Supermall",
+        "site_label": "Supermall.pe",
+        # Las marcas NO se escriben a mano: son la union de las de todos los
+        # demas sitios, y se rellenan justo debajo. Ver el comentario de ahi.
+        "allowed_arti_brands": [],
+        "vendor": "supermallpe",
+        "legacy_vendors": ["supermallpe", "supermall"],
+        "store_domain": "Supermall.pe",
+        # Respaldo nada mas: Supermall vende varias marcas y la carpeta de
+        # fotos la manda la MARCA (`BRAND_IMAGE_FOLDERS`), no el sitio. Es el
+        # mismo caso de Rockford.pe, que vende cuatro.
+        "image_folder": "",
+        "output_filename": "matrixify_supermall_generado.xlsx",
+        "sial_tail_columns": SIAL_TAIL_SUPERMALL,
+        "sial_active_columns": ["13"],
+        # Supermall es el ESPEJO de los demas sitios: no tiene input comercial
+        # propio, recibe lo que ya se cargo en otro lado.
+        "es_espejo": True,
+    },
 }
+
+# Las marcas de Supermall son las de TODOS los demas sitios, calculadas y no
+# escritas a mano. Con una lista fija, una marca nueva en cualquier sitio se
+# cargaria ahi y Supermall la rechazaria por "marca no permitida" hasta que
+# alguien se acordara de venir a este archivo. Supermall existe justo para no
+# depender de que alguien se acuerde.
+SITE_CONFIGS["supermall"]["allowed_arti_brands"] = sorted({
+    marca
+    for clave, config in SITE_CONFIGS.items()
+    if clave != "supermall"
+    for marca in config.get("allowed_arti_brands", [])
+})
 
 BRAND_CONFIGS = SITE_CONFIGS
 

@@ -60,8 +60,9 @@ Documento de continuidad. Léelo completo antes de tocar código.
 App Streamlit que convierte un Excel comercial en un catálogo Matrixify y lo
 sincroniza con Shopify, para varios sitios de Forus Perú.
 
-Sitios: Columbia.pe · Rockford.pe · HushPuppies.pe · Vans.pe (más Patagonia y
-Sorel en configuración). Cada uno con su vendor, marcas permitidas y colores.
+Sitios: Columbia.pe · Rockford.pe · HushPuppies.pe · Vans.pe · Patagonia.pe y
+**Supermall.pe**, que es el sitio ESPEJO y lleva el catálogo de todos (Sorel en
+configuración). Cada uno con su vendor, marcas permitidas y colores.
 
 Fuentes de datos: **BigQuery** (maestro ARTI y stock), **Shopify Admin API**
 (catálogo actual), y respaldos Excel en `data/`.
@@ -79,6 +80,8 @@ app_matrixify.py        25.6xx lineas · 595 funciones · UI + routing + logica
 │   ├── metrics.py      190 lin · metricas por Mod-Col (26 pruebas)
 │   ├── price_check.py  200 lin · validacion precio/stock (19 pruebas)
 │   ├── ticket_flow.py  562 lin · 23 estados -> 5 visibles (55 pruebas)
+│   ├── load_status.py   diagnostico de carga de todos los sitios (37 pruebas)
+│   ├── espejo_supermall.py  que le falta al espejo (35 pruebas)
 │   └── storage_check.py 176 lin · diagnostico de persistencia
 ├── ticket_system.py    1.093 lin · maquina de estados, 2 stores, 28 pruebas
 ├── generate_columbia_matrixify.py  3.319 lin · motor de catalogo
@@ -1112,6 +1115,111 @@ falso: no sale a la red.
 
 ---
 
+## 5 undecies. Supermall.pe: el sitio espejo (septiembre 2026)
+
+`engines/espejo_supermall.py` (sin Streamlit ni pandas) + la pestaña **"Espejo
+de Supermall"** dentro de Status de carga + el botón **"Preparar esta carga
+para Supermall.pe"** al final de Carga completa.
+
+Supermall dejó VTEX y pasó a Shopify (sección 5 sexies bis), y **lleva el
+catálogo de TODOS los sitios**, no el de una marca. O sea: es Rockford.pe
+llevado al extremo, y el modelo de la app ya servía — un sitio más en
+`SITE_CONFIGS`.
+
+**Sus marcas NO están escritas a mano.** Son la unión de las de todos los demás
+sitios, calculada justo debajo de `SITE_CONFIGS`. Con una lista fija, una marca
+nueva en cualquier sitio se cargaría ahí y Supermall la rechazaría por "marca no
+permitida" hasta que alguien se acordara de venir a este archivo. Supermall
+existe justo para no depender de que alguien se acuerde.
+
+**No recibe input comercial.** `sites_for_commercial_brand` salta los sitios con
+`es_espejo`: si entrara, la plantilla del input le pondría a cada marca una
+columna `PUBLICAR_SUPERMALL_PE` que no decide nada, y una casilla que no hace
+nada es peor que no tenerla.
+
+### El espejo: la resta, no la costumbre
+
+Mantener Supermall al día "acordándose de cargar también allí" falla el día que
+alguien tiene prisa, y nadie se entera hasta que un producto lleva meses sin
+salir. La pestaña responde por la resta:
+
+```
+lo que hay en cualquier sitio  -  lo que hay en Supermall  =  lo que falta
+```
+
+- **Vive DENTRO de Status de carga**, no en pantalla propia. Es la única
+  pantalla que ya tiene todos los sitios leídos (sección 5 quater); darle
+  pantalla propia costaría leer los seis otra vez.
+- **No vuelve a escribir cómo se lee un producto de Shopify.** La marca, el
+  estado web y sobre todo la identidad salen de `engines/load_status`. Dos
+  lectores del mismo producto se separan sin que nadie lo note.
+- **Se cuenta por `clave_de_producto`**, igual que el Status de carga: con
+  `set()` sobre el Mod-Col, todos los productos sin metacampo comparten la
+  cadena vacía y el conjunto los colapsa en uno.
+- **Cargado no es lo mismo que visible.** Lo que está en Supermall pero en
+  borrador o sin publicar sale como "Cargados sin publicar" y **no** entra en la
+  lista de códigos a cargar: recargarlo le reescribiría la ficha sin que nadie
+  lo pida. Eso se publica, no se carga.
+- **Un producto sin código Modelo-Color no se puede espejar por código** y se
+  cuenta aparte. La carga se pide por lista de códigos y el suyo no existe;
+  mezclarlo con "falta" dejaría la lista con huecos que nadie explica.
+- **Destino ausente ≠ destino vacío.** Si el catálogo de Supermall no se pudo
+  leer, todo saldría como "falta" y eso se leería como "hay que cargar el
+  catálogo entero". Con el destino sin leer la pestaña avisa y no compara.
+- Un producto que está en tres sitios cuenta **una** vez, y la fila dice en
+  cuáles está.
+
+### El segundo destino: dos pasadas, no una escritura doble
+
+Al terminar una Carga completa aparece **"Preparar esta carga para
+Supermall.pe"**: cambia el sitio activo y deja la **misma solicitud** ya elegida
+en el selector de Carga completa. Es el mismo mecanismo de `ir_a_carga_completa`
+que ya se usa después de "Aceptar carga".
+
+**Son dos pasadas encadenadas y eso es a propósito.** Cada pasada arma su PROPIO
+Matrixify, porque el catálogo contra el que se decide *crear* o *actualizar* es
+el de la tienda destino y los `Product Id` de Vans.pe no valen en Supermall.pe.
+Tener los dos vivos a la vez son ~450 MB medidos de los 1.024 que Streamlit
+Cloud da **por app** (sección 5 nonies): con dos personas cargando, el
+contenedor se muere. Encadenadas solo hay un Matrixify vivo cada vez. Hay un
+test que falla si aparece un `build_columbia_matrixify` dentro de esa función.
+
+**Es la misma solicitud, no una copia.** `_ticket_matches_active_site` deja pasar
+las solicitudes de cualquier sitio cuando el destino es el espejo. Sin eso
+habría que duplicar el ticket, y serían dos tickets para una sola decisión.
+
+**El cambio de sitio va por `site_picker_pendiente`.** Escribir `site_picker`
+después de que el `selectbox` existe levanta `StreamlitAPIException`, y el botón
+vive en el área principal, que se dibuja **después** de la barra lateral. La
+barra lo consume justo antes de instanciar el selector. Hay un test que
+comprueba el orden.
+
+### Lo que hay que confirmar todavía
+
+Tres datos de negocio que el código deja configurables y con un valor por
+defecto razonable, pero que nadie ha confirmado:
+
+1. **La bodega SIAL** (`sial_active_columns`). Quedó en `"13"`, que es la que
+   comparten cuatro de los cinco sitios. Si Supermall despacha desde otra, se
+   cambia ahí y ya.
+2. **Las tallas de calzado.** Vans.pe publica en tallas PE con
+   `tallas_calzado_pe`; Supermall quedó **sin** la bandera, o sea en tallas de
+   origen. Es una bandera de SITIO, no de marca, así que hoy no se puede tener
+   Vans en PE y el resto en origen dentro del mismo sitio.
+3. **El logo.** No hay `assets/brands/logo_supermall.png`; hasta que lo haya, la
+   barra lateral dibuja la insignia de dos letras.
+
+Y un fallo **preexistente** que Supermall hace más visible: `sial_tail_row` pone
+"Crear"/"Actualizar" en TODAS las columnas `Nuevo o Actualizar (...)` con el
+`existing_id` del sitio que se está cargando. O sea que en una carga de Vans, la
+columna de Supermall dice "Actualizar" si el producto existe en **Vans**. Ya era
+así para Columbia; no se tocó aquí porque cambiarlo afecta la hoja de los cinco
+sitios y es una decisión de negocio.
+
+`scripts/test_espejo_supermall.py` (35 pruebas) fija todo esto.
+
+---
+
 ## 5 nonies. La carga sigue con la sesión cerrada (septiembre 2026)
 
 `engines/carga_remota.py` (sin Streamlit) + `scripts/worker_carga_shopify.py` +
@@ -1374,6 +1482,13 @@ Secciones: `[bigquery]`, `[gcp_service_account]`, `[app_auth]`,
 GitHub Actions usa sus propios secretos (Settings → Secrets → Actions):
 `COLUMBIA_SHOP_DOMAIN`, `*_ADMIN_API_ACCESS_TOKEN`, `BIGQUERY_*`.
 
+**Un sitio nuevo hay que darlo de alta en TRES sitios**: `SITE_CONFIGS`,
+`[shopify_sites.<clave>]` de Streamlit y el bloque `env:` de
+`.github/workflows/carga-shopify.yml`. Si falta el tercero, la carga remota
+falla con "faltan credenciales" y nada más. Hay un test que recorre
+`SITE_CONFIGS` y lo comprueba contra el workflow — antes la lista estaba
+escrita a mano y por eso no atrapó a Supermall.
+
 ---
 
 ## 12. Cómo validar antes de entregar
@@ -1381,7 +1496,7 @@ GitHub Actions usa sus propios secretos (Settings → Secrets → Actions):
 ```bash
 python scripts/test_brand_commercial_input.py          # 6
 python scripts/test_carga_desde_solicitud.py           # 28
-python scripts/test_carga_remota.py                    # 29
+python scripts/test_carga_remota.py                    # 34
 python scripts/test_engines_audit.py                   # 45
 python scripts/test_engines_metrics.py                 # 26
 python scripts/test_engines_notify.py                  # 88
@@ -1392,6 +1507,7 @@ python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
 python scripts/test_carga_sial_parcial.py               # 28
 python scripts/test_lectura_catalogo.py                # 27
+python scripts/test_espejo_supermall.py                # 35
 python scripts/test_memoria.py                         # 14
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 20

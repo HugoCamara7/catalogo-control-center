@@ -669,5 +669,62 @@ class TestWorkflow(unittest.TestCase):
         self.assertNotIn("upload-artifact", self.RUTA.read_text(encoding="utf-8"))
 
 
+
+class TestDiagnostico(unittest.TestCase):
+    """Si la carga sobrevive al cierre de sesion, y que falta si no.
+
+    Origen: `get_job_adapter` cae al adaptador local EN SILENCIO cuando falta
+    configuracion. Es lo correcto -- sin `[carga_remota]` la app sigue
+    funcionando igual que antes -- pero deja a quien lanza una carga de 1.000
+    productos sin forma de saber si puede cerrar la pestana. Y esa es LA
+    pregunta cuando la carga dura horas.
+    """
+
+    def test_con_todo_configurado_sobrevive(self):
+        estado = cr.diagnostico_carga_remota(
+            {"token": "ghp_x", "repository": "HugoCamara7/catalogo-control-center"},
+            almacen_disponible=True)
+        self.assertTrue(estado["sobrevive"])
+        self.assertTrue(all(paso["estado"] == "ok" for paso in estado["pasos"]))
+
+    def test_sin_token_no_sobrevive_y_dice_cual(self):
+        estado = cr.diagnostico_carga_remota({}, almacen_disponible=True)
+        self.assertFalse(estado["sobrevive"])
+        fallo = [paso for paso in estado["pasos"] if paso["estado"] != "ok"]
+        self.assertEqual([paso["clave"] for paso in fallo], ["token"])
+        # Y el arreglo tiene que decir QUE token, que es donde se confunde todo
+        # el mundo: no es el de [ticketing].
+        self.assertIn("ticketing", fallo[0]["arreglo"])
+
+    def test_sin_repositorio_de_datos_no_sobrevive(self):
+        estado = cr.diagnostico_carga_remota({"token": "ghp_x"}, almacen_disponible=False)
+        self.assertFalse(estado["sobrevive"])
+        self.assertIn("almacen", [paso["clave"] for paso in estado["pasos"]
+                                  if paso["estado"] != "ok"])
+
+    def test_apagado_a_proposito_tambien_se_ve(self):
+        estado = cr.diagnostico_carga_remota(
+            {"token": "ghp_x", "enabled": "false"}, almacen_disponible=True)
+        self.assertFalse(estado["sobrevive"])
+        self.assertIn("habilitado", [paso["clave"] for paso in estado["pasos"]
+                                     if paso["estado"] != "ok"])
+
+    def test_todos_los_requisitos_traen_su_arreglo(self):
+        estado = cr.diagnostico_carga_remota({}, almacen_disponible=False)
+        for paso in estado["pasos"]:
+            if paso["estado"] != "ok":
+                self.assertTrue(paso["arreglo"], f"{paso['clave']} sin instrucciones")
+
+    def test_el_aviso_se_dibuja_donde_se_lanza_la_carga(self):
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        self.assertIn("def render_aviso_carga_remota(", fuente)
+        # Antes de la casilla que dispara la sincronizacion, no despues.
+        aviso = fuente.index("render_aviso_carga_remota()\n                    confirm_complete")
+        self.assertGreater(aviso, 0)
+        # Dos llamadas: la de Carga completa y la de Auditoria. La definicion
+        # no cuenta, lleva `compacto=False` dentro del parentesis.
+        self.assertGreaterEqual(fuente.count("render_aviso_carga_remota()"), 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

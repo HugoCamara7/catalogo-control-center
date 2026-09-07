@@ -52,6 +52,7 @@ from engines.carga_remota import ESTADOS_JOB_VIVO as JOB_ESTADOS_VIVOS
 from engines.carga_remota import JOB_SIN_DISPARAR
 from engines.carga_remota import PRODUCTOS_POR_BLOQUE as JOB_PRODUCTOS_POR_BLOQUE
 from engines.carga_remota import resumen_job as job_resumen
+from engines.carga_remota import diagnostico_carga_remota
 from engines.ticket_flow import acciones_disponibles as flujo_acciones
 from engines.ticket_flow import accion_principal as flujo_accion_principal
 from engines.ticket_flow import atajos_disponibles as flujo_atajos
@@ -19938,6 +19939,8 @@ def render_audit_center():
         render_storage_diagnostico()
     with st.expander("Memoria de la app", expanded=False):
         render_panel_memoria()
+    with st.expander("¿La carga sobrevive al cierre de sesión?", expanded=False):
+        render_aviso_carga_remota()
     with st.spinner("Leyendo auditoria..."):
         eventos = servicio.all_events()
 
@@ -21071,6 +21074,53 @@ def _job_remoto(_almacen, job_id):
     """
     job, _ = _almacen.leer(job_id)
     return job
+
+
+def estado_carga_remota():
+    """Si la carga de este despliegue sobrevive al cierre de sesion."""
+    return diagnostico_carga_remota(
+        _config_carga_remota(),
+        almacen_disponible=get_job_store() is not None,
+    )
+
+
+def render_aviso_carga_remota(compacto=False):
+    """Una linea que dice si se puede cerrar la pestana, y que falta si no.
+
+    Por que existe: `get_job_adapter` cae al adaptador local EN SILENCIO cuando
+    falta configuracion. Sin esto, quien lanza una carga de 1.000 productos no
+    tiene forma de saber si puede irse a almorzar o si al cerrar la pestana
+    pierde el trabajo. Y esa es LA pregunta cuando la carga dura horas.
+    """
+    estado = estado_carga_remota()
+    if estado["sobrevive"]:
+        st.success(
+            "**La carga sigue aunque cierres la sesión.** Se ejecuta en un runner de GitHub "
+            "Actions y el avance se guarda por bloques en el repositorio de datos: puedes "
+            "cerrar la pestaña y volver a mirar cuando quieras."
+        )
+        return True
+    st.warning(
+        "**Si cierras esta pestaña, la carga se detiene.** Se está ejecutando dentro de la "
+        "sesión de Streamlit, por bloques y a mano. Lo ya cargado no se pierde, pero hay que "
+        "volver y continuar."
+    )
+    if compacto:
+        return False
+    faltan = [paso for paso in estado["pasos"] if paso["estado"] != "ok"]
+    with st.expander(f"Qué falta para que sobreviva ({len(faltan)})", expanded=False):
+        for paso in estado["pasos"]:
+            if paso["estado"] == "ok":
+                st.markdown(f"- ✅ {paso['titulo']}"
+                            + (f" · `{paso['detalle']}`" if paso.get("detalle") else ""))
+            else:
+                st.markdown(f"- ❌ **{paso['titulo']}** — {paso['arreglo']}")
+        st.caption(
+            "Se configura en Streamlit Cloud → Manage app → Settings → Secrets, en la sección "
+            "`[carga_remota]`. Los secretos del runner (dominios y tokens de Shopify) van "
+            "aparte, en GitHub → Settings → Secrets → Actions."
+        )
+    return False
 
 
 def render_carga_remota(ticket):
@@ -25720,6 +25770,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         "Sincronizacion directa habilitada: titulo, descripcion, vendor, tipo, tags, metafields, fotos, variantes, precios y SKUs de inventory item."
                         " Ninguna variante se envia por API sin SKU."
                     )
+                    render_aviso_carga_remota()
                     confirm_complete = st.checkbox("Confirmo que revise la vista previa y quiero sincronizar productos existentes en Shopify")
                     if confirm_complete:
                         render_persistent_sync_job_panel(

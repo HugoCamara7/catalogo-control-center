@@ -323,6 +323,64 @@ def resumen_job(job):
 
 # --- almacen del avance ---------------------------------------------------
 
+# --- Diagnostico: esta carga, sobrevive al cierre de sesion? -------------
+#
+# La app cae al adaptador local EN SILENCIO cuando falta configuracion. Eso es
+# correcto -- sin `[carga_remota]` todo sigue funcionando como antes -- pero deja
+# a quien carga sin forma de saber si puede cerrar la pestana. Y esa es
+# justamente la pregunta que importa cuando una carga dura horas.
+#
+# Aqui se responde con DATOS, no con widgets: quien dibuja es app_matrixify.
+REQUISITOS_CARGA_REMOTA = (
+    ("token", "Token con permiso Actions: write",
+     "Agrega `token` a la sección [carga_remota] de Secrets. NO es el de [ticketing]: "
+     "aquel escribe contenidos en el repositorio de datos, este dispara un workflow "
+     "en el repositorio del código, que es otro permiso."),
+    ("almacen", "Repositorio de datos para guardar el avance",
+     "El avance vive en el repositorio privado, junto a las solicitudes. Con el backend "
+     "de solicitudes en modo local no hay dónde publicarlo: configura [ticketing]."),
+    ("habilitado", "Carga remota habilitada",
+     "La sección [carga_remota] tiene `enabled = false`. Quítalo o ponlo en true."),
+    ("repositorio", "Repositorio y workflow indicados",
+     "Revisa `repository` y `workflow` en [carga_remota]. Por defecto son "
+     "`HugoCamara7/catalogo-control-center` y `carga-shopify.yml`."),
+)
+
+
+def diagnostico_carga_remota(config, *, almacen_disponible=False):
+    """Si la carga sobrevive al cierre de sesion, y que falta si no.
+
+    Devuelve {"sobrevive": bool, "pasos": [{clave, titulo, estado, arreglo}]}.
+    `estado` es "ok" o "error". No consulta la red: mira la configuracion, que
+    es lo que decide si `get_job_adapter` devuelve el adaptador real o el local.
+    """
+    config = dict(config or {})
+    habilitado = _texto(config.get("enabled", "true")).casefold() not in {"false", "0", "no"}
+    token = bool(_texto(config.get("token")))
+    repositorio = _texto(config.get("repository")) or "HugoCamara7/catalogo-control-center"
+    workflow = _texto(config.get("workflow")) or "carga-shopify.yml"
+    cumplido = {
+        "token": token,
+        "almacen": bool(almacen_disponible),
+        "habilitado": habilitado,
+        "repositorio": bool(repositorio and "/" in repositorio and workflow),
+    }
+    pasos = []
+    for clave, titulo, arreglo in REQUISITOS_CARGA_REMOTA:
+        ok = cumplido.get(clave, False)
+        detalle = ""
+        if clave == "repositorio" and ok:
+            detalle = f"{repositorio} · {workflow}"
+        pasos.append({
+            "clave": clave,
+            "titulo": titulo,
+            "estado": "ok" if ok else "error",
+            "arreglo": "" if ok else arreglo,
+            "detalle": detalle,
+        })
+    return {"sobrevive": all(cumplido.values()), "pasos": pasos}
+
+
 class ErrorCargaRemota(RuntimeError):
     """Algo impidio crear, disparar o leer un job."""
 

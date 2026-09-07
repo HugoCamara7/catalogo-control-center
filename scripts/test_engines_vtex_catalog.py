@@ -558,6 +558,119 @@ class TestEspecificaciones(unittest.TestCase):
         self.assertTrue(archivos[vtex.ARCHIVO_PRODUCTOS]["filas"])
 
 
+class TestDiccionarioGuardado(unittest.TestCase):
+    """El diccionario de la tienda se puede guardar y releer.
+
+    Origen: el catalogo y el diccionario cambian a ritmos MUY distintos. El
+    catalogo cambia con cada carga (IDs nuevos); el diccionario solo cuando
+    alguien crea un campo o un valor en el admin de VTEX. Pedir las dos
+    exportaciones de especificaciones cada vez es pedir 90 MB para leer algo
+    que no se movio en meses.
+    """
+
+    def test_ida_y_vuelta_conserva_campos_valores_y_categorias(self):
+        original = maestro()
+        datos = vtex.diccionario_de(original)
+        # El JSON tiene que sobrevivir el viaje: nada de sets ni tuplas sueltas.
+        import json
+        datos = json.loads(json.dumps(datos, ensure_ascii=False))
+        copia = vtex.CatalogoMaestroVTEX.desde_filas(MAESTRO)
+        self.assertEqual(len(copia.campos_producto), 0)
+        vtex.aplicar_diccionario(copia, datos)
+        self.assertEqual(sorted(copia.campos_producto), sorted(original.campos_producto))
+        self.assertEqual(sorted(copia.campos_sku), sorted(original.campos_sku))
+        campo = copia.campo_por_nombre(copia.campos_sku, "Talla", "Hombre", "Zapatos")
+        self.assertEqual(campo["ID de campo"], "28")
+        self.assertEqual(copia.valor_de_campo(campo, "39"), ("141", "39"))
+        self.assertEqual(copia.valor_de_campo(campo, "99")[0], None)
+
+    def _con_y_sin_export(self):
+        con_export = maestro()
+        esperado = vtex.construir_archivos(vtex.plan_de_carga([entrada()], con_export), con_export)
+        guardado = vtex.CatalogoMaestroVTEX.desde_filas(MAESTRO)
+        vtex.aplicar_diccionario(guardado, vtex.diccionario_de(con_export))
+        obtenido = vtex.construir_archivos(vtex.plan_de_carga([entrada()], guardado), guardado)
+        return esperado, obtenido
+
+    def test_genera_las_mismas_planillas_que_con_las_exportaciones(self):
+        # Si el diccionario guardado no diera el mismo resultado, seria una
+        # trampa: se ahorraria la subida a costa de generar otra cosa.
+        esperado, obtenido = self._con_y_sin_export()
+        # El ID del VALOR de especificacion es lo unico que no puede salir del
+        # diccionario: es de cada producto, no del campo. Ver la prueba de abajo.
+        aparte = {"IDs de especificación"}
+        for nombre in (vtex.ARCHIVO_PRODUCTOS, vtex.ARCHIVO_ESPEC_PRODUCTO, vtex.ARCHIVO_ESPEC_SKU):
+            for fila_obtenida, fila_esperada in zip(obtenido[nombre]["filas"], esperado[nombre]["filas"]):
+                for columna in fila_esperada:
+                    if columna in aparte:
+                        continue
+                    self.assertEqual(fila_obtenida[columna], fila_esperada[columna],
+                                     f"{nombre} · {columna}")
+            self.assertEqual(len(obtenido[nombre]["filas"]), len(esperado[nombre]["filas"]), nombre)
+
+    def test_los_campos_de_lista_conservan_su_id_de_valor_sin_la_exportacion(self):
+        """Radio y CheckBox salen IDENTICOS: su valor es del campo, no del producto.
+
+        El ID de "Hombre" en el campo Genero es 62 para toda la tienda, y eso
+        SI viaja en el diccionario.
+        """
+        esperado, obtenido = self._con_y_sin_export()
+        def por_campo(archivos, tipos):
+            return {fila["Nombre del campo"]: fila["IDs de especificación"]
+                    for fila in archivos[vtex.ARCHIVO_ESPEC_PRODUCTO]["filas"]
+                    if fila["Tipo de campo"] in tipos}
+        cerrados = ("Radio", "CheckBox")
+        self.assertEqual(por_campo(obtenido, cerrados), por_campo(esperado, cerrados))
+        self.assertEqual(por_campo(esperado, cerrados).get("Género"), "62")
+
+    def test_sin_la_exportacion_se_pierde_el_id_del_valor_de_los_campos_de_texto(self):
+        """Y hay que saberlo, no descubrirlo.
+
+        En un campo de Texto, `IDs de especificación` es el ID del valor que
+        ESE producto tiene guardado (Modelo = 586682), no el del campo: vive en
+        el catalogo, no en el diccionario. Sin la exportacion sale en blanco y
+        VTEX resuelve el valor por producto + campo.
+        """
+        esperado, obtenido = self._con_y_sin_export()
+        def por_campo(archivos):
+            return {fila["Nombre del campo"]: fila["IDs de especificación"]
+                    for fila in archivos[vtex.ARCHIVO_ESPEC_PRODUCTO]["filas"]
+                    if fila["Tipo de campo"] not in ("Radio", "CheckBox")}
+        con, sin = por_campo(esperado), por_campo(obtenido)
+        self.assertTrue(any(con.values()), "el maestro de ejemplo trae IDs de valor de texto")
+        self.assertEqual(set(sin.values()), {""})
+        self.assertEqual(sorted(con), sorted(sin))
+
+    def test_lo_subido_en_la_sesion_manda_sobre_lo_guardado(self):
+        # Si no, actualizar el diccionario desde la pantalla no serviria de
+        # nada: el guardado lo volveria a tapar.
+        actual = maestro()
+        viejo = {"campos_sku": [{"ID de campo": "28", "Nombre del campo": "Talla",
+                                 "Tipo de campo": "Radio",
+                                 "IDs de valores de campo": "1", "Valores de campo": "XXX",
+                                 "categorias": []}]}
+        vtex.aplicar_diccionario(actual, viejo)
+        campo = actual.campos_sku["28"]
+        self.assertEqual(campo["Valores de campo"], "39,40,41")
+
+    def test_el_diccionario_semilla_del_repo_se_lee_y_trae_los_campos(self):
+        import json
+        ruta = ROOT / "data" / "vtex_diccionario_supermallpe.json"
+        self.assertTrue(ruta.exists(), "falta el diccionario semilla")
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+        m = vtex.CatalogoMaestroVTEX.desde_filas(MAESTRO)
+        vtex.aplicar_diccionario(m, datos)
+        # Los dos campos de SKU de la tienda, con sus listas cerradas enteras.
+        talla = m.campo_por_nombre(m.campos_sku, "Talla", "Hombre", "Zapatos")
+        color = m.campo_por_nombre(m.campos_sku, "Color", "Hombre", "Zapatos")
+        self.assertEqual(talla["ID de campo"], "28")
+        self.assertEqual(color["ID de campo"], "29")
+        self.assertGreater(len(talla["valores"]), 200)
+        self.assertGreater(len(color["valores"]), 100)
+        self.assertEqual(m.valor_de_campo(talla, "39"), ("141", "39"))
+        self.assertGreater(len(m.campos_producto), 40)
+
+
 class TestVistaPrevia(unittest.TestCase):
     def test_trae_las_columnas_que_pide_la_pantalla(self):
         plan = vtex.plan_de_carga([entrada()], maestro())
@@ -622,14 +735,25 @@ class TestIntegracionConLaPantalla(unittest.TestCase):
                       if isinstance(nodo, _ast.FunctionDef) and nodo.name == "vtex_maestro_cacheado"]
         self.assertEqual(len(definicion), 1)
         nombres = [argumento.arg for argumento in definicion[0].args.args]
-        self.assertEqual(nombres, ["firma", "_archivos"])
+        self.assertEqual(nombres, ["firma", "referencias", "_archivos"])
+        # `referencias` tampoco lleva guion bajo: el maestro se lee ACOTADO a
+        # esos codigos, asi que con otros codigos hay que releerlo. Si Streamlit
+        # la ignorara, cambiar la lista devolveria el maestro de la lista
+        # anterior y faltarian justo los productos nuevos.
 
     def test_el_maestro_se_lee_sin_cargar_el_excel_entero(self):
-        # 100 MB con `pd.read_excel` no caben en Streamlit Cloud.
-        inicio = self.fuente.index("def vtex_hojas_de_archivo(")
-        fin = self.fuente.index("def vtex_filas_de_archivo(")
+        # 100 MB con `pd.read_excel` no caben en Streamlit Cloud. El detalle
+        # completo, con presupuesto medido, esta en scripts/test_memoria.py.
+        inicio = self.fuente.index("def vtex_filas_de_archivo(")
+        fin = self.fuente.index("def vtex_tamano_de_archivo_mb(")
         cuerpo = self.fuente[inicio:fin]
         self.assertIn("read_only=True", cuerpo)
+        self.assertIn("yield", cuerpo)
+
+    def test_el_maestro_se_lee_acotado_a_los_codigos_pedidos(self):
+        """Guardar los 30.000 productos de la tienda eran los 2 GB del fallo."""
+        self.assertIn("referencias=list(referencias or ())", self.fuente)
+        self.assertIn("vtex_maestro_cacheado(firma, tuple(codigos), archivos)", self.fuente)
 
     def test_el_motor_no_importa_streamlit_ni_pandas(self):
         fuente = (ROOT / "engines" / "vtex_catalog.py").read_text(encoding="utf-8")

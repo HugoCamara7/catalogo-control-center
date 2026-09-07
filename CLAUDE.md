@@ -24,10 +24,17 @@ Documento de continuidad. Léelo completo antes de tocar código.
    Una prueba que solo mire `at.exception` dirá "sin excepciones" con la app
    rota. Hay que comprobar también `at.error`.
 
-5. **Nunca dejes una función sin llamador.** Ya pasó dos veces: se definió un
+5. **Ningún archivo del usuario se carga entero en memoria.** Se recorre en
+   streaming y solo se conserva lo que se va a usar. Un lector nuevo se prueba
+   con un archivo del TAMAÑO REAL, nunca con una muestra: en septiembre de 2026
+   un lector probado con 500 filas pedía 2 GB con el archivo de verdad y tumbó
+   la app. Streamlit Cloud da 1 GB **por app, no por usuario**. Lo vigila
+   `scripts/test_memoria.py`.
+
+6. **Nunca dejes una función sin llamador.** Ya pasó dos veces: se definió un
    panel y nunca se invocó. Verifica con AST antes de entregar.
 
-6. **Se entrega por GitHub, no en ZIP.** Desde septiembre de 2026 el agente
+7. **Se entrega por GitHub, no en ZIP.** Desde septiembre de 2026 el agente
    escribe directo en el repositorio: rama, commit, push, PR y merge a `main`.
    Ya no se arma ZIP para que el usuario suba los archivos a mano.
 
@@ -847,6 +854,90 @@ visible. No las borré porque eso es una decisión aparte.
 
 ---
 
+## 5 nonies. Memoria: 1 GB por APP, no por usuario (septiembre 2026)
+
+En septiembre de 2026 la app se cayó con *"Your app has gone over its resource
+limits. It's using too much memory!"*. **Streamlit Community Cloud da 1 GB por
+aplicación, no por sesión**: dos personas cargando a la vez comparten el mismo
+contenedor. Cuando se pasa, el proceso muere sin traza y sin decir de qué.
+
+No lo atrapó ninguna de las ~600 pruebas del repo, porque **ninguna miraba la
+memoria**. `test_rendimiento.py` mide bytes por rerun, que es otra cosa.
+
+Lo medido, y lo que se hizo con cada cosa:
+
+| Qué | Antes | Ahora |
+|---|---:|---:|
+| Leer el maestro de VTEX (300.000 filas) | **>2 GB** | **82 MB** |
+| DataFrames vivos tras una Carga completa | ~1.230 MB | ~430 MB |
+| Importar la app (antes de que entre nadie) | 251 MB · 6,1 s | 180 MB · 0,7 s |
+
+**El lector del maestro VTEX hacía `list(filas)` antes de indexar.** Medido con
+60.000 filas —una quinta parte de un maestro real— eran 242 MB solo la lista y
+464 MB con el índice. Pasó las 62 pruebas del motor porque **se probó con la
+muestra de 500 filas del ZIP**. Ahora `registros_en_streaming` no guarda ninguna
+fila, y el maestro se lee **acotado a los códigos pedidos**: de 300.000 filas
+interesan las del pedido, y guardar las otras 295.000 era todo el problema. Por
+eso **los códigos van ANTES del maestro en la pantalla**; no es cosmético.
+
+**`decidir(previa)` es lo que hace que además sea rápido.** Recibe 9 celdas de
+las 50 y dice si hace falta armar el registro completo. Armar los 295.000 que
+se tiran eran 15 millones de conversiones de celda: **73 s contra 8 s**. Los
+totales, las marcas y las categorías de toda la tienda se cuentan igual, con
+esas 9 celdas. Los valores por defecto (`Padrão`, `un`, `1, 4`) se aprenden de
+una **muestra de 2.000 productos**: la moda no necesita 30.000.
+
+**CSV contra xlsx, medido con el mismo maestro de 300.000 filas: 8 s contra
+168 s.** La misma memoria y el mismo resultado. La pantalla avisa cuando el
+archivo llega en Excel y pesa más de 5 MB.
+
+**`CENTRY_COLUMNS` se calculaba en tiempo de import.** Leía
+`data/plantilla_centry_productos.xlsx` en CADA arranque solo para sacar los
+nombres de columna: 5,5 s y ~35 MB, se usara Centry o no. Ahora es
+`centry_columns()`, perezoso y memoizado. `app_matrixify.CENTRY_COLUMNS` sigue
+existiendo con un `__getattr__` de módulo (PEP 562) para quien lo lea de fuera;
+**los usos de dentro llaman a la función**, porque una búsqueda de global NO
+pasa por `__getattr__`.
+
+**Los dos DataFrames gigantes de Carga completa van a DISCO**, no a
+`session_state`: el respaldo del catálogo (330 MB) y el maestro ARTI (167 MB).
+Solo se guardaban para reanalizar sin volver a leer Shopify y BigQuery, y eso se
+sigue cumpliendo leyéndolos de `outputs/sesion/*.pkl`. En `session_state`
+quedaban residentes toda la sesión, aunque nadie los estuviera usando. Los
+`.pkl` **se borran al limpiar**: si no, cada carga deja otro de cientos de MB en
+el contenedor.
+
+**`render_centry_preview` hacía `centry_df.copy()`** y ahí solo se lee. Eran
+277 MB duplicados en cada rerun que dibujara esa pestaña.
+
+**`sys.getsizeof` de un DataFrame miente**: devuelve el tamaño del envoltorio, y
+un df de 250 MB reportaba 130 bytes. Hay que usar `memory_usage(deep=True)`. El
+panel de memoria (Auditoría → "Memoria de la app") lo usa para decir qué se está
+comiendo la RAM, y `memoria_del_proceso()` lee `/proc/self/statm`, que en Linux
+es exacto y no necesita `psutil`.
+
+### La regla, y lo que la hace cumplir
+
+> Ningún archivo del usuario se materializa entero en memoria: se recorre en
+> streaming y solo se conserva lo que se va a usar.
+> Un lector nuevo se prueba con un archivo del **tamaño real**, nunca con una
+> muestra.
+
+`scripts/test_memoria.py` (10 pruebas) es lo que impide que esto vuelva. Genera
+un maestro sintético de 300.000 filas, corre cada medición **en un subproceso**
+—el pico de RSS es del proceso entero, medir varias cosas en el mismo intérprete
+las mezclaría— y falla si se pasa del presupuesto: 220 MB el import, 300 MB leer
+el maestro. Una de las pruebas comprueba que guardar el maestro **sin** acotar
+sigue siendo caro: si eso deja de serlo, la prueba ya no está midiendo nada.
+
+**Lo que NO se hizo, y por qué.** Mover el trabajo pesado a `sync_worker.py` /
+`api_main.py` (que ya están en Render) es la solución de fondo: Streamlit
+reejecuta el script en cada clic y un catálogo de 300.000 SKUs nunca va a estar
+cómodo en `session_state`. Es un proyecto de varios días y está anotado en
+Pendientes, no descartado.
+
+---
+
 ## 5 septies. El flujo de carga, de punta a punta (septiembre 2026)
 
 ```
@@ -1082,7 +1173,14 @@ archivos.
 5. **Borrar 5 archivos corrompidos de la raíz del repo** (ver sección 10).
 6. **Limpiar `engines/normalize.py`, `engines/excel_io.py` y un archivo suelto
    llamado `engines`** que quedaron de la Fase 0 descartada. Nadie los importa.
-7. **Rotar las credenciales del código.** `get_auth_users()` tiene un
+7. **Mover el trabajo pesado al worker.** Streamlit reejecuta el script en
+   cada clic y guarda todo en `session_state`; un catálogo de 300.000 SKUs
+   nunca va a estar cómodo ahí. `sync_worker.py` y `api_main.py` ya están
+   desplegados en Render. Es la solución de fondo del problema de memoria de
+   septiembre de 2026 (sección 5 nonies), y de paso arregla la inversión de
+   `catalog_engine.py`.
+
+8. **Rotar las credenciales del código.** `get_auth_users()` tiene un
    diccionario de usuarios y contraseñas como fallback, y está en un repo
    público.
 
@@ -1194,7 +1292,8 @@ python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 55
 python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
-python scripts/test_engines_vtex_catalog.py            # 62
+python scripts/test_engines_vtex_catalog.py            # 69
+python scripts/test_memoria.py                        # 10
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 20
 python scripts/test_bandeja_solicitudes.py             # 57
@@ -1226,7 +1325,7 @@ Además, siempre:
 ## 13. Tono de trabajo con este usuario
 
 Trabaja en español. Prefiere entregas completas y ya aplicadas en el
-repositorio, no fragmentos para copiar ni ZIP para subir a mano (ver regla 6).
+repositorio, no fragmentos para copiar ni ZIP para subir a mano (ver regla 7).
 Valora que se le diga con claridad qué no se hizo y por qué, y que se distinga
 un fallo propio de uno preexistente.
 

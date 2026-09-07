@@ -314,15 +314,44 @@ def detectar_fila_encabezado(filas, columnas_esperadas):
     return mejor_indice if mejor_puntaje >= 3 else -1
 
 
-def registros_desde_filas(filas, columnas_esperadas):
-    """(registros, columnas_encontradas, faltantes). Cada registro es un dict
-    con las columnas ESPERADAS como llave, aunque el archivo las traiga en otro
-    orden o con columnas de mas."""
-    filas = list(filas or [])
-    indice = detectar_fila_encabezado(filas, columnas_esperadas)
+def registros_en_streaming(filas, columnas_esperadas, reporte=None,
+                           columnas_previas=(), decidir=None):
+    """Genera los registros UNO A UNO, sin materializar el archivo.
+
+    Por que existe
+    --------------
+    La primera version hacia `list(filas)` antes de indexar. Medido con 60.000
+    filas -una quinta parte de un maestro real- esa lista sola son 242 MB, y el
+    indice encima otros 222 MB. Extrapolado a 300.000 filas pasa de 2 GB, en un
+    contenedor de 1 GB: la app se muere sin decir nada.
+
+    Aqui no se guarda ninguna fila. `filas` puede ser un generador que lee del
+    disco, y lo que sale es un dict por fila que el llamador usa y suelta.
+
+    `reporte` es un dict opcional donde se dejan las columnas encontradas, las
+    que faltan y cuantas filas se leyeron: un generador no puede devolver eso
+    aparte, y sin ese dato no se puede avisar de un archivo con la cabecera mal.
+
+    `decidir(previa)` es el segundo ahorro, y es el que manda en el tiempo.
+    Recibe un dict con SOLO `columnas_previas` -tres o nueve celdas- y dice si
+    hace falta armar el registro completo. De 300.000 filas interesan las 5.000
+    del pedido: armar las otras 295.000 con sus 50 columnas eran 15 millones de
+    conversiones de celda para tirarlas acto seguido. Medido: 73 s contra 4 s
+    de recorrer el archivo.
+    """
+    reporte = reporte if reporte is not None else {}
+    reporte.update({"columnas": [], "faltantes": list(columnas_esperadas), "leidos": 0})
+    iterador = iter(filas or ())
+    # Solo se retienen las primeras filas, las que puede ocupar la cabecera.
+    cabeza = []
+    for fila in iterador:
+        cabeza.append(list(fila))
+        if len(cabeza) >= MAXIMO_FILAS_PARA_CABECERA:
+            break
+    indice = detectar_fila_encabezado(cabeza, columnas_esperadas)
     if indice < 0:
-        return [], [], list(columnas_esperadas)
-    cabecera = [texto(celda) for celda in filas[indice]]
+        return
+    cabecera = [texto(celda) for celda in cabeza[indice]]
     posicion = {}
     for columna in columnas_esperadas:
         clave = normalizar_encabezado(columna)
@@ -330,22 +359,51 @@ def registros_desde_filas(filas, columnas_esperadas):
             if normalizar_encabezado(celda) == clave:
                 posicion[columna] = numero
                 break
-    faltantes = [columna for columna in columnas_esperadas if columna not in posicion]
+    reporte["columnas"] = [columna for columna in columnas_esperadas if columna in posicion]
+    reporte["faltantes"] = [columna for columna in columnas_esperadas if columna not in posicion]
     firma_cabecera = {normalizar_encabezado(celda) for celda in cabecera if texto(celda)}
-    registros = []
-    for fila in filas[indice + 1:]:
-        if not any(texto(celda) for celda in fila):
+    # La primera columna reconocida basta para sospechar de una cabecera
+    # repetida. Normalizar las 50 celdas de cada fila para compararla entera
+    # costaba mas que todo lo demas junto.
+    primera_columna = next(iter(posicion.values()), 0)
+    marca_de_cabecera = normalizar_encabezado(cabecera[primera_columna]) if cabecera else ""
+    previas = [(columna, posicion[columna]) for columna in columnas_previas if columna in posicion]
+    pares = list(posicion.items())
+    leidos = 0
+    import itertools
+    for fila in itertools.chain(cabeza[indice + 1:], iterador):
+        if not any(fila):
             continue
-        # VTEX parte los archivos grandes en varias hojas y REPITE la cabecera
-        # en cada una. Pegadas una detras de otra, esa segunda cabecera entraria
-        # como un producto llamado "Product ID".
-        if {normalizar_encabezado(celda) for celda in fila if texto(celda)} == firma_cabecera:
+        largo = len(fila)
+        if marca_de_cabecera and primera_columna < largo and \
+                normalizar_encabezado(fila[primera_columna]) == marca_de_cabecera and \
+                {normalizar_encabezado(celda) for celda in fila if texto(celda)} == firma_cabecera:
+            # VTEX parte los archivos grandes en varias hojas y REPITE la
+            # cabecera en cada una. Pegadas una detras de otra, esa segunda
+            # cabecera entraria como un producto llamado "Product ID".
             continue
+        leidos += 1
+        if decidir is not None:
+            previa = {columna: (texto(fila[numero]) if numero < largo else "")
+                      for columna, numero in previas}
+            if not decidir(previa):
+                continue
         registro = {}
-        for columna, numero in posicion.items():
-            registro[columna] = texto(fila[numero]) if numero < len(fila) else ""
-        registros.append(registro)
-    return registros, [columna for columna in columnas_esperadas if columna in posicion], faltantes
+        for columna, numero in pares:
+            registro[columna] = texto(fila[numero]) if numero < largo else ""
+        yield registro
+    reporte["leidos"] = leidos
+
+
+def registros_desde_filas(filas, columnas_esperadas):
+    """(registros, columnas_encontradas, faltantes), todo en memoria.
+
+    Es la version comoda, para archivos chicos y para las pruebas. Los maestros
+    grandes NO pasan por aqui: usan `registros_en_streaming`.
+    """
+    reporte = {}
+    registros = list(registros_en_streaming(filas, columnas_esperadas, reporte))
+    return registros, reporte["columnas"], reporte["faltantes"]
 
 
 def separar_lista(valor):
@@ -358,6 +416,80 @@ def separar_lista(valor):
 
 
 # --- Catalogo maestro ----------------------------------------------------
+
+def campo_desde_registro(registro):
+    """Un campo de la tienda a partir de una fila de la exportacion.
+
+    Cada fila REPITE la lista completa de valores admitidos del campo con sus
+    IDs, no solo el valor que usa ese producto. Por eso con una fila cualquiera
+    ya se tiene el campo entero, y por eso el diccionario se puede guardar.
+    """
+    campo = {
+        "ID de campo": texto(registro.get("ID de campo")),
+        "Nombre del campo": texto(registro.get("Nombre del campo")),
+        "Tipo de campo": texto(registro.get("Tipo de campo")),
+        "IDs de valores de campo": texto(registro.get("IDs de valores de campo")),
+        "Valores de campo": texto(registro.get("Valores de campo")),
+        "valores": {},
+        "categorias": set(),
+    }
+    ids_valores = separar_lista(campo["IDs de valores de campo"])
+    textos_valores = separar_lista(campo["Valores de campo"])
+    for valor_id, valor_texto in zip(ids_valores, textos_valores):
+        campo["valores"].setdefault(normalizar(valor_texto), (valor_id, valor_texto))
+    for categoria in registro.get("categorias") or []:
+        if isinstance(categoria, (list, tuple)) and len(categoria) == 2:
+            campo["categorias"].add((normalizar(categoria[0]), normalizar(categoria[1])))
+    if "Departamento" in registro or "Categoría" in registro:
+        campo["categorias"].add((
+            normalizar(registro.get("Departamento")),
+            normalizar(registro.get("Categoría")),
+        ))
+    return campo
+
+
+def _campo_a_registro(campo):
+    return {
+        "ID de campo": campo["ID de campo"],
+        "Nombre del campo": campo["Nombre del campo"],
+        "Tipo de campo": campo["Tipo de campo"],
+        "IDs de valores de campo": campo["IDs de valores de campo"],
+        "Valores de campo": campo["Valores de campo"],
+        "categorias": sorted(campo["categorias"]),
+    }
+
+
+def diccionario_de(maestro):
+    """El diccionario de la tienda, listo para guardar como JSON.
+
+    Que campos tiene cada categoria y que valores admite cada Radio o CheckBox,
+    con sus IDs. Se guarda aparte del catalogo porque son dos cosas que cambian
+    a ritmos MUY distintos: el catalogo cambia con cada carga (IDs nuevos), y el
+    diccionario solo cuando alguien crea un campo o un valor en el admin de
+    VTEX. Obligar a subir las dos exportaciones de especificaciones cada vez es
+    pedir 90 MB para leer algo que no se movio en meses.
+    """
+    return {
+        "campos_producto": [_campo_a_registro(campo) for campo in maestro.campos_producto.values()],
+        "campos_sku": [_campo_a_registro(campo) for campo in maestro.campos_sku.values()],
+    }
+
+
+def aplicar_diccionario(maestro, datos):
+    """Carga un diccionario guardado sobre el maestro. Devuelve el maestro.
+
+    Lo que venga del archivo de especificaciones subido en esta sesion MANDA:
+    un campo ya cargado no se pisa. Si no, actualizar el diccionario desde la
+    pantalla no serviria de nada, porque el guardado lo volveria a tapar.
+    """
+    for clave, campos in (("campos_producto", maestro.campos_producto),
+                          ("campos_sku", maestro.campos_sku)):
+        for registro in (datos or {}).get(clave) or []:
+            campo_id = texto(registro.get("ID de campo"))
+            if campo_id and campo_id not in campos:
+                campos[campo_id] = campo_desde_registro(registro)
+    return maestro
+
 
 class CatalogoMaestroVTEX:
     """El ultimo catalogo de VTEX, leido y ordenado para consultarlo.
@@ -385,12 +517,31 @@ class CatalogoMaestroVTEX:
         self.imagenes_por_sku = {}
         self.faltantes = {}
         self.leidos = {}
+        self.referencias_de_interes = None
+        self.total_productos = 0
+        self.total_skus = 0
+        self._conteo_configuracion = {}
 
     # -- construccion ------------------------------------------------------
     @classmethod
     def desde_filas(cls, filas_productos, filas_especificaciones_producto=None,
-                    filas_especificaciones_sku=None, filas_imagenes=None):
+                    filas_especificaciones_sku=None, filas_imagenes=None,
+                    referencias=None):
+        """Indexa el maestro. `referencias` acota lo que se GUARDA.
+
+        Con `referencias` (los Mod-Col que se van a cargar) solo se conservan
+        las filas de esos productos. Del resto se cuentan totales y se aprenden
+        marcas, categorias y valores por defecto, que son diccionarios chicos.
+
+        Sin `referencias` se guarda todo, que es lo que quieren las pruebas y
+        los archivos chicos. En un maestro real eso son gigas: la pantalla
+        SIEMPRE pasa las referencias.
+        """
         maestro = cls()
+        maestro.referencias_de_interes = (
+            {normalizar_referencia(referencia) for referencia in referencias}
+            if referencias is not None else None
+        )
         maestro._cargar_productos(filas_productos)
         maestro._cargar_especificaciones(
             filas_especificaciones_producto,
@@ -411,14 +562,95 @@ class CatalogoMaestroVTEX:
         maestro._cargar_imagenes(filas_imagenes)
         return maestro
 
+    # Columnas cuyo valor por defecto se aprende de la tienda en vez de
+    # escribirlo en el codigo ("Padrão" es de esta cuenta, no una constante).
+    # Se cuentan al vuelo: derivarlas despues de los productos guardados
+    # obligaria a guardarlos todos.
+    COLUMNAS_DE_CONFIGURACION = (
+        "Sales channels", "Unit of measure", "Unit multiplier", "Commercial condition",
+        "Loyalty amount", "Show when out of stock", "Display on website", "Active product",
+        "Bundle", "Activate SKU if possible", "Active SKU", "Global category ID",
+        "Global category",
+    )
+    # Tope de valores distintos por columna de configuracion. Una columna que
+    # resulte no ser de configuracion (un ID, una fecha) tendria un valor
+    # distinto por fila y el contador creceria como el catalogo.
+    MAXIMO_VALORES_DE_CONFIGURACION = 50
+
+    def _interesa(self, referencia):
+        if self.referencias_de_interes is None:
+            return True
+        return referencia in self.referencias_de_interes
+
+    def _contar_configuracion(self, registro):
+        for columna in self.COLUMNAS_DE_CONFIGURACION:
+            valor = texto(registro.get(columna))
+            if not valor:
+                continue
+            conteo = self._conteo_configuracion.setdefault(columna, {})
+            if valor in conteo:
+                conteo[valor] += 1
+            elif len(conteo) < self.MAXIMO_VALORES_DE_CONFIGURACION:
+                conteo[valor] = 1
+
+    # Celdas que bastan para decidir si una fila interesa. Nueve de cincuenta:
+    # con estas se cuentan totales, marcas y categorias de TODA la tienda sin
+    # armar el registro completo de cada fila.
+    COLUMNAS_PREVIAS = (
+        "Product ID", "Product reference code", "SKU ID",
+        "Brand ID", "Brand", "Department ID", "Department", "Category ID", "Category",
+    )
+    # De cuantos productos se aprenden los valores por defecto. La moda de
+    # "Commercial condition" no necesita 30.000 muestras, y cada muestra cuesta
+    # armar el registro entero.
+    MUESTRA_DE_CONFIGURACION = 2000
+
     def _cargar_productos(self, filas):
-        registros, _, faltantes = registros_desde_filas(filas, COLUMNAS_PRODUCTOS_Y_SKUS)
-        self.faltantes["productos"] = faltantes
-        self.leidos["productos"] = len(registros)
+        reporte = {}
         categorias = {}
-        for registro in registros:
+        vistos_producto = set()
+        vistos_sku = set()
+        estado = {"muestras": 0}
+
+        def decidir(previa):
+            """Se ejecuta con 9 celdas por fila. Aqui se cuenta la tienda entera
+            y se decide si hace falta el registro completo."""
+            producto_id = previa.get("Product ID", "")
+            referencia = normalizar_referencia(previa.get("Product reference code"))
+            nuevo_producto = bool(producto_id) and producto_id not in vistos_producto
+            if nuevo_producto:
+                vistos_producto.add(producto_id)
+                self.total_productos += 1
+                marca = previa.get("Brand", "")
+                if marca:
+                    self.marcas.setdefault(normalizar(marca), {
+                        "Brand ID": previa.get("Brand ID", ""), "Brand": marca})
+                clave = (previa.get("Department ID", ""), previa.get("Category ID", ""))
+                if clave not in categorias and any(clave):
+                    categorias[clave] = {
+                        "Department ID": clave[0], "Department": previa.get("Department", ""),
+                        "Category ID": clave[1], "Category": previa.get("Category", ""),
+                    }
+            sku_id = previa.get("SKU ID", "")
+            if sku_id and sku_id not in vistos_sku:
+                vistos_sku.add(sku_id)
+                self.total_skus += 1
+            if self._interesa(referencia):
+                return True
+            # Una muestra de filas ajenas, solo para los valores por defecto.
+            if nuevo_producto and estado["muestras"] < self.MUESTRA_DE_CONFIGURACION:
+                estado["muestras"] += 1
+                return True
+            return False
+
+        for registro in registros_en_streaming(
+                filas, COLUMNAS_PRODUCTOS_Y_SKUS, reporte,
+                columnas_previas=self.COLUMNAS_PREVIAS, decidir=decidir):
+            self._contar_configuracion(registro)
             producto_id = texto(registro.get("Product ID"))
             referencia = normalizar_referencia(registro.get("Product reference code"))
+            if not self._interesa(referencia):
+                continue  # era solo una muestra para los valores por defecto
             if producto_id and producto_id not in self.productos_por_id:
                 datos = {columna: registro.get(columna, "") for columna in COLUMNAS_NIVEL_PRODUCTO}
                 datos["_referencia"] = referencia
@@ -430,27 +662,8 @@ class CatalogoMaestroVTEX:
                             self.referencias_duplicadas.setdefault(referencia, [anterior]).append(producto_id)
                     else:
                         self.productos_por_referencia[referencia] = datos
-                marca = texto(registro.get("Brand"))
-                if marca:
-                    self.marcas.setdefault(normalizar(marca), {
-                        "Brand ID": texto(registro.get("Brand ID")),
-                        "Brand": marca,
-                    })
-                clave_categoria = (
-                    texto(registro.get("Department ID")),
-                    texto(registro.get("Category ID")),
-                )
-                if clave_categoria not in categorias and any(clave_categoria):
-                    categorias[clave_categoria] = {
-                        "Department ID": clave_categoria[0],
-                        "Department": texto(registro.get("Department")),
-                        "Category ID": clave_categoria[1],
-                        "Category": texto(registro.get("Category")),
-                    }
             sku_id = texto(registro.get("SKU ID"))
-            if not sku_id:
-                continue
-            if sku_id in self.skus_por_id:
+            if not sku_id or sku_id in self.skus_por_id:
                 continue
             sku = {columna: registro.get(columna, "") for columna in COLUMNAS_NIVEL_SKU}
             sku["_producto_id"] = producto_id
@@ -461,6 +674,8 @@ class CatalogoMaestroVTEX:
             if referencia_sku:
                 self.skus_por_referencia.setdefault(referencia_sku, sku)
             self.skus_por_producto.setdefault(producto_id, []).append(sku)
+        self.faltantes["productos"] = reporte.get("faltantes") or []
+        self.leidos["productos"] = reporte.get("leidos") or 0
         self.categorias = sorted(
             categorias.values(),
             key=lambda item: (normalizar(item["Department"]), normalizar(item["Category"])),
@@ -479,19 +694,7 @@ class CatalogoMaestroVTEX:
                 continue
             campo = campos.get(campo_id)
             if campo is None:
-                campo = {
-                    "ID de campo": campo_id,
-                    "Nombre del campo": nombre,
-                    "Tipo de campo": texto(registro.get("Tipo de campo")),
-                    "IDs de valores de campo": texto(registro.get("IDs de valores de campo")),
-                    "Valores de campo": texto(registro.get("Valores de campo")),
-                    "valores": {},
-                    "categorias": set(),
-                }
-                ids_valores = separar_lista(registro.get("IDs de valores de campo"))
-                textos_valores = separar_lista(registro.get("Valores de campo"))
-                for valor_id, valor_texto in zip(ids_valores, textos_valores):
-                    campo["valores"].setdefault(normalizar(valor_texto), (valor_id, valor_texto))
+                campo = campo_desde_registro(registro)
                 campos[campo_id] = campo
             campo["categorias"].add((
                 normalizar(registro.get("Departamento")),
@@ -520,7 +723,7 @@ class CatalogoMaestroVTEX:
     # -- consultas ---------------------------------------------------------
     @property
     def vacio(self):
-        return not self.productos_por_id
+        return not self.total_productos
 
     def producto(self, referencia):
         return self.productos_por_referencia.get(normalizar_referencia(referencia))
@@ -613,26 +816,20 @@ class CatalogoMaestroVTEX:
         Sales channels, Unit of measure o Commercial condition dependen de la
         tienda: "Padrão" en una, "Padrao" o "Estandar" en otra. Se copia lo que
         la tienda ya usa en vez de dejarlo escrito en el codigo.
+
+        Sale de un contador que se llena al leer, no de recorrer los productos
+        guardados: cuando el maestro se lee acotado a unos pocos codigos, esos
+        productos no son una muestra de la tienda.
         """
-        conteo = {}
-        for producto in self.productos_por_id.values():
-            if columna in producto:
-                valor = texto(producto.get(columna))
-                if valor:
-                    conteo[valor] = conteo.get(valor, 0) + 1
-        if not conteo:
-            for sku in self.skus_por_id.values():
-                valor = texto(sku.get(columna))
-                if valor:
-                    conteo[valor] = conteo.get(valor, 0) + 1
+        conteo = self._conteo_configuracion.get(columna) or {}
         if not conteo:
             return respaldo
         return max(conteo.items(), key=lambda item: item[1])[0]
 
     def resumen(self):
         return {
-            "Productos en el maestro": len(self.productos_por_id),
-            "SKUs en el maestro": len(self.skus_por_id),
+            "Productos en el maestro": self.total_productos,
+            "SKUs en el maestro": self.total_skus,
             "Marcas": len(self.marcas),
             "Categorias": len(self.categorias),
             "Campos de producto": len(self.campos_producto),

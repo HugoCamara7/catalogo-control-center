@@ -198,7 +198,41 @@ bloquean.
 
 ---
 
-## 9. Rendimiento
+## 9. Rendimiento y memoria
+
+El maestro real pasa de las 300.000 filas. Medido con un maestro sintético de
+ese tamaño:
+
+| | Tiempo | Pico de RAM |
+|---|---:|---:|
+| **CSV** | **8 s** | 82 MB |
+| xlsx | 168 s | 109 MB |
+
+**Guardar el export de VTEX como CSV antes de subirlo es 20 veces más rápido**,
+con el mismo resultado. La pantalla lo avisa cuando llega un xlsx grande.
+
+Tres cosas hacen que quepa en el gigabyte de Streamlit Cloud:
+
+1. **Nada se materializa.** `registros_en_streaming` genera los registros uno a
+   uno. La primera versión hacía `list(filas)` y pedía más de 2 GB: con 60.000
+   filas ya eran 242 MB solo la lista y 464 MB con el índice.
+2. **El maestro se lee acotado a los códigos pedidos.** Por eso los códigos van
+   ANTES del maestro en la pantalla. De 300.000 filas se guardan las del pedido;
+   del resto solo se cuentan totales y se aprenden marcas, categorías y valores
+   por defecto, que son diccionarios chicos.
+3. **`decidir(previa)` mira 9 celdas de las 50** antes de armar el registro
+   completo. Sin eso, armar los 295.000 registros que se tiran son 15 millones
+   de conversiones de celda: 73 s contra 8 s.
+
+Además, el índice se cachea con `st.cache_resource`. `_archivos` lleva guion
+bajo (que Streamlit no hashee el Excel por rerun) y **`firma` y `referencias`
+NO**, porque son la clave: con otro maestro, o con otros códigos, hay que
+releer. Hay una prueba que lo fija.
+
+El presupuesto está en `scripts/test_memoria.py`, que genera un maestro de
+300.000 filas y falla si leerlo pasa de 300 MB.
+
+## 9 bis. Rendimiento (detalle anterior)
 
 El maestro de VTEX pasa de los 100 MB.
 
@@ -233,7 +267,8 @@ El maestro de VTEX pasa de los 100 MB.
 ## 11. Pruebas
 
 ```bash
-python scripts/test_engines_vtex_catalog.py   # 60
+python scripts/test_engines_vtex_catalog.py   # 69
+python scripts/test_memoria.py                # 10
 ```
 
 Cubren la lectura (cabecera en la fila 2, cabeceras repetidas entre hojas,

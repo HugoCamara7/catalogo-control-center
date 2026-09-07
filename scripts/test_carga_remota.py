@@ -550,6 +550,71 @@ class _TablaFalsa:
         self.empty = not claves
 
 
+class TestMemoriaDeLaSesion(unittest.TestCase):
+    """El Matrixify no puede quedarse fijo en la sesion.
+
+    `build_columbia_matrixify` no esta cacheada: el DataFrame se reconstruye en
+    cada rerun y se libera solo. Guardar una referencia en `st.session_state`
+    lo fija hasta cerrar la sesion, y el contenedor de Streamlit Cloud da 1 GB
+    por app compartido entre todos los que esten trabajando. Es el mismo error
+    que se corrigio bajando los DataFrames gigantes a disco.
+    """
+
+    @staticmethod
+    def _funcion(nombre):
+        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        arbol = ast.parse(fuente)
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name == nombre:
+                return nodo, fuente
+        raise AssertionError(f"No encontre {nombre} en app_matrixify.py")
+
+    def test_no_deja_el_dataframe_en_session_state(self):
+        nodo, _ = self._funcion("recordar_matrixify_de_carga")
+        parametros = {arg.arg for arg in nodo.args.args}
+        self.assertIn("matrixify_df", parametros)
+        guardados = []
+        for sub in ast.walk(nodo):
+            if isinstance(sub, ast.Dict):
+                guardados.extend(
+                    valor.id for valor in sub.values if isinstance(valor, ast.Name)
+                )
+        self.assertNotIn(
+            "matrixify_df", guardados,
+            "recordar_matrixify_de_carga guarda el DataFrame en la sesion: lo fija "
+            "hasta cerrar sesion y el contenedor solo tiene 1 GB.",
+        )
+
+    def test_guarda_la_ruta_del_excel_que_ya_esta_en_disco(self):
+        """No se arma un Excel nuevo: la pantalla ya escribio uno para el boton
+        de descarga, y su primera hoja es la que lee el worker."""
+        nodo, fuente = self._funcion("recordar_matrixify_de_carga")
+        self.assertIn("excel_path", {arg.arg for arg in nodo.args.args})
+        # Y el sitio de llamada tiene que pasarla, o llegaria siempre vacia.
+        self.assertIn('excel_path=st.session_state.get("complete_excel_path")', fuente)
+
+    def test_el_adjunto_sale_del_disco_no_de_un_excel_nuevo(self):
+        nodo, _ = self._funcion("_adjuntar_matrixify_antes_de_cargar")
+        llamadas = {
+            sub.func.id for sub in ast.walk(nodo)
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+        }
+        self.assertIn("_leer_excel_de_disco", llamadas)
+        self.assertNotIn(
+            "dataframe_to_excel_bytes", llamadas,
+            "Armar el Excel al pulsar duplica en memoria justo en el peor momento.",
+        )
+
+    def test_si_el_archivo_se_perdio_pero_ya_hay_adjunto_no_corta(self):
+        """El contenedor se reinicia y el Excel de disco desaparece. Si la
+        solicitud ya tiene un Matrixify de un intento anterior, reintentar la
+        carga tiene que seguir siendo posible."""
+        nodo, _ = self._funcion("_adjuntar_matrixify_antes_de_cargar")
+        cuerpo = ast.dump(nodo)
+        self.assertIn("get_ticket", cuerpo)
+        self.assertIn("matrixify", cuerpo)
+
+
 class TestSinStreamlit(unittest.TestCase):
     def test_el_motor_no_importa_streamlit(self):
         fuente = (ROOT / "engines" / "carga_remota.py").read_text(encoding="utf-8")

@@ -2958,21 +2958,54 @@ def build_existing_lookup(matrixify_df):
     return product_by_key, product_by_handle, variant_by_sku
 
 
-def matrixify_rows_for_handle(matrixify_df, handle):
+def indice_de_handles(matrixify_df):
+    """{handle: [indices]} del catalogo actual, en UNA sola pasada.
+
+    Por que existe
+    --------------
+    `matrixify_rows_for_handle` recorria el catalogo ENTERO con `iterrows()`, y
+    se la llama UNA VEZ POR PRODUCTO dentro del bucle del analisis. Con 1.009
+    productos y un catalogo de 20.000 filas eso son 20 millones de iteraciones
+    de la operacion mas lenta de pandas: el analisis pasaba de segundos a
+    minutos y parecia colgado.
+
+    Aqui se recorre una vez y se consulta por diccionario: O(catalogo) en vez de
+    O(productos x catalogo).
+
+    El detalle que no es obvio: en una exportacion Matrixify **solo la primera
+    fila de cada producto trae el Handle**; las variantes siguientes lo dejan
+    vacio, asi que hay que arrastrarlo hacia abajo.
+    """
+    if matrixify_df is None or matrixify_df.empty or "Handle" not in matrixify_df.columns:
+        return {}
+    indice = {}
+    actual = ""
+    # `.items()` sobre UNA columna, no `iterrows()` sobre la fila entera: no
+    # hace falta construir una Series por fila para leer un solo valor.
+    for index, valor in matrixify_df["Handle"].items():
+        handle = clean(valor)
+        if handle:
+            actual = handle
+        if actual:
+            indice.setdefault(actual, []).append(index)
+    return indice
+
+
+def matrixify_rows_for_handle(matrixify_df, handle, indice=None):
+    """Las filas del catalogo que pertenecen a ese handle.
+
+    `indice` es el de `indice_de_handles`. Se pasa desde el bucle del analisis,
+    que lo arma una sola vez; sin el, se arma aqui y se tira, que es lo que
+    hacia el analisis cuadratico.
+    """
     if matrixify_df is None or matrixify_df.empty or "Handle" not in matrixify_df.columns:
         return pd.DataFrame()
     target_handle = clean(handle)
     if not target_handle:
         return pd.DataFrame()
-
-    current_handle = ""
-    matching_indexes = []
-    for index, row in matrixify_df.iterrows():
-        row_handle = clean(row.get("Handle"))
-        if row_handle:
-            current_handle = row_handle
-        if current_handle == target_handle:
-            matching_indexes.append(index)
+    if indice is None:
+        indice = indice_de_handles(matrixify_df)
+    matching_indexes = indice.get(target_handle)
     return matrixify_df.loc[matching_indexes].copy() if matching_indexes else pd.DataFrame()
 
 
@@ -3752,6 +3785,8 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     brand_config = brand_config or get_brand_config()
     matrixify_columns, matrixify_df = prepare_matrixify_context(matrixify_source, brand_config)
     product_by_key, product_by_handle, variant_by_sku = build_existing_lookup(matrixify_df)
+    # UNA pasada por el catalogo, no una por producto. Ver `indice_de_handles`.
+    handles_del_catalogo = indice_de_handles(matrixify_df)
 
     input_df = ensure_mod_col_column(input_df.dropna(how="all").copy())
     input_df["__KEY"] = input_df["Mod-Col"].map(lambda value: clean(value).upper())
@@ -4032,7 +4067,8 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         image_alt = build_image_alt_text(title, len(product_images))
         existing_product = product_by_key.get(key) or product_by_handle.get(handle) or {}
         existing_handle = existing_product.get("Handle") or handle
-        existing_rows = matrixify_rows_for_handle(matrixify_df, existing_handle)
+        existing_rows = matrixify_rows_for_handle(
+            matrixify_df, existing_handle, indice=handles_del_catalogo)
         existing_variant_by_sku, existing_variant_by_size = build_product_variant_lookup(existing_rows)
         product_price_fallback = first_valid_product_price(existing_rows)
         product_rows = []

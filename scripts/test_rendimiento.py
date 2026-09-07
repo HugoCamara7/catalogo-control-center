@@ -22,6 +22,7 @@ import ast
 import base64
 import io
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -29,7 +30,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import app_matrixify as app  # noqa: E402
+import pandas as pd  # noqa: E402
+
+import app_matrixify as app
+import generate_columbia_matrixify as motor  # noqa: E402
 
 FUENTE = io.open(ROOT / "app_matrixify.py", encoding="utf-8-sig").read()
 
@@ -274,6 +278,90 @@ class TestAdjuntosCacheados(unittest.TestCase):
         app.artefacto_de_solicitud(segundo, ruta)
         self.assertEqual(segundo.descargas, [],
                          "el segundo store volvio a bajar el adjunto")
+
+
+
+class TestAnalisisNoEsCuadratico(unittest.TestCase):
+    """El analisis no puede recorrer el catalogo una vez POR PRODUCTO.
+
+    Origen: `matrixify_rows_for_handle` hacia `iterrows()` sobre el catalogo
+    entero y se la llama una vez por producto dentro del bucle del analisis.
+    Medido con un catalogo de 20.000 filas: 1,7 s POR PRODUCTO, o sea 27,8
+    MINUTOS para los 1.009 productos de una carga real de Vans. En pantalla se
+    veia como "Analizando input..." para siempre.
+
+    Con el indice armado una sola vez: 0,6 s en total. 2.940 veces mas rapido y
+    el mismo resultado.
+    """
+
+    @staticmethod
+    def _catalogo(productos=2500, variantes=8):
+        # En una exportacion Matrixify solo la PRIMERA fila de cada producto
+        # trae el Handle; las variantes siguientes lo dejan vacio.
+        filas = []
+        for numero in range(productos):
+            for variante in range(variantes):
+                filas.append({
+                    "Handle": f"producto-{numero}" if variante == 0 else "",
+                    "Variant SKU": f"SKU{numero}-{variante}",
+                    "Title": f"Producto {numero}",
+                })
+        return pd.DataFrame(filas)
+
+    def test_el_indice_arrastra_el_handle_a_las_variantes(self):
+        catalogo = self._catalogo(productos=3, variantes=4)
+        indice = motor.indice_de_handles(catalogo)
+        self.assertEqual(sorted(indice), ["producto-0", "producto-1", "producto-2"])
+        # Las cuatro filas del producto, no solo la que trae el Handle.
+        self.assertEqual(len(indice["producto-1"]), 4)
+
+    def test_con_indice_y_sin_indice_devuelven_lo_mismo(self):
+        catalogo = self._catalogo(productos=20, variantes=5)
+        indice = motor.indice_de_handles(catalogo)
+        for handle in ("producto-0", "producto-7", "producto-19", "no-existe"):
+            pd.testing.assert_frame_equal(
+                motor.matrixify_rows_for_handle(catalogo, handle),
+                motor.matrixify_rows_for_handle(catalogo, handle, indice=indice),
+            )
+
+    def test_mil_productos_se_resuelven_en_segundos_no_en_minutos(self):
+        catalogo = self._catalogo()
+        comienzo = time.time()
+        indice = motor.indice_de_handles(catalogo)
+        for numero in range(1009):
+            motor.matrixify_rows_for_handle(
+                catalogo, f"producto-{numero % 2500}", indice=indice)
+        segundos = time.time() - comienzo
+        # Techo generoso: medido en 0,6 s. Antes eran ~1.670 s.
+        self.assertLess(segundos, 30,
+                        f"resolver 1.009 productos tarda {segundos:.0f}s: volvio a ser cuadratico")
+
+    def test_el_analisis_pasa_el_indice_en_vez_de_rearmarlo(self):
+        """Sin esto el arreglo se deshace solo: la funcion sigue aceptando que
+        no le pasen indice, y ahi lo arma y lo tira en cada llamada."""
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8")
+        inicio = fuente.index("def build_columbia_matrixify(")
+        fin = fuente.index("\ndef ", inicio + 10)
+        cuerpo = fuente[inicio:fin]
+        self.assertIn("handles_del_catalogo = indice_de_handles(matrixify_df)", cuerpo)
+        self.assertIn("indice=handles_del_catalogo", cuerpo)
+        self.assertNotIn("matrixify_rows_for_handle(matrixify_df, existing_handle)", cuerpo)
+
+    def test_el_indice_no_usa_iterrows(self):
+        """Por AST, no por texto: el docstring EXPLICA el problema y lo nombra."""
+        # utf-8-sig: el archivo empieza con BOM y ast.parse no lo tolera.
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8-sig")
+        arbol = ast.parse(fuente)
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.FunctionDef) and nodo.name in (
+                    "indice_de_handles", "matrixify_rows_for_handle"):
+                llamadas = {
+                    getattr(hijo.func, "attr", "")
+                    for hijo in ast.walk(nodo) if isinstance(hijo, ast.Call)
+                }
+                self.assertNotIn("iterrows", llamadas,
+                                 f"{nodo.name}: iterrows sobre la fila entera es "
+                                 "justo lo que hacia esto lento")
 
 
 if __name__ == "__main__":

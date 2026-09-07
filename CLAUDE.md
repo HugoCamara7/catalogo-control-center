@@ -1444,6 +1444,79 @@ por bloques de la propia pantalla. Y sin `[carga_remota]` en Secrets,
 
 ---
 
+## 5 quindecies. La carga se encadena sola, y la auditoria se puede limpiar (septiembre 2026)
+
+### "¿Por que la sincronizacion es por bloques? deberia ser completa"
+
+Los bloques **nunca fueron un limite**: la opcion "Todos pendientes" ya existia
+en el selector. Pero era la **ultima de seis** y el valor por defecto era **50**,
+asi que la carga completa estaba ahi y no la encontraba nadie: se veia como que
+la app solo sabia cargar de 50 en 50.
+
+Y lo que de verdad molestaba tampoco eran los bloques: era **pulsar "Continuar
+siguiente bloque" veinte veces**.
+
+Dos cambios:
+
+- **"Todos pendientes" va primera y por defecto.** Los tamanos chicos siguen
+  ahi, que sirven para reintentar una tanda concreta.
+- **"Cargar todo sin parar"**: se pulsa UNA vez y la pantalla encadena los
+  bloques sola, con el avance a la vista y un boton para parar.
+
+Los bloques **se quedan**, y por lo mismo de siempre: cada uno que termina queda
+guardado, asi que si la pestana se refresca o la app se reinicia a mitad de
+1.000 productos se retoma donde iba en vez de empezar de cero. La red no es el
+problema; tener que empujarla a mano si lo era.
+
+Tres detalles que no son obvios:
+
+- **El boton de parar se dibuja ANTES de procesar el bloque.** Durante el bloque
+  el script sigue corriendo, y lo que venga detras todavia no existe en
+  pantalla: dibujado despues, no se veria nunca y no habria forma de detenerlo.
+- **La bandera se limpia en el `on_click`**, que corre antes del cuerpo del
+  script en el rerun siguiente. Con un `if boton:` habria que acertar el hueco
+  entre bloques.
+- **El bucle termina siempre**, porque `process_sync_job_next_block` saca el
+  producto de `pending_keys` aunque falle (pasa a `error_keys`). Aun asi hay una
+  guarda: si un bloque no mueve el contador, se para. Un bucle infinito que
+  ademas escribe en Shopify no es un bucle infinito cualquiera.
+- **No hay `while`**: se encadena con `st.rerun()`. Un bucle dentro del mismo
+  rerun bloquearia la pantalla entera y no se podria ni parar ni ver el avance.
+
+**Y ojo:** con `[carga_remota]` configurado, "Ejecutar carga" desde una
+solicitud ya la manda a un runner de GitHub Actions y **no hace falta este panel
+para nada**. El panel es el camino local, para cuando la carga no sale de una
+solicitud. Conviven dos formas de cargar y eso confunde — esta anotado en
+Pendientes.
+
+### Limpiar el historico de auditoria
+
+El registro se guarda **un archivo por mes** en el repositorio de datos, y no
+habia forma de limpiarlo: crecia sin techo. Ahora hay un panel en
+**Auditoría → "Limpiar histórico de auditoría"**.
+
+Limpiar es **borrar meses enteros**, que es como esta guardado: no hay forma de
+que quede a medias ni de borrar "la accion de alguien" por separado.
+
+Tres cosas que no son negociables:
+
+- **El mes en curso nunca se ofrece.** Se estaria borrando lo que se acaba de
+  registrar, incluida la propia limpieza.
+- **Se conservan los ultimos 12 meses completos** por defecto (ajustable de 1 a
+  36). Esto es una limpieza, no un borron: el registro existe para mirar atras.
+- **La limpieza queda REGISTRADA**, con quien la hizo y que meses se llevo. Un
+  borrado que no deja rastro convierte la auditoria en un adorno: el registro no
+  podria explicar por que le falta un tramo.
+
+Un mes que falla no corta la limpieza de los demas: se reporta y se sigue. Un
+borrado a medias que corta en seco deja sin saber que alcanzo a irse. Y con
+almacen efimero (sin `[auditoria]` en Secrets) el panel lo dice y no ofrece
+nada: ahi el registro ya se pierde solo.
+
+`scripts/test_sincronizacion_y_limpieza.py` (19 pruebas) fija las dos cosas.
+
+---
+
 ## 5 nonies. La carga sigue con la sesión cerrada (septiembre 2026)
 
 `engines/carga_remota.py` (sin Streamlit) + `scripts/worker_carga_shopify.py` +
@@ -1617,7 +1690,24 @@ archivos.
    marca también al cargar. Toca a todos los llamadores de
    `display_size_for_site`.
 
-9. **Rotar las credenciales del código.** `get_auth_users()` tiene un
+9. **Dos formas de cargar conviven y confunden.** Con `[carga_remota]`
+   configurado, "Ejecutar carga" desde una solicitud manda la carga a un runner
+   de GitHub Actions; pero la pantalla sigue mostrando también el panel de
+   sincronización local. Quien no lo sabe carga a mano lo que ya se está
+   cargando solo. Habría que esconder el panel local cuando el job remoto está
+   vivo.
+
+10. **La memoria volvió a subir.** El catálogo del sitio y el maestro ARTI
+   volvieron a `st.session_state` (sección 5 nonies) para ahorrar 9 s de disco
+   por análisis. Medido entonces: ~500 MB residentes, más el Matrixify (224 MB)
+   y los 180 del arranque. Eso es ~900 MB de los 1.024 que da el contenedor
+   **para toda la app**: con dos personas cargando a la vez se muere, y al
+   morir se cierran TODAS las sesiones. Ahora que el análisis es 2,4 veces más
+   rápido el trato es otro y hay un camino intermedio: `complete_template_df`
+   es el mismo catálogo que ya está en la caché de sesión, solo que como
+   DataFrame — medido, 95 MB de más que cuesta 2,8 s reconstruir.
+
+11. **Rotar las credenciales del código.** `get_auth_users()` tiene un
    diccionario de usuarios y contraseñas como fallback, y está en un repo
    público.
 
@@ -1743,6 +1833,7 @@ python scripts/test_mantenedor_tallas.py               # 34
 python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 47
+python scripts/test_sincronizacion_y_limpieza.py       # 19
 python scripts/test_bandeja_solicitudes.py             # 57
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24

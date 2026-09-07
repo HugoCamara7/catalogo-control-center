@@ -51,7 +51,12 @@ jobs:
     timeout-minutes: 360
 
     env:
-      API_VERSION: "2026-04"
+      # Manda el secreto del repositorio, con el valor fijo como respaldo. Con
+      # "2026-04" escrito a mano, cambiar la version de la API en el secreto no
+      # tenia efecto en las cargas remotas y este worker se quedaba en la
+      # anterior sin que nada lo dijera. Un secreto sin definir se evalua como
+      # cadena vacia, asi que el `||` cae al respaldo solo.
+      API_VERSION: ${{ secrets.API_VERSION || '2026-04' }}
       JOB_ID: ${{ inputs.job_id }}
 
       # Donde vive el avance: el repositorio PRIVADO de datos, al lado de las

@@ -410,5 +410,151 @@ class TestAnalisisNoEsCuadratico(unittest.TestCase):
                                  "justo lo que hacia esto lento")
 
 
+class TestElCatalogoSeCortaUnaVez(unittest.TestCase):
+    """El analisis cortaba el catalogo una vez POR PRODUCTO.
+
+    `indice_de_handles` ya habia quitado el bucle cuadratico, pero cada
+    producto seguia haciendo `matrixify_df.loc[lista]`: pandas reindexa las 107
+    columnas del catalogo y las materializa. Con 1.000 productos y 33.000 filas
+    de catalogo, esos cortes y los `iterrows()` que venian detras eran ~40 de
+    los 79 segundos del analisis. Medido con cProfile:
+
+        antes   79,1 s   (1,58 M accesos a `Series.__getitem__`)
+        ahora   38,2 s
+
+    Y la salida es IDENTICA: comparadas las 6 hojas en tres sitios.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalogo = pd.DataFrame([
+            {"Handle": "zapato-a", "Variant SKU": "A1", "Option1 Value": "40", "Variant Price": "10"},
+            {"Handle": "", "Variant SKU": "A2", "Option1 Value": "41", "Variant Price": "20"},
+            {"Handle": "zapato-b", "Variant SKU": "B1", "Option1 Value": "38", "Variant Price": "30"},
+        ])
+
+    def test_devuelve_las_mismas_filas_que_el_corte_de_antes(self):
+        agrupadas = motor.filas_por_handle(self.catalogo)
+        for handle in ("zapato-a", "zapato-b"):
+            trozo = motor.matrixify_rows_for_handle(self.catalogo, handle)
+            self.assertEqual(
+                [fila.get("Variant SKU") for fila in agrupadas[handle]],
+                list(trozo["Variant SKU"]),
+                handle,
+            )
+
+    def test_arrastra_el_handle_a_las_variantes(self):
+        """En un export Matrixify solo la primera fila trae el Handle."""
+        agrupadas = motor.filas_por_handle(self.catalogo)
+        self.assertEqual(len(agrupadas["zapato-a"]), 2)
+
+    def test_un_catalogo_vacio_no_revienta(self):
+        self.assertEqual(motor.filas_por_handle(None), {})
+        self.assertEqual(motor.filas_por_handle(pd.DataFrame()), {})
+
+    def test_los_consumidores_dan_lo_mismo_con_dataframe_y_con_dicts(self):
+        """Se aceptan las dos formas para no romper a quien llame desde fuera."""
+        trozo = motor.matrixify_rows_for_handle(self.catalogo, "zapato-a")
+        dicts = motor.filas_por_handle(self.catalogo)["zapato-a"]
+        self.assertEqual(
+            motor.build_product_variant_lookup(trozo),
+            motor.build_product_variant_lookup(dicts),
+        )
+        self.assertEqual(
+            motor.first_valid_product_price(trozo),
+            motor.first_valid_product_price(dicts),
+        )
+        generadas = [{"Variant SKU": "A1"}, {"Variant SKU": "A2"}]
+        self.assertEqual(
+            motor.product_is_unchanged(generadas, trozo, list(self.catalogo.columns)),
+            motor.product_is_unchanged(generadas, dicts, list(self.catalogo.columns)),
+        )
+
+    def test_solo_guarda_los_handles_pedidos(self):
+        """El catalogo ENTERO como dicts costaba 82 MB medidos para 33 MB de
+        DataFrame, y eso crece con la tienda. Una carga toca sus handles."""
+        agrupadas = motor.filas_por_handle(self.catalogo, handles=["zapato-b"])
+        self.assertEqual(list(agrupadas), ["zapato-b"])
+
+    def test_solo_guarda_las_columnas_que_se_leen(self):
+        columnas = motor.columnas_leidas_del_catalogo(list(self.catalogo.columns))
+        agrupadas = motor.filas_por_handle(self.catalogo, columnas=columnas)
+        guardadas = set(agrupadas["zapato-a"][0])
+        self.assertIn("Variant SKU", guardadas)
+        self.assertIn("Handle", guardadas)
+        self.assertNotIn("Option1 Name", guardadas,
+                         "esa columna no se lee del catalogo y ocupa memoria")
+
+    def test_las_columnas_leidas_traen_las_que_compara_el_sin_cambios(self):
+        """Si faltara una, `product_is_unchanged` dejaria de compararla y un
+        producto que SI cambio se reportaria como omitido."""
+        columnas = list(self.catalogo.columns) + ["Title", "Body HTML"]
+        leidas = set(motor.columnas_leidas_del_catalogo(columnas))
+        for columna in motor.comparable_columns(columnas):
+            self.assertIn(columna, leidas, columna)
+        for columna in motor.COLUMNAS_VARIANTE_EXISTENTE:
+            self.assertIn(columna, leidas, columna)
+
+    def test_el_analisis_acota_el_indice(self):
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8")
+        inicio = fuente.index("def build_columbia_matrixify(")
+        cuerpo = fuente[inicio:]
+        self.assertIn("handles=handles_de_la_carga", cuerpo)
+        self.assertIn("columnas=columnas_leidas_del_catalogo(", cuerpo)
+
+    def test_el_analisis_ya_no_corta_el_catalogo_dentro_del_bucle(self):
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8")
+        inicio = fuente.index("def build_columbia_matrixify(")
+        cuerpo = fuente[inicio:]
+        self.assertNotIn("matrixify_rows_for_handle(", cuerpo,
+                         "cortar el catalogo por producto es lo que costaba los segundos")
+        self.assertIn("filas_del_catalogo.get(", cuerpo)
+
+    def test_el_maestro_arti_no_se_barre_una_vez_por_producto(self):
+        """`arti[arti["__KEY"] == key]` dentro del bucle son 1.000 barridos
+        del maestro entero."""
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8")
+        inicio = fuente.index("def build_columbia_matrixify(")
+        cuerpo = fuente[inicio:]
+        # Se mira la ASIGNACION, no el texto suelto: el comentario que explica
+        # el arreglo tambien contiene la expresion vieja.
+        self.assertNotIn('variants = arti[arti["__KEY"] == key]', cuerpo)
+        self.assertIn("variantes_por_clave", cuerpo)
+
+    def test_el_bucle_recorre_dicts_y_no_series(self):
+        """Con `iterrows()` cada `.get()` pasa por el indice de pandas: eran
+        1,47 millones de accesos y 20 segundos."""
+        fuente = (ROOT / "generate_columbia_matrixify.py").read_text(encoding="utf-8")
+        inicio = fuente.index("def build_columbia_matrixify(")
+        cuerpo = fuente[inicio:]
+        self.assertNotIn("in input_df.iterrows()", cuerpo)
+        self.assertNotIn("variants.iterrows()", cuerpo)
+        self.assertIn('input_df.to_dict("records")', cuerpo)
+
+
+class TestClavesDeFila(unittest.TestCase):
+    """El respaldo por nombre normalizado tiene que seguir funcionando.
+
+    Varias funciones leian las columnas de la fila con `getattr(row, "index")`.
+    Con un dict eso devuelve `[]` **sin fallar**: el respaldo dejaba de
+    encontrar la columna y el campo salia vacio. Es el peor tipo de error, el
+    que no revienta.
+    """
+
+    def test_funciona_con_series_y_con_dict(self):
+        fila = {"Nombre de Producto": "Zapato", "Descripcion": "x"}
+        self.assertEqual(set(motor.claves_de_fila(fila)), set(fila))
+        self.assertEqual(set(motor.claves_de_fila(pd.Series(fila))), set(fila))
+        self.assertEqual(motor.claves_de_fila(None), ())
+
+    def test_el_respaldo_por_nombre_encuentra_la_columna_en_un_dict(self):
+        """"Descripción" con tilde tiene que encontrarse pidiendo "Descripcion"."""
+        for fila in ({"Descripción ": "texto"}, pd.Series({"Descripción ": "texto"})):
+            self.assertEqual(motor.row_alias_value(fila, ["Descripcion"]), "texto",
+                             type(fila).__name__)
+            self.assertEqual(motor.row_first_existing(fila, ["Descripcion"]), "texto",
+                             type(fila).__name__)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

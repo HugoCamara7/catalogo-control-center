@@ -415,7 +415,68 @@ class TestCatalogoGuardadoEnDisco(unittest.TestCase):
         self.assertIn("progreso=", cuerpo)
         self.assertIn("session_shopify_products(", cuerpo)
         # Y la Carga completa tiene que usar esa, no la muda.
-        self.assertIn("leer_catalogo_del_sitio(brand_config[\"site_key\"], shopify_config)", fuente)
+        self.assertIn("leer_catalogo_del_sitio(", fuente)
+        self.assertIn("aviso=aviso_lectura", fuente)
+
+
+class TestPantallaNoSeDuplica(unittest.TestCase):
+    """La pantalla se dibujaba DOS veces mientras duraba el analisis.
+
+    Causa, reproducida con Chromium sobre un repro minimo: el hueco del aviso
+    de progreso (`st.empty()`) se creaba DENTRO de la rama que lee el catalogo,
+    o sea solo en algunos reruns. Eso cambia la FORMA del arbol de elementos de
+    un rerun al siguiente, Streamlit deja de poder reemplazar el bloque de
+    abajo en su sitio y lo AGREGA debajo del viejo: se ve la mitad de la
+    pagina duplicada, la copia vieja en gris.
+
+    Medido: con el hueco dentro de la rama, el bloque aparece 2 veces durante
+    el trabajo lento; creado siempre, 1 vez.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
+        cls.arbol = ast.parse(cls.fuente)
+
+    def cuerpo(self, nombre, sin_docstring=False):
+        nodo = next(n for n in ast.walk(self.arbol)
+                    if isinstance(n, ast.FunctionDef) and n.name == nombre)
+        if sin_docstring and ast.get_docstring(nodo) is not None:
+            nodo = ast.FunctionDef(
+                name=nodo.name, args=nodo.args, body=nodo.body[1:],
+                decorator_list=[], returns=None, type_params=[],
+            )
+            return "\n".join(
+                ast.get_source_segment(self.fuente, hijo) or "" for hijo in nodo.body
+            )
+        return ast.get_source_segment(self.fuente, nodo)
+
+    def test_la_lectura_no_crea_su_propio_hueco(self):
+        cuerpo = self.cuerpo("leer_catalogo_del_sitio", sin_docstring=True)
+        self.assertNotIn("st.empty()", cuerpo,
+                         "un st.empty() aqui solo existe en el rerun que lee, y duplica la pantalla")
+        self.assertIn("aviso=None", self.cuerpo("leer_catalogo_del_sitio"),
+                      "el hueco lo tiene que pasar el llamador")
+
+    def test_el_hueco_se_crea_antes_de_decidir_si_toca_leer(self):
+        """Tiene que estar FUERA del if/else, o vuelve a ser condicional."""
+        creacion = self.fuente.index("aviso_lectura = st.empty()")
+        decision = self.fuente.index("data_ready = (", creacion)
+        lectura = self.fuente.index("aviso=aviso_lectura", decision)
+        self.assertLess(creacion, decision, "el hueco se crea despues de decidir")
+        self.assertLess(decision, lectura)
+        # Y con la MISMA sangria que el `data_ready`: si estuviera mas adentro,
+        # estaria dentro de una rama.
+        def sangria(indice):
+            inicio = self.fuente.rfind("\n", 0, indice) + 1
+            return len(self.fuente[inicio:indice]) - len(self.fuente[inicio:indice].lstrip())
+        self.assertEqual(sangria(creacion), sangria(decision),
+                         "el hueco quedo dentro de una rama")
+
+    def test_sin_hueco_no_se_crea_ninguno(self):
+        """El respaldo no puede ser volver a crear un hueco condicional."""
+        cuerpo = self.cuerpo("leer_catalogo_del_sitio", sin_docstring=True)
+        self.assertIn("if aviso is not None", cuerpo)
 
 
 if __name__ == "__main__":

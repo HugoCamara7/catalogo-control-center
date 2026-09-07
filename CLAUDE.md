@@ -1301,6 +1301,88 @@ conversión contra la guía oficial de Vans.
 
 ---
 
+## 5 terdecies. La pantalla duplicada, y el analisis 2,4 veces mas rapido (septiembre 2026)
+
+### La pantalla se dibujaba dos veces
+
+Al pulsar **Analizar input** aparecia media pantalla DUPLICADA: la vista previa,
+el panel de accion y el checklist otra vez debajo, la copia vieja en gris,
+durante todo el analisis.
+
+**Regresion mia**, del aviso de progreso de la lectura del catalogo.
+`leer_catalogo_del_sitio` creaba su propio `st.empty()`, y esa funcion solo se
+llama en la rama que LEE. O sea: el hueco existia en unos reruns y no en otros.
+Eso cambia la **forma del arbol de elementos** entre un rerun y el siguiente:
+Streamlit deja de poder reemplazar el bloque de abajo en su sitio y lo **agrega**
+debajo del viejo.
+
+Reproducido con Chromium sobre un repro minimo de 20 lineas —una rama que crea
+un `st.empty()`, un bloque de columnas y un trabajo lento—:
+
+```
+hueco creado DENTRO de la rama:  el bloque aparece 2 veces durante el trabajo
+hueco creado SIEMPRE:            1 vez
+```
+
+Un `st.empty()` **vaciado sigue ocupando su nodo** en el arbol: `.empty()` borra
+el contenido, no el hueco.
+
+Ahora el hueco lo crea el LLAMADOR, antes de decidir si toca leer, y se le pasa.
+Sin `aviso` no se dibuja avance, pero **nunca** se crea un hueco condicional.
+Hay tres pruebas que lo fijan, una de ellas comparando la sangria para que el
+hueco no vuelva a caer dentro de una rama.
+
+> Regla general: **no crees elementos de Streamlit dentro de una rama que no se
+> ejecuta siempre, si despues hay contenido que tarda.** No falla, se duplica.
+
+### El analisis: 79 s a 33 s, con la misma salida
+
+Medido con cProfile sobre 1.000 productos, 10.000 filas de ARTI y un catalogo de
+33.000 filas. Lo que quedaba despues del arreglo del bucle cuadratico:
+
+| | |
+|---|---:|
+| antes | **79,1 s** |
+| el catalogo se corta una vez, no una por producto | 63,5 s |
+| el bucle recorre dicts y no `Series` | 38,2 s |
+| el indice acotado a lo que la carga usa | **32,6 s** |
+
+Las tres cosas, y por que:
+
+1. **`filas_por_handle`**: el catalogo pasa a `{handle: [fila como dict]}` en UNA
+   pasada. Antes cada producto hacia `matrixify_df.loc[lista]`, y pandas
+   reindexa las 107 columnas y las materializa: mil cortes.
+2. **El bucle recorre dicts.** `iterrows()` crea un `Series` por fila y entonces
+   **cada `.get()` pasa por el indice de pandas**: en el perfil eran 1,58
+   millones de accesos y 20 segundos. Igual el maestro ARTI, que ademas se
+   barria entero (`arti[arti["__KEY"] == key]`) una vez por producto.
+3. **`claves_de_fila`**: varias funciones leian las columnas de la fila con
+   `getattr(row, "index")`. Con un dict eso devuelve `[]` **sin fallar**, o sea
+   que el respaldo por nombre normalizado dejaba de encontrar la columna y el
+   campo salia vacio. Es el peor tipo de error, el que no revienta. Hay una
+   prueba que exige que "Descripción " se encuentre pidiendo "Descripcion", en
+   `Series` y en dict.
+
+**La salida es IDENTICA.** Comparadas las 6 hojas (Matrixify, resumen,
+observaciones, tipos nuevos, omitidos y Sial) en tres sitios, antes y despues:
+misma forma y mismos valores.
+
+**Y no se pago con memoria.** Guardar el catalogo entero como dicts costaba
+**82 MB** medidos para un catalogo de 28 MB, y eso crece con la tienda mientras
+el contenedor sigue dando 1 GB POR APP. Por eso el indice se acota a **los
+handles que la carga toca** (1.000 de 3.000) y a **las columnas que se leen de
+verdad** (46 de 98, via `columnas_leidas_del_catalogo`): **18 MB**. Lo vigila
+`scripts/test_memoria.py`, con las columnas REALES del export — con un juego de
+metacampos inventado el numero no se parece al de produccion.
+
+Si alguien agrega una lectura de una columna nueva del catalogo, tiene que
+agregarla a `columnas_leidas_del_catalogo` o llegara vacia. Hay una prueba que
+exige que esten todas las de `comparable_columns`: si faltara una,
+`product_is_unchanged` dejaria de compararla y un producto que SI cambio se
+reportaria como omitido.
+
+---
+
 ## 5 nonies. La carga sigue con la sesión cerrada (septiembre 2026)
 
 `engines/carga_remota.py` (sin Streamlit) + `scripts/worker_carga_shopify.py` +
@@ -1594,12 +1676,12 @@ python scripts/test_engines_ticket_flow.py             # 55
 python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
 python scripts/test_carga_sial_parcial.py               # 28
-python scripts/test_lectura_catalogo.py                # 27
+python scripts/test_lectura_catalogo.py                # 30
 python scripts/test_espejo_supermall.py                # 35
 python scripts/test_mantenedor_tallas.py               # 34
-python scripts/test_memoria.py                         # 14
+python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33
-python scripts/test_rendimiento.py                     # 20
+python scripts/test_rendimiento.py                     # 41
 python scripts/test_bandeja_solicitudes.py             # 57
 python scripts/test_partial_maintenance_validations.py # 6
 python scripts/test_siblings_carga_completa.py         # 24

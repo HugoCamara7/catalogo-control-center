@@ -203,9 +203,8 @@ SITE_CONFIGS = {
         "label": "Vans",
         "site_label": "Vans.pe",
         # Vans entrega el calzado en tallas US y la tienda las publica en PE.
-        # Es una bandera del sitio, no un `if` con el nombre de la marca: el
-        # dia que otra marca lo necesite, se le pone la bandera y ya.
         "tallas_calzado_pe": True,
+        "escala_calzado": "PE",
         "allowed_arti_brands": ["VANS"],
         "vendor": "Vans",
         "legacy_vendors": ["vanspe", "Vans"],
@@ -231,6 +230,25 @@ SITE_CONFIGS = {
         "output_filename": "matrixify_supermall_generado.xlsx",
         "sial_tail_columns": SIAL_TAIL_SUPERMALL,
         "sial_active_columns": ["13"],
+        # Supermall.pe publica TODO su calzado en PE, sea de la marca que sea.
+        # Es la unica tienda donde las marcas conviven: sin esto el filtro de
+        # talla mostraria `7, 8, 9` (Columbia, que entrega en US) al lado de
+        # `39, 40, 41` (Hush Puppies, que entrega en PE) para el mismo pie.
+        #
+        # No es `tallas_calzado_pe`: ese booleano solo sabe decir "todo el
+        # calzado del sitio" o "nada", y aqui la tabla de conversion la manda
+        # la MARCA (`engines/guias_tallas`). Sin guia de su marca, la talla se
+        # queda como esta y se REPORTA -- nunca se adivina.
+        "escala_calzado": "PE",
+        # Entra Activo y publicado en el canal de venta. Un producto que llega
+        # en borrador a un marketplace no lo ve nadie, y esperar a que alguien
+        # lo publique a mano es el mismo problema que el espejo existe para
+        # evitar.
+        "publicar_al_cargar": True,
+        # El precio de Supermall lo sincroniza el ERP. La carga no lo escribe:
+        # mandar un precio aqui competiria con esa sincronizacion y ganaria el
+        # ultimo que escribiera.
+        "precio_desde_erp": True,
         # Supermall es el ESPEJO de los demas sitios: no tiene input comercial
         # propio, recibe lo que ya se cargo en otro lado.
         "es_espejo": True,
@@ -642,6 +660,9 @@ def build_image_lookup_by_brand(input_df, brand_column, brand_config):
     return lookup
 
 
+from engines.tallas import clave_de_orden as orden_de_talla  # noqa: E402
+
+
 def normalize_size(value):
     if value is None or pd.isna(value):
         return ""
@@ -687,30 +708,21 @@ def normalize_size(value):
 
 
 def size_sort_key(value):
-    size = normalize_size(value)
-    alpha_order = {
-        "XXXS": 1,
-        "XXS": 2,
-        "XS": 3,
-        "S": 4,
-        "S/M": 5,
-        "M": 6,
-        "M/L": 7,
-        "L": 8,
-        "L/XL": 9,
-        "XL": 10,
-        "XXL": 11,
-        "XXXL": 12,
-        "O/S": 99,
-    }
-    if size in alpha_order:
-        return (0, alpha_order[size], size)
-    if re.fullmatch(r"\d+(\.\d+)?", size):
-        return (1, float(size), size)
-    match = re.fullmatch(r"(\d+(\.\d+)?)/(\d+(\.\d+)?)", size)
-    if match:
-        return (2, float(match.group(1)), float(match.group(3)), size)
-    return (9, 9999, size)
+    """El orden de una talla. UNICO criterio de la app: `engines/tallas`.
+
+    Antes esta funcion tenia su propia tabla de doce letras y entendia tres
+    formas -- letra, numero y `numero/numero` --; todo lo demas se ordenaba
+    ALFABETICAMENTE. Medido sobre el maestro real, eso deja 361 de los 15.690
+    modelo-color de Columbia con la curva desordenada: `L/R, M/R, S/R, XL/R,
+    XS/R` en vez de `XS/R, S/R, M/R, L/R, XL/R`.
+
+    El diccionario esta escrito UNA vez en `engines/tallas` y lo usan tambien
+    `app_matrixify.size_sort_key` y el Mantenedor de Tallas. Sus familias 0, 1
+    y 2 replican exactamente las de aqui, asi que ninguna curva que hoy sale
+    bien se mueve. Lo comprueba `scripts/test_orden_tallas_reales.py` contra
+    los ~70.000 modelo-color del maestro de verdad.
+    """
+    return orden_de_talla(value, normalize_size)
 
 
 _DECIMAL_PIPE_RE = re.compile(r"(?<=\d)\|(?=\d)")
@@ -1220,32 +1232,91 @@ def es_calzado(product_type):
     return clean(clase_de(product_type)).casefold() == "calzado"
 
 
-def display_size_for_site(value, brand_config=None, gender="", product_type=""):
+def escala_de_calzado(brand_config=None):
+    """La escala en la que ese SITIO publica el calzado: "PE" u "origen".
+
+    `tallas_calzado_pe` se conserva como respaldo para que ningun sitio
+    configurado a la vieja usanza cambie de comportamiento.
+    """
+    brand_config = brand_config or get_brand_config()
+    declarada = clean(brand_config.get("escala_calzado")).upper()
+    if declarada:
+        return declarada
+    return "PE" if brand_config.get("tallas_calzado_pe") else "ORIGEN"
+
+
+
+def estado_al_cargar(brand_config=None, fila_destino=None):
+    """`(Status, Published)` con los que el producto entra en esa tienda.
+
+    Supermall.pe entra **Activo y publicado**: es un marketplace y un producto
+    que llega en borrador no lo ve nadie, asi que quedarse esperando a que
+    alguien lo publique a mano es el mismo problema que el espejo existe para
+    evitar -- depender de que alguien se acuerde.
+
+    Los demas sitios conservan lo que el producto ya tenia en su tienda, y un
+    producto nuevo se queda sin valor para que manden las reglas de la carga
+    completa. Cambiar eso aqui reescribiria el estado de catalogos enteros.
+    """
+    brand_config = brand_config or get_brand_config()
+    if brand_config.get("publicar_al_cargar"):
+        return "Active", "TRUE"
+    if fila_destino is None:
+        return "", ""
+    return clean(fila_destino.get("Status")), clean(fila_destino.get("Published"))
+
+
+def display_size_for_site(value, brand_config=None, gender="", product_type="", marca="",
+                          avisos=None):
     """La talla tal y como la publica ese sitio.
 
-    Con `tallas_calzado_pe`, el CALZADO se convierte de US a PE con la tabla
-    oficial (`engines/tallas_calzado`). Solo calzado: en vestuario una talla
-    "12" es una talla de nino, no un US 12, y convertirla destrozaria el dato.
-    Por eso hace falta el tipo de prenda, no basta el numero.
+    Dos datos distintos deciden, y antes estaban confundidos en un booleano:
+
+    - **La escala la manda el SITIO** (`escala_calzado`). Supermall.pe publica
+      todo su calzado en PE porque es la unica tienda donde conviven marcas que
+      entregan en US (Columbia, Keds, Sorel) con marcas que entregan en PE
+      (Hush Puppies, Rockford): mezcladas, el filtro de talla no sirve.
+    - **La tabla la manda la MARCA** (`engines/guias_tallas`). Un booleano de
+      sitio solo sabe decir "todo o nada", y eso es falso en Supermall.
+
+    Solo CALZADO: en vestuario una talla "12" es de nino, no un US 12, y
+    convertirla destrozaria el dato. Por eso hace falta el tipo de prenda.
+
+    **Sin guia de la marca, o sin genero, NO se convierte y se avisa.** Nunca
+    se adivina: una talla inventada se publica como si fuera cierta. `avisos`
+    es una lista opcional donde se deja constancia; la carga la vuelca en la
+    hoja de revision y **no se detiene por esto**.
     """
     brand_config = brand_config or get_brand_config()
     site_label = clean(brand_config.get("site_label"))
     if site_label == "Rockford.pe" and (is_one_size(value) or is_zero_size(value)):
         return "Talla Única"
     talla = normalize_size(value)
-    if brand_config.get("tallas_calzado_pe") and product_type and es_calzado(product_type):
-        convertida, _nota = talla_calzado_pe(talla, gender)
-        return convertida or talla
-    return talla
+    if escala_de_calzado(brand_config) != "PE":
+        return talla
+    if not product_type or not es_calzado(product_type):
+        return talla
+    convertida, nota = talla_calzado_pe(talla, gender, marca=marca or brand_config.get("label"))
+    if nota and avisos is not None:
+        avisos.append({"Talla": talla, "Marca": clean(marca), "Motivo": nota})
+    if nota in ("sin guia", "sin genero", "desconocida"):
+        return talla
+    return convertida or talla
 
 
-def talla_calzado_pe(value, gender=""):
-    """(talla PE, nota). Envuelve el conversor para no importarlo en 5 sitios."""
+def talla_calzado_pe(value, gender="", marca=""):
+    """(talla PE, nota). La unica puerta por la que se convierte una talla.
+
+    Sin `marca` se usa la guia de Vans, que era el unico comportamiento que
+    habia antes de que existiera el registro. Con marca se busca la suya y, si
+    no tiene, **no se convierte**: la nota dice "sin guia".
+    """
     try:
-        from engines.tallas_calzado import talla_pe
+        from engines import guias_tallas
     except ImportError:
         return clean(value), ""
-    return talla_pe(value, gender)
+    clave = clean(marca).upper() or "VANS"
+    return guias_tallas.convertir(value, clave, guias_tallas.CALZADO, gender)
 
 
 def dedupe_variants_for_shopify(variants, brand_config=None, issues=None, key="", input_index=None):
@@ -2960,6 +3031,27 @@ def siblings_ya_publicados(matrixify_df):
     return {modelo: list(dict.fromkeys(handles)) for modelo, handles in por_modelo.items()}
 
 
+
+def unir_siblings(por_modelo_de_la_carga, por_modelo_publicados):
+    """`{modelo: "handle-a, handle-b"}` uniendo lo que se carga y lo que ya hay.
+
+    Es UNA sola regla porque la usan los dos caminos: la carga completa, que
+    conoce los colores del input del dia, y la carga por codigos Modelo-Color
+    (Centry, Carga Sial y Supermall), que conoce los codigos pedidos. Escrita
+    dos veces, el arreglo siguiente entraria en una y se olvidaria en la otra
+    -- es lo que este repositorio ya paga con las dos `normalize_size`.
+
+    Lo publicado NO se pisa: un modelo con tres colores en la tienda que hoy
+    recibe uno nuevo tiene que acabar con cuatro hermanos, no con uno.
+    """
+    unidos = {}
+    for modelo in set(por_modelo_de_la_carga or {}) | set(por_modelo_publicados or {}):
+        handles = list((por_modelo_de_la_carga or {}).get(modelo, []))
+        handles += list((por_modelo_publicados or {}).get(modelo, []))
+        unidos[modelo] = ", ".join(dict.fromkeys(clean(h) for h in handles if clean(h)))
+    return unidos
+
+
 def build_existing_lookup(matrixify_df):
     product_by_key = {}
     product_by_handle = {}
@@ -3944,6 +4036,51 @@ def build_matrixify_updates(
     return output_df, issues_df
 
 
+AVISO_TALLA_MOTIVOS = {
+    "sin guia": (
+        "no hay guia de tallas registrada para esa marca, asi que la talla se "
+        "publica tal y como viene del maestro"
+    ),
+    "sin genero": (
+        "no se sabe el genero del producto, y un mismo numero US son dos tallas "
+        "distintas (un 8 de hombre es PE 40.5 y uno de mujer PE 38.5)"
+    ),
+    "desconocida": "la talla no esta en la guia de esa marca",
+    "ambigua": "el numero existe en dos escalas de la guia",
+}
+
+
+def avisos_de_talla_a_issues(avisos):
+    """Las tallas de calzado que no se pudieron convertir, agrupadas.
+
+    Van a la hoja de Revision y **no detienen la carga**: parar una carga
+    entera porque a un producto le falta el genero es peor que publicarlo con
+    la talla de origen. Lo que no se puede es que no lo sepa nadie, que es lo
+    que pasaba antes -- se aplicaba la columna de hombre en silencio.
+    """
+    if not avisos:
+        return []
+    agrupados = {}
+    for aviso in avisos:
+        clave = (clean(aviso.get("Marca")).upper(), clean(aviso.get("Motivo")))
+        agrupados.setdefault(clave, set()).add(clean(aviso.get("Talla")))
+    filas = []
+    for (marca, motivo), tallas_vistas in sorted(agrupados.items()):
+        explicacion = AVISO_TALLA_MOTIVOS.get(motivo, motivo)
+        ordenadas = sorted(tallas_vistas, key=size_sort_key)
+        filas.append({
+            "Mod-Col": "Escala de tallas",
+            "Problema": (
+                f"{marca or 'sin marca'}: {len(tallas_vistas):,} tallas de calzado se "
+                f"publican SIN convertir a PE porque {explicacion}. "
+                f"Tallas: {', '.join(ordenadas[:14])}"
+                f"{' ...' if len(ordenadas) > 14 else ''}"
+            ),
+        })
+    return filas
+
+
+
 def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None):
     brand_config = brand_config or get_brand_config()
     matrixify_columns, matrixify_df = prepare_matrixify_context(matrixify_source, brand_config)
@@ -4007,16 +4144,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     # trae el input con los que ya estan publicados para el mismo modelo. Nunca
     # se reemplaza la relacion por lo que traiga el input del dia: eso borraria
     # los colores cargados antes.
-    siblings_publicados = siblings_ya_publicados(matrixify_df)
     siblings_del_input = (
         input_df.groupby("__MODEL")["__HANDLE"]
         .apply(lambda values: [clean(value) for value in values if clean(value)])
         .to_dict()
     )
-    siblings_by_model = {}
-    for modelo in set(siblings_del_input) | set(siblings_publicados):
-        handles = list(siblings_del_input.get(modelo, [])) + list(siblings_publicados.get(modelo, []))
-        siblings_by_model[modelo] = ", ".join(dict.fromkeys(handle for handle in handles if handle))
+    siblings_by_model = unir_siblings(siblings_del_input, siblings_ya_publicados(matrixify_df))
     brand_column = detect_brand_column(input_df)
     image_lookup = build_image_lookup_by_brand(input_df, brand_column, brand_config)
     wanted_keys = set(input_df["__KEY"])
@@ -4056,6 +4189,11 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     rows = []
     sial_rows = []
     issues = []
+    # Las tallas de calzado que NO se pudieron convertir. Se reportan y la
+    # carga sigue: parar la carga entera porque a un producto le falta el
+    # genero seria peor que publicarlo con la talla de origen, que es lo que
+    # pasaba antes -- solo que antes no se enteraba nadie.
+    avisos_de_talla = []
     skipped_rows = []
     known_types_for_report, known_types_source = load_known_types()
     runtime_type_warning_keys = set()
@@ -4289,6 +4427,10 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             display_size = display_size_for_site(
                 variant["__SIZE"], brand_config,
                 gender=product_gender(product), product_type=product_type,
+                # La MARCA decide la tabla de conversion, no el sitio: en
+                # Supermall.pe conviven marcas que entregan en US con marcas
+                # que ya entregan en PE.
+                marca=product_brand_raw, avisos=avisos_de_talla,
             )
             output = {column: "" for column in matrixify_columns}
             variant_sku = clean(variant.get("CODINT_MA"))
@@ -4496,6 +4638,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                 keep="first",
             )
     issues.extend(new_type_warnings_to_issues(type_warnings_df))
+    issues.extend(avisos_de_talla_a_issues(avisos_de_talla))
 
     output_df = pd.DataFrame(rows, columns=matrixify_columns)
     output_df = fill_top_row_product_fields(output_df, input_df, tech_col, brand_config)

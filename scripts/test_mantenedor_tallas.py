@@ -327,5 +327,87 @@ class TestResumenYTabla(unittest.TestCase):
         self.assertEqual(ot.filas_para_tabla(None), [])
 
 
+class TestElPegamentoDeLaPantalla(unittest.TestCase):
+    """Los tres fallos que dejaban el Mantenedor de Tallas sin efecto.
+
+    Ninguna de las 34 pruebas anteriores los atrapo porque todas prueban el
+    MOTOR, y los tres estaban en el pegamento entre el motor y la pantalla.
+    Las tres de aqui fallan con el codigo anterior.
+    """
+
+    def test_el_motor_expone_indice_de_opcion_sin_guion_bajo(self):
+        """`app_matrixify` llamaba a `orden_tallas._indice_de_opcion`, que no
+        existe: la funcion se llama `indice_de_opcion`. Era un AttributeError
+        sin capturar en `tallas_aplicar_producto`, o sea que "Aplicar" moria en
+        el primer producto que hubiera que reordenar y se llevaba la pantalla
+        por delante."""
+        self.assertTrue(hasattr(ot, "indice_de_opcion"))
+        self.assertEqual(ot.indice_de_opcion(variantes(["38", "40"]), "Talla"), "1")
+
+    def test_la_app_no_llama_a_una_funcion_privada_que_no_existe(self):
+        import inspect
+        import app_matrixify as app
+        cuerpo = inspect.getsource(app.tallas_aplicar_producto)
+        self.assertNotIn("_indice_de_opcion", cuerpo)
+        self.assertIn("orden_tallas.indice_de_opcion", cuerpo)
+
+    def test_el_plan_lleva_el_tipo_y_el_genero(self):
+        """Antes de escribir se REPLANIFICA sobre el producto releido. Si el
+        plan no lleva `Type`, el conversor sale None en ese segundo pase y el
+        cambio de escala **no se aplica nunca**: la pantalla contesta "Ya
+        estaba bien al releerlo" y no escribe nada."""
+        plan = ot.plan_de_producto(
+            producto(["8", "9"], marca="Vans", tipo="Zapatilla", Genero="Masculino"),
+            ORDEN,
+        )
+        self.assertEqual(plan["Type"], "Zapatilla")
+        self.assertEqual(plan["Genero"], "Masculino")
+
+    def test_al_replanificar_el_conversor_sigue_existiendo(self):
+        """El recorrido completo: con el plan que devuelve el motor, el
+        conversor de la pantalla tiene que seguir saliendo. Con el codigo
+        anterior salia None porque `plan.get("Type")` era ""."""
+        import app_matrixify as app
+        plan = ot.plan_de_producto(
+            producto(["8", "9"], marca="Vans", tipo="Zapatilla", Genero="Masculino"),
+            ORDEN,
+        )
+        registro = {
+            k: plan.get(k, "")
+            for k in ("Mod-Col", "Handle", "Title", "Marca", "Product ID", "Type", "Genero")
+        }
+        self.assertIsNotNone(app.tallas_convertidor_para(registro, app.get_brand_config("vans")))
+
+    def test_reorder_product_sizes_no_deja_codigo_muerto(self):
+        import inspect
+        import app_matrixify as app
+        cuerpo = inspect.getsource(app._reorder_product_sizes)
+        # Se mira la ASIGNACION, no la palabra: el comentario que explica por
+        # que se quito la nombra a proposito.
+        self.assertNotIn("values_in_order =", cuerpo)
+        self.assertNotIn("values_in_order.extend", cuerpo)
+
+
+class TestOrdenDeColumbia(unittest.TestCase):
+    """Lo que reporto el usuario: `S/R M/R ... XXL/R` salia empezando por L/R."""
+
+    def test_la_curva_con_largo_se_detecta_desordenada(self):
+        plan = ot.plan_de_producto(
+            producto(["L/R", "M/R", "S/R", "XL/R", "XS/R"], marca="Columbia", tipo="Casaca"),
+            ORDEN,
+        )
+        self.assertEqual(plan["Situacion"], ot.DESORDENADO)
+        self.assertEqual(plan["Propuesto"], ["XS/R", "S/R", "M/R", "L/R", "XL/R"])
+
+    def test_columbia_no_cambia_de_escala(self):
+        """Columbia solo necesita ORDEN. No hay guia de conversion suya, y sin
+        guia no se convierte: una talla adivinada es peor que una en US."""
+        plan = ot.plan_de_producto(
+            producto(["L/R", "M/R", "S/R"], marca="Columbia", tipo="Casaca"), ORDEN,
+        )
+        self.assertFalse(plan["Cambia_escala"])
+        self.assertEqual(plan["Renombrar"], {})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

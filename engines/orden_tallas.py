@@ -126,6 +126,14 @@ def plan_de_producto(producto, orden_clave, convertir=None):
         "Handle": _texto(producto.get("Handle")),
         "Title": _texto(producto.get("Title")),
         "Marca": _texto(producto.get("Marca")),
+        # El TIPO y el GENERO viajan en el plan porque antes de escribir se
+        # REPLANIFICA sobre el producto releido, y quien decide si hay que
+        # convertir la escala necesita los dos. Sin ellos, `plan.get("Type")`
+        # era "" en el segundo pase, el conversor salia None y el cambio de
+        # escala se perdia en silencio: la pantalla decia "Ya estaba bien al
+        # releerlo" y no convertia nada, nunca.
+        "Type": _texto(producto.get("Type")),
+        "Genero": _texto(producto.get("Genero")),
         "Product ID": _texto(producto.get("Product ID")),
         "Opcion": "",
         "Actual": [],

@@ -86,27 +86,65 @@ def modelo_color(producto):
     return _texto((producto or {}).get("Mod-Col")).upper()
 
 
-def marca_de_producto(producto, marcas_conocidas=()):
+def marca_de_producto(producto, marcas_conocidas=(), marcas_del_sitio=(),
+                      vendors_de_sitio=()):
     """La marca comercial del producto.
 
-    `Vendor` NO sirve: en Shopify es el vendor del SITIO (`rockfordpe`), el
-    mismo para todas las marcas de esa tienda. Contando por vendor, Rockford.pe
-    saldria con una sola marca y Columbia, Patagonia y Sorel desaparecerian.
+    Se mira, en este orden:
 
-    Manda el metacampo `custom.marca`, que la app escribe en cada producto. Si
-    falta (productos viejos), se busca alguna marca conocida entre los tags,
-    que es donde tambien la deja el generador.
+    1. El metacampo `custom.marca`, que la app escribe en cada producto.
+    2. Alguna marca conocida entre los tags, que es donde tambien la deja el
+       generador.
+    3. **El `Vendor`, cuando NO es el vendor del sitio.** En los productos que
+       crea esta app el vendor es el de la tienda (`rockfordpe`, `columbiape`),
+       el mismo para todas sus marcas: por eso no sirve, y por eso manda el
+       metacampo. Pero en los productos cargados por fuera el vendor SI trae la
+       marca de verdad -- es donde aparecen, por ejemplo, los "Massimo Cerutti"
+       del catalogo. `vendors_de_sitio` es la lista de los vendors que hay que
+       descartar, sacada de `SITE_CONFIGS`. **Sin esa lista este paso no se
+       hace**: sin saber cuales son los vendors de las tiendas, "rockfordpe"
+       pasaria por marca y el catalogo entero de Rockford.pe saldria bajo una
+       marca inventada, que es peor que "Sin marca".
+    4. **La unica marca que vende el sitio.** Un producto de Columbia.pe
+       cargado antes de que existiera el metacampo no tiene `custom.marca` ni
+       el tag: ahi la marca no hay que adivinarla, esta en la configuracion.
+       Con Rockford.pe o HushPuppies.pe -- cuatro y cinco marcas -- no hay
+       respuesta y se devuelve `SIN_MARCA`, que es honesto.
+
+    Y sea cual sea el paso que responda, la marca se devuelve con el nombre
+    CANONICO de `marcas_conocidas`. Sin eso, "Hush Puppies" y "Hush puppies"
+    -- el mismo texto escrito distinto en dos productos -- salian como dos
+    marcas en la tabla, con 2.399 productos una y 2 la otra.
     """
     producto = producto or {}
+    conocidas = {_clave(m): _texto(m) for m in marcas_conocidas if _texto(m)}
+
+    def canonica(valor):
+        return conocidas.get(_clave(valor), _texto(valor))
+
     marca = _texto(producto.get("Marca"))
     if marca:
-        return marca
-    conocidas = {_clave(m): _texto(m) for m in marcas_conocidas if _texto(m)}
+        return canonica(marca)
     if conocidas:
         for tag in _texto(producto.get("Tags")).split(","):
             encontrada = conocidas.get(_clave(tag))
             if encontrada:
                 return encontrada
+    vendor = _texto(producto.get("Vendor"))
+    if vendor:
+        # Un vendor que ES una marca conocida vale siempre, aunque coincida con
+        # el vendor de una tienda: `Vans` es las dos cosas a la vez (la marca, y
+        # el vendor antiguo de Vans.pe), y descartarlo dejaba sin marca a los
+        # productos de Vans que estan en Supermall.
+        conocida = conocidas.get(_clave(vendor))
+        if conocida:
+            return conocida
+        del_sitio = {_clave(v) for v in vendors_de_sitio or () if _texto(v)}
+        if del_sitio and _clave(vendor) not in del_sitio:
+            return _texto(vendor)
+    marcas = [_texto(m) for m in marcas_del_sitio or () if _texto(m)]
+    if len(marcas) == 1:
+        return canonica(marcas[0])
     return SIN_MARCA
 
 
@@ -181,7 +219,8 @@ def clave_de_producto(producto):
 
 
 # --- inventario aplanado --------------------------------------------------
-def inventario(productos_por_sitio, clase_de_tipo=None, marcas_conocidas=(), etiquetas_de_sitio=None):
+def inventario(productos_por_sitio, clase_de_tipo=None, marcas_conocidas=(),
+               etiquetas_de_sitio=None, marcas_por_sitio=None, vendors_de_sitio=()):
     """Una fila por (sitio, producto), ya con marca, clase y estado web.
 
     Es la base de todas las tablas de abajo: se recorre Shopify UNA vez.
@@ -189,11 +228,17 @@ def inventario(productos_por_sitio, clase_de_tipo=None, marcas_conocidas=(), eti
     `productos_por_sitio` es {site_key: [producto, ...]}. Un sitio que no
     respondio se pasa como lista vacia y simplemente no aporta filas; no se
     inventan ceros que parecerian catalogo apagado.
+
+    `marcas_por_sitio` es {site_key: [marcas que vende]} y `vendors_de_sitio`
+    la lista de vendors de las tiendas. Los dos son respaldos para leer la
+    marca: ver `marca_de_producto`.
     """
     etiquetas = dict(etiquetas_de_sitio or {})
+    marcas_sitio = dict(marcas_por_sitio or {})
     filas = []
     for site_key, productos in (productos_por_sitio or {}).items():
         etiqueta = _texto(etiquetas.get(site_key)) or _texto(site_key)
+        del_sitio = marcas_sitio.get(site_key) or ()
         vistos = set()
         for producto in productos or []:
             clave = clave_de_producto(producto)
@@ -207,7 +252,8 @@ def inventario(productos_por_sitio, clase_de_tipo=None, marcas_conocidas=(), eti
             filas.append({
                 "Sitio": etiqueta,
                 "Sitio key": _texto(site_key),
-                "Marca": marca_de_producto(producto, marcas_conocidas),
+                "Marca": marca_de_producto(
+                    producto, marcas_conocidas, del_sitio, vendors_de_sitio),
                 "Clase": clase_de_producto(producto, clase_de_tipo),
                 # `Mod-Col` es para MOSTRAR: vacio si el producto no tiene el
                 # metacampo, que es la verdad. `Clave` es para CONTAR.

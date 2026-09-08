@@ -324,5 +324,292 @@ class TestLaPantalla(unittest.TestCase):
             self.assertNotIn(prohibido, cuerpo)
 
 
+class TestLaMarcaSeLee(unittest.TestCase):
+    """La marca es el eje del panel del hueco: si sale "Sin marca", el panel
+    que reparte el trabajo por marca no dice nada."""
+
+    def test_el_centinela_sin_marca_ya_no_gana(self):
+        """`marca_de_producto` nunca devuelve vacio: cuando no la sabe devuelve
+        la cadena "Sin marca". Tomando el primer valor NO VACIO del grupo, ese
+        centinela ganaba y tapaba la marca de la web siguiente."""
+        r = consolidar({
+            "columbia": [producto(Title="A", Type="Casaca")],          # sin marca
+            "vans": [producto(Title="A", Type="Casaca", Marca="Vans")],
+            "supermall": [],
+        })
+        self.assertEqual(r["fichas"][0]["Marca"], "Vans")
+
+    def test_un_sitio_de_una_sola_marca_la_resuelve(self):
+        """Columbia.pe solo vende COLUMBIA: un producto suyo sin metacampo y
+        sin tag no es "Sin marca", es Columbia."""
+        r = cs.consolidar(
+            {"columbia": [producto(Title="A", Type="Casaca")], "supermall": []},
+            etiquetas_de_sitio=ETIQUETAS, orden_de_sitios=ORDEN,
+            marcas_por_sitio={"columbia": ["Columbia"]},
+        )
+        self.assertEqual(r["fichas"][0]["Marca"], "Columbia")
+
+    def test_un_sitio_de_varias_marcas_no_la_adivina(self):
+        """Rockford.pe vende cuatro. Ahi no hay respuesta, y decir cualquiera
+        seria peor que decir "Sin marca"."""
+        r = cs.consolidar(
+            {"rockford": [producto(Title="A", Type="Casaca")], "supermall": []},
+            etiquetas_de_sitio=ETIQUETAS, orden_de_sitios=ORDEN,
+            marcas_por_sitio={"rockford": ["Columbia", "Rockford", "Sorel"]},
+        )
+        self.assertEqual(r["fichas"][0]["Marca"], cs.SIN_MARCA)
+
+    def test_las_marcas_del_sitio_salen_de_SITE_CONFIGS(self):
+        """Escritas a mano en la pantalla, una marca nueva en un sitio no
+        llegaria aqui hasta que alguien se acordara."""
+        import app_matrixify as app
+        por_sitio = app.marcas_por_sitio_configuradas()
+        self.assertEqual(por_sitio["columbia"], ["Columbia"])
+        self.assertIn("Columbia", por_sitio["rockford"])
+        self.assertGreater(len(por_sitio["rockford"]), 1)
+
+
+class TestElVendorTambienDiceLaMarca(unittest.TestCase):
+    """En los productos que crea esta app el vendor es el de la TIENDA
+    (`rockfordpe`), el mismo para todas sus marcas. En los cargados por fuera
+    trae la marca de verdad -- de ahi salen los "Massimo Cerutti" del catalogo.
+    """
+
+    def _consolidar(self, vendor):
+        return cs.consolidar(
+            {"rockford": [producto(Title="A", Type="Casaca", Vendor=vendor)],
+             "supermall": []},
+            etiquetas_de_sitio=ETIQUETAS, orden_de_sitios=ORDEN,
+            marcas_conocidas=("Vans", "Columbia", "Hush Puppies"),
+            marcas_por_sitio={"rockford": ["Columbia", "Rockford", "Sorel"]},
+            vendors_de_sitio=("rockfordpe", "columbiape", "Vans"),
+        )
+
+    def test_un_vendor_que_no_es_de_la_tienda_es_la_marca(self):
+        self.assertEqual(self._consolidar("Massimo Cerutti")["fichas"][0]["Marca"],
+                         "Massimo Cerutti")
+
+    def test_el_vendor_de_la_tienda_no_es_una_marca(self):
+        """Contando por vendor, todo el catalogo de Rockford.pe saldria bajo
+        una marca inventada, que es peor que "Sin marca"."""
+        self.assertEqual(self._consolidar("rockfordpe")["fichas"][0]["Marca"],
+                         cs.SIN_MARCA)
+
+    def test_sin_la_lista_de_vendors_el_paso_no_se_hace(self):
+        """Sin saber cuales son los vendors de las tiendas no se puede
+        distinguir uno del otro, y ante la duda no se inventa una marca."""
+        r = cs.consolidar(
+            {"rockford": [producto(Title="A", Type="Casaca", Vendor="rockfordpe")],
+             "supermall": []},
+            etiquetas_de_sitio=ETIQUETAS, orden_de_sitios=ORDEN,
+            marcas_por_sitio={"rockford": ["Columbia", "Rockford"]},
+        )
+        self.assertEqual(r["fichas"][0]["Marca"], cs.SIN_MARCA)
+
+    def test_un_vendor_que_ES_una_marca_conocida_vale_igual(self):
+        """`Vans` es las dos cosas: la marca, y el vendor antiguo de Vans.pe.
+        Descartarlo dejaba sin marca a los productos de Vans en Supermall."""
+        self.assertEqual(self._consolidar("Vans")["fichas"][0]["Marca"], "Vans")
+
+    def test_la_lista_de_vendors_sale_de_SITE_CONFIGS(self):
+        import app_matrixify as app
+        vendors = app.vendors_de_los_sitios()
+        self.assertIn("rockfordpe", vendors)
+        self.assertIn("columbiape", vendors)
+
+
+class TestLaMismaMarcaEscritaDistinto(unittest.TestCase):
+    """En el catalogo real salian "Hush Puppies" con 2.399 productos y "Hush
+    puppies" con 2: la misma marca partida en dos filas de la tabla por una
+    mayuscula."""
+
+    def test_se_devuelve_el_nombre_canonico(self):
+        r = cs.consolidar(
+            {"hush_puppies": [producto("A-1", Title="A", Type="Casaca",
+                                       Marca="Hush Puppies"),
+                              producto("B-1", Title="B", Type="Casaca",
+                                       Marca="Hush puppies")],
+             "supermall": []},
+            etiquetas_de_sitio=ETIQUETAS, orden_de_sitios=ORDEN,
+            marcas_conocidas=("Hush Puppies",),
+        )
+        self.assertEqual({f["Marca"] for f in r["fichas"]}, {"Hush Puppies"})
+
+    def test_una_sola_fila_en_el_hueco_por_marca(self):
+        r = cs.consolidar(
+            {"hush_puppies": [producto("A-1", Title="A", Type="Casaca",
+                                       Marca="HUSH PUPPIES"),
+                              producto("B-1", Title="B", Type="Casaca",
+                                       Marca="Hush puppies")],
+             "supermall": []},
+            etiquetas_de_sitio=ETIQUETAS, orden_de_sitios=ORDEN,
+            marcas_conocidas=("Hush Puppies",),
+        )
+        filas = cs.hueco_por_marca(r["fichas"])
+        self.assertEqual(len(filas), 1)
+        self.assertEqual(filas[0]["Total"], 2)
+
+
+class TestColumbiaEnDosWebs(unittest.TestCase):
+    """Columbia se vende en Columbia.pe y tambien en Rockford.pe. El mismo
+    producto esta en las dos y de la consolidacion tiene que salir UNA ficha,
+    con la informacion de la tienda de la marca."""
+
+    def _catalogos(self):
+        return {
+            "columbia": [producto("C-1", Title="Desde Columbia", Type="Casaca",
+                                  Marca="Columbia")],
+            "rockford": [producto("C-1", Title="Desde Rockford", Type="Casaca",
+                                  Marca="Columbia")],
+            "supermall": [],
+        }
+
+    def _consolidar(self):
+        return cs.consolidar(
+            self._catalogos(), etiquetas_de_sitio=ETIQUETAS, orden_de_sitios=ORDEN,
+            marcas_por_sitio={"columbia": ["Columbia"]},
+            sitio_de_marca={"Columbia": "columbia"},
+        )
+
+    def test_no_se_duplica(self):
+        r = self._consolidar()
+        self.assertEqual(len(r["fichas"]), 1)
+        self.assertEqual(cs.codigos_cargables(r["fichas"]), ["C-1"])
+
+    def test_manda_la_tienda_de_la_marca(self):
+        ficha = self._consolidar()["fichas"][0]
+        self.assertEqual(ficha["Web principal"], "Columbia.pe")
+        self.assertEqual(ficha["Title"], "Desde Columbia")
+        self.assertEqual(ficha["En cuantas webs"], 2)
+
+    def test_sin_sitio_propio_manda_el_orden_declarado(self):
+        """El desempate final nunca es el de llegada: una consolidacion que
+        cambia de resultado en cada ejecucion no se puede comparar."""
+        r = cs.consolidar(self._catalogos(), etiquetas_de_sitio=ETIQUETAS,
+                          orden_de_sitios=["rockford", "columbia", "supermall"])
+        self.assertEqual(r["fichas"][0]["Web principal"], "Rockford.pe")
+
+    def test_el_sitio_propio_de_cada_marca_sale_de_SITE_CONFIGS(self):
+        import app_matrixify as app
+        propios = app.sitio_propio_de_cada_marca()
+        self.assertEqual(propios["Columbia"], "columbia")
+        self.assertEqual(propios["Vans"], "vans")
+        self.assertNotIn("Supermall", propios)  # el espejo no es tienda de nadie
+
+
+class TestElRepartoEntreLosCuatroEstados(unittest.TestCase):
+    """Antes la pantalla filtraba los codigos ANTES de consolidar, con la lista
+    del espejo: de las cuatro situaciones solo podia salir "Falta cargar", asi
+    que consolidados, se pueden cargar y se crean daban el MISMO numero y la
+    cobertura siempre 0 %."""
+
+    def _catalogos(self):
+        return {
+            "vans": [
+                producto("A-1", Title="A", Type="Zapatilla"),
+                producto("B-1", Title="B", Type="Zapatilla"),
+                producto("C-1", Title="C", Type="Zapatilla"),
+                producto("D-1", Type="Zapatilla"),          # sin titulo: bloqueado
+            ],
+            "supermall": [
+                producto("A-1"),
+                producto("B-1", Status="DRAFT"),
+            ],
+        }
+
+    def test_el_resumen_reparte_el_total(self):
+        r = consolidar(self._catalogos())
+        resumen = r["resumen"]
+        reparto = sum(resumen[clave] for clave in cs.SEGMENTOS)
+        self.assertEqual(reparto, resumen["Productos consolidados"])
+        self.assertEqual(resumen[cs.YA_VISIBLE], 1)
+        self.assertEqual(resumen[cs.SIN_PUBLICAR], 1)
+        self.assertEqual(resumen[cs.FALTA_CARGAR], 1)
+        self.assertEqual(resumen[cs.NO_CARGABLE], 1)
+
+    def test_solo_se_genera_lo_que_falta(self):
+        """Lo cargado sin publicar se PUBLICA, no se recarga: recargarlo le
+        reescribiria la ficha sin que nadie lo haya pedido."""
+        r = consolidar(self._catalogos())
+        self.assertEqual(
+            cs.codigos_cargables(r["fichas"], (cs.FALTA_CARGAR,)), ["C-1"])
+        self.assertEqual(
+            len(cs.productos_para_matrixify(r["fichas"], (cs.FALTA_CARGAR,))), 1)
+
+    def test_la_pantalla_genera_solo_lo_que_falta(self):
+        import app_matrixify as app
+        cuerpo = inspect.getsource(app.supermall_generar)
+        self.assertIn("carga_supermall.FALTA_CARGAR", cuerpo)
+
+    def test_la_pantalla_ya_no_prefiltra_con_el_espejo(self):
+        """Prefiltrando, el panel de las cuatro situaciones no puede decir nada."""
+        import app_matrixify as app
+        cuerpo = inspect.getsource(app.render_carga_supermall)
+        self.assertNotIn("espejo_de_supermall(catalogos", cuerpo)
+
+
+class TestElTrabajoNoSeRepiteEnCadaRerun(unittest.TestCase):
+    """Streamlit reejecuta el script entero en cada clic, y esta pantalla tiene
+    cuatro controles. Con el catalogo completo, rehacer `filas_para_tabla` y su
+    DataFrame costaba 0,24 s medidos POR CLIC, y el resultado no cambia."""
+
+    def test_la_tabla_y_el_hueco_se_calculan_al_analizar(self):
+        import app_matrixify as app
+        cuerpo = inspect.getsource(app.render_carga_supermall)
+        antes = cuerpo.split('st.session_state["supermall_consolidado"] = consolidado', 1)[0]
+        # Los cuatro se calculan DENTRO del bloque que analiza, o sea antes de
+        # guardarse en la sesion. Comprobarlo sobre el cuerpo entero no diria
+        # nada: la linea existiria igual estando en el camino de dibujo.
+        for guardado in ('consolidado["tabla"]', 'consolidado["hueco"]',
+                         'consolidado["totales_hueco"]', 'consolidado["por_cargar"]'):
+            self.assertIn(guardado, antes, f"{guardado} no se calcula al analizar")
+
+    def test_no_se_rehace_al_dibujar(self):
+        import app_matrixify as app
+        cuerpo = inspect.getsource(app.render_carga_supermall)
+        # despues del bloque de analisis no puede volver a llamarse
+        despues = cuerpo.split('st.session_state["supermall_consolidado"] = consolidado', 1)[1]
+        for prohibido in ("carga_supermall.filas_para_tabla(",
+                          "carga_supermall.hueco_por_marca(",
+                          "carga_supermall.totales_del_hueco("):
+            self.assertNotIn(prohibido, despues,
+                             f"{prohibido} se rehace en cada rerun")
+
+    def test_las_tablas_grandes_del_status_se_arman_una_vez(self):
+        """Streamlit ejecuta el cuerpo de las SEIS pestanas en cada rerun."""
+        import app_matrixify as app
+        self.assertIn("isinstance(datos, pd.DataFrame)",
+                      inspect.getsource(app._tabla_status))
+        self.assertIn('"tabla": _tabla_status(', inspect.getsource(app.espejo_de_supermall))
+
+
+class TestElDestinoSinLeerCorta(unittest.TestCase):
+    """Destino AUSENTE no es destino VACIO. Sin el catalogo de Supermall todo
+    sale como "falta cargar", y generar esa carga crearia por duplicado miles
+    de productos que ya existen."""
+
+    def test_el_resumen_lo_dice(self):
+        r = consolidar({"vans": [producto(Title="A", Type="Zapatilla")]})
+        self.assertFalse(r["resumen"]["destino_leido"])
+
+    def test_con_supermall_vacio_si_esta_leido(self):
+        r = consolidar({"vans": [producto(Title="A", Type="Zapatilla")], "supermall": []})
+        self.assertTrue(r["resumen"]["destino_leido"])
+
+    def test_la_pantalla_corta(self):
+        import app_matrixify as app
+        cuerpo = inspect.getsource(app.render_carga_supermall)
+        self.assertIn('destino_leido', cuerpo)
+        self.assertIn("no se pudo leer el catálogo de Supermall.pe".lower(),
+                      cuerpo.lower())
+
+    def test_la_pantalla_ensena_el_motivo_del_fallo(self):
+        """El aviso decia solo "Supermall.pe (Error)". En produccion el motivo
+        era un HTTP 401 por token vencido y no se veia en ninguna parte."""
+        import app_matrixify as app
+        cuerpo = inspect.getsource(app.render_carga_supermall)
+        self.assertIn("Detalle", cuerpo)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

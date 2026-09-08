@@ -1,4 +1,4 @@
-﻿"""Persistent catalog ticket domain for Catalog Control Center.
+"""Persistent catalog ticket domain for Catalog Control Center.
 
 The module has no Streamlit dependency. Production can persist metadata and
 validated files in a dedicated GitHub branch; tests and local development use
@@ -96,32 +96,6 @@ LEGACY_STATE_MAP = {
     "in_review": STATE_DIGITAL_REVIEW,
     "corrected": STATE_CORRECTION_RECEIVED,
     "approved": STATE_LOAD_APPROVED,
-}
-
-BRAND_STATE_LABELS = {
-    STATE_DRAFT: ("Borrador", 5, "Completa y valida el archivo."),
-    STATE_REQUEST_RECEIVED: ("Recibida", 10, "El equipo recibió tu solicitud."),
-    STATE_PENDING_ASSIGNMENT: ("Recibida", 15, "Pendiente de asignación interna."),
-    STATE_ASSIGNED: ("En validación", 25, "La solicitud ya tiene responsable."),
-    STATE_DIGITAL_REVIEW: ("En validación", 35, "El equipo está revisando la información."),
-    STATE_OBSERVED: ("Observada", 40, "Revisa las observaciones y carga una corrección."),
-    STATE_WAITING_BRAND: ("Esperando corrección", 40, "Carga la versión corregida."),
-    STATE_CORRECTION_RECEIVED: ("Corrección recibida", 50, "El equipo revisará la nueva versión."),
-    STATE_LOAD_APPROVED: ("Aprobada", 60, "La solicitud está aprobada para preparación."),
-    STATE_PREPARING: ("En preparación", 70, "Se está preparando el catálogo."),
-    STATE_DRY_RUN: ("En preparación", 75, "Se está validando antes de ejecutar."),
-    STATE_READY_EXECUTE: ("Aprobada", 80, "La carga está lista para ejecutar."),
-    STATE_LOADING: ("En proceso", 88, "La carga se está procesando."),
-    STATE_VALIDATING: ("En proceso", 95, "Se están validando los resultados."),
-    STATE_SIAL_LOADED: ("En proceso", 90, "La carga SIAL terminó. Sigue la carga de precios."),
-    STATE_PRICE_REQUESTED: ("En proceso", 92, "El Área de Producto está cargando los precios."),
-    STATE_PRICE_VALIDATION: ("En proceso", 96, "Se está validando precio y stock antes de publicar."),
-    STATE_READY_CLOSE: ("Lista para cierre", 98, "Todo validado. El equipo cerrará la solicitud."),
-    STATE_COMPLETED: ("Completada", 100, "La solicitud finalizó correctamente."),
-    STATE_COMPLETED_OBS: ("Completada", 100, "La solicitud finalizó con observaciones."),
-    STATE_FAILED: ("Requiere atención", 85, "El equipo está revisando una incidencia."),
-    STATE_REJECTED: ("Requiere atención", 100, "La solicitud fue rechazada."),
-    STATE_CANCELED: ("Cancelada", 100, "La solicitud fue cancelada."),
 }
 
 PRIORITIES = ("low", "normal", "high", "urgent")
@@ -236,22 +210,6 @@ def normalize_key(value):
 
 def internal_state(value):
     return LEGACY_STATE_MAP.get(normalize_text(value), normalize_text(value) or STATE_DRAFT)
-
-
-def brand_state(ticket):
-    state = internal_state((ticket or {}).get("status"))
-    label, progress, next_step = BRAND_STATE_LABELS.get(
-        state,
-        (STATE_LABELS.get(state, state or "Sin estado"), 0, "Consulta al equipo de catálogo."),
-    )
-    return {
-        "state": state,
-        "label": label,
-        "progress": int(progress),
-        "next_step": next_step,
-        "updated_at": normalize_text((ticket or {}).get("updated_at")),
-        "responsible": normalize_text((ticket or {}).get("assignee")) or "Equipo de catálogo",
-    }
 
 
 def upgrade_ticket(ticket):

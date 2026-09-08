@@ -51,7 +51,7 @@ def _texto(valor):
 
 
 def comparar(catalogos_por_sitio, destino=DESTINO, etiquetas_de_sitio=None,
-             marcas_conocidas=()):
+             marcas_conocidas=(), marcas_por_sitio=None, vendors_de_sitio=()):
     """Una fila por producto que exista en algun sitio distinto del destino.
 
     `catalogos_por_sitio` es {site_key: [productos de Shopify]}, tal cual lo
@@ -64,6 +64,7 @@ def comparar(catalogos_por_sitio, destino=DESTINO, etiquetas_de_sitio=None,
     """
     catalogos_por_sitio = catalogos_por_sitio or {}
     etiquetas_de_sitio = etiquetas_de_sitio or {}
+    marcas_por_sitio = dict(marcas_por_sitio or {})
     destino_leido = destino in catalogos_por_sitio
 
     # Lo que ya esta en el destino, por identidad.
@@ -81,13 +82,23 @@ def comparar(catalogos_por_sitio, destino=DESTINO, etiquetas_de_sitio=None,
         if site_key == destino:
             continue
         etiqueta = _texto(etiquetas_de_sitio.get(site_key)) or site_key
+        del_sitio = marcas_por_sitio.get(site_key) or ()
         for producto in productos or []:
             clave = clave_de_producto(producto)
             if not clave:
                 continue
-            entrada = origen.setdefault(clave, {"producto": producto, "sitios": []})
+            entrada = origen.setdefault(clave, {"producto": producto, "sitios": [], "marca": ""})
             if etiqueta not in entrada["sitios"]:
                 entrada["sitios"].append(etiqueta)
+            # La marca se resuelve CON EL SITIO en la mano y se queda con la
+            # primera respuesta de verdad. Resolverla despues, sobre el
+            # producto guardado, perdia el ultimo respaldo -- el sitio de una
+            # sola marca -- porque para entonces ya no se sabe de cual salio.
+            if not entrada["marca"]:
+                marca = marca_de_producto(
+                    producto, marcas_conocidas, del_sitio, vendors_de_sitio)
+                if marca != SIN_MARCA:
+                    entrada["marca"] = marca
 
     filas = []
     for clave, entrada in origen.items():
@@ -106,7 +117,7 @@ def comparar(catalogos_por_sitio, destino=DESTINO, etiquetas_de_sitio=None,
         filas.append({
             "Clave": clave,
             "Mod-Col": codigo,
-            "Marca": marca_de_producto(producto, marcas_conocidas) or SIN_MARCA,
+            "Marca": entrada["marca"] or SIN_MARCA,
             "Titulo": _texto(producto.get("Title")),
             "Handle": _texto(producto.get("Handle")),
             "Sitios de origen": ", ".join(entrada["sitios"]),

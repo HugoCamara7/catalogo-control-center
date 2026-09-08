@@ -1,4 +1,4 @@
-﻿"""
+"""
 Central business rules for Catalog Control Center.
 
 This module is intentionally free of Streamlit and Shopify API calls. It can be
@@ -426,102 +426,6 @@ INPUT_COLUMNS = [
     ("Fecha publicacion", "Programacion", False, "yyyy-mm-dd hh:mm."),
     ("Observaciones", "Control", False, "Notas de revision."),
 ]
-
-
-def input_dictionary_rows():
-    rows = []
-    for column, group, required, help_text in INPUT_COLUMNS:
-        rows.append(
-            {
-                "Nombre exacto": column,
-                "Grupo": group,
-                "Descripcion": help_text,
-                "Tipo de dato": "Texto" if column not in {"Precio", "Compare At Price", "Stock disponible"} else "Numero",
-                "Formato permitido": "Libre controlado",
-                "Ejemplo correcto": example_for_column(column),
-                "Ejemplo incorrecto": "",
-                "Obligatorio": "SI" if required else "NO",
-                "Valores permitidos": allowed_values_for_column(column),
-                "Regla de validacion": validation_rule_for_column(column),
-                "Transformacion": transformation_for_column(column),
-                "Destino Shopify": shopify_target_for_column(column),
-                "Si esta vacio": "Bloquea" if required else "Advertencia o autocompletado",
-                "Mensaje": "Campo obligatorio faltante" if required else "Revisar si aplica",
-            }
-        )
-    return rows
-
-
-def example_for_column(column):
-    return {
-        "Mod-Col": "2092991-NRY",
-        "Marca": "Columbia",
-        "Genero": "Mujer",
-        "Categoria": "Vestuario",
-        "Tipo de prenda": "Casacas",
-        "Color web": "Negro",
-        "Title": "Casaca Impermeable Mujer Arcadia II",
-        "Talla": "M",
-        "SKU": "5327440",
-        "EAN": "7800000000000",
-        "Precio": "299.90",
-        "Tecnologia": "Omni-Tech, Omni-Shield",
-        "Handle sugerido": "casacas-mujer-columbia-2092991-nry",
-    }.get(column, "")
-
-
-def allowed_values_for_column(column):
-    if column == "Marca":
-        return "Columbia, Rockford, Hush Puppies, Vans, Patagonia, Sorel, Mountain Hardwear"
-    if column == "Genero":
-        return "Hombre, Mujer, Unisex, Nino, Nina, Bebe"
-    if column == "Categoria":
-        return "Calzado, Vestuario, Accesorios"
-    return ""
-
-
-def validation_rule_for_column(column):
-    if column == "Talla":
-        return "No crear K, 0, 000 ni vacios; usar solo tallas existentes en BigQuery/ARTI."
-    if column == "SKU":
-        return "Obligatorio por variante. No se envia variante sin SKU."
-    if column == "Guia de tallas":
-        return "Debe ser compatible con categoria/genero; contradicciones bloquean."
-    if column == "Body HTML":
-        return "Solo etiquetas seguras; no scripts/styles/eventos."
-    if column == "Handle sugerido":
-        return "Autogenerado por la app; no requiere carga del Brand Manager."
-    return "Normalizar espacios, tildes y valores equivalentes."
-
-
-def transformation_for_column(column):
-    if column == "Tipo de prenda":
-        return "Normaliza y pluraliza para Shopify."
-    if column in {"Materiales", "Cuidados", "Caracteristicas"}:
-        return "Puede construir Body HTML por secciones."
-    if column == "Tecnologia":
-        return "Convierte a list.single_line_text_field y resuelve logo metaobjeto si existe."
-    if column == "Handle sugerido":
-        return "Se arma con tipo de prenda + genero + marca + codigo modelo-color."
-    return "Se limpia y se usa en validacion/carga."
-
-
-def shopify_target_for_column(column):
-    mapping = {
-        "Title": "Product.title",
-        "Body HTML": "Product.bodyHtml",
-        "Marca": "Product.vendor + custom.marca",
-        "Tipo de prenda": "Product.productType + custom.tipo",
-        "Tags sugeridos": "Product.tags",
-        "SKU": "Variant.sku",
-        "EAN": "Variant.barcode",
-        "Precio": "Variant.price",
-        "Tecnologia": "custom.tecnologia",
-        "Logo tecnologia": "custom.logo",
-        "Materiales": "custom.materialidad / Body HTML",
-        "Guia de tallas": "custom.guia_de_tallas",
-    }
-    return mapping.get(column, "Campo auxiliar / reporte")
 
 
 def validate_catalog_row(row):

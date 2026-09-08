@@ -2290,6 +2290,185 @@ falso: no sale a la red.
 
 ---
 
+## 5 unvicies. Carga Supermall: la marca, la duplicidad y el panel que no decía nada (septiembre 2026)
+
+Reportado con dos capturas: el panel decía **8.815 consolidados · 8.815 se
+pueden cargar · 8.815 se crean · 0 se actualizan · 0 bloqueados**, y la tabla
+por marca tenía **2.872 "Sin marca"**, más un "Hush Puppies" con 2.399 al lado
+de un "Hush puppies" con 2. Eran cinco fallos distintos.
+
+### 1. El panel no podía decir otra cosa
+
+La pantalla filtraba los códigos **antes** de consolidar, con la lista del
+espejo (`codigos_a_cargar`, que solo devuelve los que FALTAN). O sea que de las
+cuatro situaciones que el panel sabe repartir —`Ya visible`, `Cargado sin
+publicar`, `Falta cargar`, `No se puede cargar`— **solo podía salir la
+tercera**: los tres primeros números eran el mismo dato tres veces, "se
+actualizan" estaba clavado en 0 y la cobertura en 0,0 % pasara lo que pasara.
+
+Ahora se consolida el catálogo entero de las demás webs y **la situación es un
+resultado, no un filtro previo**. Las cinco tarjetas reparten el total y suman
+el total; hay un test que lo comprueba.
+
+**Lo que se GENERA sigue siendo solo lo que falta.** Los cargados sin publicar
+se publican, no se recargan —recargarlos les reescribiría la ficha sin que
+nadie lo pida—, que es la misma regla que ya seguía el espejo.
+`codigos_cargables` y `productos_para_matrixify` reciben ahora las situaciones
+que entran.
+
+### 2. `marca_de_producto` devolvía un CENTINELA, no vacío
+
+Cuando no sabe la marca devuelve la cadena `"Sin marca"`, que es **verdadera**.
+La consolidación tomaba "el primer valor no vacío" del grupo, así que ese
+centinela **ganaba**: un producto sin metacampo en la primera web salía "Sin
+marca" aunque la segunda lo tuviera perfectamente etiquetado.
+
+### 3. La marca se leía sin saber de qué web salía
+
+Se resolvía después, sobre el producto suelto, y para entonces ya no se sabía
+en qué tienda estaba. Ahora se resuelve **con el sitio en la mano** y hay dos
+respaldos nuevos, en este orden:
+
+| # | De dónde | Cuándo |
+|---|---|---|
+| 1 | `custom.marca` | siempre que esté |
+| 2 | un tag de marca conocida | productos que creó esta app |
+| 3 | **el `Vendor`, si no es el de una tienda** | productos cargados por fuera |
+| 4 | **la única marca del sitio** | Columbia.pe, Vans.pe, Patagonia.pe |
+
+El **paso 3 es el que pidió el usuario**: "del proveedor que también dice la
+marca". En los productos que crea esta app el vendor es el de la TIENDA
+(`rockfordpe`), el mismo para todas sus marcas —por eso CLAUDE.md dice desde
+siempre que no sirve—, pero en los cargados por fuera trae la marca de verdad:
+de ahí salen los "Massimo Cerutti" del catálogo. **Sin la lista de vendors de
+las tiendas ese paso no se hace**: sin poder distinguirlos, `rockfordpe` pasaría
+por marca y el catálogo entero de Rockford saldría bajo una marca inventada, que
+es peor que "Sin marca". Y un vendor que **ES** una marca conocida vale siempre,
+aunque coincida con el vendor de una tienda: `Vans` es las dos cosas a la vez.
+
+El **paso 4** no adivina: solo responde donde hay UNA respuesta. Rockford.pe
+vende cuatro marcas y HushPuppies.pe cinco; ahí se queda en "Sin marca".
+
+Los tres respaldos van también a `engines/load_status.inventario` y a
+`engines/espejo_supermall`, así que el Status de carga y el espejo cuentan igual.
+**Dos lectores del mismo producto se separan sin que nadie lo note.**
+
+### 4. La misma marca partida en dos por una mayúscula
+
+"Hush Puppies" (2.399) y "Hush puppies" (2) eran dos filas de la tabla. Ahora
+`marca_de_producto` devuelve siempre el nombre **canónico** de
+`marcas_conocidas` cuando el texto coincide sin distinguir mayúsculas, gane el
+paso que gane. Hay un test que exige una sola fila en el hueco por marca.
+
+### 5. Columbia está en Columbia.pe **y** en Rockford.pe
+
+El mismo producto está en las dos webs. Por identidad (`clave_de_producto`) ya
+salía UNA ficha —no había duplicado en el archivo—, pero la ficha se armaba con
+la web que cayera primero en el orden de `SITE_CONFIGS`, que no es una razón.
+
+Ahora manda **la tienda propia de la marca** (`sitio_propio_de_cada_marca`, que
+sale de `SITE_CONFIGS` y no de una lista escrita a mano): la de Columbia.pe es
+la que su equipo mantiene. Los tres criterios, en orden: sitio propio de la
+marca → prendido y visible → orden declarado. Cada ficha dice ahora en
+`Web principal` de cuál salió y en `En cuantas webs` en cuántas está.
+
+Los sitios ESPEJO quedan fuera: Supermall.pe no es la tienda de nadie.
+
+### El destino sin leer ya no pasa por destino vacío
+
+En la captura, **Supermall.pe devolvía Error** —un HTTP 401 por token vencido,
+que solo se veía yendo a su Dashboard— y la pantalla siguió adelante. Con el
+catálogo del destino sin leer, TODO sale como "falta cargar" y **generar esa
+carga crearía por duplicado miles de productos que ya existen**. El motor ya lo
+distinguía (`resumen["destino_leido"]`, la misma regla del espejo); la pantalla
+no lo miraba. Ahora corta, y **enseña el motivo**: la tabla de estado de los
+seis sitios con su columna `Detalle` va en la propia pantalla. Un error sin su
+motivo no se puede arreglar.
+
+### Lo que se hacía en cada rerun
+
+Con el catálogo completo, `filas_para_tabla` más su DataFrame costaba **0,24 s
+medidos por clic** —y la pantalla tiene cuatro controles—. La tabla, el hueco,
+los totales y la lista de códigos se calculan **una vez, al analizar**, igual
+que `resumen_centry_para_pantalla`. Medido: 35.000 fichas → tabla de 10 MB.
+
+Lo mismo en Status de carga, que ejecuta el cuerpo de las **seis** pestañas en
+cada rerun: el detalle del espejo y los no visibles se arman ya como DataFrame
+al actualizar el status, y `_tabla_status` deja pasar tal cual lo que ya es uno.
+
+Consolidar el catálogo entero cuesta **3,0 s y 39 MB** medidos con 48.000
+productos en cinco sitios, y se paga una vez por análisis.
+
+`scripts/test_carga_supermall.py` pasó de 31 a **57 pruebas**.
+
+---
+
+## 5 duovicies. Limpieza: 700 líneas sin llamador y los archivos corrompidos (septiembre 2026)
+
+Pendientes 5 y 6 de la sección 8, y la regla 6 ("nunca dejes una función sin
+llamador"), que llevaba **16 funciones** incumplida.
+
+**Borradas por AST, no a ojo.** Se recorren todos los `.py` del repositorio
+contando referencias por `Name` y por `Attribute`, y se comprueba además que el
+nombre no aparezca en ningún texto (los tests de este repo leen el código con
+`inspect`, así que una referencia solo en una cadena también cuenta). Solo se
+borra lo que aparece **una vez**: su propia definición. Y se repite hasta que la
+cuenta da cero, porque borrar una arrastra a las que solo ella usaba —así
+cayeron `_commercial_values_rows`, `_url_is_reachable_image`,
+`BRAND_STATE_LABELS` y las cinco `*_for_column` de `catalog_rules`.
+
+| Dónde | Qué se fue |
+|---|---:|
+| `app_matrixify.py` | 16 funciones · **482 líneas** |
+| `generate_columbia_matrixify.py` | 3 funciones |
+| `catalog_rules.py` | 6 funciones |
+| `ticket_system.py` | `brand_state` + su tabla de etiquetas |
+| `engines/enrich.py` | `pares_de_texto` |
+
+Entre ellas **`render_header`, `render_active_site_card` y
+`render_input_upload_card`**: tres paneles definidos y nunca invocados, que es
+exactamente el fallo que la regla 6 existe para impedir.
+
+**`engines/normalize.py` (525 líneas) y `engines/excel_io.py`** se fueron con sus
+dos archivos de pruebas. Quedaron de la Fase 0 descartada y **no los importaba
+nadie más que sus propios tests**. Con ellos se va una de las dos
+`normalize_size` de la sección 9: la que queda es la de
+`generate_columbia_matrixify`, que es la que usa la app.
+
+**Los archivos corrompidos de la raíz** (sección 10, verificados otra vez por
+firma binaria antes de borrarlos): `config.toml` (que era JavaScript),
+`download` y `download (1)` (copias del `.gitignore`),
+`dimensiones_productos.xlsx` y `matrixify_modelo.xlsx` (imágenes WEBP),
+`formato_input_catalog_control_center.xlsx` (texto plano) y los **nueve
+`assets/logo_*` de la raíz**. Los dos `.xlsx` de verdad siguen en `data/`, que
+es de donde los lee la app, y los nueve logos buenos siguen en `assets/brands/`.
+Se confirmó por hash que los de la raíz están corridos una posición:
+`assets/logo_sorel.webp` era, byte a byte, `assets/brands/logo_rockford.webp`.
+
+**Una prueba que se apoyaba en un archivo roto se fabrica ahora el suyo.**
+`test_un_archivo_corrupto_no_revienta` abría `assets/logo_columbia.png` (2 bytes)
+y hacía `skipTest` si no estaba: borrar el archivo la habría dejado **verde sin
+comprobar nada**, que es peor que roja. Ahora escribe sus dos bytes en un
+temporal.
+
+**Tres archivos de la raíz que se llamaban `test_*` y no eran pruebas.**
+`test_catalog_rules.py`, `test_partial_maintenance_validations.py` y
+`test_brand_commercial_input.py` eran generadores de Excel de un solo uso: los
+dos primeros leen un archivo de una ruta de OneDrive de Windows escrita a mano
+(`C:\Users\hcamara\...`), así que en Linux fallan siempre, y los tres escriben
+en `parents[1]` — como si vivieran en `scripts/` — o sea **fuera del
+repositorio**: correr la suite dejaba un `.xlsx` en `/home/user/outputs/`.
+Además se llaman **igual** que las pruebas de verdad de `scripts/`, así que
+cualquier runner recoge la equivocada. Las de `scripts/` se quedan; estas se
+fueron.
+
+**Y el BOM de `app_matrixify.py` desapareció.** El archivo empezaba con
+`U+FEFF`, y eso hace que `ast.parse` del contenido crudo falle con
+`SyntaxError: invalid non-printable character`. Python lo tolera al importar,
+pero cualquier herramienta que lea el archivo como texto se tropieza. Ya no está.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -2334,9 +2513,11 @@ archivos.
    parcial están incrustadas.
 4. **Extraer `engines/shopify_sync.py`** y arreglar la inversión de
    `catalog_engine.py`.
-5. **Borrar 5 archivos corrompidos de la raíz del repo** (ver sección 10).
-6. **Limpiar `engines/normalize.py`, `engines/excel_io.py` y un archivo suelto
-   llamado `engines`** que quedaron de la Fase 0 descartada. Nadie los importa.
+5. ~~Borrar los archivos corrompidos de la raíz del repo.~~ **Hecho** en
+   septiembre de 2026 — ver la sección 5 duovicies.
+6. ~~Limpiar `engines/normalize.py` y `engines/excel_io.py`.~~ **Hecho** en
+   septiembre de 2026 — ver la sección 5 duovicies. El archivo suelto llamado
+   `engines` ya no existía.
 7. **Mover el trabajo pesado al worker.** Streamlit reejecuta el script en
    cada clic y guarda todo en `session_state`; un catálogo de 300.000 SKUs
    nunca va a estar cómodo ahí. `sync_worker.py` y `api_main.py` ya están
@@ -2419,18 +2600,22 @@ vista previa, que ya los trae.
 **`inotify watch limit reached`** en Streamlit Cloud. Se resuelve con
 `fileWatcherType = "none"` en `.streamlit/config.toml`.
 
-**Dos `normalize_size` distintas conviven** — `engines/normalize.py` (Fase 0,
-sin usar) y `generate_columbia_matrixify.py`. Difieren en 15 de 27 casos: la
-segunda convierte tallas de calzado (`85` → `8.5`, `400` → `40`). Los datos
-reales de ARTI (`TALNUM_MA`) vienen en formato ×10. **No unificar** sin decidir
-antes qué flujo usa cuál.
+**Ya no conviven dos `normalize_size`.** Eran la de `engines/normalize.py`
+(Fase 0, sin usar) y la de `generate_columbia_matrixify.py`, y diferían en 15 de
+27 casos: la segunda convierte tallas de calzado (`85` → `8.5`, `400` → `40`),
+que es lo que piden los datos reales de ARTI (`TALNUM_MA` viene en formato ×10).
+En septiembre de 2026 se borró `engines/normalize.py` entero, que no lo
+importaba nadie: queda **una sola**, la que usa la app.
 
 ---
 
-## 10. Archivos corrompidos en el repositorio
+## 10. Archivos corrompidos en el repositorio — BORRADOS (septiembre 2026)
 
-Verificado por firma binaria. No los usa nadie; la app lee los originales de
-`data/`.
+Ya no están: se borraron en septiembre de 2026 (sección 5 duovicies) después de
+volver a verificar por firma binaria que eran lo que esta tabla decía. Se deja
+la tabla porque explica por qué existían y por dónde buscarlos en el historial
+de git si alguna vez hicieran falta. La app lee los originales de `data/` y los
+logos de `assets/brands/`.
 
 | Ruta | Contenido real |
 |---|---|
@@ -2493,7 +2678,7 @@ python scripts/test_espejo_supermall.py                # 35
 python scripts/test_mantenedor_tallas.py               # 41
 python scripts/test_orden_tallas_reales.py             # 17
 python scripts/test_guias_tallas.py                    # 21
-python scripts/test_carga_supermall.py                 # 31
+python scripts/test_carga_supermall.py                 # 57
 python scripts/test_colecciones.py                     # 54
 python scripts/test_tipos_de_prenda.py                 # 13
 python scripts/test_carga_sial_campos.py               # 27

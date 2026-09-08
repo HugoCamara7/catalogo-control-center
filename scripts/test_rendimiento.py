@@ -23,6 +23,7 @@ import base64
 import io
 import sys
 import time
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -141,9 +142,14 @@ class TestNoRompeLaTransparencia(unittest.TestCase):
 class TestArchivosQueNoSonImagenes(unittest.TestCase):
     """Un archivo roto no puede tumbar la pantalla.
 
-    `assets/logo_columbia.png` son 2 bytes (`\\r\\n`) y no es una imagen. Antes
-    de reducir nada eso daba un data URI invalido pero inofensivo; al abrirlo
-    con Pillow hay que atrapar el fallo.
+    El caso real era `assets/logo_columbia.png`: 2 bytes (`\\r\\n`) y no una
+    imagen. Antes de reducir nada eso daba un data URI invalido pero
+    inofensivo; al abrirlo con Pillow hay que atrapar el fallo.
+
+    Ese archivo se borro del repositorio (era una copia muerta y mal nombrada;
+    la app lee de `assets/brands/`), asi que la prueba **se fabrica el suyo**.
+    Apoyada en un archivo del repositorio, borrarlo dejaba la prueba en
+    `skip` -- verde sin comprobar nada, que es peor que roja.
     """
 
     def test_un_archivo_que_no_existe_devuelve_cadena_vacia(self):
@@ -151,10 +157,10 @@ class TestArchivosQueNoSonImagenes(unittest.TestCase):
         self.assertEqual(app.image_data_uri(ROOT / "assets" / "tampoco.webp"), "")
 
     def test_un_archivo_corrupto_no_revienta(self):
-        roto = ROOT / "assets" / "logo_columbia.png"
-        if not roto.exists():
-            self.skipTest("falta el archivo de 2 bytes")
-        self.assertIsInstance(app.image_data_uri(roto), str)
+        with tempfile.TemporaryDirectory() as carpeta:
+            roto = Path(carpeta) / "logo_roto.png"
+            roto.write_bytes(b"\\r\\n")
+            self.assertIsInstance(app.image_data_uri(roto), str)
 
     def test_un_directorio_no_revienta(self):
         self.assertIsInstance(app.image_data_uri(ROOT / "assets"), str)

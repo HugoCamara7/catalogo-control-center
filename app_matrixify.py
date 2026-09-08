@@ -40,6 +40,8 @@ from engines import centry_map as centry_plantilla
 from engines import load_status as status_carga
 from engines import espejo_supermall as espejo
 from engines import orden_tallas
+from engines import guias_tallas
+from engines.tallas import clave_de_orden as orden_de_talla
 from engines import video_media as video_motor
 
 try:
@@ -156,6 +158,8 @@ from generate_columbia_matrixify import (
     display_size_for_site,
     es_calzado,
     talla_calzado_pe,
+    escala_de_calzado,
+    avisos_de_talla_a_issues,
     fold_accents,
     get_brand_config,
     image_candidates,
@@ -868,26 +872,18 @@ def _row_by_size_keys(mapping, size):
 
 
 def size_sort_key(size):
-    """Orden de una talla. Las de LETRA por su escala; las de NUMERO por valor.
+    """El orden de una talla. UNICO criterio de la app: `engines/tallas`.
 
-    El numero va primero a proposito, antes de mirar `SIZE_ORDER`. Antes se
-    consultaba `SIZE_ORDER` para todo, y las tallas conocidas caian en el grupo
-    0 mientras las que no estaban en la tabla caian en el grupo 1: como
-    `SIZE_ORDER` no tiene las medias tallas, una curva de calzado PE quedaba
-    **36, 39, 42, 38.5, 40.5, 44.5** -- las medias, todas al final.
+    Esta funcion y la del maestro (`master_size_sort_key`) tenian cada una su
+    tabla y no coincidian: `S/M` estaba en el maestro entre `S` y `M`, y aqui
+    caia al cajon de las desconocidas. Dos criterios se separan sin que nadie
+    lo note, que es lo que este repositorio ya paga con las dos
+    `normalize_size`. Ahora las dos delegan en el mismo diccionario.
 
-    Se ve en el selector de tallas de la ficha, y es justo lo que el Mantenedor
-    de Tallas existe para arreglar. Ordenar los numeros por su valor tampoco
-    pierde nada: `SIZE_ORDER` tiene el mismo numero en dos escalas (el "40" de
-    vestuario y el "40" europeo), asi que cual ganaba ya dependia de cual se
-    asignara ultimo.
+    `SIZE_ORDER` se conserva porque hay pantallas que lo leen como tabla de
+    escalas, pero ya no decide ningun orden.
     """
-    normalized = normalize_size(size)
-    if re.fullmatch(r"\d+(\.\d+)?", normalized):
-        return (1, float(normalized), normalized)
-    if normalized in SIZE_ORDER:
-        return (0, SIZE_ORDER[normalized], normalized)
-    return (9, 9999, normalized)
+    return orden_de_talla(size, normalize_size)
 
 
 def slugify(value):
@@ -5685,8 +5681,14 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         # tambien, no solo al crear el producto. El Centry se arma desde el
         # export de Shopify, y los productos que ya estaban siguen teniendo la
         # talla US. Convertir dos veces es inofensivo: un PE se queda igual.
-        if brand_config.get("tallas_calzado_pe") and es_calzado(product_type):
-            size_pe, nota_talla = talla_calzado_pe(size, gender)
+        # La MARCA manda la tabla de conversion. En Rockford.pe y en
+        # Supermall.pe el `vendor` de la fila es el de la MARCA, no el del
+        # sitio, que es justo el dato que hace falta.
+        marca_de_la_talla = first_non_empty(
+            row.get("Metafield: custom.marca [single_line_text_field]"), vendor,
+        )
+        if escala_de_calzado(brand_config) == "PE" and es_calzado(product_type):
+            size_pe, nota_talla = talla_calzado_pe(size, gender, marca=marca_de_la_talla)
             if nota_talla == "desconocida":
                 tallas_desconocidas.setdefault(clean_value(size), set()).add(current_mod_col)
             else:
@@ -6654,6 +6656,7 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(issues, columns=["Mod-Col", "Problema"]).drop_duplicates()
 
     rows = []
+    avisos_de_talla = []
     for key, variants in arti.groupby("__KEY", sort=False):
         variants = variants.copy()
         variants = variants[variants["CODINT_MA"].map(clean_value) != ""].copy()
@@ -6774,7 +6777,11 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         for position, (_, variant) in enumerate(variants.iterrows(), start=1):
             size = display_size_for_site(
                 variant.get("__SIZE"), brand_config,
-                gender=clean_value(maestro.get("Genero")), product_type=product_type,
+                gender=first_non_empty(gender_master, maestro.get("Genero")),
+                product_type=product_type,
+                # La MARCA manda la tabla, no el sitio: Supermall.pe lleva
+                # marcas que entregan en US y marcas que ya entregan en PE.
+                marca=raw_brand, avisos=avisos_de_talla,
             )
             rows.append(
                 {
@@ -6829,6 +6836,8 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                     ) if product_row is not None else "",
                 }
             )
+
+    issues.extend(avisos_de_talla_a_issues(avisos_de_talla))
 
     matrixify_like = pd.DataFrame(rows)
     for column in MATRIXIFY_COLUMNS:
@@ -8757,6 +8766,24 @@ def shopify_products_to_matrixify_df(shopify_products):
                     "Option2 Name": variant.get("Option2 Name", ""),
                     "Option2 Value": variant.get("Option2 Value", ""),
                     "Metafield: custom.codigo_modelo_color [id]": product.get("Mod-Col") if index == 0 else "",
+                    # El genero, el color y los textos cortos ya vienen del
+                    # lector de Shopify. Antes estas cuatro columnas salian
+                    # SIEMPRE vacias aunque el producto los tuviera, asi que la
+                    # conversion de tallas se quedaba sin genero y el Centry
+                    # sin nombre corto.
+                    "Metafield: custom.marca [single_line_text_field]": product.get("Marca") if index == 0 else "",
+                    "Metafield: custom.genero [single_line_text_field]": (
+                        product.get("Metafield: custom.genero [single_line_text_field]")
+                    ) if index == 0 else "",
+                    "Metafield: custom.color [single_line_text_field]": (
+                        product.get("Metafield: custom.color [single_line_text_field]")
+                    ) if index == 0 else "",
+                    "Metafield: custom.nombre_corto [single_line_text_field]": (
+                        product.get("Metafield: custom.nombre_corto [single_line_text_field]")
+                    ) if index == 0 else "",
+                    "Metafield: custom.descripcion_corta [single_line_text_field]": (
+                        product.get("Metafield: custom.descripcion_corta [single_line_text_field]")
+                    ) if index == 0 else "",
                     "Metafield: custom.materialidad [single_line_text_field]": (
                         product.get("Metafield: custom.materialidad [single_line_text_field]")
                     )
@@ -12813,14 +12840,11 @@ def _reorder_product_sizes(shopify_config, product_gid, product_variant_rows):
         size_option = options[0]
         option_name = clean_value(size_option.get("name")) or option_name
 
-    existing_values = [
-        clean_value(option_value.get("name"))
-        for option_value in size_option.get("optionValues") or []
-        if clean_value(option_value.get("name"))
-    ]
-    values_in_order = [size for size in ordered_sizes if size in existing_values]
-    values_in_order.extend(value for value in existing_values if value not in values_in_order)
-
+    # `optionValues` se leia aqui para calcular un `values_in_order` que no se
+    # usaba en ninguna parte: codigo muerto de un reordenamiento de valores de
+    # opcion que nunca se llego a escribir. El orden de la ficha lo da la
+    # posicion de las VARIANTES, que es lo que se reordena mas abajo y lo que
+    # se verifica releyendo.
     variant_by_size = {}
     for variant in variants:
         size = _selected_option_value(variant, option_name)
@@ -24062,14 +24086,19 @@ def tallas_convertidor_para(producto, brand_config):
     Solo CALZADO: en vestuario una talla "12" es de nino, no un US 12, y
     convertirla destrozaria el dato.
     """
-    marca = clean_value(producto.get("Marca")) or clean_value(brand_config.get("label"))
-    if not orden_tallas.marca_publica_en_pe(marca):
+    if escala_de_calzado(brand_config) != "PE":
         return None
+    marca = clean_value(producto.get("Marca")) or clean_value(brand_config.get("label"))
     tipo = clean_value(producto.get("Type"))
     if not tipo or not es_calzado(tipo):
         return None
+    # Sin guia registrada para esa marca no se convierte NADA. Antes se miraba
+    # `MARCAS_TALLA_PE`, una lista de nombres escrita a mano: una marca en la
+    # lista sin tabla habria pedido una conversion que no existe.
+    if guias_tallas.guia_para(marca, guias_tallas.CALZADO) is None:
+        return None
     genero = centry_gender(producto)
-    return lambda talla: talla_calzado_pe(talla, genero)
+    return lambda talla: talla_calzado_pe(talla, genero, marca=marca)
 
 
 def tallas_planificar_catalogo(productos, brand_config, marcas=(), codigos=()):
@@ -24127,13 +24156,17 @@ def tallas_aplicar_producto(shopify_config, plan, brand_config):
 
     # Se REPLANIFICA sobre lo que Shopify dice ahora, no sobre el plan viejo.
     registro = tallas_producto_como_registro(actual)
-    registro.update({k: plan.get(k) for k in ("Mod-Col", "Handle", "Title", "Marca", "Product ID")})
-    registro["Type"] = plan.get("Type", "")
+    # El TIPO y el GENERO tienen que viajar: son lo que decide si hay que
+    # convertir la escala. Sin ellos el conversor salia None en el segundo pase
+    # y el cambio de escala no se aplicaba NUNCA -- la pantalla contestaba "Ya
+    # estaba bien al releerlo" y no escribia nada.
+    registro.update({
+        k: plan.get(k, "")
+        for k in ("Mod-Col", "Handle", "Title", "Marca", "Product ID", "Type", "Genero")
+    })
     fresco = orden_tallas.plan_de_producto(
         registro, tallas_orden_clave,
-        convertir=tallas_convertidor_para(
-            dict(registro, Marca=plan.get("Marca"), Type=plan.get("Type", "")), brand_config
-        ),
+        convertir=tallas_convertidor_para(registro, brand_config),
     )
     if not (fresco.get("Cambia_escala") or fresco.get("Cambia_orden")):
         pasos.append({"Paso": "Comparar", "Estado": "aviso",
@@ -24172,7 +24205,7 @@ def tallas_aplicar_producto(shopify_config, plan, brand_config):
 
     # --- 2. Orden --------------------------------------------------------
     if fresco.get("Cambia_orden"):
-        indice = orden_tallas._indice_de_opcion(registro["Variants"], fresco["Opcion"])
+        indice = orden_tallas.indice_de_opcion(registro["Variants"], fresco["Opcion"])
         # La talla de cada variante se lee del registro RELEIDO; si se acaba de
         # renombrar, el nombre nuevo es el que corresponde a esa variante.
         posicion_de = {}

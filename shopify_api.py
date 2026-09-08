@@ -250,6 +250,15 @@ def _product_node_to_record(node):
         "Tags": ", ".join(node.get("tags") or []),
         "Vendor": clean(node.get("vendor")),
         "Marca": clean(marca.get("value")),
+        # El GENERO decide la columna de la guia de tallas: un mismo numero US
+        # son dos tallas distintas segun el genero. Antes no se leia, asi que
+        # el catalogo llegaba siempre sin el y la conversion aplicaba la
+        # columna de hombre a ciegas.
+        "Genero": clean((node.get("genero") or {}).get("value")),
+        "Metafield: custom.genero [single_line_text_field]": clean((node.get("genero") or {}).get("value")),
+        "Metafield: custom.color [single_line_text_field]": clean((node.get("color") or {}).get("value")),
+        "Metafield: custom.nombre_corto [single_line_text_field]": clean((node.get("nombreCorto") or {}).get("value")),
+        "Metafield: custom.descripcion_corta [single_line_text_field]": clean((node.get("descripcionCorta") or {}).get("value")),
         "Type": clean(node.get("productType")),
         "Status": clean(node.get("status")),
         "Online Store URL": clean(node.get("onlineStoreUrl")),
@@ -298,6 +307,18 @@ CAMPOS_PRODUCTO = """
             value
           }
           marca: metafield(namespace: "custom", key: "marca") {
+            value
+          }
+          genero: metafield(namespace: "custom", key: "genero") {
+            value
+          }
+          color: metafield(namespace: "custom", key: "color") {
+            value
+          }
+          nombreCorto: metafield(namespace: "custom", key: "nombre_corto") {
+            value
+          }
+          descripcionCorta: metafield(namespace: "custom", key: "descripcion_corta") {
             value
           }
           materialidad: metafield(namespace: "custom", key: "materialidad") {
@@ -2400,6 +2421,18 @@ def search_products(config, search_query, first=20):
           marca: metafield(namespace: "custom", key: "marca") {
             value
           }
+          genero: metafield(namespace: "custom", key: "genero") {
+            value
+          }
+          color: metafield(namespace: "custom", key: "color") {
+            value
+          }
+          nombreCorto: metafield(namespace: "custom", key: "nombre_corto") {
+            value
+          }
+          descripcionCorta: metafield(namespace: "custom", key: "descripcion_corta") {
+            value
+          }
           media(first: 1) {
             nodes {
               id
@@ -2429,6 +2462,11 @@ def search_products(config, search_query, first=20):
             "Online Store URL": clean(node.get("onlineStoreUrl")),
             "Mod-Col": clean((node.get("codigoModeloColor") or {}).get("value")).upper(),
             "Marca": clean((node.get("marca") or {}).get("value")),
+            "Genero": clean((node.get("genero") or {}).get("value")),
+            "Metafield: custom.genero [single_line_text_field]": clean((node.get("genero") or {}).get("value")),
+            "Metafield: custom.color [single_line_text_field]": clean((node.get("color") or {}).get("value")),
+            "Metafield: custom.nombre_corto [single_line_text_field]": clean((node.get("nombreCorto") or {}).get("value")),
+            "Metafield: custom.descripcion_corta [single_line_text_field]": clean((node.get("descripcionCorta") or {}).get("value")),
         }
         for node in nodes
         if node

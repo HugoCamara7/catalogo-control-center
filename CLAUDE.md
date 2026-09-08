@@ -2060,6 +2060,85 @@ impediria ejecutar la carga a mano.
 
 ---
 
+## 5 vicies. El panel del hueco por marca, y la vista previa de la carga (septiembre 2026)
+
+`carga_supermall.hueco_por_marca` + `render_hueco_por_marca` +
+`resumen_matrixify_por_marca`, dentro de **Carga Supermall**.
+
+### Antes de cargar, que falta y comparado con quien
+
+La pregunta es "que le falta a Supermall **comparado con las otras marcas**", y
+esa se responde por marca. Sale de las fichas YA consolidadas, asi que **no
+cuesta ninguna lectura extra**: los seis catalogos ya estan en la mano.
+
+Cuatro estados, de mejor a peor: `Ya visible`, `Cargado sin publicar`,
+`Falta cargar` y `No se puede cargar`. El ultimo va **aparte** de "falta" a
+proposito: son los que no tienen codigo, nombre o tipo en ninguna web, y
+mezclarlos haria creer que con pulsar el boton se resuelven.
+
+Los totales del titular se suman sobre las FILAS por marca, no sobre las fichas
+otra vez: dos calculos separados podrian dar numeros distintos, y un panel que
+se contradice consigo mismo no se puede usar para decidir. Hay un test que lo
+comprueba.
+
+### Barra apilada horizontal, y cada una al 100 % de SU marca
+
+La forma sale del trabajo del dato: es un **part-to-whole por marca** y las
+marcas tienen nombre largo, asi que la barra va en horizontal -- con una
+columna por marca los nombres se cortan o se giran.
+
+**La primera version usaba una escala compartida y enganaba.** Medido con el
+reparto real: Sorel salia con una barra del **2,6 %** del ancho, que se lee como
+"esta bien", cuando en realidad le falta el **71 %** de su catalogo. La pregunta
+es la comparacion ENTRE marcas, asi que lo que hay que poder comparar es la
+PROPORCION; la magnitud absoluta va al lado, en la etiqueta, que es donde se lee
+un numero. Hay un test que exige que cada barra sume 100 %.
+
+Lo demas que no es negociable, y por que:
+
+- **Los colores son de ESTADO, no de identidad.** Son cuatro situaciones de
+  mejor a peor, asi que usan los tokens de estado de la app (`--c-ok`,
+  `--c-warn`, `--c-bad`) y no una paleta categorica. Usar tokens de estado para
+  identidad -o al reves- es un error con nombre propio.
+- Los tres colores se **validaron** contra el fondo blanco: pasan banda de
+  luminosidad, piso de croma, separacion para daltonismo (peor par 8,9 en
+  protanopia) y piso de vision normal (19,8). El aviso de contraste por debajo
+  de 3:1 se cubre con las **etiquetas visibles y la tabla**, que llevan todos
+  los numeros -- ese aviso no se puede ignorar, se compensa.
+- **La identidad nunca es solo color:** leyenda con las cuatro etiquetas y su
+  numero, una etiqueta directa por fila y la tabla con todas las marcas.
+- **Un numero por fila, no por segmento.** Un valor pegado a cada segmento es
+  ruido y no se lee: se etiqueta lo que se va a usar para decidir -- lo que
+  falta -- y el resto lo llevan la leyenda y el `title` de cada segmento.
+- La separacion entre segmentos es un **hueco de 2px del color de la
+  superficie**, no un borde: el borde ensucia el color y engorda la marca.
+- **Ordenado por lo que falta**, no alfabetico: la primera fila es donde hay mas
+  trabajo, que es la razon de mirar el panel.
+
+Se dibujan las 12 marcas con mas pendiente y la tabla lleva el resto.
+
+**Verificado en Chromium**, no solo en pruebas: 1440px y 390px, sin desborde
+horizontal, sin textos recortados y las ocho filas de la misma altura. En movil
+la cifra se queda con el ancho de un numero de cuatro digitos con separador de
+miles; con menos, la etiqueta parte en dos lineas y las filas quedan desiguales.
+
+### La vista previa de la carga
+
+`resumen_matrixify_por_marca` dice **que hay dentro del archivo que se va a
+subir**, marca por marca: productos y filas de talla. Sale del propio Matrixify
+para que no pueda discrepar de el -- si se calculara aparte, el resumen y el
+archivo podrian decir cosas distintas y entonces no sirve para revisar.
+
+El Excel lleva cinco hojas: **Products** (el Matrixify), **Carga Sial**,
+**Resumen por marca**, **Consolidacion** (de que web salio cada dato) y
+**Revision**. La pantalla dice explicitamente que **todavia no se ha escrito
+nada en Shopify**: es una vista previa, y hay un test que exige que ni el panel
+ni el resumen puedan tocar la tienda.
+
+`scripts/test_hueco_por_marca.py` (28 pruebas) fija todo esto.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -2266,6 +2345,7 @@ python scripts/test_guias_tallas.py                    # 21
 python scripts/test_carga_supermall.py                 # 31
 python scripts/test_carga_sial_campos.py               # 27
 python scripts/test_curva_y_carga_suelta.py            # 42
+python scripts/test_hueco_por_marca.py                 # 28
 python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 47

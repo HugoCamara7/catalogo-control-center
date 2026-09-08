@@ -314,3 +314,75 @@ def filas_para_tabla(fichas):
         }
         for f in fichas or []
     ]
+
+
+# --- El hueco por marca, para el panel de antes de cargar -----------------
+#
+# La pregunta es "que le falta a Supermall COMPARADO con las otras marcas", y
+# esa se responde por marca: cuanto de lo que existe en las demas webs ya esta
+# visible en Supermall y cuanto no. Sale de las fichas YA consolidadas, asi que
+# no cuesta ninguna lectura extra.
+
+YA_VISIBLE = "Ya visible"
+SIN_PUBLICAR = "Cargado sin publicar"
+FALTA_CARGAR = "Falta cargar"
+NO_CARGABLE = "No se puede cargar"
+
+# El orden es el de la barra, y es un orden de ESTADO -de mejor a peor-, no de
+# identidad: por eso lleva los colores de estado de la app y no una paleta
+# categorica. Cada segmento va con su etiqueta y su numero, nunca solo color.
+SEGMENTOS = (YA_VISIBLE, SIN_PUBLICAR, FALTA_CARGAR, NO_CARGABLE)
+
+
+def _situacion_de_ficha(ficha):
+    """En que estado esta este producto respecto de Supermall.
+
+    `No se puede cargar` va aparte de `Falta cargar` a proposito: son los que
+    no tienen codigo, nombre o tipo en ninguna web. Mezclarlos haria creer que
+    con pulsar el boton se resuelven, y no.
+    """
+    if not ficha.get("Se puede cargar"):
+        return NO_CARGABLE
+    if not ficha.get("Ya esta en Supermall"):
+        return FALTA_CARGAR
+    return YA_VISIBLE if ficha.get("Estado en Supermall") == PRENDIDO else SIN_PUBLICAR
+
+
+def hueco_por_marca(fichas):
+    """Una fila por marca con el reparto de sus productos entre los 4 estados.
+
+    Ordenado por lo que FALTA, de mayor a menor: la primera fila es donde hay
+    mas trabajo, que es la razon de mirar el panel. Un orden alfabetico
+    obligaria a leer las 10 filas para encontrar eso.
+    """
+    marcas = {}
+    for ficha in fichas or []:
+        marca = _texto(ficha.get("Marca")) or SIN_MARCA
+        fila = marcas.setdefault(marca, {
+            "Marca": marca, "Total": 0,
+            YA_VISIBLE: 0, SIN_PUBLICAR: 0, FALTA_CARGAR: 0, NO_CARGABLE: 0,
+        })
+        fila["Total"] += 1
+        fila[_situacion_de_ficha(ficha)] += 1
+    filas = []
+    for fila in marcas.values():
+        total = fila["Total"] or 1
+        fila["Cobertura"] = round(100.0 * fila[YA_VISIBLE] / total, 1)
+        filas.append(fila)
+    return sorted(filas, key=lambda f: (-f[FALTA_CARGAR], -f["Total"], f["Marca"]))
+
+
+def totales_del_hueco(filas):
+    """La fila de totales, para el titular del panel.
+
+    Se suma sobre las FILAS por marca y no sobre las fichas otra vez: si los
+    dos numeros se calcularan por separado podrian discrepar, y un panel que se
+    contradice consigo mismo no se puede usar para decidir.
+    """
+    filas = filas or []
+    totales = {clave: sum(f.get(clave, 0) for f in filas) for clave in SEGMENTOS}
+    totales["Total"] = sum(f.get("Total", 0) for f in filas)
+    totales["Marcas"] = len(filas)
+    base = totales["Total"] or 1
+    totales["Cobertura"] = round(100.0 * totales[YA_VISIBLE] / base, 1)
+    return totales

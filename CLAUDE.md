@@ -1928,6 +1928,96 @@ arreglar de verdad, que es la misma guarda que ya tenian los valores.
 
 ---
 
+## 5 novodecies. La curva decide la talla, y la carga remota sin solicitud (septiembre 2026)
+
+### Un valor suelto no se puede interpretar; la curva si
+
+El maestro escribe el calzado multiplicado por diez (`85` es 8.5) y a veces con
+relleno de ceros (`085`, `040`) o por cien (`850`). **Un valor suelto es
+ambiguo**: `040` puede ser el PE 40 o el US 4, y son dos tallas y media.
+
+Lo que SI se puede decidir es la **curva entera**, porque un producto de
+calzado tiene sus tallas en UNA escala. `interpretar_curva` prueba las tres
+lecturas -directa, entre diez, entre cien- y se queda con la que deja TODAS las
+tallas dentro de un rango que existe (US 1-16.5, PE 26-50):
+
+```
+040, 050, 060, 070  ->  directa daria PE 40 a 70, que no existe  ->  US 4 a 7
+070, 085            ->  US 7 y 8.5
+800, 850            ->  entre cien: US 8 y 8.5
+390, 400, 410       ->  entre diez: PE 39, 40, 41   (el maestro de hoy)
+```
+
+**La regla de mujer, que la dio el usuario:** "ninguna talla de mujer empieza de
+la 40". Asi que una curva de calzado de MUJER cuyo minimo leido en PE sea 40 o
+mas **no esta en PE** (`MINIMO_PE_MUJER`). Eso resuelve el unico caso realmente
+ambiguo, `040` sola: en mujer es el US 4, en hombre sigue siendo el PE 40. Y es
+el MINIMO de la curva, no el valor: una curva de mujer que llega a la 40 pero
+empieza en la 36 sigue siendo PE.
+
+**Se interpreta el valor CRUDO, no el normalizado.** `normalize_size` tiene su
+propia regla por valor: divide `050` entre diez pero deja `040` tal cual. Con la
+curva apoyada en el normalizado, la misma curva llegaba medio dividida y el
+divisor se aplicaba dos veces a unas tallas y a otras no -- `400, 410` salia
+`4, 4.1` y las filas se caian del filtro. Por eso `display_size_for_site` recibe
+`curva` (los crudos) y `valor_crudo`, y cuando la curva decide una escala, ELLA
+manda para el calzado. **Sin `curva` se comporta exactamente como antes.**
+
+Toda lectura que no sea la directa se **reporta** en la hoja de Revision.
+
+### Rockford: una sola talla es Talla Única, pero no en calzado
+
+Un accesorio de Rockford con una sola talla sale como **"Talla Única"** aunque
+esa talla venga con numero. Antes solo se miraba el VALOR (`O/S` o `0`).
+
+**No se aplica a calzado ni a vestuario**, y no es un detalle: ahi "Talla Única"
+esta bloqueada a proposito y `final_variant_filter` **BORRA** esas filas.
+Renombrarla hacia **desaparecer el producto entero** -- medido: una zapatilla de
+una sola talla salia del Matrixify con cero filas. La guarda
+(`_talla_unica_bloqueada`) responde la misma pregunta que el filtro final, y
+tiene que dar la misma respuesta.
+
+### Las marcas sin guia se quedan como estan
+
+Confirmado por el usuario: **Hush Puppies, Keds, Sorel y Columbia** no tienen
+guia registrada, asi que su calzado se publica con la talla de origen y sale
+avisado. **Supermall y Vans usan la misma guia** -- la de Vans -- y los dos
+publican en PE.
+
+### La carga remota ya no exige una solicitud
+
+`start(ticket)` necesitaba una solicitud porque el job cuelga de ella: el
+Matrixify es un adjunto del ticket y de ahi lo lee el runner. Eso dejaba fuera
+el caso mas comun: **subir un Excel a mano y cargarlo**. En ese camino la carga
+se hacia dentro de la sesion de Streamlit, asi que cerrar la pestana la
+detenia -- justo lo que el runner existe para evitar.
+
+`start_suelto` sube el Matrixify al repositorio de datos por su cuenta, al lado
+del registro del job (`ruta_de_matrixify`), y **el resto del recorrido es EL
+MISMO**: mismo registro, mismo workflow, mismo worker, mismo avance por bloques
+y misma reanudacion. No hay un segundo motor de carga.
+
+- **El archivo va PRIMERO.** Con el registro guardado y el archivo no, el runner
+  arrancaria para morir leyendo una ruta que no existe.
+- El codigo es sintetico y se ve como lo que es (`CARGA-VANS-20260908-...`):
+  inventar un CAT-#### haria creer que existe una solicitud.
+- `recordar_matrixify_de_carga` ya no corta cuando el codigo viene vacio. Era la
+  puerta cerrada: sin solicitud no se apuntaba nada.
+- El boton (`render_boton_carga_remota`) se dibuja **fuera** del
+  `if complete_source == "Shopify API"` y fuera de la casilla de
+  sincronizacion -- anidado ahi no aparecia con "Respaldo Excel", que es el
+  mismo fallo que ya se corrigio con el cierre de la solicitud. Hay un test que
+  compara la sangria.
+- **No se dibuja cuando la carga SI sale de una solicitud**: ahi manda la barra
+  de acciones, que ademas mueve su estado. Dos botones para lo mismo es peor
+  que uno.
+- Sin `[carga_remota]` en Secrets el boton dice **exactamente que falta** en vez
+  de caer al camino local en silencio.
+
+`scripts/test_curva_y_carga_suelta.py` (32 pruebas) fija todo esto.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -2133,6 +2223,7 @@ python scripts/test_orden_tallas_reales.py             # 17
 python scripts/test_guias_tallas.py                    # 21
 python scripts/test_carga_supermall.py                 # 31
 python scripts/test_carga_sial_campos.py               # 27
+python scripts/test_curva_y_carga_suelta.py            # 32
 python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 47

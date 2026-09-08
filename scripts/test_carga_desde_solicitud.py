@@ -340,8 +340,13 @@ class TestSubirElInputAMano(unittest.TestCase):
             self.fuente,
         )
 
-    def test_el_matrixify_solo_se_apunta_con_codigo(self):
-        """Es la condicion que hacia que el caso anterior fallara en silencio."""
+    def test_el_matrixify_se_apunta_tambien_SIN_codigo(self):
+        """Antes se exigia codigo, y eso cerraba la puerta a la carga remota de
+        un Excel subido a mano: sin solicitud no se apuntaba nada, asi que no
+        habia con que disparar el runner y la carga se quedaba dentro de la
+        sesion. El codigo vacio se CONSERVA vacio, que es lo que le dice a
+        `_adjuntar_matrixify_antes_de_cargar` que no hay solicitud a la que
+        adjuntarlo y a `render_boton_carga_remota` que le toca a el."""
         import app_matrixify as app
         import pandas as pd
         sesion_previa = app.st.session_state
@@ -349,9 +354,26 @@ class TestSubirElInputAMano(unittest.TestCase):
         try:
             df = pd.DataFrame([{"Handle": "h", "Top Row": "TRUE", "Metafield: custom.codigo_modelo_color [id]": "VN1-001"}])
             app.recordar_matrixify_de_carga("", df, "vans", excel_path="/tmp/x.xlsx")
-            self.assertNotIn(app.CLAVE_MATRIXIFY_SESION, app.st.session_state)
+            guardado = app.st.session_state[app.CLAVE_MATRIXIFY_SESION]
+            self.assertEqual(guardado["codigo"], "")
+            self.assertEqual(guardado["site_key"], "vans")
+            # Y el nombre no queda en "Matrixify_.xlsx".
+            self.assertEqual(guardado["filename"], "Matrixify_vans.xlsx")
+
             app.recordar_matrixify_de_carga("CAT-1", df, "vans", excel_path="/tmp/x.xlsx")
-            self.assertIn(app.CLAVE_MATRIXIFY_SESION, app.st.session_state)
+            self.assertEqual(
+                app.st.session_state[app.CLAVE_MATRIXIFY_SESION]["codigo"], "CAT-1")
+        finally:
+            app.st.session_state = sesion_previa
+
+    def test_sin_matrixify_no_se_apunta_nada(self):
+        import app_matrixify as app
+        import pandas as pd
+        sesion_previa = app.st.session_state
+        app.st.session_state = {}
+        try:
+            app.recordar_matrixify_de_carga("CAT-1", pd.DataFrame(), "vans")
+            self.assertNotIn(app.CLAVE_MATRIXIFY_SESION, app.st.session_state)
         finally:
             app.st.session_state = sesion_previa
 

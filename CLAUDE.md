@@ -1831,6 +1831,103 @@ hermanos, no con uno.
 
 ---
 
+## 5 octodecies. La hoja Carga Sial: categoria, topes y que tallas salen (septiembre 2026)
+
+`engines/sial_campos.py` (sin Streamlit ni pandas) + `talla_sirve_para_sial`.
+
+Cuatro cosas que reporto el usuario, las cuatro reproducidas contra una carga
+real antes de tocar nada:
+
+```
+Categoria           VACIA en toda la carga completa
+Tipo de Material     65 caracteres  (tope 30)
+Tecnologias          71 caracteres  (tope 50)
+Caracteristicas     144 caracteres  (tope 130)
+```
+
+### La Categoria es la CLASE, y salia vacia
+
+`product_category` miraba `custom.categoria`, `Categoria `, `Categoria` y
+`Category`. El input comercial llama a esa columna **`Clase`** -es una de sus
+columnas obligatorias- y no se miraba, asi que **la columna salia vacia en toda
+la carga completa**. El respaldo es el diccionario de tipos
+(`engines/garment_types`), de donde ya la deriva la hoja por codigos: un
+ALPARGATA es Calzado se escriba o no. Asi las dos hojas dicen lo mismo del
+mismo producto.
+
+`Color web/filtro` tampoco estaba en `COLOR_WEB_COLUMNS`. Se agrego **al
+final**: puesto ahi solo rellena lo que hoy sale en blanco, y donde ya habia
+valor no cambia nada.
+
+### Los topes: cada columna tiene su POLITICA
+
+La hoja se emite desde DOS sitios -la carga completa y la carga por codigos, que
+sirve a Centry, a la Carga Sial parcial y a Supermall-, asi que la regla vive en
+`engines/sial_campos` y las dos la llaman. Escrita dos veces, el arreglo
+siguiente entra en una hoja y se olvida en la otra.
+
+**No se recorta por la mitad de una palabra.** Un "100% Algodon organi" no es un
+material: es basura que alguien va a corregir a mano. Las tres politicas son
+distintas porque los datos son distintos:
+
+| Columna | Tope | Politica |
+|---|---:|---|
+| `Color Web` | 30 | antes de la coma |
+| `Tipo de Material` | 30 | antes de la coma |
+| `Tecnologias ` | 50 | primer valor, o **vacio** |
+| `Caracteristicas` | 130 | recortar en palabra |
+
+`Color Web` y `Tipo de Material` son listas donde el primer elemento es el valor
+principal: "AZUL MARINO, BLANCO, ROJO" es fundamentalmente azul marino. Cortar
+la lista conserva el dato; recortar la cadena lo destruye. En `Tecnologias ` una
+tecnologia a medias es peor que ninguna -"Omni-Heat Reflec" no existe-, asi que
+si ni el primer valor entra, se deja vacia. `Caracteristicas` es prosa
+descriptiva: 130 caracteres siguen sirviendo.
+
+**Todo ajuste se REPORTA** en la hoja de Revision. Un recorte silencioso es como
+se pierde un dato sin que nadie se entere.
+
+### Que tallas salen, y las fechas que dejo Excel
+
+`talla_sirve_para_sial` deja fuera lo que no es una talla: las **internas K**
+(`K1201`, `K601` — 162 formas en el maestro) y lo que el **diccionario no
+reconoce** (`R`, `RH`, `LLH`, `REGRH` — medido, ~200 filas). Antes
+`filter_centry_size_rows` solo miraba las K, asi que los codigos internos
+llegaban a la hoja del almacen.
+
+**Las fechas de Excel NO se borran: se decodifican.** `04-Jun` no es basura, es
+la talla `4-6` que Excel convirtio al exportar el maestro; `08-Oct` es `8-10` y
+`Dic-18` es `12-18`. Medido, son **~7.800 filas** del maestro real. Borrarlas
+dejaria al almacen sin una talla real, asi que `normalize_size` las devuelve
+decodificadas -- y va **en el normalizador compartido** para que la hoja y la
+ficha de Shopify no puedan discrepar: si el Sial dijera `4-6` y la tienda
+`04-Jun`, seria el mismo dato con dos nombres.
+
+`6/6X` se agrego al diccionario: es una talla de nino real y caia en el cajon de
+las desconocidas, asi que el filtro la habria dejado fuera.
+
+La columna `Talla` sigue siendo el codigo del **MAESTRO**, no la talla que ve el
+comprador -eso es `Talla Web`-: `400` se manda `400`. Lo unico que se corrige es
+lo que viene roto, y por un solo embudo (`sial_size_value`).
+
+### 16 cabeceras salian con el nombre equivocado
+
+`repair_mojibake_dataframe` pasaba los NOMBRES de columna por
+`repair_mojibake_text`, que empieza con `clean_value` y recorta espacios. Eso le
+quitaba el espacio final a 16 cabeceras de la plantilla -`Categoria `,
+`Talla Web `, `Tecnologias `, `Product Name `, `Adicional 2 `...- que SIAL
+espera **con** el espacio, porque asi se llaman en su plantilla. La hoja de la
+carga completa no pasa por ahi, asi que las dos hojas salian con cabeceras
+distintas para la misma columna.
+
+Un nombre de columna es una LLAVE: si se le quita un espacio, deja de coincidir
+con la plantilla que lo espera. Ahora solo se reescribe cuando hay mojibake que
+arreglar de verdad, que es la misma guarda que ya tenian los valores.
+
+`scripts/test_carga_sial_campos.py` (27 pruebas) fija todo esto.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -2034,7 +2131,8 @@ python scripts/test_espejo_supermall.py                # 35
 python scripts/test_mantenedor_tallas.py               # 41
 python scripts/test_orden_tallas_reales.py             # 17
 python scripts/test_guias_tallas.py                    # 21
-python scripts/test_carga_supermall.py                 # 30
+python scripts/test_carga_supermall.py                 # 31
+python scripts/test_carga_sial_campos.py               # 27
 python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 47

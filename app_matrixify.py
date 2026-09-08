@@ -42,6 +42,7 @@ from engines import espejo_supermall as espejo
 from engines import orden_tallas
 from engines import guias_tallas
 from engines import carga_supermall
+from engines import sial_campos
 from engines.tallas import clave_de_orden as orden_de_talla
 from engines import video_media as video_motor
 
@@ -159,6 +160,8 @@ from generate_columbia_matrixify import (
     display_size_for_site,
     es_calzado,
     talla_calzado_pe,
+    talla_sirve_para_sial,
+    sial_size_value,
     escala_de_calzado,
     estado_al_cargar,
     avisos_de_talla_a_issues,
@@ -502,13 +505,37 @@ def repair_mojibake_text(value):
     return repaired
 
 
+def _repair_column_name(column):
+    """Arregla el mojibake del NOMBRE de una columna sin tocar nada mas.
+
+    El nombre de una columna es una llave: si se le quita un espacio, deja de
+    coincidir con la plantilla que lo espera. Por eso solo se reescribe cuando
+    hay algo que arreglar de verdad.
+    """
+    if not isinstance(column, str):
+        return column
+    if not any(marker in column for marker in ("Ã", "Â", "â")):
+        return column
+    return repair_mojibake_text(column)
+
+
 def repair_mojibake_dataframe(df):
     if df is None:
         return df
     if not isinstance(df, pd.DataFrame) or df.empty:
         return df
     repaired = df.copy()
-    repaired.columns = [repair_mojibake_text(column) for column in repaired.columns]
+    # Una columna se renombra SOLO si de verdad tiene mojibake que arreglar.
+    # `repair_mojibake_text` empieza con `clean_value`, que recorta espacios, y
+    # eso le quitaba el espacio final a 16 cabeceras de la plantilla Carga Sial
+    # -- `Categoria `, `Talla Web `, `Tecnologias `, `Product Name `,
+    # `Adicional 2 `... -- que SIAL espera con el espacio, porque asi se llaman
+    # en su plantilla. La hoja de la carga completa no pasa por aqui, asi que
+    # las dos hojas salian con cabeceras distintas para la misma columna.
+    #
+    # Es la misma guarda que ya tienen los VALORES tres lineas mas abajo: si no
+    # hay marcador, no se toca.
+    repaired.columns = [_repair_column_name(column) for column in repaired.columns]
     for column in repaired.columns:
         repaired[column] = repaired[column].map(
             lambda value: repair_mojibake_text(value)
@@ -5257,10 +5284,22 @@ def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_la
     result = df.copy()
     key_values = result[key_column].map(clean_value) if key_column in result.columns else pd.Series("", index=result.index)
 
-    k_mask = result[size_column].map(is_internal_k_size)
-    if k_mask.any():
-        issues.append({"Mod-Col": output_label, "Problema": f"Se eliminaron {safe_int_value(k_mask.sum())} filas con talla interna K"})
-        result = result[~k_mask].copy()
+    # MISMO criterio que la carga completa (`talla_sirve_para_sial`): fuera las
+    # tallas internas K y lo que el diccionario no reconoce como talla. Antes
+    # aqui solo se miraban las K, asi que codigos internos como `R` o `REGRH`
+    # llegaban a la hoja del almacen.
+    fuera_mask = ~result[size_column].map(talla_sirve_para_sial)
+    if fuera_mask.any():
+        descartadas = sorted({clean_value(v) for v in result.loc[fuera_mask, size_column] if clean_value(v)})
+        issues.append({
+            "Mod-Col": output_label,
+            "Problema": (
+                f"Se eliminaron {safe_int_value(fuera_mask.sum())} filas cuya talla no es una "
+                "talla (interna K o no reconocida): " + ", ".join(descartadas[:14])
+                + (" ..." if len(descartadas) > 14 else "")
+            ),
+        })
+        result = result[~fuera_mask].copy()
         key_values = key_values.loc[result.index]
 
     # La talla 0 se borra SOLO si el producto tiene ademas tallas reales. Si el
@@ -6136,7 +6175,7 @@ def centry_bullets(row, vendor, product_type, color, gender):
     return ", ".join(f"{label} | {value}" for label, value in items if centry_value(value))
 
 
-def _filas_sial_desde_matrixify(matrixify_df, brand_config=None):
+def _filas_sial_desde_matrixify(matrixify_df, brand_config=None, avisos_de_limite=None):
     """El cuerpo de la hoja Carga Sial, sin las columnas que dependen del destino.
 
     La hoja se emite en DOS formatos: el de Centry (Mod/Col/Tal y la cola de
@@ -6203,7 +6242,10 @@ def _filas_sial_desde_matrixify(matrixify_df, brand_config=None):
             raw_size,
             centry_output_is_accessory(category_probe) and (is_one_size(raw_size) or is_zero_size(raw_size)),
         )
-        tal_value = first_non_empty(row.get("__CENTRY_RAW_SIZE"), raw_size)
+        # Por el MISMO embudo que la carga completa (`sial_size_value`): el
+        # codigo del maestro se conserva, y solo se corrige lo que viene roto
+        # -- `04-Jun` es la talla `4-6` que Excel convirtio en fecha.
+        tal_value = sial_size_value(first_non_empty(row.get("__CENTRY_RAW_SIZE"), raw_size))
         identidad = {
             "modelo": model,
             "color": color_code,
@@ -6216,7 +6258,7 @@ def _filas_sial_desde_matrixify(matrixify_df, brand_config=None):
         }
         yield (
             identidad,
-            {
+            sial_campos.ajustar_fila({
                 # La hoja Sial ya identifica con Mod/Col/Tal (o con Cod.
                 # Modelo/Cod. Color/Talla): no lleva las columnas COD MOD/COD
                 # COL/TALLA, que son de la hoja Centry.
@@ -6243,16 +6285,13 @@ def _filas_sial_desde_matrixify(matrixify_df, brand_config=None):
                 "Temporada ": centry_value(row.get("Temporada"), "Verano"),
                 "Modelo": model,
                 "Marca": vendor,
-                "Tecnologias ": limit_words(first_non_empty(row.get("Metafield: custom.tecnologia [list.single_line_text_field]"), ""), 45),
+                "Tecnologias ": first_non_empty(row.get("Metafield: custom.tecnologia [list.single_line_text_field]"), ""),
                 # Los tags primero; si el producto no los trae, los bullets de
                 # la ficha, que es donde vive la informacion de verdad.
-                "Caracteristicas": limit_words(
-                    first_non_empty(
-                        centry_value(row.get("Tags")).replace(",", " |"),
-                        body_features_sial,
-                        body_care_sial,
-                    ),
-                    45,
+                "Caracteristicas": first_non_empty(
+                    centry_value(row.get("Tags")).replace(",", " |"),
+                    body_features_sial,
+                    body_care_sial,
                 ),
                 "Tipo de Boardshort": "",
                 "Tipo de Bikini": "",
@@ -6269,7 +6308,7 @@ def _filas_sial_desde_matrixify(matrixify_df, brand_config=None):
                 "Adicional 8 ": "",
                 "Adicional 9 ": "",
                 "Adicional 10": "",
-            },
+            }, avisos=avisos_de_limite, clave=mod_col),
         )
 
 

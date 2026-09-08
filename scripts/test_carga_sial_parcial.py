@@ -90,9 +90,20 @@ def matrixify_de_prueba():
 
 
 def columnas_esperadas(brand_config):
-    # La hoja pasa por `repair_mojibake_dataframe`, igual que la de la carga
-    # completa, y ahi los nombres pierden el espacio del final.
-    return [app.repair_mojibake_text(columna) for columna in gen.get_sial_columns(brand_config)]
+    """Los nombres EXACTOS de la plantilla, con su espacio final incluido.
+
+    Esta funcion daba por buena la perdida del espacio -- decia que la hoja
+    pasa por `repair_mojibake_dataframe` "y ahi los nombres pierden el espacio
+    del final" -- y con eso congelaba el fallo: 16 cabeceras de la plantilla
+    (`Categoria `, `Talla Web `, `Tecnologias `, `Product Name `,
+    `Adicional 2 `...) salian sin el espacio que SIAL espera, y la hoja de la
+    carga completa, que no pasa por ahi, salia con el nombre correcto. Las dos
+    hojas tenian cabeceras distintas para la misma columna.
+
+    Un nombre de columna es una LLAVE: se compara contra la plantilla, no
+    contra lo que la app hace hoy con el.
+    """
+    return list(gen.get_sial_columns(brand_config))
 
 
 class TestFormatoDelSitio(unittest.TestCase):
@@ -209,10 +220,8 @@ class TestCentryNoCambio(unittest.TestCase):
 
     def test_conserva_sus_columnas(self):
         centry = app.build_centry_sial_from_matrixify(matrixify_de_prueba(), gen.SITE_CONFIGS["columbia"])
-        self.assertEqual(
-            list(centry.columns),
-            [app.repair_mojibake_text(columna) for columna in app.CENTRY_SIAL_COLUMNS],
-        )
+        # Los nombres declarados, tal cual: ver `columnas_esperadas`.
+        self.assertEqual(list(centry.columns), list(app.CENTRY_SIAL_COLUMNS))
 
     def test_conserva_su_cola_de_supermall(self):
         centry = app.build_centry_sial_from_matrixify(matrixify_de_prueba(), gen.SITE_CONFIGS["columbia"])

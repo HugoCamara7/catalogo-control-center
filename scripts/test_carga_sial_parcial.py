@@ -306,7 +306,19 @@ class TestPantallaCargaParcial(unittest.TestCase):
     def test_el_id_de_shopify_viaja_en_el_matrixify(self):
         cuerpo = FUENTE_APP[FUENTE_APP.index("def build_centry_matrixify_from_master("):]
         cuerpo = cuerpo[:cuerpo.index("\ndef ", 10)]
-        self.assertIn('"ID": clean_value(product_row.get("ID")) if product_row is not None else "",', cuerpo)
+        self.assertIn('"ID": clean_value(fila_destino.get("ID")) if fila_destino is not None else "",', cuerpo)
+
+    def test_el_id_sale_del_catalogo_del_DESTINO(self):
+        """El ID decide si el producto se crea o se actualiza, asi que tiene
+        que ser el de la tienda a la que se carga. Con Supermall.pe origen y
+        destino son tiendas distintas: usar el ID de Vans.pe haria un MERGE
+        contra un producto que no es. Cuando son la misma tienda -- Centry,
+        Carga Sial -- `fila_destino` es la misma fila que `product_row`."""
+        cuerpo = FUENTE_APP[FUENTE_APP.index("def build_centry_matrixify_from_master("):]
+        cuerpo = cuerpo[:cuerpo.index("\ndef ", 10)]
+        self.assertIn("destino_df = shopify_df", cuerpo)
+        self.assertIn("fila_destino = destino_lookup.get(key)", cuerpo)
+        self.assertNotIn('"ID": clean_value(product_row.get("ID"))', cuerpo)
 
 
 if __name__ == "__main__":

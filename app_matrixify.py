@@ -41,6 +41,7 @@ from engines import load_status as status_carga
 from engines import espejo_supermall as espejo
 from engines import orden_tallas
 from engines import guias_tallas
+from engines import carga_supermall
 from engines.tallas import clave_de_orden as orden_de_talla
 from engines import video_media as video_motor
 
@@ -159,7 +160,11 @@ from generate_columbia_matrixify import (
     es_calzado,
     talla_calzado_pe,
     escala_de_calzado,
+    estado_al_cargar,
     avisos_de_talla_a_issues,
+    siblings_ya_publicados,
+    unir_siblings,
+    model_code as codigo_de_modelo,
     fold_accents,
     get_brand_config,
     image_candidates,
@@ -6334,25 +6339,54 @@ def build_sial_de_sitio_from_matrixify(matrixify_df, brand_config=None):
     return repair_mojibake_dataframe(sial_df)
 
 
-def matrixify_desde_codigos_modelo_color(codes, brand_config, shopify_config):
+def matrixify_desde_codigos_modelo_color(codes, brand_config, shopify_config,
+                                          productos_origen=None,
+                                          origen_matrixify_df=None,
+                                          destino_matrixify_df=None,
+                                          maestro=None):
     """Shopify + BigQuery/ARTI para una lista de codigos Modelo-Color.
 
-    Es el primer tramo -identico- de las dos entregas por codigos de la carga
-    parcial: el Centry y la Carga Sial. Escrito dos veces, el arreglo siguiente
-    entraria en una y se olvidaria en la otra.
+    Es el primer tramo -identico- de las tres entregas por codigos: el Centry,
+    la Carga Sial y la carga de Supermall. Escrito tres veces, el arreglo
+    siguiente entraria en una y se olvidaria en las otras.
+
+    `productos_origen` es el catalogo del que se sacan titulo, descripcion,
+    tipo, tags, color y metacampos. **Sin el se usa el del sitio activo, que es
+    el comportamiento de siempre.** Existe por Supermall: ahi el sitio activo
+    es el DESTINO, y los productos que faltan por definicion no estan en el, asi
+    que `product_lookup` salia vacio y el producto se armaba casi entero en
+    blanco. El origen se consolida en `engines/carga_supermall`.
+
+    `destino_matrixify_df` es el catalogo de la tienda a la que se carga, y
+    solo hace falta cuando no es el mismo que el de origen.
+
+    `origen_matrixify_df` y `maestro` se pasan ya calculados cuando la carga va
+    por BLOQUES: sin ellos, cada bloque volveria a convertir el catalogo entero
+    y a pedir el maestro. **Es el mismo tramo comun, no una segunda copia**:
+    hay una prueba que exige que `build_centry_matrixify_from_master` se llame
+    desde un solo lugar.
 
     Devuelve `(matrixify_df, revision_df, arti_df, origen_del_maestro)`. El ARTI
     sale tambien porque el Centry lo vuelve a mirar para completar el EAN, y
     leerlo dos veces es leer el maestro dos veces.
     """
-    shopify_products = session_shopify_products(brand_config["site_key"], shopify_config)
-    shopify_matrixify_df = shopify_products_to_matrixify_df(shopify_products)
-    arti_df, arti_source = session_arti_for_app(brand_config)
+    if origen_matrixify_df is None:
+        shopify_products = (
+            productos_origen
+            if productos_origen is not None
+            else session_shopify_products(brand_config["site_key"], shopify_config)
+        )
+        origen_matrixify_df = shopify_products_to_matrixify_df(shopify_products)
+    if maestro is None:
+        arti_df, arti_source = session_arti_for_app(brand_config)
+    else:
+        arti_df, arti_source = maestro
     matrixify_df, master_issues_df = build_centry_matrixify_from_master(
         codes,
-        shopify_matrixify_df,
+        origen_matrixify_df,
         arti_df,
         brand_config,
+        destino_matrixify_df=destino_matrixify_df,
     )
     return matrixify_df, master_issues_df, arti_df, arti_source
 
@@ -6580,7 +6614,20 @@ def centry_missing_ean_count(centry_df):
     return safe_int_value(centry_df[column].map(clean_value).eq("").sum())
 
 
-def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, brand_config):
+def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, brand_config,
+                                       destino_matrixify_df=None):
+    """El Matrixify de una lista de codigos Modelo-Color.
+
+    `shopify_matrixify_df` es el catalogo de ORIGEN: de ahi salen el titulo, la
+    descripcion, el tipo, los tags y los metacampos.
+
+    `destino_matrixify_df` es el catalogo de la tienda a la que se va a cargar,
+    y solo se pasa cuando NO es el mismo que el de origen -- o sea, en
+    Supermall. De el salen dos cosas que no pueden venir del origen: el `ID` y
+    el `Handle` con los que se decide si el producto se **crea** o se
+    **actualiza** (los de Vans.pe no valen en Supermall.pe), y los siblings que
+    la tienda destino ya tiene publicados.
+    """
     codes = [clean_value(code).upper() for code in codes if clean_value(code)]
     if not codes:
         return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(columns=["Mod-Col", "Problema"])
@@ -6608,6 +6655,45 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             key = clean_value(key).upper()
             if key and key not in product_lookup:
                 product_lookup[key] = group.iloc[0]
+
+    # El catalogo del DESTINO. Cuando no se pasa, el destino ES el origen, que
+    # es lo que pasa en Centry y en la Carga Sial: el sitio activo es el mismo
+    # de donde se leyo. En Supermall son dos tiendas distintas y hay que
+    # separarlos, porque el `ID` de Vans.pe no vale en Supermall.pe y usarlo
+    # haria un MERGE contra un producto que no es.
+    destino_df = shopify_df
+    if destino_matrixify_df is not None:
+        destino_df = coalesce_duplicate_columns(destino_matrixify_df).copy()
+        if not destino_df.empty:
+            for column in MATRIXIFY_COLUMNS:
+                if column not in destino_df.columns:
+                    destino_df[column] = ""
+            destino_df = forward_fill_product_block(
+                destino_df,
+                ["Title", "Handle", "Metafield: custom.codigo_modelo_color [id]"],
+            )
+            destino_df["__CENTRY_KEY"] = destino_df.apply(centry_mod_col_from_row, axis=1)
+    destino_lookup = {}
+    if destino_df is not None and not destino_df.empty and "__CENTRY_KEY" in destino_df.columns:
+        for key, group in destino_df.groupby("__CENTRY_KEY", sort=False):
+            key = clean_value(key).upper()
+            if key and key not in destino_lookup:
+                destino_lookup[key] = group.iloc[0]
+
+    # Los SIBLINGS del destino: los colores del mismo modelo que ya viven en
+    # esa tienda. Se calculan con la MISMA funcion que la carga completa
+    # (`unir_siblings`), no con una regla nueva.
+    siblings_publicados = siblings_ya_publicados(destino_df)
+    handles_de_la_carga = {}
+    for code in codes:
+        modelo = codigo_de_modelo(code)
+        if modelo:
+            fila_destino = destino_lookup.get(code)
+            handle = (
+                clean_value(fila_destino.get("Handle")) if fila_destino is not None else ""
+            ) or code.lower()
+            handles_de_la_carga.setdefault(modelo, []).append(handle)
+    siblings_por_modelo = unir_siblings(handles_de_la_carga, siblings_publicados)
 
     arti = normalize_arti_columns_for_app(arti_df).copy() if arti_df is not None else pd.DataFrame()
     for column in ("CODINT_MA", "COD MOD COL", "Mod-Col", "TALNUM_MA", "MARCA_MA", "Precio", "CodBarras"):
@@ -6774,6 +6860,21 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         if product_row is None:
             issues.append({"Mod-Col": key, "Problema": "No existe en Shopify; se completo Centry con BigQuery/ARTI y fotos S3"})
 
+        fila_destino = destino_lookup.get(key)
+        # Los siblings SIEMPRE se cargan. Sin ellos la ficha no ofrece los
+        # otros colores del modelo, y hasta ahora esta rama -- la de carga por
+        # codigos -- no los escribia: solo los escribia la carga completa.
+        handle_propio = (
+            clean_value(fila_destino.get("Handle")) if fila_destino is not None else ""
+        ) or key.lower()
+        hermanos = siblings_por_modelo.get(codigo_de_modelo(key), "") or handle_propio
+        # El ESTADO con el que nace el producto lo decide el sitio. Supermall
+        # entra activo y publicado; los demas conservan lo que ya tenian.
+        estado_destino, publicado_destino = estado_al_cargar(brand_config, fila_destino)
+        # El PRECIO: Supermall lo sincroniza el ERP, asi que la carga no lo
+        # escribe. Mandar un precio aqui competiria con esa sincronizacion.
+        precio_desde_maestro = not brand_config.get("precio_desde_erp")
+
         for position, (_, variant) in enumerate(variants.iterrows(), start=1):
             size = display_size_for_site(
                 variant.get("__SIZE"), brand_config,
@@ -6788,8 +6889,15 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                     # El ID de Shopify no es columna de Matrixify: viaja para
                     # que la hoja Carga Sial del sitio sepa si el producto se
                     # crea o se actualiza y a que tienda devolver el Product Id.
-                    "ID": clean_value(product_row.get("ID")) if product_row is not None else "",
-                    "Handle": clean_value(product_row.get("Handle")) if product_row is not None else key.lower(),
+                    #
+                    # Sale del catalogo del DESTINO, no del de origen: el ID de
+                    # Vans.pe no existe en Supermall.pe y usarlo haria un MERGE
+                    # contra otro producto. Cuando destino y origen son el mismo
+                    # -- Centry, Carga Sial -- `fila_destino` ES `product_row`.
+                    "ID": clean_value(fila_destino.get("ID")) if fila_destino is not None else "",
+                    "Handle": (
+                        clean_value(fila_destino.get("Handle")) if fila_destino is not None else ""
+                    ) or key.lower(),
                     "Title": title,
                     "Body HTML": body_html,
                     "Vendor": vendor,
@@ -6803,15 +6911,26 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                     "Option2 Name": "Color",
                     "Option2 Value": color,
                     "Variant Barcode": clean_value(variant.get("CodBarras")),
-                    "Variant Price": clean_value(variant.get("Precio")),
+                    "Variant Price": (
+                        clean_value(variant.get("Precio")) if precio_desde_maestro else ""
+                    ),
                     "Metafield: custom.codigo_modelo_color [id]": key,
                     "Metafield: custom.marca [single_line_text_field]": vendor,
                     "Metafield: custom.genero [single_line_text_field]": gender_master,
                     "Metafield: custom.color [single_line_text_field]": color,
                     "Metafield: custom.materialidad [single_line_text_field]": materiality,
                     "Metafield: custom.tecnologia [list.single_line_text_field]": technology,
-                    "Status": clean_value(product_row.get("Status")) if product_row is not None else "",
-                    "Published": clean_value(product_row.get("Published")) if product_row is not None else "",
+                    "Status": estado_destino,
+                    "Published": publicado_destino,
+                    # Los dos juegos de metacampos: `theme` es el que lee el
+                    # tema y `custom` el de la ficha. Van los dos porque el tipo
+                    # lo manda la TIENDA y no se puede saber cual quedo -- es la
+                    # misma razon por la que la carga parcial los manda en dos
+                    # llamadas separadas.
+                    "Metafield: theme.siblings [single_line_text_field]": hermanos,
+                    "Metafield: custom.siblings [single_line_text_field]": hermanos,
+                    "Metafield: theme.siblings_color [single_line_text_field]": color,
+                    "Metafield: custom.siblings_color [single_line_text_field]": color,
                     "Variant Position": position,
                     # Lo que sabe el maestro y Shopify no. No son columnas
                     # Matrixify: viajan solo entre esta funcion y el
@@ -15089,6 +15208,7 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button,
         div.st-key-operation_nav_status button,
+        div.st-key-operation_nav_supermall button,
         div.st-key-operation_nav_input button,
         div.st-key-operation_nav_tickets button,
         div.st-key-operation_nav_audit button,
@@ -15123,6 +15243,7 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_status button [data-testid="stMarkdownContainer"],
+        div.st-key-operation_nav_supermall button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_input button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_tickets button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_audit button [data-testid="stMarkdownContainer"],
@@ -15138,6 +15259,7 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button p,
         div.st-key-operation_nav_status button p,
+        div.st-key-operation_nav_supermall button p,
         div.st-key-operation_nav_input button p,
         div.st-key-operation_nav_tickets button p,
         div.st-key-operation_nav_audit button p,
@@ -15158,6 +15280,7 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button::before,
         div.st-key-operation_nav_status button::before,
+        div.st-key-operation_nav_supermall button::before,
         div.st-key-operation_nav_input button::before,
         div.st-key-operation_nav_tickets button::before,
         div.st-key-operation_nav_audit button::before,
@@ -15185,6 +15308,9 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_status button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 18a8 8 0 1 1 16 0'/%3E%3Cpath d='M12 18l4.5-5.5'/%3E%3Cpath d='M12 18h.01'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-operation_nav_supermall button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 9l1.5-5h15L21 9'/%3E%3Cpath d='M4 9v11h16V9'/%3E%3Cpath d='M12 12v5'/%3E%3Cpath d='m9.5 14.5 2.5 2.5 2.5-2.5'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-operation_nav_input button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
@@ -15214,6 +15340,7 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_kpis button:hover,
         div.st-key-operation_nav_status button:hover,
+        div.st-key-operation_nav_supermall button:hover,
         div.st-key-operation_nav_input button:hover,
         div.st-key-operation_nav_tickets button:hover,
         div.st-key-operation_nav_audit button:hover,
@@ -24272,6 +24399,299 @@ def render_tallas_resumen(resumen):
     )
 
 
+SUPERMALL_LABEL = "Carga Supermall"
+# Cuantos codigos se procesan por bloque. Mas chico que en Centry porque cada
+# bloque cruza el maestro entero y arma su tramo de Matrixify: bloques mas
+# chicos guardan mas seguido y una lista larga no se cae entera. Misma razon
+# que en fotos, videos y tallas.
+SUPERMALL_CODIGOS_POR_BLOQUE = 200
+SUPERMALL_FILAS_VISTA = 300
+
+
+def supermall_consolidar_origen(catalogos, codigos=()):
+    """La mejor ficha de cada codigo, con todos los sitios en la mano.
+
+    El paso que faltaba entre "que le falta a Supermall" y "generar la carga".
+    """
+    etiquetas = {k: clean_value(c.get("site_label")) or k for k, c in SITE_CONFIGS.items()}
+    return carga_supermall.consolidar(
+        catalogos,
+        codigos=codigos,
+        etiquetas_de_sitio=etiquetas,
+        marcas_conocidas=configured_commercial_brands(),
+        orden_de_sitios=list(SITE_CONFIGS),
+    )
+
+
+def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=None):
+    """El Matrixify y la Carga Sial de Supermall, por bloques.
+
+    El origen es el catalogo CONSOLIDADO -- de ahi salen titulo, descripcion,
+    tipo, tags y metacampos -- y el destino es el catalogo de Supermall, de
+    donde salen el ID y el Handle que deciden crear o actualizar. Sin separar
+    los dos, el ID de Vans.pe habria hecho un MERGE contra otro producto.
+
+    Se procesa por BLOQUES: con miles de codigos, una pasada unica que se cae a
+    la mitad no deja constancia de nada.
+    """
+    productos_origen = carga_supermall.productos_para_matrixify(fichas)
+    codigos = carga_supermall.codigos_cargables(fichas)
+    destino_df = shopify_products_to_matrixify_df(catalogos.get(carga_supermall.DESTINO) or [])
+    origen_df = shopify_products_to_matrixify_df(productos_origen)
+    arti_df, arti_source = session_arti_for_app(brand_config)
+
+    partes, revisiones = [], []
+    hechos = 0
+    for bloque in png_bloques(codigos, SUPERMALL_CODIGOS_POR_BLOQUE):
+        # Por el MISMO tramo comun que el Centry y la Carga Sial. El catalogo
+        # de origen y el maestro van ya calculados porque esto va por bloques:
+        # rehacerlos en cada bloque seria convertir el catalogo entero N veces.
+        parte, revision, _arti, _fuente = matrixify_desde_codigos_modelo_color(
+            bloque, brand_config, shopify_config,
+            origen_matrixify_df=origen_df,
+            destino_matrixify_df=destino_df,
+            maestro=(arti_df, arti_source),
+        )
+        if parte is not None and not parte.empty:
+            partes.append(parte)
+        if revision is not None and not revision.empty:
+            revisiones.append(revision)
+        hechos += len(bloque)
+        if avanzar:
+            avanzar(hechos, len(codigos))
+
+    matrixify_df = (
+        pd.concat(partes, ignore_index=True) if partes else pd.DataFrame(columns=MATRIXIFY_COLUMNS)
+    )
+    revision_df = (
+        pd.concat(revisiones, ignore_index=True).drop_duplicates()
+        if revisiones else pd.DataFrame(columns=["Mod-Col", "Problema"])
+    )
+    sial_df = build_sial_de_sitio_from_matrixify(matrixify_df, brand_config)
+    return matrixify_df, sial_df, revision_df, arti_source
+
+
+def render_carga_supermall():
+    """La pantalla de Carga Supermall, en DOS TIEMPOS.
+
+    Por que existe
+    --------------
+    Supermall.pe lleva el catalogo de TODOS los sitios. Hasta ahora la app
+    respondia QUE FALTA (la pestana del espejo) y sabia hacer la segunda pasada
+    de una carga recien hecha, pero entre las dos cosas no habia nada: el
+    espejo entregaba un Excel de codigos y mandaba a "Carga parcial -> Carga
+    Sial", que **solo produce la hoja SIAL** y **lee el catalogo de un solo
+    sitio, el activo**. Estando en Supermall, ese es el destino, donde esos
+    productos por definicion no estan: el producto habria salido casi vacio.
+
+    Aqui la informacion se toma de las webs donde el producto SI esta, se
+    consolida campo a campo y se genera la carga entera.
+    """
+    log_acceso_modulo(SUPERMALL_LABEL)
+    render_html(
+        """
+        <div class="kpi-hero">
+            <div class="kpi-title">
+                <h2>Carga Supermall</h2>
+                <p>Toma lo que ya está cargado en las demás webs, lo consolida y arma la carga de Supermall.pe.</p>
+            </div>
+        </div>
+        """
+    )
+    espejo_key = sitio_espejo()
+    if not espejo_key:
+        st.error(
+            "No hay ningún sitio espejo configurado. Supermall.pe necesita su sección "
+            "`[shopify_sites.supermall]` en Secrets."
+        )
+        return
+    brand_config = get_brand_config(espejo_key)
+    shopify_config = get_shopify_config(espejo_key)
+    if not is_shopify_configured(shopify_config):
+        st.error(
+            "**Supermall.pe no tiene Shopify configurado en Secrets.** Sin su catálogo no se "
+            "puede saber qué productos ya están cargados, y todo saldría como \"falta\": "
+            "eso se leería como \"hay que cargar el catálogo entero\", que no es cierto."
+        )
+        return
+
+    # --- 1. Que se va a cargar -------------------------------------------
+    st.markdown('<div class="section-card"><h2>1. Qué se va a cargar</h2>', unsafe_allow_html=True)
+    st.caption(
+        "Se leen los catálogos de **todos los sitios a la vez** y se restan los que ya están "
+        "en Supermall. Es la misma lectura que usa Status de carga, así que si ya la hiciste "
+        "en esta sesión no cuesta esperar otra vez."
+    )
+    columna_modo, columna_excel = st.columns([1, 1], gap="large")
+    with columna_modo:
+        modo = st.radio(
+            "Qué códigos",
+            ["Los que faltan en Supermall", "Una lista mía"],
+            key="supermall_modo",
+            help="Lo que falta sale de la resta entre los demás sitios y Supermall.",
+        )
+        actualizar = st.checkbox(
+            "Volver a leer los catálogos",
+            key="supermall_refrescar",
+            help="Sin marcar se usa lo que la app ya tiene leído.",
+        )
+    codigos_pedidos = []
+    with columna_excel:
+        if modo == "Una lista mía":
+            excel = st.file_uploader(
+                "Excel de códigos Modelo-Color", type=["xlsx", "xls"], key="supermall_excel",
+            )
+            if excel is not None:
+                df_codigos = read_uploaded_excel_cached(excel, "supermall_codigos_df")
+                codigos_pedidos, descartados = png_codigos_desde_excel(df_codigos)
+                st.caption(f"{len(codigos_pedidos):,} códigos leídos del Excel.")
+                if descartados:
+                    with st.expander(f"{len(descartados):,} filas descartadas"):
+                        st.dataframe(pd.DataFrame(descartados), use_container_width=True, hide_index=True)
+
+    if st.button("Analizar qué se puede cargar", type="primary", key="supermall_analizar"):
+        with st.spinner("Leyendo los catálogos de todos los sitios..."):
+            catalogos, estado_sitios = cargar_catalogos_de_todos_los_sitios(
+                force_refresh=bool(actualizar)
+            )
+        if modo == "Los que faltan en Supermall":
+            etiquetas = {k: clean_value(c.get("site_label")) or k for k, c in SITE_CONFIGS.items()}
+            codigos_pedidos = espejo_de_supermall(catalogos, etiquetas)["codigos"]
+        with st.spinner("Consolidando la información de las distintas webs..."):
+            consolidado = supermall_consolidar_origen(catalogos, codigos_pedidos)
+        st.session_state["supermall_consolidado"] = consolidado
+        st.session_state["supermall_catalogos"] = catalogos
+        st.session_state["supermall_estado_sitios"] = estado_sitios
+        st.session_state.pop("supermall_resultado", None)
+        log_user_activity(
+            SUPERMALL_LABEL,
+            f"{len(consolidado['fichas']):,} productos consolidados para Supermall.pe.",
+            module=SUPERMALL_LABEL,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    consolidado = st.session_state.get("supermall_consolidado")
+    if consolidado is None:
+        return
+    fichas = consolidado["fichas"]
+    if not fichas:
+        st.info("No hay productos en las demás webs que Supermall no tenga ya.")
+        return
+
+    estado_sitios = st.session_state.get("supermall_estado_sitios") or []
+    caidos = [e for e in estado_sitios if e.get("Estado") != "Leido"]
+    if caidos:
+        st.warning(
+            "**No se pudieron leer todos los sitios**, así que la consolidación va con menos "
+            "información de la que hay: "
+            + ", ".join(f"{e['Sitio']} ({e['Estado']})" for e in caidos)
+            + ". Los productos que solo existan en esos sitios no aparecen aquí."
+        )
+
+    # --- 2. Que sale -------------------------------------------------------
+    st.markdown('<div class="section-card"><h2>2. Qué sale de la consolidación</h2>', unsafe_allow_html=True)
+    resumen = consolidado["resumen"]
+    tarjetas = [
+        ("Productos consolidados", resumen["Productos consolidados"], "blue", "&#9633;"),
+        ("Se pueden cargar", resumen["Se pueden cargar"], "green", "&#10003;"),
+        ("Se crean", resumen["Se crean"], "purple", "+"),
+        ("Se actualizan", resumen["Se actualizan"], "blue", "&#8635;"),
+        ("Bloqueados", resumen["Bloqueados"], "orange", "!"),
+    ]
+    render_html(
+        '<div class="kpi-card-grid">'
+        + "".join(
+            f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+            f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+            for titulo, valor, tono, icono in tarjetas
+        )
+        + "</div>"
+    )
+    st.caption(
+        "Cada campo se toma de la primera web que lo tenga, mirando primero donde el producto "
+        "está **prendido y visible**. Ningún sitio manda sobre otro: Supermall no tiene marca "
+        "propia, las lleva todas. La columna **Origen por campo** dice de dónde salió cada dato."
+    )
+    tabla = pd.DataFrame(carga_supermall.filas_para_tabla(fichas))
+    solo_problemas = st.checkbox(
+        "Ver solo lo que tiene bloqueos o avisos", key="supermall_solo_problemas",
+    )
+    vista = tabla[tabla["Bloqueos"].ne("") | tabla["Avisos"].ne("")] if solo_problemas else tabla
+    st.dataframe(vista.head(SUPERMALL_FILAS_VISTA), use_container_width=True, height=400, hide_index=True)
+    if len(vista) > SUPERMALL_FILAS_VISTA:
+        st.caption(f"Se muestran {SUPERMALL_FILAS_VISTA:,} de {len(vista):,} filas. El Excel las lleva todas.")
+    if resumen["Bloqueados"]:
+        st.warning(
+            f"**{resumen['Bloqueados']:,} productos no se pueden cargar** y quedan fuera del "
+            "archivo: les falta el código Modelo-Color, el nombre o el tipo de prenda en todas "
+            "las webs. Los avisos (sin género, sin fotos) **no bloquean**: esos sí se cargan."
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- 3. Generar --------------------------------------------------------
+    st.markdown('<div class="section-card"><h2>3. Generar la carga</h2>', unsafe_allow_html=True)
+    st.info(
+        f"**Cómo entra en Supermall.pe:** activo y publicado · **sin precio** (lo sincroniza el "
+        f"ERP) · con siblings · bodega SIAL "
+        f"{', '.join(brand_config.get('sial_active_columns', [])) or 'sin definir'} · el calzado "
+        "de las marcas con guía registrada, convertido a tallas PE."
+    )
+    if st.button("Generar la carga de Supermall", type="primary", key="supermall_generar"):
+        catalogos = st.session_state.get("supermall_catalogos") or {}
+        barra = st.progress(0.0, text="Armando...")
+
+        def avanzar(hechos, total):
+            barra.progress(hechos / max(total, 1), text=f"{hechos:,} de {total:,} códigos")
+
+        with st.spinner("Cruzando con BigQuery/ARTI y armando el Matrixify..."):
+            matrixify_df, sial_df, revision_df, arti_source = supermall_generar(
+                fichas, catalogos, brand_config, shopify_config, avanzar=avanzar,
+            )
+        barra.empty()
+        st.session_state["supermall_resultado"] = {
+            "excel": dataframe_to_excel_bytes({
+                "Products": matrixify_df,
+                "Carga Sial": sial_df,
+                "Consolidacion": tabla,
+                "Revision": revision_df,
+            }),
+            "filas": len(matrixify_df),
+            "modelos": safe_int_value(
+                matrixify_df["Metafield: custom.codigo_modelo_color [id]"]
+                .map(lambda v: clean_value(v).upper()).replace("", pd.NA).nunique()
+            ) if "Metafield: custom.codigo_modelo_color [id]" in matrixify_df.columns else 0,
+            "sial": len(sial_df),
+            "fuente": arti_source,
+        }
+        log_user_activity(
+            SUPERMALL_LABEL,
+            f"Carga de Supermall.pe generada: {len(matrixify_df):,} filas de talla.",
+            module=SUPERMALL_LABEL,
+        )
+
+    resultado = st.session_state.get("supermall_resultado")
+    if resultado:
+        st.success(
+            f"Carga generada: **{resultado['filas']:,} filas de talla** "
+            f"({resultado['modelos']:,} modelo-color) y {resultado['sial']:,} filas de Carga Sial."
+        )
+        st.caption(f"Base maestra usada: {resultado['fuente']}")
+        st.download_button(
+            "Descargar la carga de Supermall",
+            data=resultado["excel"],
+            file_name=f"carga_supermall_{datetime.now().strftime('%d%m%Y')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="supermall_descargar",
+            on_click=log_descarga, args=(SUPERMALL_LABEL, "render_carga_supermall"),
+        )
+        st.caption(
+            "El Excel lleva cuatro hojas: **Products** (el Matrixify que se sube a Shopify), "
+            "**Carga Sial** en el formato de Supermall, **Consolidacion** (de qué web salió cada "
+            "dato) y **Revision** (todo lo que hubo que avisar, incluidas las tallas de calzado "
+            "que se publican sin convertir)."
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
 def render_mantenedor_tallas(brand_config, shopify_config):
     """La pantalla del Mantenedor de Tallas, en DOS TIEMPOS.
 
@@ -24783,6 +25203,7 @@ def main():
     nav_options = [
         "KPIs de catálogo",
         STATUS_CARGA_LABEL,
+        SUPERMALL_LABEL,
         "Input comercial",
         "Solicitudes",
         "Carga de catálogo",
@@ -24795,6 +25216,7 @@ def main():
     with st.sidebar.container(key="operation_nav"):
         sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
         sidebar_nav_button(STATUS_CARGA_LABEL, "operation_area_choice", STATUS_CARGA_LABEL, "operation_nav_status")
+        sidebar_nav_button(SUPERMALL_LABEL, "operation_area_choice", SUPERMALL_LABEL, "operation_nav_supermall")
         sidebar_nav_button("Input comercial", "operation_area_choice", "Input comercial", "operation_nav_input")
         sidebar_nav_button("Solicitudes", "operation_area_choice", "Solicitudes", "operation_nav_tickets")
         if can_view_user_activity_log(auth_user):
@@ -24868,6 +25290,9 @@ api_version = "{DEFAULT_API_VERSION}"
     if operation_area == STATUS_CARGA_LABEL:
         log_acceso_modulo(STATUS_CARGA_LABEL)
         render_status_de_carga(ticket_actor)
+        return
+    if operation_area == SUPERMALL_LABEL:
+        render_carga_supermall()
         return
     if operation_area == "Input comercial":
         render_commercial_input_center(actor=ticket_actor)

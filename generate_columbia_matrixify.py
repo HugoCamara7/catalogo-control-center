@@ -240,6 +240,15 @@ SITE_CONFIGS = {
         # la MARCA (`engines/guias_tallas`). Sin guia de su marca, la talla se
         # queda como esta y se REPORTA -- nunca se adivina.
         "escala_calzado": "PE",
+        # Entra Activo y publicado en el canal de venta. Un producto que llega
+        # en borrador a un marketplace no lo ve nadie, y esperar a que alguien
+        # lo publique a mano es el mismo problema que el espejo existe para
+        # evitar.
+        "publicar_al_cargar": True,
+        # El precio de Supermall lo sincroniza el ERP. La carga no lo escribe:
+        # mandar un precio aqui competiria con esa sincronizacion y ganaria el
+        # ultimo que escribiera.
+        "precio_desde_erp": True,
         # Supermall es el ESPEJO de los demas sitios: no tiene input comercial
         # propio, recibe lo que ya se cargo en otro lado.
         "es_espejo": True,
@@ -1234,6 +1243,27 @@ def escala_de_calzado(brand_config=None):
     if declarada:
         return declarada
     return "PE" if brand_config.get("tallas_calzado_pe") else "ORIGEN"
+
+
+
+def estado_al_cargar(brand_config=None, fila_destino=None):
+    """`(Status, Published)` con los que el producto entra en esa tienda.
+
+    Supermall.pe entra **Activo y publicado**: es un marketplace y un producto
+    que llega en borrador no lo ve nadie, asi que quedarse esperando a que
+    alguien lo publique a mano es el mismo problema que el espejo existe para
+    evitar -- depender de que alguien se acuerde.
+
+    Los demas sitios conservan lo que el producto ya tenia en su tienda, y un
+    producto nuevo se queda sin valor para que manden las reglas de la carga
+    completa. Cambiar eso aqui reescribiria el estado de catalogos enteros.
+    """
+    brand_config = brand_config or get_brand_config()
+    if brand_config.get("publicar_al_cargar"):
+        return "Active", "TRUE"
+    if fila_destino is None:
+        return "", ""
+    return clean(fila_destino.get("Status")), clean(fila_destino.get("Published"))
 
 
 def display_size_for_site(value, brand_config=None, gender="", product_type="", marca="",
@@ -3001,6 +3031,27 @@ def siblings_ya_publicados(matrixify_df):
     return {modelo: list(dict.fromkeys(handles)) for modelo, handles in por_modelo.items()}
 
 
+
+def unir_siblings(por_modelo_de_la_carga, por_modelo_publicados):
+    """`{modelo: "handle-a, handle-b"}` uniendo lo que se carga y lo que ya hay.
+
+    Es UNA sola regla porque la usan los dos caminos: la carga completa, que
+    conoce los colores del input del dia, y la carga por codigos Modelo-Color
+    (Centry, Carga Sial y Supermall), que conoce los codigos pedidos. Escrita
+    dos veces, el arreglo siguiente entraria en una y se olvidaria en la otra
+    -- es lo que este repositorio ya paga con las dos `normalize_size`.
+
+    Lo publicado NO se pisa: un modelo con tres colores en la tienda que hoy
+    recibe uno nuevo tiene que acabar con cuatro hermanos, no con uno.
+    """
+    unidos = {}
+    for modelo in set(por_modelo_de_la_carga or {}) | set(por_modelo_publicados or {}):
+        handles = list((por_modelo_de_la_carga or {}).get(modelo, []))
+        handles += list((por_modelo_publicados or {}).get(modelo, []))
+        unidos[modelo] = ", ".join(dict.fromkeys(clean(h) for h in handles if clean(h)))
+    return unidos
+
+
 def build_existing_lookup(matrixify_df):
     product_by_key = {}
     product_by_handle = {}
@@ -4093,16 +4144,12 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     # trae el input con los que ya estan publicados para el mismo modelo. Nunca
     # se reemplaza la relacion por lo que traiga el input del dia: eso borraria
     # los colores cargados antes.
-    siblings_publicados = siblings_ya_publicados(matrixify_df)
     siblings_del_input = (
         input_df.groupby("__MODEL")["__HANDLE"]
         .apply(lambda values: [clean(value) for value in values if clean(value)])
         .to_dict()
     )
-    siblings_by_model = {}
-    for modelo in set(siblings_del_input) | set(siblings_publicados):
-        handles = list(siblings_del_input.get(modelo, [])) + list(siblings_publicados.get(modelo, []))
-        siblings_by_model[modelo] = ", ".join(dict.fromkeys(handle for handle in handles if handle))
+    siblings_by_model = unir_siblings(siblings_del_input, siblings_ya_publicados(matrixify_df))
     brand_column = detect_brand_column(input_df)
     image_lookup = build_image_lookup_by_brand(input_df, brand_column, brand_config)
     wanted_keys = set(input_df["__KEY"])

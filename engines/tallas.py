@@ -191,6 +191,33 @@ def limpiar_separadores(talla):
     return re.sub(r"\s*([/\-])\s*", r"\1", texto)
 
 
+def normalizar(valor):
+    """La talla tal y como debe escribirse. Es la forma que se PUBLICA.
+
+    Hace dos cosas y las dos son correcciones de un dato roto, no cambios de
+    criterio:
+
+    1. **Decodifica las fechas de Excel.** `04-Jun` no es una talla: es `4-6`
+       que Excel convirtio al exportar el maestro. Medido, son **~7.800 filas**
+       del maestro real (`04-Jun`, `06-Ago`, `08-Oct`, `02-Abr`, `Dic-18`,
+       `Oct-13`, `30-Oct`...), y llegaban tal cual a la hoja Carga Sial y a la
+       ficha de Shopify. Se decodifica, no se borra: `4-6` es una talla de nino
+       de verdad y quitarla dejaria al almacen sin esa talla.
+    2. **Quita los espacios pegados a la barra.** `S/ 8` y `S/8` son la misma
+       talla y el maestro las escribe de las dos formas dentro del mismo
+       producto.
+
+    Devuelve el valor tal cual cuando no hay nada que corregir.
+    """
+    texto = _texto(valor)
+    if not texto:
+        return ""
+    decodificada = decodificar_fecha_de_excel(texto)
+    if decodificada:
+        return decodificada
+    return limpiar_separadores(texto)
+
+
 def descomponer(talla):
     """La talla, entendida: `(familia, componentes, canonica)`.
 
@@ -247,6 +274,12 @@ def descomponer(talla):
         par = _RE_PAR.match(decodificada)
         if par:
             return (PAR_NUMERICO, (float(par.group(1)), float(par.group(2))), decodificada)
+
+    # 4 ter. `6/6X`: talla de nino real (6 / 6X). Sin esto caia en el cajon de
+    #    las desconocidas y la hoja Sial la habria dejado fuera.
+    con_x = re.match(rf"^({_NUM})/({_NUM})X$", texto)
+    if con_x:
+        return (PAR_NUMERICO, (float(con_x.group(1)), float(con_x.group(2))), texto)
 
     # 4 bis. Rango de letras escrito con guion: `S-M`, `L-XL`, `M-L`. Es la
     #    misma talla combinada que `S/M`, escrita de otra forma, asi que va al

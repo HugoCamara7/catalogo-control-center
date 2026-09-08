@@ -661,6 +661,9 @@ def build_image_lookup_by_brand(input_df, brand_column, brand_config):
 
 
 from engines.tallas import clave_de_orden as orden_de_talla  # noqa: E402
+from engines import sial_campos  # noqa: E402
+from engines.tallas import normalizar as _talla_canonica  # noqa: E402
+from engines.tallas import es_reconocida as talla_reconocida  # noqa: E402
 
 
 def normalize_size(value):
@@ -704,7 +707,19 @@ def normalize_size(value):
         "SM": "S/M",
         "ML": "M/L",
     }
-    return aliases.get(text, text)
+    if text in aliases:
+        return aliases[text]
+    # Ultimo paso: la forma canonica del diccionario, que decodifica las fechas
+    # que Excel dejo en el maestro (`04-Jun` es la talla `4-6`, `Dic-18` es
+    # `12-18`) y quita el espacio pegado a la barra (`S/ 8` es `S/8`).
+    #
+    # Medido, son ~7.800 filas del maestro real que llegaban asi a la hoja
+    # Carga Sial Y a la ficha de Shopify. Va AQUI, en el normalizador que
+    # comparten las dos hojas y la carga, para que no puedan discrepar: si el
+    # Sial dijera `4-6` y la tienda `04-Jun`, seria el mismo dato con dos
+    # nombres. Se decodifica y no se borra: `4-6` es una talla de nino de
+    # verdad, y quitarla dejaria al almacen sin esa talla.
+    return _talla_canonica(text)
 
 
 def size_sort_key(value):
@@ -1111,12 +1126,53 @@ def limit_words(value, max_words=45):
 
 
 def product_category(product):
-    return first_non_empty(
+    """La CATEGORIA de la hoja Sial, que es la CLASE del producto.
+
+    Faltaban dos cosas y por eso la columna salia **vacia en toda la carga
+    completa**: el input comercial llama a esa columna `Clase` -es una de sus
+    columnas obligatorias- y aqui no se miraba, y no habia respaldo cuando el
+    input no la trae.
+
+    El respaldo es el diccionario de tipos (`engines/garment_types`), que es
+    de donde ya la deriva la hoja por codigos: un ALPARGATA es Calzado se
+    escriba o no. Asi las dos hojas dicen lo mismo del mismo producto.
+
+    En MAYUSCULA, que es como la emite la hoja por codigos y como la espera
+    SIAL.
+    """
+    declarada = first_non_empty(
         product.get("Metafield: custom.categoria [single_line_text_field]"),
         product.get("Categoria "),
         product.get("Categoria"),
+        product.get("Categoría"),
         product.get("Category"),
+        product.get("Clase"),
+        row_alias_value(product, CATEGORY_COLUMNS),
     )
+    if clean(declarada):
+        return clean(declarada).upper()
+    tipo, _ = resolve_product_type(product, None)
+    return clase_de_tipo(tipo).upper()
+
+
+CATEGORY_COLUMNS = [
+    "Clase", "Categoria", "Categoría", "Categoria ", "Category", "Clase comercial",
+    "Metafield: custom.categoria [single_line_text_field]",
+]
+
+
+def clase_de_tipo(product_type):
+    """Vestuario / Calzado / Accesorios segun el diccionario de tipos, o "".
+
+    Es el MISMO diccionario que usa `centry_garment_class` en la capa de
+    aplicacion. No se escribe una segunda tabla de clases: dos tablas se
+    separan sin que nadie lo note.
+    """
+    try:
+        from engines.garment_types import clase_de
+    except ImportError:
+        return ""
+    return clean(clase_de(clean(product_type)))
 
 
 def product_gender(product):
@@ -1349,12 +1405,57 @@ def dedupe_variants_for_shopify(variants, brand_config=None, issues=None, key=""
 
 
 def sial_size_value(value):
-    return clean(value)
+    """La talla tal y como va en la columna `Talla` de la hoja Carga Sial.
+
+    Es el codigo del MAESTRO, no la talla que ve el comprador -- eso es
+    `Talla Web` --, asi que se conserva tal cual: `400` se manda `400`.
+
+    Lo unico que se corrige es lo que el maestro trae roto: `04-Jun` no es un
+    codigo, es la talla `4-6` que Excel convirtio en fecha al exportar. Mandar
+    `04-Jun` a SIAL no cuadra con nada, porque en el ERP la talla es `4-6`.
+    Medido, son ~7.800 filas del maestro real.
+    """
+    return _talla_canonica(clean(value))
 
 
 def is_internal_k_size(value):
     size = clean(normalize_size(value)).upper().replace(" ", "")
     return bool(re.fullmatch(r"K\d+", size))
+
+
+
+def talla_sirve_para_sial(value):
+    """True si esa talla puede salir en la hoja Carga Sial.
+
+    Quedan fuera tres cosas, y las tres por el mismo motivo: no son tallas.
+
+    - Las **tallas internas K** (`K1201`, `K601`): 162 formas distintas en el
+      maestro real, ninguna es una talla de venta.
+    - Lo que el **diccionario de tallas no reconoce** (`R`, `RH`, `LLH`,
+      `REGRH`): medido, ~200 filas del maestro. Son codigos internos, y en la
+      hoja del almacen no significan nada.
+    - Lo vacio.
+
+    La talla 0 NO se decide aqui: su regla depende del producto entero -se
+    borra solo si tiene ademas tallas reales- y ya vive en
+    `final_variant_filter` y en `filter_centry_size_rows`. Meterla aqui seria
+    la misma regla escrita dos veces.
+
+    Lo que NO queda fuera son las fechas que dejo Excel (`04-Jun`, `Dic-18`):
+    esas SI son tallas, y `normalize_size` ya las devuelve decodificadas
+    (`4-6`, `12-18`). Borrarlas dejaria al almacen sin una talla real -- son
+    ~7.800 filas del maestro.
+
+    Solo se aplica a la hoja Sial. Quitar una variante de Shopify es otra cosa
+    y no se hace aqui: lo que no se reconoce se REPORTA y la decision es de
+    quien mira el reporte.
+    """
+    texto = clean(value)
+    if not texto:
+        return False
+    if is_internal_k_size(texto):
+        return False
+    return talla_reconocida(normalize_size(texto))
 
 
 def boolean_mask(series, predicate):
@@ -1495,9 +1596,28 @@ def final_variant_filter(output_df, sial_df, issues_df):
                 output_df = output_df[~duplicate_sku_mask].copy()
 
     if sial_df is not None and not sial_df.empty and "Talla" in sial_df.columns:
-        k_mask = sial_df["Talla"].map(is_internal_k_size)
-        if k_mask.any():
-            sial_df = sial_df[~k_mask].copy()
+        # Lo que no es una talla no sale en la hoja del almacen: las internas K
+        # y lo que el diccionario no reconoce (`R`, `RH`, `LLH`, `REGRH`). Se
+        # REPORTA con el valor, para que se pueda decidir si hay que arreglar el
+        # maestro. Las fechas de Excel NO caen aqui: `normalize_size` ya las
+        # devuelve decodificadas (`04-Jun` es la talla `4-6`), y borrarlas
+        # dejaria al almacen sin una talla real.
+        fuera_mask = ~sial_df["Talla"].map(talla_sirve_para_sial)
+        if fuera_mask.any():
+            descartadas = sorted({clean(v) for v in sial_df.loc[fuera_mask, "Talla"] if clean(v)})
+            issues.append(
+                {
+                    "Mod-Col": "Carga Sial",
+                    "Problema": (
+                        "Se dejaron fuera filas cuya talla no es una talla: "
+                        + ", ".join(descartadas[:14])
+                        + (" ..." if len(descartadas) > 14 else "")
+                    ),
+                    "Fila input": "",
+                    "Cantidad": safe_int(fuera_mask.sum()),
+                }
+            )
+            sial_df = sial_df[~fuera_mask].copy()
         def sial_zero_blocked(row):
             if not is_zero_size(row.get("Talla")):
                 return False
@@ -1563,7 +1683,7 @@ def sial_tail_row(brand_config=None, existing_id="", sku=""):
     return valores
 
 
-def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None, brand_label=""):
+def build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config=None, brand_label="", avisos_de_limite=None):
     brand_config = brand_config or get_brand_config()
     brand_label = clean(brand_label) or brand_config["label"]
     display_size = sial_size_value(variant.get("__SIAL_SIZE") or variant["__SIZE"])
@@ -1626,6 +1746,11 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
         "Sku - Sial": clean(variant.get("CODINT_MA")),
     }
     row.update(sial_tail_row(brand_config, existing_id, variant.get("CODINT_MA")))
+    # Los topes de la hoja: Color Web y Tipo de Material 30, Tecnologias 50 y
+    # Caracteristicas 130. La regla vive en `engines/sial_campos` porque la hoja
+    # se emite tambien desde la carga por codigos, y escrita dos veces el
+    # arreglo siguiente se olvida en una de las dos.
+    sial_campos.ajustar_fila(row, avisos=avisos_de_limite, clave=key)
     return row
 
 
@@ -1807,6 +1932,11 @@ def resolve_product_type(row, brand_config=None):
 COLOR_WEB_COLUMNS = [
     "Color Web", "Color", "Color Name", "Color Nombre", "Nombre Color", "Color Comercial",
     "Grupo Color", "Metafield: custom.grupo_color [single_line_text_field]",
+    # Va AL FINAL a proposito: es el nombre que usa el input comercial y no
+    # estaba en la lista, asi que un input sin "Color Comercial" dejaba la
+    # columna vacia. Puesto al final solo rellena lo que hoy sale en blanco;
+    # donde ya habia valor, no cambia nada.
+    "Color web/filtro",
 ]
 
 TAG_COLUMNS = [
@@ -4194,6 +4324,10 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     # genero seria peor que publicarlo con la talla de origen, que es lo que
     # pasaba antes -- solo que antes no se enteraba nadie.
     avisos_de_talla = []
+    # Los valores que hubo que acortar para respetar los topes de la hoja Sial.
+    # Se reportan: un recorte silencioso es como se pierde un dato sin que nadie
+    # se entere, y despues no hay forma de saber por que la ficha salio corta.
+    avisos_de_limite = []
     skipped_rows = []
     known_types_for_report, known_types_source = load_known_types()
     runtime_type_warning_keys = set()
@@ -4604,7 +4738,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
 
             product_rows.append(output)
             product_sial_rows.append(
-                build_sial_row(product, variant, key, product_images, existing_product, tech_col, brand_config, product_brand_label)
+                build_sial_row(product, variant, key, product_images, existing_product,
+                               tech_col, brand_config, product_brand_label,
+                               avisos_de_limite=avisos_de_limite)
             )
 
         if existing_product.get("ID") and product_is_unchanged(product_rows, existing_rows, matrixify_columns):
@@ -4639,6 +4775,7 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             )
     issues.extend(new_type_warnings_to_issues(type_warnings_df))
     issues.extend(avisos_de_talla_a_issues(avisos_de_talla))
+    issues.extend(sial_campos.avisos_a_issues(avisos_de_limite))
 
     output_df = pd.DataFrame(rows, columns=matrixify_columns)
     output_df = fill_top_row_product_fields(output_df, input_df, tech_col, brand_config)

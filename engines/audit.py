@@ -169,6 +169,16 @@ def normalizar(evento):
 
 
 # --- almacenamiento ------------------------------------------------------
+def _mes_menos(periodo, meses):
+    """El periodo YYYY-MM que queda `meses` antes. Sin dependencias de fechas."""
+    try:
+        anio, mes = (int(parte) for parte in _texto(periodo).split("-")[:2])
+    except (TypeError, ValueError):
+        return periodo
+    total = anio * 12 + (mes - 1) - max(0, int(meses))
+    return "%04d-%02d" % (total // 12, total % 12 + 1)
+
+
 class AuditError(RuntimeError):
     pass
 
@@ -210,6 +220,15 @@ class LocalAuditStore:
 
     def periods(self):
         return sorted(p.stem for p in self.root.glob("*.jsonl"))
+
+    def delete_period(self, periodo):
+        """Borra el archivo de ese mes. Devuelve cuantos eventos se llevo."""
+        archivo = self._archivo(periodo)
+        if not archivo.exists():
+            return 0
+        cuantos = len(self.read_period(periodo))
+        archivo.unlink()
+        return cuantos
 
 
 class GitHubAuditStore:
@@ -307,6 +326,24 @@ class GitHubAuditStore:
         return sorted(i["name"][:-6] for i in datos
                       if isinstance(i, dict) and i.get("name", "").endswith(".jsonl"))
 
+    def delete_period(self, periodo):
+        """Borra el archivo de ese mes del repositorio. Devuelve cuantos eventos
+        se llevo.
+
+        La API de contenidos exige el `sha` del archivo para borrarlo: sin el
+        no se puede, y si no existe no hay nada que hacer.
+        """
+        crudo, sha = self._leer(periodo)
+        if not sha:
+            return 0
+        cuantos = sum(1 for linea in crudo.splitlines() if linea.strip())
+        self._request("DELETE", self._ruta(periodo), {
+            "message": f"audit: limpiar {periodo}",
+            "sha": sha,
+            "branch": self.branch,
+        }, ref=False)
+        return cuantos
+
 
 # --- servicio ------------------------------------------------------------
 class AuditService:
@@ -323,6 +360,37 @@ class AuditService:
             return self.store.append(build_event(accion, usuario, **kwargs))
         except Exception:
             return None
+
+    def periodos_limpiables(self, conservar_meses=12, hoy=None):
+        """Los meses que se pueden borrar, del mas viejo al mas nuevo.
+
+        El mes EN CURSO nunca se ofrece: se estaria borrando lo que se acaba de
+        registrar, incluida la propia limpieza. Y se conservan los ultimos
+        `conservar_meses` completos, que es lo que hace que esto sea una
+        limpieza y no un borron.
+        """
+        hoy = hoy or ahora_lima()
+        actual = hoy.strftime("%Y-%m")
+        limite = _mes_menos(actual, max(0, int(conservar_meses)))
+        return [p for p in sorted(self.store.periods()) if p < limite and p != actual]
+
+    def limpiar_periodos(self, periodos):
+        """Borra esos meses. Devuelve [(periodo, eventos, error)] por cada uno.
+
+        Nunca levanta: si un mes falla, los demas se siguen limpiando y el
+        fallo se reporta. Un borrado a medias que corta en seco deja al usuario
+        sin saber que alcanzo a irse.
+        """
+        borrar = getattr(self.store, "delete_period", None)
+        if not callable(borrar):
+            return [(p, 0, "este almacen no sabe borrar periodos") for p in periodos or []]
+        resultados = []
+        for periodo in periodos or []:
+            try:
+                resultados.append((periodo, int(borrar(periodo) or 0), ""))
+            except Exception as exc:  # noqa: BLE001
+                resultados.append((periodo, 0, _texto(exc) or "error desconocido"))
+        return resultados
 
     def all_events(self, periodos=None):
         try:

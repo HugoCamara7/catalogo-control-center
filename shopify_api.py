@@ -817,6 +817,102 @@ def fetch_metaobjects(config, metaobject_type, max_items=1000):
     return records
 
 
+def fetch_collections(config, max_items=500):
+    """Las colecciones de la tienda con su regla, no solo con su nombre.
+
+    La regla es el dato que importa: en una coleccion automatica el `ruleSet`
+    es lo que decide que producto entra, y casi siempre es un TAG. Sin el, el
+    diccionario de colecciones seria una lista de nombres y no se podria
+    responder "que le pongo al producto para que salga aqui".
+
+    `ruleSet` llega vacio en las colecciones MANUALES. Eso no es un hueco: es
+    la respuesta -- ahi quien esta dentro lo decidio una persona y no se deduce
+    de los tags.
+
+    No se pide dentro de la consulta de productos a proposito. Ahi el costo se
+    paga POR PRODUCTO (ver la seccion 5 decies del contexto: 430 puntos por
+    producto ya rozan el maximo de 1.000 de una consulta), y las colecciones
+    son unas decenas por tienda: una lectura aparte cuesta dos o tres viajes.
+    """
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query CollectionsForCatalog($first: Int!, $after: String) {
+      collections(first: $first, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          handle
+          title
+          updatedAt
+          sortOrder
+          productsCount {
+            count
+          }
+          ruleSet {
+            appliedDisjunctively
+            rules {
+              column
+              relation
+              condition
+            }
+          }
+        }
+      }
+    }
+    """
+    records = []
+    after = None
+    while len(records) < max_items:
+        data = graphql_request(
+            shop_domain,
+            token,
+            query,
+            variables={"first": min(250, max_items - len(records)), "after": after},
+            api_version=api_version,
+            timeout=45,
+        )
+        bloque = data.get("collections") or {}
+        records.extend(bloque.get("nodes") or [])
+        page_info = bloque.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    return records
+
+
+def coleccion_a_registro(node):
+    """El nodo de Shopify con la forma que usa engines/colecciones.
+
+    La traduccion vive aqui, al lado de la consulta, y no en el motor: el motor
+    no tiene que saber como se llaman los campos de la API.
+    """
+    node = node or {}
+    rule_set = node.get("ruleSet") or {}
+    reglas = [
+        {
+            "campo": clean(r.get("column")),
+            "relacion": clean(r.get("relation")),
+            "valor": clean(r.get("condition")),
+        }
+        for r in (rule_set.get("rules") or [])
+    ]
+    conteo = node.get("productsCount") or {}
+    return {
+        "handle": clean(node.get("handle")),
+        "titulo": clean(node.get("title")),
+        "automatica": bool(reglas),
+        "disyuntiva": bool(rule_set.get("appliedDisjunctively")),
+        "reglas": reglas,
+        "productos_shopify": conteo.get("count") if isinstance(conteo, dict) else None,
+        "actualizada": clean(node.get("updatedAt")),
+    }
+
+
 def fetch_metaobject_definitions(config, max_items=250):
     shop_domain, api_version, token = _client(config)
     query = """

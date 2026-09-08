@@ -15879,6 +15879,59 @@ def inject_custom_css(config):
             font-size:13px;
             font-weight:750;
         }}
+        /* --- Hueco por marca: barra apilada horizontal ------------------
+           Part-to-whole por marca, y las marcas tienen nombre largo, asi que
+           la barra va en horizontal. Los cuatro colores son de ESTADO (bien /
+           aviso / falta / no se puede), no de identidad: por eso usan los
+           tokens de estado de la app y cada segmento va SIEMPRE con su
+           etiqueta y su numero en la leyenda -- nunca solo color.
+
+           Los tres colores de estado se validaron contra el fondo blanco:
+           pasan banda de luminosidad, piso de croma, separacion para daltonismo
+           (peor par 8.9 en protanopia) y piso de vision normal (19.8). El aviso
+           de contraste bajo 3:1 se cubre con las etiquetas visibles y la tabla
+           de abajo, que llevan todos los numeros. */
+        .hueco-leyenda {{
+            display:flex; flex-wrap:wrap; gap:14px; margin:2px 0 14px;
+            font-size:12.5px; color:var(--c-text-soft);
+        }}
+        .hueco-leyenda span {{ display:inline-flex; align-items:center; gap:6px; }}
+        .hueco-punto {{ width:9px; height:9px; border-radius:3px; flex:none; }}
+        .hueco-grid {{ display:flex; flex-direction:column; gap:9px; }}
+        .hueco-fila {{ display:flex; align-items:center; gap:12px; }}
+        .hueco-marca {{
+            flex:none; width:150px; font-size:13px; font-weight:600;
+            color:var(--c-text); overflow:hidden; text-overflow:ellipsis;
+            white-space:nowrap;
+        }}
+        /* La pista es la escala comun: todas las marcas comparten el mismo
+           ancho, asi que la longitud de cada segmento se puede comparar entre
+           filas. Con el ancho proporcional al total de cada marca no se
+           podria. */
+        .hueco-barra {{
+            flex:1; display:flex; height:11px; border-radius:6px;
+            background:var(--c-surface-soft); overflow:hidden; min-width:80px;
+        }}
+        /* 2px de hueco del color de la superficie entre segmentos, no un
+           borde: el borde ensucia el color y engorda la marca. */
+        .hueco-seg {{ height:100%; box-shadow:inset -2px 0 0 var(--c-surface); }}
+        .hueco-seg:last-child {{ box-shadow:none; }}
+        .hueco-cifra {{
+            flex:none; width:112px; text-align:right; font-size:12.5px;
+            line-height:1.3; color:var(--c-text-muted);
+            font-variant-numeric:tabular-nums;
+        }}
+        .hueco-cifra strong {{ color:var(--c-text); font-size:13.5px; }}
+        @media (max-width: 640px) {{
+            /* La cifra se queda con el ancho que necesita un numero de cuatro
+               digitos con separador de miles ("2.794 por cargar"): con menos
+               parte la etiqueta en dos lineas y las filas quedan de alturas
+               distintas. El nombre de la marca cede el espacio y se recorta
+               con puntos suspensivos, que es lo que menos informacion pierde:
+               el nombre completo sigue en el `title` y en la tabla. */
+            .hueco-marca {{ width:82px; font-size:12px; }}
+            .hueco-cifra {{ width:100px; font-size:11.5px; }}
+        }}
         .kpi-card-grid {{
             display:grid;
             grid-template-columns:repeat(4,minmax(0,1fr));
@@ -25151,6 +25204,108 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
     return matrixify_df, sial_df, revision_df, arti_source
 
 
+# Los colores de los cuatro estados del panel. Son de ESTADO, no de identidad:
+# de mejor a peor. Van con etiqueta y numero en la leyenda -- nunca solo color.
+HUECO_COLORES = {
+    carga_supermall.YA_VISIBLE: "var(--c-ok)",
+    carga_supermall.SIN_PUBLICAR: "var(--c-warn)",
+    carga_supermall.FALTA_CARGAR: "var(--c-bad)",
+    carga_supermall.NO_CARGABLE: "var(--c-text-muted)",
+}
+HUECO_MARCAS_VISIBLES = 12
+
+
+def render_hueco_por_marca(filas, totales):
+    """El hueco de Supermall marca por marca, en barras apiladas.
+
+    Por que barra apilada horizontal: el dato es un part-to-whole por marca
+    -de lo que existe en las otras webs, cuanto ya esta en Supermall- y las
+    marcas tienen nombre largo. Con una columna por marca los nombres se
+    cortan o se giran.
+
+    Todas las marcas comparten la MISMA pista, asi que la longitud de un
+    segmento se puede comparar entre filas. Ordenado por lo que falta, que es
+    la razon de mirar el panel.
+
+    El numero que se etiqueta en cada fila es el que se va a usar para decidir
+    -lo que falta-; el resto lo llevan la leyenda y la tabla. Un numero en cada
+    segmento no se lee.
+    """
+    filas = filas or []
+    if not filas:
+        return
+    totales = totales or {}
+    render_html(
+        '<div class="hueco-leyenda">'
+        + "".join(
+            f'<span><i class="hueco-punto" style="background:{HUECO_COLORES[clave]}"></i>'
+            f"{clave} · <strong>{format_kpi_number(totales.get(clave, 0))}</strong></span>"
+            for clave in carga_supermall.SEGMENTOS
+        )
+        + "</div>"
+    )
+    # Cada barra es el 100 % de SU marca. La primera version usaba una escala
+    # compartida -la pista era el total de la marca mas grande- y eso engana:
+    # medido con el reparto real, Sorel salia con una barra del 2,6 % del ancho
+    # y se leia como "esta bien", cuando en realidad le falta el 71 % de su
+    # catalogo. La pregunta es la comparacion ENTRE marcas, asi que lo que hay
+    # que poder comparar es la proporcion; la magnitud absoluta va al lado, en
+    # la etiqueta, que es donde se lee un numero.
+    piezas = []
+    for fila in filas[:HUECO_MARCAS_VISIBLES]:
+        total = fila.get("Total", 0) or 1
+        segmentos = "".join(
+            f'<div class="hueco-seg" style="width:{100.0 * fila.get(clave, 0) / total:.4f}%;'
+            f'background:{HUECO_COLORES[clave]}" title="{fila["Marca"]} · {clave}: '
+            f'{fila.get(clave, 0):,} de {fila.get("Total", 0):,}"></div>'
+            for clave in carga_supermall.SEGMENTOS
+            if fila.get(clave, 0)
+        )
+        faltan = fila.get(carga_supermall.FALTA_CARGAR, 0)
+        piezas.append(
+            f'<div class="hueco-fila"><div class="hueco-marca" title="{fila["Marca"]}">'
+            f'{fila["Marca"]}</div><div class="hueco-barra">{segmentos}</div>'
+            f'<div class="hueco-cifra"><strong>{format_kpi_number(faltan)}</strong> por cargar'
+            f'<br><span style="font-size:11px">{fila.get("Cobertura", 0):.0f}% cubierto</span>'
+            "</div></div>"
+        )
+    render_html(f'<div class="hueco-grid">{"".join(piezas)}</div>')
+    if len(filas) > HUECO_MARCAS_VISIBLES:
+        st.caption(
+            f"Se dibujan las {HUECO_MARCAS_VISIBLES} marcas con más pendiente, de "
+            f"{len(filas):,}. La tabla de abajo las lleva todas."
+        )
+
+
+def resumen_matrixify_por_marca(matrixify_df):
+    """Que se va a cargar, marca por marca, leido del Matrixify ya armado.
+
+    Es lo que responde "que hay dentro del archivo que estoy por subir": no el
+    hueco -eso es antes-, sino la composicion de la carga. Sale del propio
+    Matrixify para que no pueda discrepar de el.
+    """
+    if matrixify_df is None or matrixify_df.empty:
+        return pd.DataFrame(columns=["Marca", "Productos", "Filas de talla"])
+    columna_marca = "Metafield: custom.marca [single_line_text_field]"
+    columna_codigo = "Metafield: custom.codigo_modelo_color [id]"
+    df = matrixify_df.copy()
+    for columna in (columna_marca, columna_codigo):
+        if columna not in df.columns:
+            df[columna] = ""
+    df[columna_marca] = df[columna_marca].map(
+        lambda valor: clean_value(valor) or carga_supermall.SIN_MARCA)
+    df[columna_codigo] = df[columna_codigo].map(lambda valor: clean_value(valor).upper())
+    filas = []
+    for marca, grupo in df.groupby(columna_marca, sort=False):
+        filas.append({
+            "Marca": marca,
+            "Productos": safe_int_value(
+                grupo[columna_codigo].replace("", pd.NA).nunique()),
+            "Filas de talla": len(grupo),
+        })
+    return pd.DataFrame(filas).sort_values("Filas de talla", ascending=False)
+
+
 def render_carga_supermall():
     """La pantalla de Carga Supermall, en DOS TIEMPOS.
 
@@ -25290,6 +25445,21 @@ def render_carga_supermall():
         "está **prendido y visible**. Ningún sitio manda sobre otro: Supermall no tiene marca "
         "propia, las lleva todas. La columna **Origen por campo** dice de dónde salió cada dato."
     )
+
+    # El hueco marca por marca, ANTES de cargar. Es la pregunta "que le falta a
+    # Supermall comparado con las otras marcas", y se responde con las fichas
+    # que ya estan consolidadas: no cuesta ninguna lectura extra.
+    hueco = carga_supermall.hueco_por_marca(fichas)
+    totales_hueco = carga_supermall.totales_del_hueco(hueco)
+    st.markdown("#### Dónde está el hueco, marca por marca")
+    st.caption(
+        f"De los **{totales_hueco['Total']:,} productos** que existen en las otras webs, "
+        f"**{totales_hueco['Cobertura']:.1f}%** ya está visible en Supermall.pe. "
+        "Las marcas van ordenadas por lo que falta."
+    )
+    render_hueco_por_marca(hueco, totales_hueco)
+    with st.expander(f"Ver la tabla con las {len(hueco):,} marcas"):
+        st.dataframe(pd.DataFrame(hueco), use_container_width=True, hide_index=True)
     tabla = pd.DataFrame(carga_supermall.filas_para_tabla(fichas))
     solo_problemas = st.checkbox(
         "Ver solo lo que tiene bloqueos o avisos", key="supermall_solo_problemas",
@@ -25326,13 +25496,16 @@ def render_carga_supermall():
                 fichas, catalogos, brand_config, shopify_config, avanzar=avanzar,
             )
         barra.empty()
+        resumen_marcas = resumen_matrixify_por_marca(matrixify_df)
         st.session_state["supermall_resultado"] = {
             "excel": dataframe_to_excel_bytes({
                 "Products": matrixify_df,
                 "Carga Sial": sial_df,
+                "Resumen por marca": resumen_marcas,
                 "Consolidacion": tabla,
                 "Revision": revision_df,
             }),
+            "resumen_marcas": resumen_marcas,
             "filas": len(matrixify_df),
             "modelos": safe_int_value(
                 matrixify_df["Metafield: custom.codigo_modelo_color [id]"]
@@ -25354,6 +25527,17 @@ def render_carga_supermall():
             f"({resultado['modelos']:,} modelo-color) y {resultado['sial']:,} filas de Carga Sial."
         )
         st.caption(f"Base maestra usada: {resultado['fuente']}")
+        # Que hay DENTRO del archivo que se va a subir, marca por marca. El
+        # panel de arriba dice que falta; esto dice que se va a cargar, y sale
+        # del propio Matrixify para que no puedan discrepar.
+        resumen_marcas = resultado.get("resumen_marcas")
+        if resumen_marcas is not None and not resumen_marcas.empty:
+            st.markdown("##### Qué lleva el archivo, marca por marca")
+            st.dataframe(resumen_marcas, use_container_width=True, hide_index=True)
+        st.info(
+            "**Todavía no se ha escrito nada en Shopify.** Este archivo es la vista previa "
+            "completa de la carga: descárgalo, revísalo y solo entonces súbelo."
+        )
         st.download_button(
             "Descargar la carga de Supermall",
             data=resultado["excel"],
@@ -25363,10 +25547,11 @@ def render_carga_supermall():
             on_click=log_descarga, args=(SUPERMALL_LABEL, "render_carga_supermall"),
         )
         st.caption(
-            "El Excel lleva cuatro hojas: **Products** (el Matrixify que se sube a Shopify), "
-            "**Carga Sial** en el formato de Supermall, **Consolidacion** (de qué web salió cada "
-            "dato) y **Revision** (todo lo que hubo que avisar, incluidas las tallas de calzado "
-            "que se publican sin convertir)."
+            "El Excel lleva cinco hojas: **Products** (el Matrixify que se sube a Shopify), "
+            "**Carga Sial** en el formato de Supermall, **Resumen por marca** (cuántos "
+            "productos lleva cada una), **Consolidacion** (de qué web salió cada dato) y "
+            "**Revision** (todo lo que hubo que avisar, incluidas las tallas de calzado que se "
+            "publican sin convertir)."
         )
     st.markdown("</div>", unsafe_allow_html=True)
 

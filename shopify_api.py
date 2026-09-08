@@ -400,7 +400,33 @@ def _avisar(progreso, mensaje):
         pass
 
 
-def fetch_products(config, max_products=5000, progreso=None):
+# El TOPE de productos que se leen de una tienda. Estaba en 5.000 y se
+# alcanzaba: Rockford.pe pasa de 9.000 modelo-color, y al llegar al tope el
+# reensamblado hacia `break` **en silencio**. Un catalogo truncado no es solo
+# un catalogo incompleto: es el dato con el que se decide si un producto se
+# CREA o se ACTUALIZA, asi que lo que se quedaba fuera del tope se volvia a
+# crear y quedaba duplicado en la tienda.
+#
+# Se sube a 50.000 y se puede ajustar desde Secrets (`max_products`). Un tope
+# alto no cuesta memoria por si mismo -- es un techo, no una reserva --; lo que
+# ocupa es el catalogo que de verdad tenga la tienda.
+PRODUCTOS_MAXIMOS = 50000
+
+
+def _limite_de_productos(config, max_products=None):
+    """El tope, con lo que diga Secrets por delante."""
+    if max_products:
+        return max(1, int(max_products))
+    valor = clean((config or {}).get("max_products"))
+    if valor:
+        try:
+            return max(1, int(float(valor)))
+        except (TypeError, ValueError):
+            pass
+    return PRODUCTOS_MAXIMOS
+
+
+def fetch_products(config, max_products=None, progreso=None):
     """El catalogo del sitio.
 
     Por defecto va por **bulk operation**, que es lo que cambia el orden de
@@ -420,10 +446,16 @@ def fetch_products(config, max_products=5000, progreso=None):
     app y esta tienda, la tienda la rechaza, o el token no la permite- se cae
     a la lectura paginada de siempre, que es exactamente la de antes.
     """
+    max_products = _limite_de_productos(config, max_products)
     if _bulk_habilitado(config):
         try:
             return fetch_products_bulk(config, max_products=max_products, progreso=progreso)
-        except ShopifyApiError as exc:
+        except Exception as exc:  # noqa: BLE001
+            # CUALQUIER fallo, no solo `ShopifyApiError`. Atrapando solo ese, un
+            # corte de red bajando el JSONL, un gzip a medias o un timeout se
+            # propagaban y el sitio entero quedaba SIN LEER -- que es como se
+            # ven dos sitios en "(Error)" mientras los otros cuatro entran. El
+            # respaldo paginado existe precisamente para eso.
             _avisar(progreso, f"Lectura masiva no disponible ({exc}). Se sigue pagina por pagina.")
     return fetch_products_paginado(config, max_products=max_products, progreso=progreso)
 
@@ -435,7 +467,7 @@ def _bulk_habilitado(config):
     return valor.lower() not in ("0", "false", "no", "off")
 
 
-def fetch_products_paginado(config, max_products=5000, progreso=None):
+def fetch_products_paginado(config, max_products=None, progreso=None):
     """La lectura pagina por pagina. Es el respaldo, no el camino normal.
 
     `products_page_size` existe porque el costo por pagina depende de cuantas
@@ -443,6 +475,7 @@ def fetch_products_paginado(config, max_products=5000, progreso=None):
     costo, se baja desde Secrets.
     """
     shop_domain, api_version, token = _client(config)
+    max_products = _limite_de_productos(config, max_products)
     try:
         page_size = int(clean(config.get("products_page_size")) or 250)
     except (TypeError, ValueError):
@@ -502,6 +535,12 @@ __CAMPOS_VARIANTE__
         after = page_info.get("endCursor")
         if not after:
             break
+    if len(records) >= max_products:
+        _avisar(
+            progreso,
+            f"Se alcanzo el tope de {max_products:,} productos: el catalogo puede estar "
+            "incompleto. Se ajusta con `max_products` en Secrets.",
+        )
     return records
 
 
@@ -690,7 +729,7 @@ def _bulk_abrir(ruta, comprimido):
     return open(ruta, "r", encoding="utf-8")
 
 
-def _bulk_reensamblar(lineas, max_products=5000):
+def _bulk_reensamblar(lineas, max_products=PRODUCTOS_MAXIMOS, progreso=None):
     """Del JSONL a la misma lista de registros que devuelve la paginada.
 
     Las lineas hijas traen `__parentId`. No se asume que vengan despues de su
@@ -727,17 +766,31 @@ def _bulk_reensamblar(lineas, max_products=5000):
         nodo["media"]["nodes"].extend(contenido["media"])
     hijos.clear()
     registros = []
+    truncado = False
     for identificador in list(productos.keys()):
         if len(registros) >= max_products:
+            # El `break` era SILENCIOSO. Un catalogo cortado en el tope se lee
+            # como "esto es todo lo que hay", y de ahi sale la decision de
+            # crear o actualizar cada producto: lo que se quedaba fuera se
+            # volvia a crear.
+            truncado = True
             break
         registros.append(_product_node_to_record(productos.pop(identificador)))
+    if truncado:
+        _avisar(
+            progreso,
+            f"Se alcanzo el tope de {max_products:,} productos y el catalogo quedo "
+            f"incompleto ({len(productos):,} sin leer). Se ajusta con `max_products` "
+            "en Secrets.",
+        )
     productos.clear()
     return registros
 
 
-def fetch_products_bulk(config, max_products=5000, progreso=None):
+def fetch_products_bulk(config, max_products=None, progreso=None):
     """El catalogo entero por bulk operation. Levanta ShopifyApiError si no se puede."""
     shop_domain, api_version, token = _client(config)
+    max_products = _limite_de_productos(config, max_products)
     _avisar(progreso, "Pidiendo el catálogo completo a Shopify (lectura masiva)...")
     identificador = _bulk_lanzar(shop_domain, token, api_version, _bulk_query(config))
     url = _bulk_esperar(shop_domain, token, api_version, identificador, progreso=progreso)
@@ -749,7 +802,9 @@ def fetch_products_bulk(config, max_products=5000, progreso=None):
     try:
         comprimido = _bulk_descargar(url, ruta)
         with _bulk_abrir(ruta, comprimido) as archivo:
-            registros = _bulk_reensamblar(archivo, max_products=max_products)
+            registros = _bulk_reensamblar(
+                archivo, max_products=max_products, progreso=progreso,
+            )
     finally:
         try:
             os.remove(ruta)

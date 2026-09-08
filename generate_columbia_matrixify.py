@@ -1288,6 +1288,39 @@ def es_calzado(product_type):
     return clean(clase_de(product_type)).casefold() == "calzado"
 
 
+
+def _talla_unica_bloqueada(product_type):
+    """True si a este tipo de prenda NO le corresponde una talla unica.
+
+    Es la misma pregunta que responde `_row_blocks_zero_size` en el filtro
+    final, y la respuesta tiene que ser la misma: si aqui se dijera que si y
+    alli que no, el producto se renombraria a "Talla Única" y despues el filtro
+    lo borraria.
+    """
+    clase = clase_de_tipo(product_type).casefold()
+    return clase in ("calzado", "vestuario")
+
+
+def _interpretar_curva_de_calzado(curva, gender=""):
+    """`(divisor, escala, nota)` de la curva. Envuelve el motor con su import."""
+    try:
+        from engines.tallas_calzado import interpretar_curva
+    except ImportError:
+        return 1, "", ""
+    return interpretar_curva(curva, gender)
+
+
+def _dividir_talla(value, divisor):
+    """El numero de la talla dividido, conservando el texto si no es numero."""
+    texto = clean(value)
+    try:
+        numero = float(texto.replace(",", "."))
+    except (TypeError, ValueError):
+        return texto
+    resultado = numero / divisor
+    return f"{resultado:.1f}".rstrip("0").rstrip(".")
+
+
 def escala_de_calzado(brand_config=None):
     """La escala en la que ese SITIO publica el calzado: "PE" u "origen".
 
@@ -1323,7 +1356,7 @@ def estado_al_cargar(brand_config=None, fila_destino=None):
 
 
 def display_size_for_site(value, brand_config=None, gender="", product_type="", marca="",
-                          avisos=None):
+                          avisos=None, curva=None, valor_crudo=""):
     """La talla tal y como la publica ese sitio.
 
     Dos datos distintos deciden, y antes estaban confundidos en un booleano:
@@ -1342,12 +1375,52 @@ def display_size_for_site(value, brand_config=None, gender="", product_type="", 
     se adivina: una talla inventada se publica como si fuera cierta. `avisos`
     es una lista opcional donde se deja constancia; la carga la vuelca en la
     hoja de revision y **no se detiene por esto**.
+
+    `curva` son TODAS las tallas del producto. Hay dos cosas que un valor
+    suelto no puede decidir y la curva si: que un producto de Rockford con una
+    sola talla es "Talla Única", y como leer los numeros del maestro cuando
+    vienen con relleno de ceros o multiplicados (`040` puede ser el PE 40 o el
+    US 4). Sin `curva` se comporta exactamente como antes.
     """
     brand_config = brand_config or get_brand_config()
     site_label = clean(brand_config.get("site_label"))
     if site_label == "Rockford.pe" and (is_one_size(value) or is_zero_size(value)):
         return "Talla Única"
+    # Rockford.pe: un producto con UNA sola talla es talla unica, aunque esa
+    # talla venga con un numero. Antes solo se miraba el VALOR (`O/S` o `0`), y
+    # un accesorio de una sola talla salia publicado con ese numero como si
+    # fuera una curva de una talla. `curva` la pasa el llamador, que es el
+    # unico que ve el producto entero: un valor suelto no puede saberlo.
+    #
+    # NO se aplica a calzado ni a vestuario. Ahi "Talla Única" esta bloqueada a
+    # proposito -- `final_variant_filter` BORRA esas filas -- porque una
+    # zapatilla con una sola talla es un dato incompleto, no una talla unica.
+    # Sin esta guarda, renombrar la talla hacia desaparecer el producto entero.
+    if (site_label == "Rockford.pe" and curva is not None
+            and not _talla_unica_bloqueada(product_type)
+            and len({clean(t) for t in curva if clean(t)}) == 1):
+        return "Talla Única"
+
+    # Como leer los NUMEROS del maestro. Lo decide la curva entera, no el valor:
+    # `040` puede ser el PE 40 o el US 4, y son dos tallas y media. Ver
+    # `engines/tallas_calzado.interpretar_curva`.
     talla = normalize_size(value)
+    if curva is not None and clean(valor_crudo) and product_type and es_calzado(product_type):
+        # La curva se interpreta sobre los valores CRUDOS del maestro, y el
+        # resultado se aplica tambien al crudo. No se puede apoyar en
+        # `normalize_size`: su regla por valor divide `050` entre diez pero deja
+        # `040` tal cual, asi que la misma curva llegaria medio dividida y el
+        # divisor de la curva se aplicaria dos veces a unas tallas y a otras no.
+        #
+        # Cuando la curva decide una escala, ELLA manda para el calzado: es la
+        # unica que ve el producto entero.
+        divisor, escala_curva, nota_de_curva = _interpretar_curva_de_calzado(curva, gender)
+        if escala_curva:
+            talla = _dividir_talla(valor_crudo, divisor)
+        if nota_de_curva and avisos is not None:
+            avisos.append({
+                "Talla": clean(valor_crudo), "Marca": clean(marca), "Motivo": nota_de_curva,
+            })
     if escala_de_calzado(brand_config) != "PE":
         return talla
     if not product_type or not es_calzado(product_type):
@@ -4549,6 +4622,13 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         product_rows = []
         product_sial_rows = []
 
+        # La curva del producto, UNA vez. Se toma del valor CRUDO del maestro
+        # (`TALNUM_MA`), no del normalizado, porque lo que hay que interpretar
+        # es justo el relleno de ceros y el multiplicador que trae el maestro.
+        curva_del_producto = [
+            clean(v.get("TALNUM_MA")) or clean(v.get("__SIZE"))
+            for v in variants.to_dict("records")
+        ]
         for position, variant in enumerate(variants.to_dict("records"), start=1):
             if is_internal_k_size(variant.get("__SIZE")) or is_internal_k_size(variant.get("TALNUM_MA")):
                 continue
@@ -4565,6 +4645,9 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
                 # Supermall.pe conviven marcas que entregan en US con marcas
                 # que ya entregan en PE.
                 marca=product_brand_raw, avisos=avisos_de_talla,
+                # La CURVA entera: es lo unico que puede decidir si un producto
+                # de Rockford es talla unica y como leer un `040`.
+                curva=curva_del_producto, valor_crudo=variant.get("TALNUM_MA"),
             )
             output = {column: "" for column in matrixify_columns}
             variant_sku = clean(variant.get("CODINT_MA"))

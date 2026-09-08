@@ -6914,6 +6914,10 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         # escribe. Mandar un precio aqui competiria con esa sincronizacion.
         precio_desde_maestro = not brand_config.get("precio_desde_erp")
 
+        curva_del_producto = [
+            clean_value(v.get("TALNUM_MA")) or clean_value(v.get("__SIZE"))
+            for v in variants.to_dict("records")
+        ]
         for position, (_, variant) in enumerate(variants.iterrows(), start=1):
             size = display_size_for_site(
                 variant.get("__SIZE"), brand_config,
@@ -6922,6 +6926,8 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                 # La MARCA manda la tabla, no el sitio: Supermall.pe lleva
                 # marcas que entregan en US y marcas que ya entregan en PE.
                 marca=raw_brand, avisos=avisos_de_talla,
+                # La CURVA entera, la misma que la carga completa.
+                curva=curva_del_producto, valor_crudo=variant.get("TALNUM_MA"),
             )
             rows.append(
                 {
@@ -22462,16 +22468,118 @@ def recordar_matrixify_de_carga(codigo, matrixify_df, site_key, excel_path="", f
     cadenas, para poder decir cuantos productos se van a cargar sin abrir el
     archivo.
     """
+    # El CODIGO puede venir vacio: una carga que no sale de ninguna solicitud
+    # tambien tiene que poder irse a GitHub Actions. Antes se cortaba aqui, y
+    # con eso la unica forma de que la carga sobreviviera al cierre de sesion
+    # era que hubiera una solicitud detras -- subir un Excel a mano condenaba la
+    # carga a hacerse dentro de la sesion, por bloques y a mano.
     codigo = clean_value(codigo)
-    if not codigo or matrixify_df is None or matrixify_df.empty:
+    if matrixify_df is None or matrixify_df.empty:
         return
     st.session_state[CLAVE_MATRIXIFY_SESION] = {
         "codigo": codigo,
         "excel_path": clean_value(excel_path),
         "product_keys": _sync_job_product_keys(matrixify_df, mode="complete"),
         "site_key": clean_value(site_key),
-        "filename": clean_value(filename) or f"Matrixify_{codigo}.xlsx",
+        # Sin solicitud el nombre no puede quedar en "Matrixify_.xlsx": se usa
+        # el del sitio, que es el que la carga completa ya escribe en disco.
+        "filename": (
+            clean_value(filename)
+            or (f"Matrixify_{codigo}.xlsx" if codigo
+                else f"Matrixify_{clean_value(site_key) or 'catalogo'}.xlsx")
+        ),
     }
+
+
+
+def lanzar_carga_remota_suelta(brand_config):
+    """Manda a GitHub Actions el Matrixify recien analizado, sin solicitud.
+
+    Devuelve `(ok, mensaje)`. Es el mismo recorrido que la carga desde una
+    solicitud -- mismo registro de job, mismo workflow, mismo worker, mismo
+    avance por bloques y misma reanudacion --; lo unico que cambia es de donde
+    sale el archivo.
+    """
+    guardado = st.session_state.get(CLAVE_MATRIXIFY_SESION)
+    if not isinstance(guardado, dict):
+        return False, "No hay un Matrixify analizado. Pulsa «Analizar input» primero."
+    payload = _leer_excel_de_disco(guardado.get("excel_path"))
+    if not payload:
+        return False, (
+            "El Matrixify ya no está en disco (la app se reinició). "
+            "Vuelve a pulsar «Analizar input»."
+        )
+    adaptador = get_job_adapter()
+    if not hasattr(adaptador, "start_suelto"):
+        return False, (
+            "La carga remota no está configurada: falta la sección `[carga_remota]` en "
+            "Secrets. Mientras no esté, la carga se hace dentro de la sesión."
+        )
+    resumen = adaptador.start_suelto(
+        site_key=guardado.get("site_key") or brand_config.get("site_key"),
+        matrixify_bytes=payload,
+        filename=guardado.get("filename") or brand_config.get("output_filename"),
+        claves_producto=guardado.get("product_keys") or [],
+        creado_por=clean_value(st.session_state.get("auth_user")),
+        marca=clean_value(brand_config.get("label")),
+    )
+    resumen = resumen or {}
+    if clean_value(resumen.get("status")) == "not_dispatched":
+        return False, clean_value(resumen.get("message")) or "No se pudo iniciar la carga."
+    st.session_state["carga_remota_ultimo_job"] = resumen
+    log_user_activity(
+        "Carga remota sin solicitud",
+        f"Job {clean_value(resumen.get('id'))} lanzado para "
+        f"{clean_value(brand_config.get('site_label'))}.",
+        module="Carga completa",
+    )
+    return True, (
+        f"Carga lanzada en GitHub Actions (job `{clean_value(resumen.get('id'))}`). "
+        "Ya puedes cerrar la pestaña: sigue hasta terminar."
+    )
+
+
+def render_boton_carga_remota(brand_config):
+    """El boton que manda la carga al runner. Con o SIN solicitud.
+
+    Se dibuja siempre que haya un Matrixify analizado. Antes este camino solo
+    existia detras de una solicitud (`Ejecutar carga` en la bandeja), asi que
+    quien subia un Excel a mano no tenia forma de que la carga sobreviviera al
+    cierre de la sesion -- que es justo para lo que se monto el runner.
+    """
+    guardado = st.session_state.get(CLAVE_MATRIXIFY_SESION)
+    if not isinstance(guardado, dict):
+        return
+    if clean_value(guardado.get("codigo")):
+        # Esta carga SI sale de una solicitud: se ejecuta desde la barra de
+        # acciones de la solicitud, que ademas mueve su estado. Dos botones
+        # para lo mismo es peor que uno.
+        return
+    estado = estado_carga_remota()
+    st.markdown("#### Ejecutar la carga fuera de la sesión")
+    if not estado["sobrevive"]:
+        st.warning(
+            "**La carga remota no está configurada**, así que esta carga se haría dentro de "
+            "la sesión y se detendría al cerrar la pestaña. Abajo está exactamente qué falta."
+        )
+        render_aviso_carga_remota()
+        return
+    st.caption(
+        f"Se envía a un runner de GitHub Actions: **{len(guardado.get('product_keys') or []):,} "
+        "productos**. Puedes cerrar la pestaña y volver a mirar cuando quieras; el avance se "
+        "guarda por bloques en el repositorio de datos y se reanuda donde quedó."
+    )
+    if st.button(
+        "Ejecutar carga en GitHub Actions",
+        type="primary",
+        key=f"carga_remota_suelta_{brand_config.get('site_key')}",
+    ):
+        with st.spinner("Subiendo el Matrixify y disparando el runner..."):
+            ok, mensaje = lanzar_carga_remota_suelta(brand_config)
+        (st.success if ok else st.error)(mensaje)
+    ultimo = st.session_state.get("carga_remota_ultimo_job")
+    if isinstance(ultimo, dict) and clean_value(ultimo.get("id")):
+        st.caption(f"Último job lanzado: `{clean_value(ultimo.get('id'))}`")
 
 
 def _adjuntar_matrixify_antes_de_cargar(service, actor, codigo):
@@ -26951,6 +27059,15 @@ api_version = "{DEFAULT_API_VERSION}"
                     excel_path=st.session_state.get("complete_excel_path"),
                     filename=brand_config.get("output_filename"),
                 )
+
+                # El boton que manda la carga al runner cuando NO hay solicitud
+                # detras. Va FUERA del `if complete_source == "Shopify API"` y
+                # fuera de la casilla de sincronizacion, por la misma razon que
+                # el cierre de la solicitud: anidado ahi no aparecia con
+                # "Respaldo Excel" ni sin marcar la casilla. La funcion se
+                # protege sola y no dibuja nada si la carga viene de una
+                # solicitud -- ese camino es la barra de acciones.
+                render_boton_carga_remota(brand_config)
 
                 # Cerrar la solicitud va AQUI, no dentro del `if confirm_complete`
                 # de arriba. Estaba anidado tres niveles: hacia falta estar en

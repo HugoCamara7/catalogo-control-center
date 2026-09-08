@@ -232,3 +232,98 @@ def talla_pe(valor, genero="", permitir_unisex=True):
 def talla_pe_desde_cm(valor):
     """Conversion desde centimetros, que no es ambigua. "" si no esta."""
     return POR_CM.get(normalizar_talla(valor), "")
+
+
+# --- Interpretacion de la CURVA, no del valor suelto ----------------------
+#
+# El maestro escribe el calzado multiplicado por diez (`85` es 8.5) y a veces
+# con relleno de ceros (`085`, `040`) o multiplicado por cien (`850`). Un valor
+# suelto NO se puede interpretar: `040` puede ser el PE 40 o el US 4, y son dos
+# tallas y media de diferencia.
+#
+# Lo que SI se puede decidir es la curva entera. Un producto de calzado tiene
+# sus tallas en UNA escala, asi que se prueban las tres lecturas -tal cual,
+# entre diez y entre cien- y se elige la unica que deja TODAS las tallas dentro
+# de un rango que existe. Con `040, 050, 060, 070` la lectura directa daria PE
+# 40 a 70, que no existe; entre diez da US 4 a 7, que si.
+
+RANGO_US = (1.0, 16.5)
+RANGO_PE = (26.0, 50.0)
+DIVISORES = (1, 10, 100)
+
+
+def _valor(talla):
+    try:
+        return float(normalizar_talla(talla))
+    except (TypeError, ValueError):
+        return None
+
+
+def _cabe(valor, rango):
+    return rango[0] <= valor <= rango[1]
+
+
+# Una curva de calzado de MUJER no empieza en la 40. Las tallas PE de mujer van
+# de la 34.5 a la 43, asi que una curva de mujer cuyo minimo leido como PE sea
+# 40 o mas no esta en PE: es US mal escrito. Es la regla que dio el usuario --
+# "ninguna talla de mujer empieza de la 40" -- y es lo que resuelve el caso
+# ambiguo de verdad: `040` sola, que puede ser PE 40 o US 4.
+MINIMO_PE_MUJER = 40.0
+
+
+def interpretar_curva(valores, genero=""):
+    """Como hay que leer los numeros de esta curva de calzado.
+
+    Devuelve `(divisor, escala, nota)`:
+
+    - `divisor` es por cuanto hay que dividir cada numero (1, 10 o 100).
+    - `escala` es `"US"`, `"PE"` o `""` si no se pudo decidir.
+    - `nota` explica la lectura cuando no fue la directa; vacia cuando si.
+
+    Con `divisor` 1 y escala `""` no se toca nada: es lo que devuelve cuando la
+    curva no es de calzado reconocible, y ahi manda el comportamiento de
+    siempre.
+
+    Se prueba la lectura DIRECTA primero, que es la que no supone nada, y entre
+    dos directas manda PE, porque es lo que el maestro trae para la mayoria de
+    las marcas. La excepcion es el calzado de mujer que leido en PE empezaria en
+    la 40 o mas: eso no existe, asi que se lee como US.
+    """
+    numeros = [n for n in (_valor(v) for v in valores or []) if n is not None]
+    if not numeros:
+        return 1, "", ""
+
+    es_mujer = escala_de_genero(genero) == MUJER
+    lecturas = []
+    descartadas_por_mujer = []
+    for divisor in DIVISORES:
+        convertidos = [n / divisor for n in numeros]
+        if all(_cabe(n, RANGO_PE) for n in convertidos):
+            # La regla de mujer DESCARTA la lectura PE, no elige otra: si la
+            # curva de mujer empezara en la 40 leida en PE, no es PE.
+            if es_mujer and min(convertidos) >= MINIMO_PE_MUJER:
+                descartadas_por_mujer.append(min(convertidos))
+            else:
+                lecturas.append((divisor, "PE"))
+        if all(_cabe(n, RANGO_US) for n in convertidos):
+            lecturas.append((divisor, "US"))
+    if not lecturas:
+        return 1, "", "la curva no cabe en ninguna escala de calzado conocida"
+
+    # Directa antes que dividida, y PE antes que US a igualdad de divisor.
+    lecturas.sort(key=lambda par: (DIVISORES.index(par[0]), 0 if par[1] == "PE" else 1))
+    divisor, escala = lecturas[0]
+
+    nota = ""
+    if divisor != 1:
+        nota = f"numeros leidos entre {divisor}: la curva esta en {escala}"
+    if descartadas_por_mujer:
+        nota = (
+            f"calzado de mujer: se descarto la lectura PE porque la curva "
+            f"empezaria en la {min(descartadas_por_mujer):g}, y una curva de mujer "
+            f"no empieza en la {MINIMO_PE_MUJER:g}; se leyo como {escala}"
+        )
+    elif len(lecturas) > 1 and not nota:
+        otras = ", ".join(f"/{d} {e}" for d, e in lecturas[1:3])
+        nota = f"la curva tambien cabria como {otras}; se leyo directa en {escala}"
+    return divisor, escala, nota

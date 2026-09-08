@@ -145,6 +145,11 @@ def texto_publico(valor, largo=LARGO_MAXIMO_LOG):
     return texto
 
 
+# Prefijo del codigo de una carga que no sale de ninguna solicitud. Se ve
+# como lo que es: inventar un CAT-#### haria creer que existe una solicitud.
+CODIGO_CARGA_SUELTA = "CARGA"
+
+
 def nuevo_id_job(codigo_solicitud=""):
     marca_tiempo = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     sufijo = uuid.uuid4().hex[:8]
@@ -409,6 +414,21 @@ class AlmacenJobsGitHub:
         self.prefix = _texto(prefix).strip("/") or "catalog_tickets"
         self.timeout = int(timeout)
         self.base = f"https://api.github.com/repos/{quote(self.owner)}/{quote(self.repo)}/contents"
+
+    def ruta_de_matrixify(self, job_id, filename=""):
+        """Donde vive el Matrixify de una carga que NO sale de una solicitud.
+
+        Cuando la carga viene de una solicitud, el Matrixify es un adjunto de
+        esa solicitud y la ruta la da `attach_matrixify`. Una carga suelta no
+        tiene solicitud de la que colgarse, asi que el archivo va al lado del
+        registro del job, con su mismo identificador: si algun dia hay que
+        mirar que se cargo, el job y su archivo estan juntos.
+        """
+        seguro = re.sub(r"[^A-Za-z0-9_\-.]+", "-", _texto(job_id)).strip("-") or "job"
+        nombre = re.sub(r"[^A-Za-z0-9_\-.]+", "-", _texto(filename)).strip("-") or "matrixify.xlsx"
+        if not nombre.lower().endswith((".xlsx", ".xls")):
+            nombre = f"{nombre}.xlsx"
+        return f"{self.prefix}/catalog_jobs/{seguro}/{nombre}"
 
     def _ruta(self, job_id):
         seguro = re.sub(r"[^A-Za-z0-9_\-.]+", "-", _texto(job_id)).strip("-") or "job"
@@ -686,6 +706,86 @@ class AdaptadorCargaActions:
                 pass
             return self._resumen_para_ticket(job)
 
+        return self._resumen_para_ticket(job)
+
+    def start_suelto(self, *, site_key, matrixify_bytes, filename="",
+                     claves_producto=(), creado_por="", marca="", modo="complete"):
+        """Lanza una carga remota que NO sale de una solicitud.
+
+        Por que existe
+        --------------
+        `start(ticket)` necesita una solicitud porque el job cuelga de ella: el
+        Matrixify es un adjunto del ticket y de ahi lo lee el runner. Eso
+        dejaba fuera el caso mas comun de todos: **subir un Excel a mano y
+        cargarlo**. En ese camino la carga se hacia dentro de la sesion de
+        Streamlit, asi que cerrar la pestana la detenia -- justo lo que la
+        carga remota existe para evitar.
+
+        Aqui el Matrixify se sube al repositorio de datos por su cuenta, al
+        lado del registro del job, y el resto del recorrido es EL MISMO: mismo
+        registro, mismo workflow, mismo worker, mismo avance por bloques y
+        misma reanudacion. No hay un segundo motor de carga.
+
+        Nunca levanta: devuelve el job en `not_dispatched` con el motivo, igual
+        que `start`. Un fallo al disparar no puede tumbar la pantalla.
+        """
+        site_key = _texto(site_key)
+        claves = [clave for clave in (claves_producto or []) if _texto(clave)]
+        if not matrixify_bytes:
+            return self._job_sin_disparar(
+                "", "No hay un Matrixify que cargar. Pulsa «Analizar input» primero.")
+        if not site_key:
+            return self._job_sin_disparar("", "La carga no dice a que sitio va.")
+
+        # El codigo es sintetico y se ve como lo que es: no hay solicitud, y
+        # inventar un CAT-#### haria creer que existe una.
+        codigo = f"{CODIGO_CARGA_SUELTA}-{site_key.upper()}-{ahora_utc().strftime('%Y%m%d-%H%M%S')}"
+        job = nuevo_registro_job(
+            codigo_solicitud=codigo,
+            site_key=site_key,
+            matrixify_path="",
+            claves_producto=claves,
+            batch_size=self.batch_size,
+            creado_por=_texto(creado_por),
+            marca=_texto(marca),
+        )
+        job["mode"] = _texto(modo) or "complete"
+        job["sin_solicitud"] = True
+
+        # El archivo va PRIMERO. Con el registro guardado y el archivo no, el
+        # runner arrancaria para morir leyendo una ruta que no existe.
+        try:
+            ruta = self.almacen.ruta_de_matrixify(job["id"], filename)
+            self.almacen.guardar_archivo(
+                ruta, matrixify_bytes, mensaje=f"catalog: matrixify de {job['id']}")
+            job["matrixify_path"] = ruta
+        except Exception as exc:
+            return self._job_sin_disparar(
+                codigo, f"No pude subir el Matrixify al repositorio de datos: {texto_publico(exc)}")
+
+        agregar_evento(job, "Creado", f"{len(claves):,} productos por cargar (carga suelta)")
+        try:
+            self.almacen.guardar(job, mensaje=f"catalog: job {job['id']} creado")
+        except Exception as exc:
+            return self._job_sin_disparar(
+                codigo, f"No pude guardar el registro de la carga: {texto_publico(exc)}")
+
+        try:
+            self._disparar(
+                owner=self.owner, repo=self.repo, workflow=self.workflow, ref=self.ref,
+                token=self.token,
+                inputs={"job_id": job["id"], "site_key": job["site_key"], "ticket": ""},
+            )
+        except Exception as exc:
+            job["status"] = JOB_SIN_DISPARAR
+            job["error"] = texto_publico(exc, 500)
+            job["message"] = f"No se pudo iniciar la carga en GitHub Actions: {job['error']}"
+            agregar_evento(job, "Sin disparar", job["error"])
+            try:
+                self.almacen.guardar(job, mensaje=f"catalog: job {job['id']} sin disparar")
+            except Exception:
+                pass
+            return self._resumen_para_ticket(job)
         return self._resumen_para_ticket(job)
 
     def _job_sin_disparar(self, codigo, motivo):

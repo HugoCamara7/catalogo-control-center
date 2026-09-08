@@ -92,12 +92,18 @@ class TestVariantesDeEscritura(unittest.TestCase):
         ("camisa", "Camisa"), ("Camisas", "Camisa"),
         ("Interiores Termicos", "Interior Termico"),
         ("Interiores Térmicos", "Interior Termico"),
-        ("Ropa de Baño", "Ropa de Bano"), ("ropa de bano", "Ropa de Bano"),
+        # Tres esperados cambiaron en septiembre de 2026, al pasar a UN solo
+        # diccionario: donde las dos tablas se contradecian manda el maestro
+        # (engines/garment_types), que es el Excel que confirmo el usuario.
+        #   "Ropa de Bano" -> "Ropa De Baño": el canonico lleva tilde.
+        #   "Correa"       -> "Cinturon":     el maestro llama Cinturones al tipo.
+        #   "Sombrero"     -> "Gorro":        el maestro pone Bucket en Gorros.
+        ("Ropa de Baño", "Ropa De Baño"), ("ropa de bano", "Ropa De Baño"),
         ("maletín", "Maletin"), ("Maletines", "Maletin"),
         ("riñonera", "Canguro"), ("Canguros", "Canguro"),
-        ("cinturon", "Correa"), ("Correas", "Correa"),
+        ("cinturon", "Cinturon"), ("Correas", "Cinturon"),
         ("guantes", "Guante"), ("mitones", "Guante"),
-        ("bucket hat", "Sombrero"), ("mochilas", "Mochila"),
+        ("bucket hat", "Gorro"), ("mochilas", "Mochila"),
     ]
 
     def test_todas_resuelven(self):

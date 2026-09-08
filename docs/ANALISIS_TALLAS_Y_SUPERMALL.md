@@ -236,6 +236,88 @@ anterior:
 - `_reorder_product_sizes`: quitar el código muerto o completar el
   reordenamiento de valores de opción.
 
+## 1.6 Supermall obliga a que la guía sea un DICCIONARIO por marca, no una bandera de sitio
+
+Esto sale de una corrección del usuario: *"las tallas de Supermall también se
+tienen que cargar como las de Vans en un diccionario para que se vea
+ordenado"*. Lo medí sobre el maestro real y es correcto — y el problema es
+bastante más grande que Vans.
+
+Contando **solo** las filas del maestro que son inequívocamente calzado (valores
+`50-130` de 5 en 5, que son US ×10, y `340-500` de 5 en 5, que son PE ×10):
+
+| Marca que llega a Supermall | mod-col en **US** | mod-col en **PE** | con **las dos** |
+|---|---:|---:|---:|
+| Hush Puppies | 2.752 | 8.165 | **36** |
+| Columbia | **2.794** | 0 | 0 |
+| Rockford | 328 | 2.078 | **8** |
+| Vans | 151 | 790 | **8** |
+| Keds | 335 | 0 | 0 |
+| Sorel | 201 | 0 | 0 |
+
+Tres conclusiones, todas verificadas abriendo productos concretos:
+
+**a) Columbia, Keds y Sorel entregan TODO su calzado en US.** No es una
+sospecha: `BM3003-EW7` de Columbia es la curva `70, 75, 80 … 120, 130`, o sea
+US 7 a 13. Como Columbia.pe no tiene la bandera `tallas_calzado_pe`, **hoy
+Columbia.pe ya publica su calzado en tallas US**. No es solo un problema de
+Supermall.
+
+**b) Hoy nadie convierte nada excepto Vans.pe.** Rockford.pe y HushPuppies.pe
+salen bien **por casualidad**: el maestro ya les trae PE. En cuanto la marca
+entrega US —Columbia, Keds, Sorel, y una parte de Hush Puppies y Rockford— se
+publica en US, en silencio.
+
+**c) Hay productos con las dos escalas dentro del MISMO modelo-color.**
+`HP10201118-742` (Hush Puppies) trae `60, 65, 70 … 110` **y** `390, 400 …
+450`. Ese producto publica hoy un selector con catorce tallas repetidas en dos
+escalas. Son 36 de Hush Puppies, 8 de Rockford y 8 de Vans.
+
+**En Supermall esto es lo peor posible**, porque es el único sitio donde las
+marcas conviven en la misma tienda: el filtro de talla mostraría `7, 8, 9`
+(Columbia) al lado de `39, 40, 41` (Hush Puppies) para el mismo pie.
+
+### Lo que cambia en el diseño
+
+`tallas_calzado_pe` (bandera de sitio, un booleano) se sustituye por dos cosas:
+
+1. **La escala de publicación, por SITIO**: `escala_calzado`.
+   `supermall → "PE"` (todo el calzado en PE, sea de la marca que sea),
+   `vans → "PE"`, el resto `"origen"` hasta que se decida lo contrario.
+   Es un dato de la tienda: qué escala ve el comprador.
+
+2. **La tabla de conversión, por MARCA + CLASE (+ GÉNERO)**: el registro de
+   `engines/guias_tallas.py`, cargable desde `data/guias_tallas.xlsx`.
+   Es un dato del producto: cómo se traduce su talla.
+
+Separadas, un sitio nuevo es una línea de config y una guía nueva es una hoja
+de Excel. Juntas en un booleano no se puede tener "Vans en PE y el resto en
+origen dentro de la misma tienda", que es justo lo que Supermall pide.
+
+**Sin guía no se convierte y se reporta.** Nunca se inventa una equivalencia y
+nunca se publica una talla adivinada: eso es peor que dejarla en US, porque en
+US al menos se ve que está en US.
+
+### Lo que me falta para que Supermall se vea ordenado
+
+Tengo la guía de **Vans** (confirmada, coincide fila a fila con el código).
+Para que el calzado de Supermall salga entero en PE necesito, en el mismo
+formato de la de Vans:
+
+| Marca | mod-col de calzado en US que quedarían sin convertir |
+|---|---:|
+| Columbia | 2.794 |
+| Hush Puppies (+ HP Kids) | 2.752 |
+| Keds | 335 |
+| Sorel | 201 |
+| Rockford | 328 |
+
+La alternativa, si no existen guías por marca, es autorizar **una tabla US→PE
+estándar de calzado** como respaldo, marcando en la hoja de revisión cada talla
+que se convirtió con ella en vez de con la guía de su marca. Es una decisión
+tuya (3.8).
+
+
 ---
 
 # PARTE 2 — Carga de Supermall
@@ -442,6 +524,16 @@ de Supermall ya cargado) o se intentan reconstruir desde el principio?
 
 **3.7 — La guía de tallas de Columbia**, que no vino en el adjunto.
 
+**3.8 — Las guías de Hush Puppies, Keds, Sorel y Rockford** (calzado), o la
+autorización para usar una tabla US→PE estándar como respaldo, marcada en la
+revisión. Sin una de las dos cosas, 6.400 modelo-color de calzado se quedan en
+US dentro de Supermall. Ver 1.6.
+
+**3.9 — ¿La escala PE se aplica solo en Supermall, o también en Columbia.pe,
+Rockford.pe y HushPuppies.pe?** Hoy Columbia.pe publica su calzado en US.
+Recomiendo: Supermall primero (es donde se ve la mezcla) y los sitios propios
+después, con el Mantenedor de Tallas, que es para lo que existe.
+
 ---
 
 # 4. Riesgos
@@ -456,6 +548,8 @@ de Supermall ya cargado) o se intentan reconstruir desde el principio?
 | `sial_tail_row` pone "Actualizar" en la columna de Supermall según el ID del **sitio que se carga** | medio | **preexistente**, ya anotado en `CLAUDE.md`. Supermall lo hace más visible. Es decisión de negocio: afecta la hoja de los cinco sitios |
 | Añadir metacampos a `CAMPOS_PRODUCTO` encarece la lectura paginada | bajo | la lectura normal es bulk y no paga costo por consulta; el respaldo paginado sí, y hay que medirlo |
 | `render_mantenedor_tallas` es la vía para arreglar lo ya cargado y **está roto** | alto | los tres fallos de 1.4, con pruebas que fallen con el código anterior |
+| Productos con las **dos escalas** en el mismo modelo-color (36 HP, 8 Rockford, 8 Vans) | medio — selector con tallas repetidas | al convertir, las US caen sobre las PE que ya están: `orden_tallas` lo detecta como colisión y no renombra. Hay que **fusionarlas**, no ignorarlas: son la misma talla con dos SKU |
+| Convertir a PE una marca sin guía propia usando una tabla estándar | medio | solo con autorización explícita (3.8) y marcado talla a talla en la revisión |
 
 ---
 
@@ -464,8 +558,9 @@ de Supermall ya cargado) o se intentan reconstruir desde el principio?
 1. **Los tres fallos de 1.4** — son bugs vivos, van solos y con prueba propia.
 2. **`engines/tallas.py` + prueba dorada** — arregla Columbia sin tocar el
    resto.
-3. **Guías por marca+clase + género + marca en `display_size_for_site`** —
-   arregla Vans, en la carga y en el mantenedor.
+3. **Diccionario de guías por marca+clase+género, `escala_calzado` por sitio,
+   y género de verdad** — arregla Vans, deja Supermall entero en PE y destapa
+   que Columbia.pe publica en US (ver 1.6).
 4. **`engines/carga_supermall.py` + pantalla** — con las decisiones de la
    sección 3 ya tomadas.
 

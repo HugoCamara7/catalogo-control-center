@@ -258,5 +258,127 @@ class TestCargaRemotaSinSolicitud(unittest.TestCase):
         self.fail("no encontre la llamada a render_boton_carga_remota")
 
 
+class TestAdjuntarElMatrixifyALaSolicitud(unittest.TestCase):
+    """El puente entre la sesion y el runner, que fallaba EN SILENCIO.
+
+    `_adjuntar_matrixify_antes_de_cargar` tenia dos salidas que devolvian ""
+    -o sea "todo bien"- sin haber adjuntado nada: cuando no habia Matrixify
+    apuntado y cuando el codigo apuntado no era el de la solicitud. En las dos
+    la carga seguia adelante y moria en el adaptador con "La solicitud no tiene
+    un Matrixify adjunto. Genéralo en Carga completa (Analizar input)", que
+    culpa a la solicitud y manda a hacer algo que ya se hizo.
+
+    Y el segundo caso se hizo MAS probable al permitir la carga remota sin
+    solicitud: desde entonces el codigo apuntado puede venir vacio.
+    """
+
+    CODIGO = "CAT-2026-000041"
+
+    def setUp(self):
+        import pathlib
+        import tempfile
+        self.excel = pathlib.Path(tempfile.mkdtemp()) / "m.xlsx"
+        self.excel.write_bytes(b"PK contenido")
+        self.sesion_previa = app.st.session_state
+        self.apuntado = {
+            "codigo": "", "excel_path": str(self.excel), "product_keys": ["a", "b"],
+            "site_key": "rockford", "filename": "m.xlsx",
+        }
+
+    def tearDown(self):
+        app.st.session_state = self.sesion_previa
+
+    def _servicio(self, ticket):
+        adjuntos = []
+
+        class Servicio:
+            def get_ticket(self, actor, code):
+                return ticket
+
+            def attach_matrixify(self, actor, code, **kw):
+                adjuntos.append({"codigo": code, "site_key": kw.get("site_key"),
+                                 "bytes": len(kw["payload"])})
+
+        return Servicio(), adjuntos
+
+    def _ejecutar(self, apuntado, ticket, remota=True):
+        app.st.session_state = {} if apuntado is None else {
+            app.CLAVE_MATRIXIFY_SESION: dict(apuntado)}
+        servicio, adjuntos = self._servicio(ticket)
+        previo = app.estado_carga_remota
+        app.estado_carga_remota = lambda *a, **k: {"sobrevive": remota, "pasos": []}
+        try:
+            aviso = app._adjuntar_matrixify_antes_de_cargar(
+                servicio, {"role": "admin"}, self.CODIGO)
+        finally:
+            app.estado_carga_remota = previo
+        return aviso, adjuntos
+
+    def test_sin_carga_remota_activa_no_bloquea(self):
+        """Sin `[carga_remota]` la carga se hace dentro de la sesion, por
+        bloques: no hay runner que necesite el archivo en el repositorio, asi
+        que no hay nada que adjuntar y bloquear cortaria un camino valido."""
+        aviso, adjuntos = self._ejecutar(None, {"site_key": "rockford", "matrixify": {}},
+                                         remota=False)
+        self.assertEqual(aviso, "")
+        self.assertEqual(adjuntos, [])
+
+    def test_analizado_SIN_ticket_se_adjunta_igual(self):
+        """El caso que reporto el usuario. En la sesion solo cabe el ultimo
+        Matrixify analizado; si se ejecuta la carga de una solicitud del mismo
+        sitio, ese es el archivo."""
+        aviso, adjuntos = self._ejecutar(self.apuntado, {"site_key": "rockford", "matrixify": {}})
+        self.assertEqual(aviso, "")
+        self.assertEqual(len(adjuntos), 1)
+        self.assertEqual(adjuntos[0]["codigo"], self.CODIGO)
+
+    def test_analizado_con_otro_codigo_del_mismo_sitio_tambien(self):
+        aviso, adjuntos = self._ejecutar(dict(self.apuntado, codigo="CAT-2026-000099"),
+                                         {"site_key": "rockford", "matrixify": {}})
+        self.assertEqual(aviso, "")
+        self.assertEqual(len(adjuntos), 1)
+
+    def test_otro_SITIO_no_se_adjunta_y_lo_dice(self):
+        """Lo que de verdad no puede cruzarse: un Matrixify de Vans.pe en una
+        solicitud de Rockford.pe cargaria el catalogo equivocado."""
+        aviso, adjuntos = self._ejecutar(dict(self.apuntado, site_key="vans"),
+                                         {"site_key": "rockford", "matrixify": {}})
+        self.assertEqual(adjuntos, [])
+        self.assertIn("vans", aviso)
+        self.assertIn("rockford", aviso)
+
+    def test_sin_nada_apuntado_lo_dice_en_vez_de_seguir(self):
+        aviso, adjuntos = self._ejecutar(None, {"site_key": "rockford", "matrixify": {}})
+        self.assertEqual(adjuntos, [])
+        self.assertIn("Analizar input", aviso)
+        self.assertNotEqual(aviso, "")
+
+    def test_si_la_solicitud_ya_tiene_adjunto_se_sigue(self):
+        """Un reintento legitimo no puede convertirse en callejon sin salida."""
+        aviso, adjuntos = self._ejecutar(
+            None, {"site_key": "rockford", "matrixify": {"path": "catalog_tickets/x.xlsx"}})
+        self.assertEqual(aviso, "")
+        self.assertEqual(adjuntos, [])
+
+    def test_sin_el_excel_en_disco_lo_dice(self):
+        aviso, adjuntos = self._ejecutar(dict(self.apuntado, excel_path="/no/existe.xlsx"),
+                                         {"site_key": "rockford", "matrixify": {}})
+        self.assertEqual(adjuntos, [])
+        self.assertIn("no está en disco", aviso)
+
+    def test_no_queda_ninguna_salida_silenciosa(self):
+        """Cada `return ""` de la funcion tiene que ir despues de un adjunto o
+        despues de comprobar que la solicitud ya tenia uno."""
+        cuerpo = inspect.getsource(app._adjuntar_matrixify_antes_de_cargar)
+        self.assertNotIn('    if not isinstance(guardado, dict):\n        return ""', cuerpo)
+        self.assertNotIn('!= clean_value(codigo):\n        return ""', cuerpo)
+
+    def test_tras_adjuntar_queda_apuntado_a_esa_solicitud(self):
+        """Para que un segundo clic no vuelva a subir el mismo archivo."""
+        self._ejecutar(self.apuntado, {"site_key": "rockford", "matrixify": {}})
+        self.assertEqual(
+            app.st.session_state[app.CLAVE_MATRIXIFY_SESION]["codigo"], self.CODIGO)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

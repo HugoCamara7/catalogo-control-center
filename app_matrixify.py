@@ -24657,22 +24657,20 @@ def render_carga_supermall():
         </div>
         """
     )
+    # `sitio_espejo()` ya comprueba Shopify, asi que un segundo `if` por el
+    # token seria una rama que no se puede alcanzar. El aviso explica las dos
+    # cosas de una vez.
     espejo_key = sitio_espejo()
     if not espejo_key:
         st.error(
-            "No hay ningún sitio espejo configurado. Supermall.pe necesita su sección "
-            "`[shopify_sites.supermall]` en Secrets."
+            "**Supermall.pe no tiene Shopify configurado en Secrets** (falta la sección "
+            "`[shopify_sites.supermall]`). Sin su catálogo no se puede saber qué productos "
+            "ya están cargados, y todo saldría como \"falta\": eso se leería como \"hay que "
+            "cargar el catálogo entero\", que no es cierto."
         )
         return
     brand_config = get_brand_config(espejo_key)
     shopify_config = get_shopify_config(espejo_key)
-    if not is_shopify_configured(shopify_config):
-        st.error(
-            "**Supermall.pe no tiene Shopify configurado en Secrets.** Sin su catálogo no se "
-            "puede saber qué productos ya están cargados, y todo saldría como \"falta\": "
-            "eso se leería como \"hay que cargar el catálogo entero\", que no es cierto."
-        )
-        return
 
     # --- 1. Que se va a cargar -------------------------------------------
     st.markdown('<div class="section-card"><h2>1. Qué se va a cargar</h2>', unsafe_allow_html=True)

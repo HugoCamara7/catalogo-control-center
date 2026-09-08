@@ -1629,6 +1629,208 @@ que arrastra Streamlit al runner. Es la deuda de la sección 2 (extraer
 `engines/shopify_sync.py`). Escribir aquí un segundo motor de carga sería tener
 dos que se separan sin que nadie lo note, como las dos `normalize_size`.
 
+## 5 sexdecies. El diccionario de tallas, y la escala por marca (septiembre 2026)
+
+`engines/tallas.py` (sin Streamlit ni pandas) + `engines/guias_tallas.py`.
+
+### El orden lo decidian TRES criterios y ninguno entendia a Columbia
+
+Habia un `size_sort_key` en `generate_columbia_matrixify`, otro en
+`app_matrixify` y una copia muerta en `engines/normalize`. Los tres entendian lo
+mismo: **letra** de una tabla de doce, **numero** puro y **`numero/numero`**.
+Todo lo demas caia en un cajon que se ordenaba **alfabeticamente**.
+
+Medido sobre `data/arti.zip` -653.431 filas, ~94.000 modelo-color-, eso dejaba
+**361 de los 15.690 modelo-color de Columbia** con la curva desordenada:
+
+```
+L/R, M/R, S/R, XL/R, XS/R      ->  XS/R, S/R, M/R, L/R, XL/R
+10/R, 12/R, 2/R, 4/R, 6/R      ->  2/R, 4/R, 6/R, 8/R, 10/R, 12/R
+L/6, L/8, M/6, M/8, S/ 8       ->  S/ 6, S/ 8, M/6, M/8, L/6, L/8
+18/24, 03-JUN, 06-DIC, DIC-18  ->  03-JUN, 06-DIC, DIC-18, 18/24
+```
+
+Las de tipo `03-JUN` son `3-6` que Excel convirtio en fecha al exportar el
+maestro. Se decodifican sustituyendo el mes por su numero **en el sitio donde
+esta**: `DIC-18` da `12-18`. No hay que adivinar cual de los dos era el mes,
+porque el texto conserva la posicion.
+
+**La regla que hace que esto se pueda tocar sin miedo:** las familias 0, 1 y 2
+de `engines/tallas` son **exactamente** las tres del criterio viejo, con los
+mismos indices, y las formas nuevas van en familias >= 3, o sea siempre despues.
+Consecuencia: en cualquier producto cuyas tallas el criterio viejo ya reconocia
+todas, el orden nuevo es **identico**. Eso es lo que garantiza que Rockford (3
+productos afectados de 9.785), Hush Puppies (2 de 14.581) y el 97,7 % de
+Columbia no se muevan.
+
+`scripts/test_orden_tallas_reales.py` lo comprueba recorriendo **los ~94.000
+modelo-color del maestro real**. Un juego de casos escritos a mano no sirve para
+esto: prueba lo que a uno se le ocurre, y lo que rompe una carga es lo que no se
+le ocurrio a nadie. Es la misma leccion del lector de VTEX, que paso sus 62
+pruebas porque se probo con una muestra de 500 filas.
+
+**Si agregas una familia, va con numero >= 3 y con su caso en esa prueba.** La
+cobertura paso del 97,7 % al 99,66 % de los modelo-color; lo que queda sin
+reconocer se **reporta** (`tallas.no_reconocidas`) en vez de ordenarse por texto
+en silencio. `O/S` se queda en la escala de letras en 99, donde estaba: sacarlo
+a familia propia cambiaria el orden de los productos que lo mezclan con numeros
+-PARFOIS tiene varios- y ahi hoy va primero.
+
+### La escala de calzado son DOS datos, no un booleano
+
+`tallas_calzado_pe` era una bandera del SITIO, y alcanzaba mientras Vans vivia
+solo en Vans.pe. Con Supermall.pe un booleano solo sabe decir "todo el calzado
+del sitio" o "nada", y las dos respuestas son falsas. Medido:
+
+| Marca | mod-col en US | mod-col en PE | con las DOS |
+|---|---:|---:|---:|
+| Hush Puppies | 2.752 | 8.165 | **36** |
+| Columbia | **2.794** | 0 | 0 |
+| Rockford | 328 | 2.078 | **8** |
+| Vans | 151 | 790 | **8** |
+| Keds | 335 | 0 | 0 |
+| Sorel | 201 | 0 | 0 |
+
+**Columbia, Keds y Sorel entregan TODO su calzado en US** (`BM3003-EW7` es la
+curva `70...130`, o sea US 7 a 13), asi que **Columbia.pe publica hoy su calzado
+en tallas US**. Y hay 52 modelo-color con las dos escalas dentro del mismo
+producto: `HP10201118-742` publica `60...110` y `390...450` a la vez.
+
+Por eso el dato se parte:
+
+- **`escala_calzado`, por SITIO**: que ve el comprador. `supermall` y `vans` en
+  `"PE"`, el resto en `"origen"`. `tallas_calzado_pe` se conserva como respaldo.
+- **`engines/guias_tallas`, por MARCA + CLASE**: como se traduce esa talla. Una
+  guia nueva entra como **tabla** (`registrar_tabla`), no como `if`.
+
+**Sin guia de la marca, o sin genero, NO se convierte**: se devuelve la talla de
+origen y se avisa en la hoja de **Revision**. **La carga no se detiene por
+esto** - parar una carga entera porque a un producto le falta el genero es peor
+que publicarlo con la talla de origen, que es lo que pasaba antes solo que sin
+que se enterara nadie.
+
+**El genero importa y no se leia.** Un mismo numero US son dos tallas distintas:
+US 8 de hombre es PE 40.5 y de mujer es PE 38.5. Sin genero se aplicaba la
+columna de hombre en silencio, y por eso `5, 6, 7` salian `36.5, 38, 39` cuando
+lo correcto era `35, 36, 37`. `custom.genero` se agrego a
+`shopify_api.CAMPOS_PRODUCTO` -junto con `custom.color`, `custom.nombre_corto` y
+`custom.descripcion_corta`, que tampoco se leian- y se propaga en
+`shopify_products_to_matrixify_df`, donde esas columnas salian **siempre
+vacias**.
+
+**Solo hay guia de Vans**, que es la unica confirmada y coincide fila a fila con
+el Excel oficial. Columbia solo necesita ORDEN, no conversion. Faltan las de
+Hush Puppies, Keds, Sorel y Rockford: mientras no esten, su calzado en US se
+publica como viene y sale avisado.
+
+### Tres fallos dejaban el Mantenedor de Tallas sin efecto
+
+Ninguna de sus 34 pruebas los atrapo: todas prueban el **motor**, y los tres
+estaban en el **pegamento** con la pantalla.
+
+1. `app_matrixify` llamaba a `orden_tallas._indice_de_opcion`, que **no existe**
+   (es `indice_de_opcion`). `AttributeError` sin capturar: "Aplicar" moria en el
+   primer producto que hubiera que reordenar y se llevaba la pantalla por
+   delante.
+2. `plan_de_producto` no devolvia `Type` ni `Genero`, asi que al **replanificar
+   antes de escribir** el conversor salia `None` y el cambio de escala **no se
+   aplicaba nunca**: la pantalla contestaba "Ya estaba bien al releerlo".
+3. `values_in_order` en `_reorder_product_sizes` era codigo muerto.
+
+---
+
+## 5 septdecies. Carga Supermall (septiembre 2026)
+
+`engines/carga_supermall.py` (sin Streamlit ni pandas) + `render_carga_supermall()`.
+Pantalla propia **en el menu principal**, al lado de Status de carga.
+
+### El agujero que cierra
+
+La app resolvia los dos extremos y nada del medio. El espejo decia QUE FALTA y
+entregaba un Excel de codigos que mandaba a "Carga parcial -> Carga Sial". Esa
+pantalla **solo produce la hoja SIAL** -no el Matrixify, que es lo que crea el
+producto- y **lee el catalogo de UN solo sitio: el activo**. Estando en
+Supermall ese es el DESTINO, donde esos productos por definicion no estan, asi
+que `product_lookup` salia vacio y el producto se armaba casi entero en blanco.
+
+La informacion existia -en Vans.pe, Rockford.pe, Columbia.pe- pero el camino que
+la app ofrecia no la miraba. **Lo que faltaba no era una pantalla: era el paso
+de CONSOLIDACION.**
+
+### Como consolida
+
+**Campo a campo, no por sitio entero.** Tomar "el sitio ganador" desperdicia el
+campo que solo tiene el otro.
+
+**Ningun sitio manda sobre otro.** Supermall no tiene marca propia: las lleva
+todas, asi que no hay un "sitio dueno" del producto. A igualdad de dato manda la
+web donde el producto esta **prendido y visible**, que es la que alguien reviso
+de verdad. El desempate final es el orden de `SITE_CONFIGS` y **no el de
+llegada**: una consolidacion que cambia de resultado en cada ejecucion no se
+puede comparar con la anterior.
+
+Cada ficha lleva **de que web salio cada campo**. Cuando un producto salga raro
+la pregunta va a ser "de donde saco esa descripcion", y tiene que poder
+responderse sin abrir seis pestanas.
+
+**No vuelve a escribir como se lee un producto de Shopify**: la identidad, la
+marca y el estado web salen de `engines/load_status`, igual que el espejo.
+
+### Bloquear y avisar no es lo mismo
+
+Sin codigo Modelo-Color, sin nombre o sin tipo: **bloquea**, queda fuera del
+archivo. Sin genero o sin fotos: **avisa y se carga igual**. Un aviso que
+bloquea detiene una carga de miles por un dato que no lo merece.
+
+### Las reglas de Supermall, confirmadas
+
+- Entra **Activo y publicado**. Un producto que llega en borrador a un
+  marketplace no lo ve nadie, y esperar a que alguien lo publique a mano es el
+  mismo problema que el espejo existe para evitar.
+- **Sin precio**: lo sincroniza el ERP. Mandar un precio aqui competiria con esa
+  sincronizacion y ganaria el ultimo que escribiera (`precio_desde_erp`).
+- **Con siblings**, siempre.
+- **Bodega SIAL `13`**, confirmada.
+- El calzado de las marcas **con guia registrada**, en tallas PE.
+
+### Reutiliza el tramo comun, no lo copia
+
+`matrixify_desde_codigos_modelo_color` recibe un catalogo de **ORIGEN** opcional
+y uno de **DESTINO**. Sin ellos se comporta exactamente como antes.
+
+**Separar origen de destino no es cosmetico:** el `ID` de Vans.pe no existe en
+Supermall.pe, y usarlo haria un MERGE contra otro producto. Cuando origen y
+destino son la misma tienda -Centry, Carga Sial- `fila_destino` es la misma fila
+que `product_row`. Hay una prueba que exige que
+`build_centry_matrixify_from_master` se siga llamando desde **un solo lugar**.
+
+Se procesa **por bloques de 200 codigos**, con la misma `png_bloques` de fotos,
+videos y tallas: con miles de codigos, una pasada unica que se cae a la mitad no
+deja constancia de nada.
+
+### Los siblings ahora los escribe tambien la carga por codigos
+
+Hasta ahora **solo** los escribia la carga completa, asi que Centry, Carga Sial
+y Supermall dejaban la ficha sin los otros colores del modelo. Es la **MISMA**
+regla, extraida a `unir_siblings`: lo ya publicado no se pisa, y un modelo con
+tres colores en la tienda que hoy recibe uno nuevo acaba con **cuatro**
+hermanos, no con uno.
+
+### Lo que sigue sin resolverse
+
+- **`theme.siblings` y `custom.guia_de_tallas` del ORIGEN no son trasladables**:
+  son referencias a productos y paginas de la tienda de origen. Los siblings se
+  reconstruyen contra el catalogo de Supermall; la guia de tallas queda
+  pendiente.
+- `sial_tail_row` sigue poniendo "Crear"/"Actualizar" en TODAS las columnas
+  `Nuevo o Actualizar (...)` con el `existing_id` del sitio que se carga. Es
+  **preexistente** y afecta la hoja de los cinco sitios.
+
+`scripts/test_carga_supermall.py` (30 pruebas) y `scripts/test_guias_tallas.py`
+(21) fijan todo esto.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -1829,7 +2031,10 @@ python scripts/test_engines_video_media.py             # 106
 python scripts/test_carga_sial_parcial.py               # 28
 python scripts/test_lectura_catalogo.py                # 30
 python scripts/test_espejo_supermall.py                # 35
-python scripts/test_mantenedor_tallas.py               # 34
+python scripts/test_mantenedor_tallas.py               # 41
+python scripts/test_orden_tallas_reales.py             # 17
+python scripts/test_guias_tallas.py                    # 21
+python scripts/test_carga_supermall.py                 # 30
 python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 47

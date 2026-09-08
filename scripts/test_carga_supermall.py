@@ -191,8 +191,15 @@ class TestElDestinoAusente(unittest.TestCase):
     def test_la_pantalla_corta_si_supermall_no_tiene_shopify(self):
         import app_matrixify as app
         cuerpo = inspect.getsource(app.render_carga_supermall)
-        self.assertIn("is_shopify_configured", cuerpo)
+        self.assertIn("sitio_espejo()", cuerpo)
         self.assertIn("no tiene Shopify configurado", cuerpo)
+
+    def test_no_hay_una_segunda_comprobacion_del_token(self):
+        """`sitio_espejo()` ya comprueba Shopify: un segundo `if` por el token
+        seria una rama que no se puede alcanzar nunca."""
+        import app_matrixify as app
+        cuerpo = inspect.getsource(app.render_carga_supermall)
+        self.assertNotIn("if not is_shopify_configured(shopify_config):", cuerpo)
 
 
 class TestLasReglasDeSupermall(unittest.TestCase):

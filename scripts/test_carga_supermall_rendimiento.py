@@ -131,11 +131,39 @@ class TestLaPreparacionSaleDelBucleDeBloques(unittest.TestCase):
         cat, mae, cfg = catalogo(10), maestro(10), {"label": "Columbia"}
         contexto = app.preparar_contexto_de_codigos(cat, mae, cfg)
         antes_arti = contexto["arti"].copy()
-        antes_shopify = contexto["shopify_df"].copy()
+        antes_claves = set(contexto["product_lookup"])
         app.build_centry_matrixify_from_master(
             ["MC0000-XX"], cat, mae, cfg, contexto=contexto)
         pd.testing.assert_frame_equal(contexto["arti"], antes_arti)
-        pd.testing.assert_frame_equal(contexto["shopify_df"], antes_shopify)
+        self.assertEqual(set(contexto["product_lookup"]), antes_claves)
+
+    def test_el_contexto_NO_retiene_los_catalogos(self):
+        """Es de donde sale el ahorro: una vez calculados los `lookup` y los
+        siblings, nadie vuelve a leer los catalogos. Retenerlos era guardar una
+        copia entera del de origen y otra del de destino durante toda la
+        generacion -- medido a escala real, 950 MB de pico de los 1.024 que da
+        el contenedor para toda la app."""
+        contexto = app.preparar_contexto_de_codigos(
+            catalogo(10), maestro(10), {"label": "Columbia"})
+        for prohibida in ("shopify_df", "destino_df"):
+            self.assertNotIn(prohibida, contexto)
+        cuerpo = _cuerpo("build_centry_matrixify_from_master")
+        for prohibida in ('contexto["shopify_df"]', 'contexto["destino_df"]'):
+            self.assertNotIn(prohibida, cuerpo)
+
+    def test_supermall_SUELTA_los_catalogos_antes_del_bucle(self):
+        cuerpo = _cuerpo("supermall_generar")
+        self.assertIn("del productos_origen, origen_df, destino_df", cuerpo)
+        self.assertLess(
+            cuerpo.index("del productos_origen"),
+            cuerpo.index("for bloque in png_bloques("),
+            "soltarlos despues del bucle no ahorra nada durante la generacion",
+        )
+
+    def test_con_contexto_no_se_reconstruye_el_catalogo(self):
+        """Si se reconstruyera, quien pasa contexto no podria soltar el suyo."""
+        cuerpo = _cuerpo("matrixify_desde_codigos_modelo_color")
+        self.assertIn("if origen_matrixify_df is None and contexto is None:", cuerpo)
 
     def test_los_diagnosticos_del_maestro_siguen_saliendo_en_cada_bloque(self):
         """Se calculan una vez, pero la hoja de Revision tiene que decir lo

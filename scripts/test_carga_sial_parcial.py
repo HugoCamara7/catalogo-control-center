@@ -341,7 +341,7 @@ class TestPantallaCargaParcial(unittest.TestCase):
             pd.DataFrame([{"Handle": "h", "Mod-Col": "AB-1", "ID": "gid://9"}]),
             pd.DataFrame(), {"label": "X"},
         )
-        self.assertIs(contexto["destino_df"], contexto["shopify_df"])
+        self.assertTrue(contexto["destino_es_el_origen"])
         self.assertEqual(set(contexto["destino_lookup"]), set(contexto["product_lookup"]))
 
 

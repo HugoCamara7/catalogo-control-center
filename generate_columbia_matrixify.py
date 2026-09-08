@@ -4252,7 +4252,14 @@ def avisos_de_talla_a_issues(avisos):
     filas = []
     for (marca, motivo), tallas_vistas in sorted(agrupados.items()):
         explicacion = AVISO_TALLA_MOTIVOS.get(motivo, motivo)
-        ordenadas = sorted(tallas_vistas, key=size_sort_key)
+        # El desempate es la talla en TEXTO, y no es cosmetico: `tallas_vistas`
+        # es un `set`, asi que cuando dos tallas empatan en `size_sort_key`
+        # -- "6" y "60", "SM" y "S/M" -- el orden lo decidia la iteracion del
+        # conjunto, que depende del hash de las cadenas y **cambia en cada
+        # proceso**. Medido: la misma carga, ejecutada dos veces, escribia seis
+        # avisos distintos en la hoja de Revision. Un informe que cambia entre
+        # ejecuciones no se puede comparar con el anterior.
+        ordenadas = sorted(tallas_vistas, key=lambda talla: (size_sort_key(talla), talla))
         filas.append({
             "Mod-Col": "Escala de tallas",
             "Problema": (

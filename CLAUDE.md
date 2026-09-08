@@ -2757,6 +2757,83 @@ exige que el resultado sea el mismo que de una sola vez.
 
 ---
 
+## 5 quinvicies. El pico de memoria de Carga Supermall, medido con el maestro REAL (septiembre 2026)
+
+Reportado como *"carga todo y cuando lee todo ya no bota nada"*. Esa es
+exactamente la forma que tiene un **OOM en Streamlit Cloud**: el contenedor
+mata el proceso, no hay traza ni `st.error` -- `run_app()` no llega a
+atrapar nada porque el proceso muere entero -- y la pantalla vuelve vacia.
+
+### Lo medido, a la escala del usuario
+
+9.644 fichas consolidadas, 6 catalogos, y el **maestro ARTI de verdad**
+(`data/arti.zip`, 653.431 filas). Es la regla de la seccion 5 nonies: un lector
+nuevo se prueba con un archivo del TAMANO REAL, nunca con una muestra.
+
+| Paso | antes | ahora |
+|---|---:|---:|
+| arranque | 137 MB | 137 MB |
+| maestro ARTI real | 255 MB | 255 MB |
+| 6 catalogos | 434 MB | 434 MB |
+| origen_df + destino_df | 617 MB | 617 MB |
+| contexto preparado | 829 MB | 829 MB |
+| **durante los bloques** | **836 MB** | **639 MB** |
+| **PICO FINAL** | **950 MB** | **756 MB** |
+
+**El contenedor da 1.024 MB PARA TODA LA APP.** Con 950 MB basta con que entre
+una segunda persona para que el proceso muera, y al morir se cierran TODAS las
+sesiones.
+
+### De donde salian los 200 MB
+
+`preparar_contexto_de_codigos` devolvia `shopify_df` y `destino_df` -- una copia
+entera del catalogo de origen y otra del de destino -- y los retenia durante
+toda la generacion. Comprobado con AST: dentro de
+`build_centry_matrixify_from_master` esos dos nombres **se asignaban y no se
+leian ni una vez mas**. Lo que el bucle consume son los `lookup`, los siblings y
+el maestro acotado.
+
+Ahora el contexto lleva solo eso, y `supermall_generar` **suelta** los dos
+Matrixify convertidos y la lista de productos de origen en cuanto lo tiene.
+Para poder soltarlos, `matrixify_desde_codigos_modelo_color` ya no reconstruye
+el catalogo cuando le pasan un contexto: lo que armaba se descartaba sin usarse.
+
+`destino_es_el_origen` conserva el unico dato que si hacia falta de esos frames:
+cuando no se pasa destino, el destino ES el origen (Centry, Carga Sial).
+
+### Y la hoja de Revision cambiaba entre ejecuciones
+
+Destapado al comparar dos versiones: **la misma carga, ejecutada dos veces,
+escribia seis avisos distintos**. `avisos_de_talla_a_issues` hacia
+`sorted(tallas_vistas, key=size_sort_key)` sobre un **`set`**, asi que cuando
+dos tallas empatan en la clave -- `6` y `60`, `SM` y `S/M` -- el orden lo
+decidia la iteracion del conjunto, que depende del hash de las cadenas y cambia
+**en cada proceso**.
+
+El desempate es ahora la talla en texto. Un informe que cambia entre ejecuciones
+no se puede comparar con el anterior -- es la misma regla que ya seguia la
+consolidacion de Supermall. Es un fallo **preexistente**, no una regresion:
+comprobado ejecutando dos veces el codigo anterior.
+
+### La salida es IDENTICA
+
+Comparadas las tres hojas con **datos del maestro real** (1.500 codigos de
+Columbia, 7.031 filas de Matrixify y 7.003 de Carga Sial): **cero celdas
+distintas** en Matrixify y en Carga Sial. Y ahora dos ejecuciones seguidas dan
+**cero diferencias** tambien en Revision, que antes no pasaba.
+
+### Lo que sigue sin resolverse
+
+756 MB de 1.024 **sigue siendo mucho para una sola sesion**. Lo que queda vivo
+es lo que de verdad se usa: el maestro ARTI dos veces (el crudo en sesion y el
+normalizado en el contexto), los 6 catalogos en `session_state`, los `lookup` y
+el Matrixify resultante. Bajar de ahi es el Pendiente 7 -- mover el trabajo
+pesado al worker --, no un ajuste mas.
+
+`scripts/test_carga_supermall_rendimiento.py` pasa de 13 a **16 pruebas**.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -2985,7 +3062,7 @@ python scripts/test_siblings_tipos.py                  # 20
 python scripts/test_ticket_system.py                   # 28
 python scripts/test_tipos_vestido_y_bloqueos.py       # 24
 python scripts/test_optimizacion_memoria_excel.py       # 38
-python scripts/test_carga_supermall_rendimiento.py     # 13
+python scripts/test_carga_supermall_rendimiento.py     # 16
 ```
 
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes

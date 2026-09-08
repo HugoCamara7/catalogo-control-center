@@ -6476,7 +6476,10 @@ def matrixify_desde_codigos_modelo_color(codes, brand_config, shopify_config,
     sale tambien porque el Centry lo vuelve a mirar para completar el EAN, y
     leerlo dos veces es leer el maestro dos veces.
     """
-    if origen_matrixify_df is None:
+    # Con un contexto ya preparado no hace falta el catalogo: lo que se armara
+    # aqui se descartaria sin usarse, y volver a convertirlo son cientos de MB.
+    # Asi quien pasa contexto puede SOLTAR sus catalogos antes del bucle.
+    if origen_matrixify_df is None and contexto is None:
         shopify_products = (
             productos_origen
             if productos_origen is not None
@@ -6831,15 +6834,26 @@ def preparar_contexto_de_codigos(shopify_matrixify_df, arti_df, brand_config,
     arti["__KEY"] = arti["Mod-Col"].where(arti["Mod-Col"].map(clean_value) != "", arti["COD MOD COL"]).map(lambda value: clean_value(value).upper())
     arti["__MODEL"] = arti["__KEY"].map(lambda value: value.rsplit("-", 1)[0] if "-" in value else value)
 
-    return {
-        "shopify_df": shopify_df,
+    # Los dos catalogos NO viajan en el contexto, y eso es lo que ahorra la
+    # memoria: una vez calculados los `lookup` y los siblings, nadie vuelve a
+    # leerlos -- se comprobo con AST que `shopify_df` y `destino_df` se
+    # asignaban dentro de `build_centry_matrixify_from_master` y no se usaban
+    # ni una vez mas. Retenerlos era guardar una copia entera del catalogo de
+    # origen y otra del de destino durante toda la generacion.
+    #
+    # `destino_es_el_origen` conserva el dato que si hace falta saber: cuando
+    # no se pasa un destino, el destino ES el origen (Centry, Carga Sial).
+    contexto = {
         "product_lookup": product_lookup,
-        "destino_df": destino_df,
         "destino_lookup": destino_lookup,
+        "destino_es_el_origen": destino_df is shopify_df,
         "siblings_publicados": siblings_ya_publicados(destino_df),
         "arti": arti,
         "diagnosticos": diagnosticos,
     }
+    del shopify_df, destino_df
+    gc.collect()
+    return contexto
 
 
 def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, brand_config,
@@ -6867,9 +6881,7 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
     issues = list(contexto["diagnosticos"])
     code_set = set(codes)
     model_only_set = {code for code in codes if "-" not in code}
-    shopify_df = contexto["shopify_df"]
     product_lookup = contexto["product_lookup"]
-    destino_df = contexto["destino_df"]
     destino_lookup = contexto["destino_lookup"]
     siblings_publicados = contexto["siblings_publicados"]
 
@@ -25268,6 +25280,14 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
     contexto = preparar_contexto_de_codigos(
         origen_df, arti_df, brand_config, destino_matrixify_df=destino_df,
     )
+    # Y se SUELTAN. Dentro del contexto quedan los `lookup`, que es lo unico
+    # que el bucle lee; los dos Matrixify convertidos y la lista de productos
+    # de origen ya no los mira nadie. Medido a escala real (9.644 fichas y el
+    # maestro ARTI de verdad): el pico bajaba de 950 MB a 664 de los 1.024 que
+    # da el contenedor PARA TODA LA APP -- y a 950 MB basta con que entre una
+    # segunda persona para que el proceso muera sin dejar traza.
+    del productos_origen, origen_df, destino_df
+    gc.collect()
 
     partes, revisiones = [], []
     hechos = 0
@@ -25277,8 +25297,6 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
         # rehacerlos en cada bloque seria convertir el catalogo entero N veces.
         parte, revision, _arti, _fuente = matrixify_desde_codigos_modelo_color(
             bloque, brand_config, shopify_config,
-            origen_matrixify_df=origen_df,
-            destino_matrixify_df=destino_df,
             maestro=(arti_df, arti_source),
             contexto=contexto,
         )

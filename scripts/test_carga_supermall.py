@@ -293,9 +293,25 @@ class TestLaPantalla(unittest.TestCase):
     def test_esta_en_el_menu_principal(self):
         """Supermall es una funcionalidad central, no una opcion escondida
         dentro de Carga parcial."""
+        import ast
+
         import app_matrixify as app
         fuente = inspect.getsource(app)
-        self.assertIn("SUPERMALL_LABEL,\n        \"Input comercial\",", fuente)
+        # Se mira que SUPERMALL_LABEL este en la lista `nav_options` del menu,
+        # no que sea vecino de "Input comercial": esa era la comprobacion
+        # anterior y se rompio sola al meter "Diccionarios" en medio, sin que
+        # Supermall se hubiera movido del menu.
+        opciones = []
+        for nodo in ast.walk(ast.parse(fuente)):
+            if not isinstance(nodo, ast.Assign):
+                continue
+            destinos = [d.id for d in nodo.targets if isinstance(d, ast.Name)]
+            if "nav_options" in destinos and isinstance(nodo.value, ast.List):
+                opciones = [
+                    e.id if isinstance(e, ast.Name) else getattr(e, "value", None)
+                    for e in nodo.value.elts
+                ]
+        self.assertIn("SUPERMALL_LABEL", opciones)
         self.assertIn("if operation_area == SUPERMALL_LABEL:", fuente)
 
     def test_no_escribe_en_shopify_al_analizar(self):

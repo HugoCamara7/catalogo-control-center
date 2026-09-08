@@ -2523,6 +2523,169 @@ fallan con el código anterior.
 
 ---
 
+## 5 tervicies. La exportacion a Excel era lo que tumbaba el contenedor (septiembre 2026)
+
+Auditoria completa de rendimiento y estabilidad. Todo medido, nada supuesto.
+
+### El crash: `dataframe_to_excel_bytes` armaba el libro con openpyxl
+
+`requirements.txt` lo dice desde hace meses -"openpyxl arma el libro entero en
+memoria y es lo que tumbaba el proceso con el catalogo completo"-, pero solo se
+habia cambiado `columbia_to_excel_bytes`. **La funcion que usan los 17 botones
+de descarga se habia quedado atras.**
+
+Medido con un Matrixify de 40.000 filas x 107 columnas:
+
+| | tiempo | RSS |
+|---|---:|---:|
+| openpyxl (lo que habia) | **70,8 s** | **+1,79 GB** |
+| xlsxwriter | 42,5 s | +0,49 GB |
+| xlsxwriter + memo, en el rerun | **0,41 s** | +3 MB |
+
+El contenedor da **1 GB POR APP**. La version vieja se lo comia entero ella
+sola, con una sola persona pulsando una sola pantalla.
+
+Y no hacia falta pulsar nada: **`st.download_button` exige los bytes POR
+ADELANTADO**, no acepta un callable, asi que 17 botones rearmaban su Excel en
+CADA rerun aunque nadie los tocara. Es el mismo problema que ya tenian los
+adjuntos de las solicitudes, solo que aqui no se paga red sino CPU y RAM.
+
+**El memo va por CONTENIDO, no por identidad.** Una huella de las hojas cuesta
+0,38 s contra los 70 s de armar el libro. Con `id(df)` un frame modificado en el
+sitio devolveria el Excel viejo; con el contenido, no puede.
+
+**`constant_memory` de xlsxwriter NO se usa.** Baja el pico a cero, pero
+comprobado: **se pierden datos** -- solo sobrevive la primera columna. Un
+exportador que pierde columnas en silencio es peor que uno lento.
+
+### xlsxwriter INTERPRETA lo que escribe, y eso corrompe el dato
+
+Dos cosas que hay que apagar (`OPCIONES_XLSXWRITER`), y que `columbia_to_excel_bytes`
+llevaba mal desde que se cambio de motor:
+
+- **Un texto que empieza por `=` sale como FORMULA.** Medido: `"=1+1"` se lee de
+  vuelta como `0`, no como el texto que puso la marca.
+- **Un texto que parece URL sale como HIPERVINCULO.** Excel admite **65.530
+  hipervinculos por hoja** y el Matrixify lleva columnas enteras de URLs de
+  imagen: pasado ese numero xlsxwriter avisa y **descarta el resto**.
+
+Comprobado que lo demas no cambia: ceros iniciales (`0012`, `000`, `007`),
+tallas (`04-Jun`, `400`, `8.5`, `O/S`), acentos, y las 16 cabeceras que SIAL
+espera **con** el espacio final.
+
+### `repair_mojibake_dataframe` recorria TODAS las columnas, celda a celda
+
+Tambien las numericas, donde un marcador de mojibake no puede existir. En cada
+exportacion, de cada hoja. Medido: **2,33 s y +141 MB por hoja** en el
+Matrixify grande; ahora **0,28 s y +10 MB**.
+
+El descarte es vectorizado y el resultado es identico: una columna sin marcador
+dejaba cada valor tal cual de todos modos. Y ahora se recorre **por POSICION**:
+con dos columnas que se llaman igual, `repaired[nombre]` devolvia un DataFrame.
+
+### `apply(..., axis=1)` armaba un Series por fila para leer dos columnas
+
+| Donde | antes | ahora |
+|---|---:|---:|
+| clave Centry sobre el catalogo (30.000 x 104) | 11,84 s | **0,02 s** |
+| clave de stock sobre el maestro ARTI (200.000) | 1,37 s | 0,28 s |
+| buscadores de los paneles de pendientes | 0,15 s | 0,05 s |
+
+Las tres llaman a **la misma funcion sobre los mismos valores**: lo unico que se
+quita es el Series de pandas que se construia y se tiraba por cada fila.
+
+**Con columnas repetidas se cae a `apply` a proposito**: ahi `row.get(nombre)`
+devuelve un Series y no un valor. Y el buscador solo toma el atajo si TODAS las
+columnas son `object`: si el frame mezcla tipos, el Series de la fila promueve
+(un entero al lado de un decimal sale decimal) y el texto sobre el que se busca
+cambiaria. Hay pruebas de los dos casos.
+
+### El snapshot del job se recorria una vez POR PRODUCTO
+
+`_sync_job_subset_df` recalculaba la serie de claves sobre el frame **entero**
+para sacar las pocas filas de un producto. Con 1.000 productos eran mil pasadas
+completas. Ahora el bloque la calcula **una vez** y la pasa.
+
+Y `_create_sync_job` hacia `pickle.dump(source_df.copy())`: una copia del
+Matrixify entero -cientos de MB- solo para serializarlo. Pickle no la necesita.
+
+### Las caches de disco no se borraban NUNCA
+
+El disco del contenedor es una **cuota fija**: cuando se acaba, la escritura
+falla y la app cae con *"Error running app"* sin decir de que.
+
+- Un catalogo `.pkl` caducado o de otra tienda se **ignoraba** pero se quedaba
+  ocupando. Ahora se borra, y tambien el pickle ilegible -- una escritura
+  cortada tampoco va a servir nunca.
+- Cada proceso de sincronizacion dejaba su registro **y un pickle con el
+  Matrixify entero**, para siempre. Se conservan los 10 mas recientes y se tiran
+  los de mas de 7 dias, con su pickle. Se mira la fecha del ARCHIVO, no la del
+  registro: uno ilegible tambien ocupa.
+
+### `pd.ExcelFile` quedaba abierto, y el libro se parseaba una vez por hoja
+
+Tres sitios abrian el libro sin cerrarlo. Dos ademas hacian
+`pd.ExcelFile(path)` solo para leer `sheet_names` y despues
+`pd.read_excel(path, sheet_name=...)` **por cada hoja**: el archivo se parseaba
+N+1 veces. Ahora se reusa el libro abierto, dentro de un `with`.
+
+### Varios archivos seguidos dejaban uno residente POR SITIO
+
+El prefijo de `read_uploaded_excel_cached` lleva el sitio
+(`complete_input_vans`, `complete_input_rockford`...), asi que pasar por tres
+sitios con un input grande cargado dejaba tres DataFrames vivos, y ninguno se
+soltaba. Ahora se conservan **3** y el cuarto suelta el primero; si esa pantalla
+lo vuelve a pedir, el archivo sigue en el `file_uploader` y se relee. Cuesta una
+lectura, no la memoria del contenedor.
+
+Ademas el anterior se suelta **antes** de leer el nuevo: guardandolo despues,
+los dos convivian mientras se parseaba el segundo.
+
+**El registro va en `session_state`, no en un global.** Streamlit Cloud corre UN
+proceso para todas las personas conectadas: en un global, el archivo que abre
+una haria soltar el de otra.
+
+### Y una hoja rara ya no tumba la descarga
+
+Una hoja que llega como `None`, un nombre vacio, o dos nombres largos que chocan
+al cortarse en los 31 caracteres de Excel (`Duplicate worksheet name`): los tres
+tiraban la pantalla entera. Ahora se escriben vacia, como `Hoja`, y desempatados
+con un numero.
+
+### Lo medido de punta a punta
+
+Carga real de 1.200 modelos (6.000 filas x 91 columnas, mas la hoja Sial):
+
+| | antes | ahora |
+|---|---:|---:|
+| exportar el Excel | 13,08 s | **6,56 s** |
+| exportarlo otra vez (rerun) | 12,17 s | **0,13 s** |
+| RSS pico | 516 MB | **330 MB** |
+
+Cinco archivos seguidos, sin recargar: **13,8 s -> 11,0 s** por archivo y
+**+133 MB -> +87 MB** residentes, planos en los cinco.
+
+**Y la salida es IDENTICA.** Comparadas las 6 hojas antes y despues, en los
+DataFrames y releyendo el Excel: **cero celdas distintas** de 546.000. La unica
+diferencia en todo el trabajo es que un `"=1+1"` que openpyxl **perdia** (volvia
+como NaN) ahora se conserva.
+
+### Lo que NO se toco, y por que
+
+- **`inject_custom_css`**: rearmar su f-string cuesta 0,12 ms. Ya estaba medido.
+- **`complete_sial_df` en la sesion** (191 MB): bajarlo a disco costaba 9 s de
+  I/O por analisis y ya se probo. Es el Pendiente 10, no una regresion.
+- **El `main()` del generador** (`generate_columbia_matrixify.py`) sigue con
+  openpyxl: aplica `cell.style = "Headline 4"`, que xlsxwriter no hace igual, y
+  corre fuera del contenedor. Queda anotado.
+
+`scripts/test_optimizacion_memoria_excel.py` (38 pruebas) fija todo esto; **31
+fallan con el codigo anterior**. Las 7 que pasan en las dos versiones son las
+que exigen que **nada cambie**: ceros iniciales, tallas, cabeceras con espacio y
+el resultado del reparador de mojibake.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -2750,6 +2913,7 @@ python scripts/test_siblings_referencias.py            # 14
 python scripts/test_siblings_tipos.py                  # 20
 python scripts/test_ticket_system.py                   # 28
 python scripts/test_tipos_vestido_y_bloqueos.py       # 24
+python scripts/test_optimizacion_memoria_excel.py       # 38
 ```
 
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes

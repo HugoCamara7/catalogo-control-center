@@ -14992,6 +14992,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button,
         div.st-key-operation_nav_status button,
         div.st-key-operation_nav_supermall button,
+        div.st-key-operation_nav_colecciones button,
         div.st-key-operation_nav_input button,
         div.st-key-operation_nav_tickets button,
         div.st-key-operation_nav_audit button,
@@ -15027,6 +15028,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_status button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_supermall button [data-testid="stMarkdownContainer"],
+        div.st-key-operation_nav_colecciones button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_input button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_tickets button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_audit button [data-testid="stMarkdownContainer"],
@@ -15043,6 +15045,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button p,
         div.st-key-operation_nav_status button p,
         div.st-key-operation_nav_supermall button p,
+        div.st-key-operation_nav_colecciones button p,
         div.st-key-operation_nav_input button p,
         div.st-key-operation_nav_tickets button p,
         div.st-key-operation_nav_audit button p,
@@ -15064,6 +15067,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button::before,
         div.st-key-operation_nav_status button::before,
         div.st-key-operation_nav_supermall button::before,
+        div.st-key-operation_nav_colecciones button::before,
         div.st-key-operation_nav_input button::before,
         div.st-key-operation_nav_tickets button::before,
         div.st-key-operation_nav_audit button::before,
@@ -15095,6 +15099,9 @@ def inject_custom_css(config):
         div.st-key-operation_nav_supermall button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 9l1.5-5h15L21 9'/%3E%3Cpath d='M4 9v11h16V9'/%3E%3Cpath d='M12 12v5'/%3E%3Cpath d='m9.5 14.5 2.5 2.5 2.5-2.5'/%3E%3C/svg%3E") !important;
         }}
+        div.st-key-operation_nav_colecciones button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0l-7.2-7.2A2 2 0 0 1 3 12V4a1 1 0 0 1 1-1h8a2 2 0 0 1 1.4.6l7.2 7.2a2 2 0 0 1 0 2.6z'/%3E%3Cpath d='M7.5 7.5h.01'/%3E%3C/svg%3E") !important;
+        }}
         div.st-key-operation_nav_input button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
         }}
@@ -15124,6 +15131,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button:hover,
         div.st-key-operation_nav_status button:hover,
         div.st-key-operation_nav_supermall button:hover,
+        div.st-key-operation_nav_colecciones button:hover,
         div.st-key-operation_nav_input button:hover,
         div.st-key-operation_nav_tickets button:hover,
         div.st-key-operation_nav_audit button:hover,
@@ -18831,6 +18839,305 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         on_click=log_descarga, args=("Descargar diagnostico KPIs", "render_catalog_kpi_dashboard"),
     )
+
+
+DICCIONARIOS_LABEL = "Diccionarios"
+
+DICCIONARIO_COLECCIONES_PATH = Path("data/colecciones_por_marca.json")
+
+COMANDO_GENERAR_COLECCIONES = "python scripts/generar_diccionario_colecciones.py"
+
+
+@st.cache_data(show_spinner=False)
+def _diccionario_colecciones(mtime_ns, size):
+    """El diccionario del archivo, cacheado por el archivo mismo.
+
+    `mtime_ns` y `size` no se usan dentro: estan en la firma para que
+    regenerar el archivo invalide la cache sola. Con el `stat` DENTRO habria
+    que reiniciar la app para ver el diccionario nuevo -- es la misma regla que
+    `image_data_uri` (seccion 5 septies del contexto).
+    """
+    from engines import colecciones as motor
+
+    return motor.cargar_diccionario(DICCIONARIO_COLECCIONES_PATH)
+
+
+def cargar_diccionario_colecciones():
+    try:
+        stat = DICCIONARIO_COLECCIONES_PATH.stat()
+        firma = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        firma = (0, 0)
+    return _diccionario_colecciones(*firma)
+
+
+def _tabla_colecciones(colecciones):
+    filas = []
+    for coleccion in colecciones:
+        tags = coleccion.get("tags") or []
+        filas.append({
+            "Colección": coleccion.get("titulo", ""),
+            "Handle": coleccion.get("handle", ""),
+            "Se llena": "Automática" if coleccion.get("automatica") else "A mano",
+            "Condición": "Basta una (OR)" if coleccion.get("disyuntiva") else "Todas (AND)",
+            "Tags que la alimentan": ", ".join(tags),
+            "Reglas": len(coleccion.get("reglas") or []),
+            "Productos de la marca": coleccion.get("productos_de_la_marca", 0),
+            "Productos en Shopify": coleccion.get("productos_shopify") or 0,
+            # Una regla por precio o inventario no se puede responder con los
+            # tags. Decir que si se puede seria dar un numero falso.
+            "Se puede evaluar": "Sí" if coleccion.get("evaluable") else "No",
+        })
+    return pd.DataFrame(filas)
+
+
+def _tabla_vocabulario(vocabulario):
+    filas = [
+        {"Familia": familia, "Tag": tag}
+        for familia, tags in sorted((vocabulario or {}).items())
+        for tag in tags
+    ]
+    return pd.DataFrame(filas)
+
+
+def _tabla_tipos_de_prenda():
+    """El diccionario maestro de tipos, entero, tal como lo usa la carga."""
+    from engines import garment_types as tipos
+
+    filas = []
+    for regla in tipos.TIPOS:
+        fila = {
+            "Tipo": regla["tipo"],
+            "Singular": regla["singular"],
+            "Clase": regla["categoria"],
+            "Guía de tallas": regla["grupo_talla"] or "-",
+            "Talla única": "Sí" if regla["talla_unica"] else "No",
+        }
+        for site_key, config in SITE_CONFIGS.items():
+            etiqueta = clean_value(config.get("site_label")) or site_key
+            # Vacio significa que ESE sitio no vende esa prenda. Es
+            # informacion, no un hueco.
+            fila[etiqueta] = regla["sitios"].get(site_key, "")
+        fila["Sinónimos"] = ", ".join(regla["sinonimos"])
+        filas.append(fila)
+    return pd.DataFrame(filas)
+
+
+def _render_probador_de_tags(colecciones, vocabulario):
+    """Que colecciones toca un producto con estos tags.
+
+    Es la pregunta que la pantalla existe para responder: no "cuales hay" sino
+    "que le pongo para que salga ahi".
+    """
+    from engines import colecciones as motor
+
+    st.markdown("##### Probar un producto")
+    st.caption(
+        "Pega los tags separados por coma y te digo en qué colecciones cae. "
+        "No escribe nada: solo evalúa las reglas que ya tiene la tienda."
+    )
+    texto = st.text_area(
+        "Tags del producto",
+        key="colecciones_probador_tags",
+        placeholder="Hiking, Hombre, Vestuario, Casaca, Omni-Tech™",
+        height=80,
+    )
+    tags = [t.strip() for t in re.split(r"[,;\n]", texto or "") if t.strip()]
+    if not tags:
+        return
+    producto = {"tags": tags}
+    dentro, dudosas = motor.colecciones_de_producto(producto, colecciones)
+    por_handle = {c.get("handle", ""): c for c in colecciones}
+    if dentro:
+        st.success(
+            "Cae en %d colección(es): %s"
+            % (len(dentro), ", ".join(por_handle.get(h, {}).get("titulo", h) for h in dentro))
+        )
+    else:
+        st.warning(
+            "No cae en ninguna colección automática. Cargado así, el producto existe "
+            "pero no lo encuentra nadie navegando la tienda."
+        )
+    if dudosas:
+        st.info(
+            "No se puede decidir en %d: %s. Son colecciones que se llenan a mano o que "
+            "tienen reglas por precio o inventario, que los tags no responden."
+            % (len(dudosas), ", ".join(por_handle.get(h, {}).get("titulo", h) for h in dudosas))
+        )
+    clasificados = motor.clasificar_tags(tags, vocabulario)
+    st.dataframe(
+        pd.DataFrame(
+            [{"Familia": f, "Tags": ", ".join(v)} for f, v in clasificados.items() if v]
+        ),
+        use_container_width=True, hide_index=True,
+    )
+    sueltos = clasificados.get("sin_clasificar") or []
+    if sueltos:
+        st.caption(
+            "Sin clasificar: %s. No están en el diccionario de la tienda, así que "
+            "nadie sabe para qué sirven." % ", ".join(sueltos)
+        )
+
+
+def render_diccionario_colecciones():
+    """Las colecciones de cada marca en cada tienda, y qué tags las alimentan.
+
+    En Shopify una coleccion automatica se llena SOLA a partir de una regla, y
+    casi siempre la regla es un TAG. O sea que el tag que escribe la carga
+    decide en que colecciones aparece el producto, y eso no estaba escrito en
+    ninguna parte: habia que abrir Shopify tienda por tienda para saberlo.
+
+    Va por MARCA y no por sitio porque una marca vive en varias tiendas --
+    Columbia se carga en Columbia.pe, Rockford.pe y Supermall.pe -- y cada una
+    tiene sus propias colecciones.
+    """
+    from engines import colecciones as motor
+
+    render_html(
+        """
+        <div class="kpi-hero">
+            <div class="kpi-title">
+                <h2>Diccionarios</h2>
+                <p>Qué colecciones tiene cada marca en cada tienda, qué tags las alimentan, y el diccionario de tipos de prenda con todos sus sinónimos.</p>
+            </div>
+        </div>
+        """
+    )
+
+    datos = cargar_diccionario_colecciones()
+    tab_colecciones, tab_tipos = st.tabs(["Colecciones por marca", "Tipos de prenda"])
+
+    with tab_colecciones:
+        marcas = motor.marcas_del_diccionario(datos)
+        errores = (datos or {}).get("sitios_con_error") or {}
+        if errores:
+            st.warning(
+                "Estas tiendas no se pudieron leer: "
+                + "; ".join(f"{sitio} ({motivo})" for sitio, motivo in sorted(errores.items()))
+                + ". Sus colecciones NO están abajo — que falten aquí no significa que no existan."
+            )
+        if not marcas:
+            st.info(
+                "Todavía no se ha leído ninguna tienda. El diccionario no se escribe a mano: "
+                "se lee de Shopify, porque una lista inventada se leería como cierta."
+            )
+            st.code(COMANDO_GENERAR_COLECCIONES, language="bash")
+            return
+        if datos.get("generado"):
+            st.caption(f"Diccionario generado: {datos['generado']}")
+
+        izquierda, derecha = st.columns(2)
+        with izquierda:
+            marca = st.selectbox("Marca", marcas, key="colecciones_marca")
+        sitios = motor.sitios_de_marca(datos, marca)
+        with derecha:
+            etiquetas = {
+                sitio: (SITE_CONFIGS.get(sitio, {}).get("site_label") or sitio) for sitio in sitios
+            }
+            sitio = st.selectbox(
+                "Tienda", sitios, format_func=lambda s: etiquetas.get(s, s), key="colecciones_sitio"
+            ) if sitios else ""
+        if not sitio:
+            st.info(f"{marca} no tiene ninguna tienda leída todavía.")
+            return
+
+        colecciones = motor.colecciones_de(datos, marca, sitio)
+        vocabulario = motor.vocabulario_de(datos, marca, sitio)
+        if not colecciones:
+            st.info(
+                f"No hay colecciones leídas para {marca} en {etiquetas.get(sitio, sitio)}. "
+                "Corre el generador para leerlas de Shopify."
+            )
+            st.code(f"{COMANDO_GENERAR_COLECCIONES} --sitios {sitio}", language="bash")
+
+        automaticas = [c for c in colecciones if c.get("automatica")]
+        con_tags = [c for c in automaticas if c.get("tags")]
+        tags_unicos = {motor.clave(t) for c in colecciones for t in (c.get("tags") or [])}
+        vacias = [c for c in automaticas if not c.get("productos_de_la_marca")]
+        no_evaluables = [c for c in colecciones if not c.get("evaluable")]
+        tarjetas = [
+            ("Colecciones", len(colecciones), "blue", "&#9670;"),
+            ("Automáticas", len(automaticas), "green", "&#9881;"),
+            ("Se llenan por tag", len(con_tags), "purple", "&#9873;"),
+            ("Tags que las alimentan", len(tags_unicos), "blue", "&#9635;"),
+            ("Sin productos de la marca", len(vacias), "orange", "&#9676;"),
+            ("No evaluables por tags", len(no_evaluables), "orange", "!"),
+        ]
+        render_html(
+            f'<div class="kpi-section-label">{marca} en {etiquetas.get(sitio, sitio)}</div>'
+            '<div class="kpi-card-grid">'
+            + "".join(
+                f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+                f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+                for titulo, valor, tono, icono in tarjetas
+            )
+            + "</div>"
+        )
+
+        tabla = _tabla_colecciones(colecciones)
+        if not tabla.empty:
+            st.dataframe(tabla, use_container_width=True, hide_index=True)
+
+        st.markdown("##### Vocabulario de tags de la tienda")
+        st.caption(
+            "Género, clase y tipo de prenda salen del diccionario maestro y son iguales en las "
+            "seis tiendas. Lo demás — actividades, tecnologías, líneas — es propio de cada "
+            "tienda y se cura a mano: Shopify no sabe que “Hiking” es una actividad."
+        )
+        vocab_df = _tabla_vocabulario(vocabulario)
+        if vocab_df.empty:
+            st.caption("Sin vocabulario curado para esta tienda todavía.")
+        else:
+            st.dataframe(vocab_df, use_container_width=True, hide_index=True)
+
+        _render_probador_de_tags(colecciones, vocabulario)
+
+        hojas = {"Colecciones": tabla, "Vocabulario": vocab_df}
+        st.download_button(
+            "Descargar diccionario de colecciones",
+            data=dataframe_to_excel_bytes(hojas),
+            file_name=f"colecciones_{marca.lower().replace(' ', '_')}_{sitio}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            on_click=log_descarga,
+            args=("Descargar diccionario de colecciones", "render_diccionario_colecciones"),
+        )
+
+    with tab_tipos:
+        st.caption(
+            "El diccionario maestro de tipos de prenda: es el ÚNICO, y de él sale la clase "
+            "del producto, el grupo de guía de tallas y el nombre que usa cada tienda. "
+            "Una columna de sitio vacía significa que esa tienda no vende esa prenda."
+        )
+        tipos_df = _tabla_tipos_de_prenda()
+        buscar = st.text_input(
+            "Buscar un tipo o un sinónimo",
+            key="diccionario_tipos_buscar",
+            placeholder="buzo, hoody, falda, beanie...",
+        )
+        if clean_value(buscar):
+            from engines import garment_types as tipos_engine
+
+            regla = tipos_engine.resolver(buscar)
+            if regla:
+                st.success(
+                    f"“{clean_value(buscar)}” es **{regla['tipo']}** ({regla['categoria']})"
+                    + (f", guía {regla['grupo_talla']}" if regla["grupo_talla"] else "")
+                )
+                tipos_df = tipos_df[tipos_df["Tipo"] == regla["tipo"]]
+            else:
+                st.warning(
+                    f"“{clean_value(buscar)}” no está en el diccionario. En una carga eso se "
+                    "avisa en la validación previa: no se inventa un tipo."
+                )
+        st.dataframe(tipos_df, use_container_width=True, hide_index=True)
+        st.download_button(
+            "Descargar diccionario de tipos de prenda",
+            data=dataframe_to_excel_bytes({"Tipos de prenda": _tabla_tipos_de_prenda()}),
+            file_name="diccionario_tipos_de_prenda.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            on_click=log_descarga,
+            args=("Descargar diccionario de tipos", "render_diccionario_colecciones"),
+        )
 
 
 STATUS_CARGA_LABEL = "Status de carga"
@@ -25489,6 +25796,7 @@ def main():
         "KPIs de catálogo",
         STATUS_CARGA_LABEL,
         SUPERMALL_LABEL,
+        DICCIONARIOS_LABEL,
         "Input comercial",
         "Solicitudes",
         "Carga de catálogo",
@@ -25502,6 +25810,7 @@ def main():
         sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
         sidebar_nav_button(STATUS_CARGA_LABEL, "operation_area_choice", STATUS_CARGA_LABEL, "operation_nav_status")
         sidebar_nav_button(SUPERMALL_LABEL, "operation_area_choice", SUPERMALL_LABEL, "operation_nav_supermall")
+        sidebar_nav_button(DICCIONARIOS_LABEL, "operation_area_choice", DICCIONARIOS_LABEL, "operation_nav_colecciones")
         sidebar_nav_button("Input comercial", "operation_area_choice", "Input comercial", "operation_nav_input")
         sidebar_nav_button("Solicitudes", "operation_area_choice", "Solicitudes", "operation_nav_tickets")
         if can_view_user_activity_log(auth_user):
@@ -25578,6 +25887,10 @@ api_version = "{DEFAULT_API_VERSION}"
         return
     if operation_area == SUPERMALL_LABEL:
         render_carga_supermall()
+        return
+    if operation_area == DICCIONARIOS_LABEL:
+        log_acceso_modulo(DICCIONARIOS_LABEL)
+        render_diccionario_colecciones()
         return
     if operation_area == "Input comercial":
         render_commercial_input_center(actor=ticket_actor)

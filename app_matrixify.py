@@ -6448,7 +6448,8 @@ def matrixify_desde_codigos_modelo_color(codes, brand_config, shopify_config,
                                           productos_origen=None,
                                           origen_matrixify_df=None,
                                           destino_matrixify_df=None,
-                                          maestro=None):
+                                          maestro=None,
+                                          contexto=None):
     """Shopify + BigQuery/ARTI para una lista de codigos Modelo-Color.
 
     Es el primer tramo -identico- de las tres entregas por codigos: el Centry,
@@ -6492,6 +6493,7 @@ def matrixify_desde_codigos_modelo_color(codes, brand_config, shopify_config,
         arti_df,
         brand_config,
         destino_matrixify_df=destino_matrixify_df,
+        contexto=contexto,
     )
     return matrixify_df, master_issues_df, arti_df, arti_source
 
@@ -6719,28 +6721,67 @@ def centry_missing_ean_count(centry_df):
     return safe_int_value(centry_df[column].map(clean_value).eq("").sum())
 
 
-def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, brand_config,
-                                       destino_matrixify_df=None):
-    """El Matrixify de una lista de codigos Modelo-Color.
+def _lookup_por_clave(df, columna="__CENTRY_KEY"):
+    """{clave en mayusculas: primera fila}, sin pasar por `groupby`.
 
-    `shopify_matrixify_df` es el catalogo de ORIGEN: de ahi salen el titulo, la
-    descripcion, el tipo, los tags y los metacampos.
+    Es EXACTAMENTE lo que hacia `for clave, grupo in df.groupby(columna):
+    lookup[clave] = grupo.iloc[0]` -- primera aparicion gana-- pero sin trocear
+    el frame grupo a grupo. Medido en el perfil: ese `groupby` mas el
+    `grupo.iloc[0]` se llevaban 30 de los 58 segundos de una sola llamada,
+    porque cortar 11.000 grupos sobre 102 columnas rebana cada bloque interno
+    una vez por grupo.
 
-    `destino_matrixify_df` es el catalogo de la tienda a la que se va a cargar,
-    y solo se pasa cuando NO es el mismo que el de origen -- o sea, en
-    Supermall. De el salen dos cosas que no pueden venir del origen: el `ID` y
-    el `Handle` con los que se decide si el producto se **crea** o se
-    **actualiza** (los de Vans.pe no valen en Supermall.pe), y los siblings que
-    la tienda destino ya tiene publicados.
+    `drop_duplicates` conserva la primera fila de cada clave y respeta el orden
+    del frame, que es el mismo criterio.
     """
-    codes = [clean_value(code).upper() for code in codes if clean_value(code)]
-    if not codes:
-        return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(columns=["Mod-Col", "Problema"])
+    lookup = {}
+    if df is None or df.empty or columna not in df.columns:
+        return lookup
+    # `.astype(object)` ANTES del bucle, y no es cosmetico: el catalogo mezcla
+    # columnas de texto de pyarrow con columnas `object`, asi que cada
+    # `primeras.iloc[posicion]` tenia que buscar el tipo comun de las 102
+    # columnas para armar la fila. Medido: 9,1 de 23 segundos se iban solo en
+    # `find_common_type`. Con un unico bloque de tipo `object` la fila sale
+    # directa. El tipo comun que pandas calculaba ERA `object`, asi que los
+    # valores son los mismos -- hay una prueba que los compara uno a uno.
+    primeras = df.drop_duplicates(subset=[columna], keep="first").astype(object)
+    for posicion, bruta in enumerate(primeras[columna].to_numpy()):
+        clave = clean_value(bruta).upper()
+        if clave and clave not in lookup:
+            lookup[clave] = primeras.iloc[posicion]
+    return lookup
 
-    issues = []
-    code_set = set(codes)
-    model_only_set = {code for code in codes if "-" not in code}
-    shopify_df = coalesce_duplicate_columns(shopify_matrixify_df).copy() if shopify_matrixify_df is not None else pd.DataFrame()
+
+def preparar_contexto_de_codigos(shopify_matrixify_df, arti_df, brand_config,
+                                 destino_matrixify_df=None):
+    """Todo lo que NO depende de la lista de codigos, calculado una sola vez.
+
+    Por que existe
+    --------------
+    `build_centry_matrixify_from_master` se llama **una vez por bloque**, y la
+    carga de Supermall va en bloques de 200 codigos: con 11.000 codigos son 55
+    llamadas. En cada una se volvia a:
+
+    - copiar y normalizar el catalogo de ORIGEN entero y el del DESTINO entero,
+    - recorrerlos con `forward_fill_product_block` y calcular sus claves,
+    - construir los dos `lookup` producto a producto,
+    - y **copiar y normalizar el maestro ARTI COMPLETO** -- 653.000 filas en
+      produccion -- para quedarse despues con las 200 del bloque.
+
+    Nada de eso depende de los codigos del bloque. Medido con 11.000 codigos:
+    **22,4 s por bloque, o sea 20,5 minutos** de reloj, que es exactamente el
+    "no carga" que se reporto. Calculandolo una vez se paga una sola.
+
+    Lo que SI depende de los codigos -- el filtro del maestro, los siblings de
+    la carga, las filas -- se queda donde estaba, en cada bloque.
+
+    Los frames de este contexto **no se mutan** despues: el maestro se acota con
+    `.copy()` antes de tocarlo. Hay una prueba que lo comprueba.
+    """
+    shopify_df = (
+        coalesce_duplicate_columns(shopify_matrixify_df).copy()
+        if shopify_matrixify_df is not None else pd.DataFrame()
+    )
     if not shopify_df.empty:
         for column in MATRIXIFY_COLUMNS:
             if column not in shopify_df.columns:
@@ -6753,13 +6794,7 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         shopify_df["__CENTRY_KEY"] = centry_keys_de_frame(shopify_df)
     else:
         shopify_df["__CENTRY_KEY"] = pd.Series(dtype=object)
-
-    product_lookup = {}
-    if not shopify_df.empty and "__CENTRY_KEY" in shopify_df.columns:
-        for key, group in shopify_df.groupby("__CENTRY_KEY", sort=False):
-            key = clean_value(key).upper()
-            if key and key not in product_lookup:
-                product_lookup[key] = group.iloc[0]
+    product_lookup = _lookup_por_clave(shopify_df)
 
     # El catalogo del DESTINO. Cuando no se pasa, el destino ES el origen, que
     # es lo que pasa en Centry y en la Carga Sial: el sitio activo es el mismo
@@ -6778,17 +6813,69 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                 ["Title", "Handle", "Metafield: custom.codigo_modelo_color [id]"],
             )
             destino_df["__CENTRY_KEY"] = centry_keys_de_frame(destino_df)
-    destino_lookup = {}
-    if destino_df is not None and not destino_df.empty and "__CENTRY_KEY" in destino_df.columns:
-        for key, group in destino_df.groupby("__CENTRY_KEY", sort=False):
-            key = clean_value(key).upper()
-            if key and key not in destino_lookup:
-                destino_lookup[key] = group.iloc[0]
+    destino_lookup = _lookup_por_clave(destino_df)
+
+    arti = normalize_arti_columns_for_app(arti_df).copy() if arti_df is not None else pd.DataFrame()
+    for column in ("CODINT_MA", "COD MOD COL", "Mod-Col", "TALNUM_MA", "MARCA_MA", "Precio", "CodBarras"):
+        if column not in arti.columns:
+            arti[column] = ""
+    # Los diagnosticos se calculan sobre el maestro ENTERO, asi que dan lo mismo
+    # en todos los bloques. Se guardan y cada bloque los vuelve a anotar, para
+    # que la hoja de Revision salga igual que antes.
+    diagnosticos = [{"Mod-Col": "Diagnostico EAN", "Problema": arti_barcode_diagnostics(arti)}]
+    if arti["CodBarras"].map(clean_value).eq("").all():
+        diagnosticos.append({
+            "Mod-Col": "Diagnostico BigQuery",
+            "Problema": bigquery_barcode_schema_diagnostics(get_bigquery_config()),
+        })
+    arti["__KEY"] = arti["Mod-Col"].where(arti["Mod-Col"].map(clean_value) != "", arti["COD MOD COL"]).map(lambda value: clean_value(value).upper())
+    arti["__MODEL"] = arti["__KEY"].map(lambda value: value.rsplit("-", 1)[0] if "-" in value else value)
+
+    return {
+        "shopify_df": shopify_df,
+        "product_lookup": product_lookup,
+        "destino_df": destino_df,
+        "destino_lookup": destino_lookup,
+        "siblings_publicados": siblings_ya_publicados(destino_df),
+        "arti": arti,
+        "diagnosticos": diagnosticos,
+    }
+
+
+def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, brand_config,
+                                       destino_matrixify_df=None, contexto=None):
+    """El Matrixify de una lista de codigos Modelo-Color.
+
+    `shopify_matrixify_df` es el catalogo de ORIGEN: de ahi salen el titulo, la
+    descripcion, el tipo, los tags y los metacampos.
+
+    `destino_matrixify_df` es el catalogo de la tienda a la que se va a cargar,
+    y solo se pasa cuando NO es el mismo que el de origen -- o sea, en
+    Supermall. De el salen dos cosas que no pueden venir del origen: el `ID` y
+    el `Handle` con los que se decide si el producto se **crea** o se
+    **actualiza** (los de Vans.pe no valen en Supermall.pe), y los siblings que
+    la tienda destino ya tiene publicados.
+    """
+    codes = [clean_value(code).upper() for code in codes if clean_value(code)]
+    if not codes:
+        return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(columns=["Mod-Col", "Problema"])
+
+    contexto = contexto or preparar_contexto_de_codigos(
+        shopify_matrixify_df, arti_df, brand_config,
+        destino_matrixify_df=destino_matrixify_df,
+    )
+    issues = list(contexto["diagnosticos"])
+    code_set = set(codes)
+    model_only_set = {code for code in codes if "-" not in code}
+    shopify_df = contexto["shopify_df"]
+    product_lookup = contexto["product_lookup"]
+    destino_df = contexto["destino_df"]
+    destino_lookup = contexto["destino_lookup"]
+    siblings_publicados = contexto["siblings_publicados"]
 
     # Los SIBLINGS del destino: los colores del mismo modelo que ya viven en
     # esa tienda. Se calculan con la MISMA funcion que la carga completa
     # (`unir_siblings`), no con una regla nueva.
-    siblings_publicados = siblings_ya_publicados(destino_df)
     handles_de_la_carga = {}
     for code in codes:
         modelo = codigo_de_modelo(code)
@@ -6800,15 +6887,7 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             handles_de_la_carga.setdefault(modelo, []).append(handle)
     siblings_por_modelo = unir_siblings(handles_de_la_carga, siblings_publicados)
 
-    arti = normalize_arti_columns_for_app(arti_df).copy() if arti_df is not None else pd.DataFrame()
-    for column in ("CODINT_MA", "COD MOD COL", "Mod-Col", "TALNUM_MA", "MARCA_MA", "Precio", "CodBarras"):
-        if column not in arti.columns:
-            arti[column] = ""
-    issues.append({"Mod-Col": "Diagnostico EAN", "Problema": arti_barcode_diagnostics(arti)})
-    if arti["CodBarras"].map(clean_value).eq("").all():
-        issues.append({"Mod-Col": "Diagnostico BigQuery", "Problema": bigquery_barcode_schema_diagnostics(get_bigquery_config())})
-    arti["__KEY"] = arti["Mod-Col"].where(arti["Mod-Col"].map(clean_value) != "", arti["COD MOD COL"]).map(lambda value: clean_value(value).upper())
-    arti["__MODEL"] = arti["__KEY"].map(lambda value: value.rsplit("-", 1)[0] if "-" in value else value)
+    arti = contexto["arti"]
     allowed = {clean_value(value).upper() for value in brand_config.get("allowed_arti_brands", [])}
     # Primero se acota a los codigos pedidos y DESPUES se filtra por marca: asi
     # se puede decir cuantas tallas de ESOS codigos se cayeron por la marca.
@@ -6848,6 +6927,9 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
 
     rows = []
     avisos_de_talla = []
+    # Fuera del bucle: solo depende de las COLUMNAS del maestro, que no cambian
+    # de un producto a otro. Se rearmaba una vez por modelo-color.
+    resolutor_maestro = centry_resolutor(arti)
     for key, variants in arti.groupby("__KEY", sort=False):
         variants = variants.copy()
         variants = variants[variants["CODINT_MA"].map(clean_value) != ""].copy()
@@ -6949,7 +7031,6 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         # producto que no esta en Shopify salia sin ninguno de los cuatro
         # aunque BigQuery/ARTI los trajera en Material / Cuidado / Tecnologia.
         maestro = variants.iloc[0]
-        resolutor_maestro = centry_resolutor(arti)
         materiality = first_non_empty(
             product_row.get("Metafield: custom.materialidad [single_line_text_field]") if product_row is not None else "",
             _enriquecer("material", [maestro], marca=vendor, resolutor=resolutor_maestro),
@@ -25179,6 +25260,14 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
     destino_df = shopify_products_to_matrixify_df(catalogos.get(carga_supermall.DESTINO) or [])
     origen_df = shopify_products_to_matrixify_df(productos_origen)
     arti_df, arti_source = session_arti_for_app(brand_config)
+    # Los dos catalogos y el maestro se preparan UNA vez, no una por bloque.
+    # Antes cada bloque volvia a copiar y normalizar el catalogo de origen, el
+    # del destino y el maestro ARTI entero -653.000 filas en produccion- para
+    # quedarse despues con los 200 codigos del bloque. Medido con 11.000
+    # codigos: 22,4 s por bloque, o sea 20,5 MINUTOS. Eso era el "no carga".
+    contexto = preparar_contexto_de_codigos(
+        origen_df, arti_df, brand_config, destino_matrixify_df=destino_df,
+    )
 
     partes, revisiones = [], []
     hechos = 0
@@ -25191,6 +25280,7 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
             origen_matrixify_df=origen_df,
             destino_matrixify_df=destino_df,
             maestro=(arti_df, arti_source),
+            contexto=contexto,
         )
         if parte is not None and not parte.empty:
             partes.append(parte)

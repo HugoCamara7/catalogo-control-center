@@ -325,9 +325,24 @@ class TestPantallaCargaParcial(unittest.TestCase):
         Carga Sial -- `fila_destino` es la misma fila que `product_row`."""
         cuerpo = FUENTE_APP[FUENTE_APP.index("def build_centry_matrixify_from_master("):]
         cuerpo = cuerpo[:cuerpo.index("\ndef ", 10)]
-        self.assertIn("destino_df = shopify_df", cuerpo)
         self.assertIn("fila_destino = destino_lookup.get(key)", cuerpo)
         self.assertNotIn('"ID": clean_value(product_row.get("ID"))', cuerpo)
+        # La preparacion de los dos catalogos se saco a `preparar_contexto_de_codigos`
+        # para que no se rehiciera una vez POR BLOQUE (medido: 22,4 s por bloque,
+        # 20,5 minutos con 11.000 codigos). El "sin destino, el destino ES el
+        # origen" se comprueba ahi, que es donde vive ahora.
+        prep = FUENTE_APP[FUENTE_APP.index("def preparar_contexto_de_codigos("):]
+        prep = prep[:prep.index("\ndef ", 10)]
+        self.assertIn("destino_df = shopify_df", prep)
+
+    def test_sin_destino_el_destino_es_el_origen(self):
+        """Comprobado sobre el RESULTADO, no solo leyendo el codigo."""
+        contexto = app.preparar_contexto_de_codigos(
+            pd.DataFrame([{"Handle": "h", "Mod-Col": "AB-1", "ID": "gid://9"}]),
+            pd.DataFrame(), {"label": "X"},
+        )
+        self.assertIs(contexto["destino_df"], contexto["shopify_df"])
+        self.assertEqual(set(contexto["destino_lookup"]), set(contexto["product_lookup"]))
 
 
 if __name__ == "__main__":

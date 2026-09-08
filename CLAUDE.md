@@ -2686,6 +2686,77 @@ el resultado del reparador de mojibake.
 
 ---
 
+## 5 quatervicies. "Lo de Supermall no carga" (septiembre 2026)
+
+Reportado asi, literal. No estaba roto: **tardaba 20 minutos**, que desde la
+pantalla se ve exactamente igual que colgado.
+
+### Todo el trabajo pesado se rehacia una vez POR BLOQUE
+
+La carga de Supermall va en bloques de 200 codigos
+(`SUPERMALL_CODIGOS_POR_BLOQUE`) y llama a
+`build_centry_matrixify_from_master` una vez por bloque. Con 11.000 codigos son
+**55 llamadas**, y en CADA una se volvia a:
+
+- copiar y normalizar el catalogo de **origen** entero y el de **destino**
+  entero, recorrerlos con `forward_fill_product_block` y calcular sus claves;
+- construir los dos `lookup` producto a producto;
+- y **copiar y normalizar el maestro ARTI COMPLETO** -- 653.000 filas en
+  produccion -- para quedarse despues con las 200 filas del bloque.
+
+Nada de eso depende de los codigos del bloque. `supermall_generar` ya sacaba
+del bucle `shopify_products_to_matrixify_df` y el maestro -- su comentario lo
+dice-- pero **la preparacion cara vivia dentro de la funcion llamada**, asi que
+seguia pagandose 55 veces.
+
+Ahora `preparar_contexto_de_codigos` lo calcula **una vez** y el contexto se
+pasa a cada bloque. Lo que SI depende de los codigos -- el acotado del maestro,
+los siblings de la carga, las filas -- se queda en cada bloque, donde estaba.
+
+**Los frames del contexto no se mutan**: el maestro se acota con `.copy()`
+antes de tocarlo. Hay una prueba que lo comprueba, porque si un bloque tocara
+el maestro compartido el siguiente veria otra cosa.
+
+### Y dos cosas mas del perfil
+
+- **`groupby` + `.iloc[0]` para armar los `lookup`**: 30 de los 58 segundos de
+  una sola llamada. Trocear 11.000 grupos sobre 102 columnas rebana cada bloque
+  interno una vez por grupo. `_lookup_por_clave` usa `drop_duplicates`, que
+  conserva la primera fila de cada clave y respeta el orden -- **el mismo
+  criterio**, sin trocear.
+- **`.astype(object)` antes del bucle de filas**, y no es cosmetico: el
+  catalogo mezcla columnas de texto de pyarrow con columnas `object`, asi que
+  cada `iloc[posicion]` buscaba el tipo comun de las 102 columnas. Solo
+  `find_common_type` eran **9,1 de 23 segundos**. El tipo comun que pandas
+  calculaba ERA `object`, asi que los valores no cambian.
+- **`centry_resolutor(arti)` estaba DENTRO del bucle por producto** y solo
+  depende de las COLUMNAS del maestro: se rearmaba una vez por modelo-color.
+
+### Lo medido
+
+Con 11.000 codigos, catalogo de origen de 55.000 filas y destino de 15.000:
+
+| | antes | ahora |
+|---|---:|---:|
+| preparacion | (no existia) | **2,2 s**, una vez |
+| un bloque de 200 codigos | 22,4 s | **2,0 s** |
+| **los 55 bloques** | **25,4 min** | **1,9 min** |
+
+Una llamada **suelta** -- que es como la usan Centry y la Carga Sial parcial --
+baja de 27,7 s a **4,4 s**, asi que esas dos pantallas tambien van mas rapido
+sin haberlas tocado.
+
+**La salida es IDENTICA.** Comparadas las tres hojas (Matrixify, Revision y
+Carga Sial) antes y despues, con casos borde a proposito -- productos sin
+nombre, sin tipo, sin genero, sin marca, filas descartadas por marca y sin
+EAN --: **cero celdas distintas**.
+
+`scripts/test_carga_supermall_rendimiento.py` (13 pruebas) lo fija; **las 13
+fallan con el codigo anterior**. Una parte los mismos codigos en bloques y
+exige que el resultado sea el mismo que de una sola vez.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -2889,7 +2960,7 @@ python scripts/test_engines_stock.py                   # 35
 python scripts/test_engines_ticket_flow.py             # 55
 python scripts/test_engines_load_status.py             # 37
 python scripts/test_engines_video_media.py             # 106
-python scripts/test_carga_sial_parcial.py               # 28
+python scripts/test_carga_sial_parcial.py               # 30
 python scripts/test_lectura_catalogo.py                # 30
 python scripts/test_espejo_supermall.py                # 35
 python scripts/test_mantenedor_tallas.py               # 41
@@ -2914,6 +2985,7 @@ python scripts/test_siblings_tipos.py                  # 20
 python scripts/test_ticket_system.py                   # 28
 python scripts/test_tipos_vestido_y_bloqueos.py       # 24
 python scripts/test_optimizacion_memoria_excel.py       # 38
+python scripts/test_carga_supermall_rendimiento.py     # 13
 ```
 
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes

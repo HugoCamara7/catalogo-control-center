@@ -319,12 +319,6 @@ def brand_from_variants(variants):
     return next(iter(brands_by_normalized.values()), ""), sorted(brands_by_normalized)
 
 
-def variants_are_mountain_hardwear(variants):
-    if variants is None or variants.empty or "MARCA_MA" not in variants.columns:
-        return False
-    return variants["MARCA_MA"].map(normalize_brand_name).eq("MOUNTAIN HARDWEAR").any()
-
-
 def get_brand_config(site="columbia", overrides=None):
     key = _config_clean(site).lower().replace(" ", "_") or "columbia"
     base = SITE_CONFIGS.get(key, SITE_CONFIGS["columbia"]).copy()
@@ -895,11 +889,6 @@ def build_tags_para_producto(product, brand_config=None):
 
     return _catalogo_tags_a_texto(
         _catalogo_build_tags(fila, sitio, clase_de_tipo=clase_de))
-
-
-def format_tags(value):
-    """Normaliza los tags del input al formato de Shopify (separados por coma)."""
-    return ", ".join(split_pipe_items(value))
 
 
 def split_technology_items(value):
@@ -1545,16 +1534,6 @@ def boolean_mask(series, predicate):
 
 def _row_blocks_zero_size(row):
     return category_blocks_zero_size(row)
-
-
-def row_is_mountain_hardwear(row):
-    values = [
-        row.get("Vendor"),
-        row.get("Metafield: custom.marca [single_line_text_field]"),
-        row.get("Marca"),
-        row.get("Brand"),
-    ]
-    return any(normalize_brand_name(value) == "MOUNTAIN HARDWEAR" for value in values if clean(value))
 
 
 def final_variant_filter(output_df, sial_df, issues_df):

@@ -221,15 +221,6 @@ def _pares_cacheados(texto):
     return tuple(pares)
 
 
-def pares_de_texto(texto):
-    """Los pares "Etiqueta: Valor" de un listado separado por | o salto.
-
-    Con cache: el mismo Body se consulta una vez por cada atributo y por cada
-    variante del producto.
-    """
-    return list(_pares_cacheados(_texto(texto)))
-
-
 def desde_etiquetas(textos, etiquetas):
     """(valor, origen) buscando "Etiqueta : Valor" dentro de textos libres."""
     buscadas = [normalizar(etiqueta) for etiqueta in etiquetas]

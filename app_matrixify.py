@@ -1,4 +1,4 @@
-﻿import io
+import io
 import base64
 import hmac
 import json
@@ -977,10 +977,6 @@ def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=0):
     st.session_state[f"{state_prefix}_fingerprint"] = fingerprint
     st.session_state[f"{state_prefix}_df"] = df
     return df
-
-
-def read_excel_path(path):
-    return pd.read_excel(path, dtype=object).dropna(how="all")
 
 
 def get_bigquery_config():
@@ -2388,6 +2384,67 @@ def configured_commercial_brands():
     return [brands[key] for key in sorted(brands)]
 
 
+def marcas_por_sitio_configuradas():
+    """{site_key: [marcas que vende ese sitio]}, con el nombre que se muestra.
+
+    Es el ultimo respaldo para leer la marca de un producto: `custom.marca`
+    primero, un tag conocido despues y, si no hay ninguno, la unica marca del
+    sitio. Columbia.pe solo vende COLUMBIA, asi que un producto suyo sin
+    metacampo y sin tag no es "Sin marca" -- es Columbia. Rockford.pe vende
+    cuatro y ahi no hay respuesta, que tambien es correcto.
+    """
+    return {
+        site_key: [
+            commercial_brand_display_name(marca)
+            for marca in config.get("allowed_arti_brands", [])
+        ]
+        for site_key, config in SITE_CONFIGS.items()
+    }
+
+
+def vendors_de_los_sitios():
+    """Todos los `Vendor` que usan las tiendas, para poder DESCARTARLOS.
+
+    En los productos que crea esta app el vendor es el de la tienda
+    (`rockfordpe`, `columbiape`), el mismo para todas sus marcas: por eso el
+    vendor no sirve para saber la marca y manda el metacampo `custom.marca`.
+
+    Pero en los productos cargados por fuera de la app el vendor SI trae la
+    marca de verdad -- es de donde salen los "Massimo Cerutti" del catalogo.
+    Sabiendo cuales son los vendors de las tiendas se puede usar el resto:
+    `engines/load_status` descarta estos y se queda con el vendor cuando dice
+    algo distinto.
+    """
+    vendors = []
+    for config in SITE_CONFIGS.values():
+        for valor in [config.get("vendor")] + list(config.get("legacy_vendors") or []):
+            valor = clean_value(valor)
+            if valor and valor not in vendors:
+                vendors.append(valor)
+    return vendors
+
+
+def sitio_propio_de_cada_marca():
+    """{marca: site_key de SU tienda}, para los sitios que llevan su nombre.
+
+    Columbia se vende en Columbia.pe y tambien en Rockford.pe: el mismo
+    producto esta en las dos webs y de la consolidacion tiene que salir UNA
+    ficha. La que vale es la de Columbia.pe -- la tienda de la marca, la que su
+    equipo mantiene. Sin esto la ficha salia de la web que cayera primero en el
+    orden de `SITE_CONFIGS`, que no es una razon.
+
+    Los sitios ESPEJO quedan fuera: Supermall.pe no es la tienda de nadie.
+    """
+    propios = {}
+    for site_key, config in SITE_CONFIGS.items():
+        if config.get("es_espejo"):
+            continue
+        etiqueta = commercial_brand_display_name(config.get("label"))
+        if etiqueta:
+            propios.setdefault(etiqueta, site_key)
+    return propios
+
+
 def sites_for_commercial_brand(brand_name):
     """Los sitios donde una marca comercial puede pedir que se publique.
 
@@ -2537,43 +2594,6 @@ def commercial_input_columns_for_brand(brand_name):
     base_columns.extend(["Tags adicionales", "Fecha publicacion"])
     site_columns = [publication_column_for_site(site["site_label"]) for site in sites_for_commercial_brand(brand_name)]
     return base_columns + site_columns
-
-
-def _commercial_values_rows(brand_name):
-    sites = sites_for_commercial_brand(brand_name)
-    allowed_classes = commercial_allowed_classes_for_brand(brand_name)
-    profile = commercial_input_profile_for_brand(brand_name)
-    values = []
-    for item in ["Hombre", "Mujer", "Unisex", "Nino", "Nina", "Bebe"]:
-        values.append({"Lista": "Genero", "Valor": item, "Marca": brand_name, "Observacion": ""})
-    for item in ["Adulto", "Kids", "Junior", "Bebe"]:
-        values.append({"Lista": "Grupo de edad", "Valor": item, "Marca": brand_name, "Observacion": ""})
-    for item in allowed_classes:
-        values.append({"Lista": "Clase", "Valor": item, "Marca": brand_name, "Observacion": ""})
-        values.append({"Lista": "Categoria", "Valor": item, "Marca": brand_name, "Observacion": ""})
-    for item in ["SI", "NO"]:
-        values.append({"Lista": "Publicacion sitio", "Valor": item, "Marca": brand_name, "Observacion": "Obligatorio por sitio."})
-    for rule in commercial_product_type_rules_for_brand(brand_name):
-        values.append({"Lista": "Tipo de prenda", "Valor": rule.get("plural") or rule.get("normalized"), "Marca": brand_name, "Observacion": rule.get("category", "")})
-    for rule in SIZE_GUIDE_RULES:
-        guide = clean_value(rule.get("guide"))
-        if guide:
-            values.append({"Lista": "Guia de talla", "Valor": guide, "Marca": rule.get("brand", ""), "Observacion": rule.get("family", "")})
-    if normalize_brand_name(brand_name) == "COLUMBIA":
-        for item in ["Omni-Tech", "Omni-Heat Infinity", "Omni-Shield", "Omni-Grip", "OutDry", "Techlite", "Thermarator"]:
-            values.append({"Lista": "Tecnologia", "Valor": item, "Marca": "Columbia", "Observacion": "Solo si aplica."})
-    elif profile.get("technology_example"):
-        values.append(
-            {
-                "Lista": "Tecnologia",
-                "Valor": profile["technology_example"].split("|")[0],
-                "Marca": brand_name,
-                "Observacion": "Ejemplo comercial; no limita otros valores validos del sitio.",
-            }
-        )
-    for site in sites:
-        values.append({"Lista": "Sitios asociados", "Valor": site["site_label"], "Marca": brand_name, "Observacion": publication_column_for_site(site["site_label"])})
-    return pd.DataFrame(values)
 
 
 def _commercial_dictionary_rows(brand_name):
@@ -2753,245 +2773,6 @@ def _commercial_input_blank_df(brand_name, rows=100):
         if column.startswith("PUBLICAR_"):
             df[column] = "NO"
     return df
-
-
-def _build_brand_commercial_input_workbook_legacy(brand_name):
-    from openpyxl.comments import Comment
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    from openpyxl.worksheet.datavalidation import DataValidation
-    from openpyxl.utils import get_column_letter
-
-    brand_label = commercial_brand_display_name(brand_name)
-    profile = commercial_input_profile_for_brand(brand_label)
-    sites = sites_for_commercial_brand(brand_label)
-    columns = commercial_input_columns_for_brand(brand_label)
-    site_columns = [column for column in columns if column.startswith("PUBLICAR_")]
-    allowed_classes = commercial_allowed_classes_for_brand(brand_label)
-    dictionary_df = _commercial_dictionary_rows(brand_label)
-    values_df = _commercial_values_rows(brand_label)
-    examples_df = _commercial_examples_df(brand_label)
-    separated_fields = [
-        field
-        for field in ["Caracteristicas", "Materiales", "Cuidados", "Tecnologia", "Tags adicionales"]
-        if field in columns
-    ]
-    separated_fields_text = ", ".join(separated_fields)
-    automatic_tag_fields = "marca, Mod-Col, tipo de prenda, color y clase"
-    if "Tecnologia" in columns:
-        automatic_tag_fields += ", ademas de las tecnologias informadas"
-    guide_rows = [
-        {"Seccion": "Resumen", "Campo": "Marca", "Detalle": brand_label},
-        {"Seccion": "Resumen", "Campo": "Version formato", "Detalle": COMMERCIAL_INPUT_TEMPLATE_VERSION},
-        {"Seccion": "Resumen", "Campo": "Sitio Shopify", "Detalle": profile.get("site_profile", "")},
-        {
-            "Seccion": "Resumen",
-            "Campo": "Campos adaptados",
-            "Detalle": (
-                f"Columnas comerciales adicionales para {brand_label}: "
-                f"{', '.join(profile.get('extra_columns', [])) or 'ninguna'}."
-            ),
-        },
-        {"Seccion": "Regla clave", "Campo": "Maximo de hojas", "Detalle": "El archivo operativo usa solo INPUT_COMERCIAL, GUIA y DICCIONARIO."},
-        {"Seccion": "Regla clave", "Campo": "Tallas", "Detalle": "Brand no llena tallas. La app crea variantes desde BigQuery/ARTI y excluye tallas invalidas."},
-        {"Seccion": "Regla clave", "Campo": "Clases permitidas", "Detalle": f"Para {brand_label} solo se permiten: {', '.join(allowed_classes)}."},
-        {"Seccion": "Regla clave", "Campo": "Body HTML", "Detalle": "Brand no llena Body HTML. La app lo genera desde Descripcion, Caracteristicas, Materiales y Cuidados."},
-        {"Seccion": "Regla clave", "Campo": "Metafields automaticos", "Detalle": "Brand no llena siblings, logos/GID, guia de tallas, categoria, subcategoria, grupo color ni relaciones. La app los calcula o conserva."},
-        {"Seccion": "Regla clave", "Campo": "Tecnologia", "Detalle": "El Brand informa nombres comerciales. Para Columbia la app resuelve custom.tecnologia y los GID de custom.logo; para los demas sitios usa la definicion propia del metafield."},
-        {"Seccion": "Regla clave", "Campo": "Tags tradicionales", "Detalle": f"Brand no llena tags tradicionales. La app agrega automaticamente {automatic_tag_fields}."},
-        {"Seccion": "Regla clave", "Campo": "Tags adicionales", "Detalle": "Brand solo completa tags comerciales extra en Tags adicionales, separados por |."},
-        {"Seccion": "Publicacion", "Campo": "Columnas PUBLICAR_*", "Detalle": "Usar SI para publicar/considerar ese sitio y NO para mantener apagado/no publicar en ese sitio."},
-        {"Seccion": "Publicacion", "Campo": "Carga completa", "Detalle": "La app debe respetar las columnas SI/NO por sitio aunque el input incluya todos los modelos."},
-        {"Seccion": "Separadores", "Campo": "Listas", "Detalle": f"Usar solamente | en: {separated_fields_text}. No usar comas, punto y coma ni saltos de linea como separador."},
-        {"Seccion": "Separadores", "Campo": "Que hace la app", "Detalle": "El brand escribe valores simples separados por |. Catalog Control Center los convierte internamente en bullets para Body HTML y en listas compatibles con Shopify."},
-        {"Seccion": "Automatico", "Campo": "Informacion fuente", "Detalle": "La app completa o valida Cod Mod Col, tipo de prenda, color, clase y reglas web desde sus fuentes. La guia de tallas tambien es automatica."},
-    ]
-    sites_df = pd.DataFrame(
-        [
-            {
-                "Tipo": "Sitio",
-                "Nombre exacto": publication_column_for_site(site.get("site_label", "")),
-                "Nombre visible": site.get("site_label", ""),
-                "Descripcion": f"Dominio: {site.get('store_domain', '')}",
-                "Valores permitidos": "SI|NO",
-                "Responsable": "Usuario eCommerce",
-            }
-            for site in sites
-        ]
-    )
-    values_compact_df = values_df.rename(
-        columns={
-            "Lista": "Tipo",
-            "Valor": "Nombre exacto",
-            "Marca": "Nombre visible",
-            "Observacion": "Descripcion",
-        }
-    )
-    values_compact_df["Valores permitidos"] = ""
-    values_compact_df["Responsable"] = "Catalog Control Center"
-    metafields_compact_df = commercial_input_metafields_for_brand(brand_label).rename(
-        columns={
-            "Nombre visible": "Nombre exacto",
-            "Namespace": "Nombre visible",
-            "Regla": "Descripcion",
-            "Responsable": "Responsable",
-        }
-    )
-    if not metafields_compact_df.empty:
-        metafields_compact_df["Tipo"] = "Metafield"
-        metafields_compact_df["Valores permitidos"] = metafields_compact_df.get("Tipo de dato", "")
-    dictionary_compact = pd.concat(
-        [
-            dictionary_df.assign(Tipo="Columna input").rename(
-                columns={
-                    "Nombre exacto": "Nombre exacto",
-                    "Nombre visible": "Nombre visible",
-                    "Descripcion": "Descripcion",
-                    "Valores permitidos": "Valores permitidos",
-                    "Responsable de llenado": "Responsable",
-                }
-            )[["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]],
-            sites_df[["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]],
-            values_compact_df[["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]],
-            metafields_compact_df.reindex(columns=["Tipo", "Nombre exacto", "Nombre visible", "Descripcion", "Valores permitidos", "Responsable"]),
-        ],
-        ignore_index=True,
-    )
-    sheets = {
-        "INPUT_COMERCIAL": _commercial_input_blank_df(brand_label),
-        # La guia replica el input real: un ejemplo por clase y cada dato en su propia celda.
-        "GUIA": examples_df,
-        "DICCIONARIO": dictionary_compact,
-    }
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for sheet_name, df in sheets.items():
-            repair_mojibake_dataframe(df).to_excel(writer, index=False, sheet_name=sheet_name[:31])
-        wb = writer.book
-        guide_ws = wb["GUIA"]
-        guide_last_column = max(1, len(columns))
-        guide_ws.insert_rows(1, amount=4)
-        guide_ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=guide_last_column)
-        guide_ws.cell(1, 1).value = f"EJEMPLO COMPLETADO - {brand_label}"
-        guide_ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=guide_last_column)
-        guide_ws.cell(2, 1).value = (
-            "Cada fila es un ejemplo listo para copiar: una celda por campo. "
-            f"Usa solamente | para separar: {separated_fields_text}."
-        )
-        guide_header_row = 5
-        guide_first_example_row = guide_header_row + 1
-        guide_last_example_row = guide_header_row + max(1, len(examples_df))
-        rules_title_row = guide_last_example_row + 2
-        guide_ws.merge_cells(
-            start_row=rules_title_row,
-            start_column=1,
-            end_row=rules_title_row,
-            end_column=guide_last_column,
-        )
-        guide_ws.cell(rules_title_row, 1).value = "REGLAS DE LLENADO"
-        rules_header_row = rules_title_row + 1
-        for column_index, title in enumerate(["Seccion", "Campo", "Detalle"], start=1):
-            guide_ws.cell(rules_header_row, column_index).value = title
-        for row_offset, guide_row in enumerate(guide_rows, start=1):
-            target_row = rules_header_row + row_offset
-            guide_ws.cell(target_row, 1).value = clean_value(guide_row.get("Seccion"))
-            guide_ws.cell(target_row, 2).value = clean_value(guide_row.get("Campo"))
-            guide_ws.cell(target_row, 3).value = clean_value(guide_row.get("Detalle"))
-        thin = Side(style="thin", color="D9E2EF")
-        header_fill = PatternFill("solid", fgColor="DCEBFF")
-        required_fill = PatternFill("solid", fgColor="FFE8E8")
-        optional_fill = PatternFill("solid", fgColor="EAF7EF")
-        auto_fill = PatternFill("solid", fgColor="F4F6FA")
-        for ws in wb.worksheets:
-            ws.freeze_panes = "A2"
-            ws.sheet_view.showGridLines = False
-            for row in ws.iter_rows():
-                for cell in row:
-                    cell.alignment = Alignment(vertical="top", wrap_text=True)
-                    cell.border = Border(top=thin, left=thin, right=thin, bottom=thin)
-            for cell in ws[1]:
-                cell.font = Font(bold=True, color="001B44")
-                cell.fill = header_fill
-                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            for column_index in range(1, ws.max_column + 1):
-                letter = get_column_letter(column_index)
-                header_value = ws.cell(row=1, column=column_index).value
-                width = min(max(len(clean_value(header_value)) + 4, 16), 42)
-                ws.column_dimensions[letter].width = width
-        guide_ws.freeze_panes = f"A{guide_first_example_row}"
-        guide_ws.auto_filter.ref = (
-            f"A{guide_header_row}:{get_column_letter(guide_last_column)}{guide_last_example_row}"
-        )
-        guide_ws.row_dimensions[1].height = 30
-        guide_ws.row_dimensions[2].height = 42
-        guide_ws.cell(1, 1).font = Font(bold=True, color="FFFFFF", size=15)
-        guide_ws.cell(1, 1).fill = PatternFill("solid", fgColor="005AA8")
-        guide_ws.cell(1, 1).alignment = Alignment(horizontal="left", vertical="center")
-        guide_ws.cell(2, 1).font = Font(color="334155", size=11)
-        guide_ws.cell(2, 1).fill = PatternFill("solid", fgColor="EAF3FF")
-        guide_ws.cell(2, 1).alignment = Alignment(vertical="center", wrap_text=True)
-        for cell in guide_ws[guide_header_row]:
-            cell.font = Font(bold=True, color="001B44")
-            cell.fill = header_fill
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        guide_ws.row_dimensions[guide_header_row].height = 36
-        for row_index in range(guide_first_example_row, guide_last_example_row + 1):
-            guide_ws.row_dimensions[row_index].height = 58
-            for cell in guide_ws[row_index]:
-                cell.alignment = Alignment(vertical="top", wrap_text=True)
-        guide_ws.cell(rules_title_row, 1).font = Font(bold=True, color="FFFFFF", size=12)
-        guide_ws.cell(rules_title_row, 1).fill = PatternFill("solid", fgColor="172554")
-        guide_ws.cell(rules_title_row, 1).alignment = Alignment(vertical="center")
-        guide_ws.row_dimensions[rules_title_row].height = 26
-        for cell in guide_ws[rules_header_row][:3]:
-            cell.font = Font(bold=True, color="001B44")
-            cell.fill = header_fill
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        guide_ws.column_dimensions["A"].width = 24
-        guide_ws.column_dimensions["B"].width = 22
-        guide_ws.column_dimensions["C"].width = 28
-        for column_index in range(4, guide_last_column + 1):
-            guide_ws.column_dimensions[get_column_letter(column_index)].width = 24
-        ws = wb["INPUT_COMERCIAL"]
-        ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{COMMERCIAL_INPUT_MAX_ROWS + 1}"
-        ws.row_dimensions[1].height = 34
-        column_positions = {cell.value: cell.column for cell in ws[1]}
-        for column in columns:
-            col_idx = column_positions.get(column)
-            if not col_idx:
-                continue
-            header = ws.cell(row=1, column=col_idx)
-            if column in COMMERCIAL_INPUT_REQUIRED_COLUMNS or column.startswith("PUBLICAR_"):
-                header.fill = required_fill
-            elif column in {"Marca"}:
-                header.fill = auto_fill
-            else:
-                header.fill = optional_fill
-            header.comment = Comment(clean_value(dictionary_df.loc[dictionary_df["Nombre exacto"].eq(column), "Descripcion"].head(1).squeeze()), "Catalog Control Center")
-        si_no_validation = DataValidation(type="list", formula1='"SI,NO"', allow_blank=False)
-        ws.add_data_validation(si_no_validation)
-        for column in site_columns:
-            col_letter = get_column_letter(column_positions[column])
-            si_no_validation.add(f"{col_letter}2:{col_letter}{COMMERCIAL_INPUT_MAX_ROWS + 1}")
-        for list_name, target_column in [
-            ("Genero", "Genero"),
-            ("Grupo de edad", "Grupo de edad"),
-            ("Clase", "Clase"),
-            ("Categoria", "Categoria"),
-            ("Tipo de prenda", "Tipo de prenda"),
-            ("Guia de talla", "Guia de talla"),
-        ]:
-            if target_column not in column_positions:
-                continue
-            values = values_df.loc[values_df["Lista"].eq(list_name), "Valor"].dropna().astype(str).drop_duplicates().tolist()
-            if not values:
-                continue
-            options = ",".join(values[:80])
-            validation = DataValidation(type="list", formula1=f'"{options}"', allow_blank=True)
-            ws.add_data_validation(validation)
-            col_letter = get_column_letter(column_positions[target_column])
-            validation.add(f"{col_letter}2:{col_letter}{COMMERCIAL_INPUT_MAX_ROWS + 1}")
-    buffer.seek(0)
-    return buffer
 
 
 def _commercial_brand_fill_guide_df(brand_name):
@@ -9145,22 +8926,6 @@ def stock_units_from_concat_tienda(value, store_code):
     return max(candidates)
 
 
-def ecomm_row_stock_units(row, store_column):
-    store_code = normalize_warehouse_code(row.get(store_column))
-    stock_tiendas = safe_float_value(row.get("stock_tiendas"))
-    stock_bodega = safe_float_value(row.get("stock_bodega"))
-    stock_total = safe_float_value(row.get("stock_total"))
-    if store_code == "320":
-        value = stock_tiendas + stock_bodega
-    else:
-        value = stock_tiendas
-    if value <= 0 and stock_total > 0:
-        value = stock_total
-    if value <= 0 and "CONCAT_TIENDA" in getattr(row, "index", []):
-        value = stock_units_from_concat_tienda(row.get("CONCAT_TIENDA"), store_code)
-    return max(0, value)
-
-
 def ecomm_stock_units_series(stock, store_column):
     if stock.empty:
         return pd.Series(dtype=float)
@@ -11072,31 +10837,6 @@ def _image_url_candidates(value):
     return list(dict.fromkeys([url for url in (converted, normalized, original) if url]))
 
 
-def _url_is_reachable_image(url, timeout=8):
-    headers = {"User-Agent": "Mozilla/5.0", "Range": "bytes=0-512"}
-    for method in ("HEAD", "GET"):
-        request = Request(url, method=method, headers=headers)
-        try:
-            with urlopen(request, timeout=timeout) as response:
-                content_type = clean_value(response.headers.get("Content-Type")).lower()
-                return response.status < 400 and content_type.startswith("image/")
-        except HTTPError as exc:
-            if exc.code in (403, 405) and method == "HEAD":
-                continue
-            return False
-        except (URLError, TimeoutError, OSError):
-            return False
-    return False
-
-
-def _first_reachable_image_url(value):
-    candidates = _image_url_candidates(value)
-    for url in candidates:
-        if _url_is_reachable_image(url):
-            return url, ""
-    return "", candidates[0] if candidates else clean_value(value)
-
-
 def _download_image_bytes(value):
     last_error = ""
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -11890,33 +11630,6 @@ def _sync_product_photos_direct(shopify_config, product_gid, image_urls, existin
     return message
 
 
-def _media_status_summary(media_statuses):
-    ready = []
-    failed = []
-    pending = []
-    for media in media_statuses or []:
-        status = clean_value(media.get("status")).upper()
-        if status == "READY":
-            ready.append(media)
-        elif status == "FAILED":
-            failed.append(media)
-        else:
-            pending.append(media)
-    return ready, failed, pending
-
-
-def _media_error_text(media):
-    errors = media.get("mediaErrors") or []
-    if not errors:
-        return clean_value(media.get("status")) or "sin detalle"
-    messages = []
-    for error in errors[:2]:
-        detail = clean_value(error.get("message")) or clean_value(error.get("details")) or clean_value(error.get("code"))
-        if detail:
-            messages.append(detail)
-    return "; ".join(messages) if messages else "sin detalle"
-
-
 def _metafield_value_for_api(column, value, shopify_config=None, field_type=None):
     text = clean_value(value)
     field_type = clean_value(field_type) or _metafield_type_from_column(column)
@@ -12164,38 +11877,6 @@ def _missing_variant_inputs(
     return variants
 
 
-def _all_variant_inputs(
-    product_variant_rows,
-    option_id=None,
-    option_name=None,
-    fallback_price=None,
-    fallback_compare_at_price=None,
-    force_option_name=False,
-):
-    variants = []
-    seen_keys = set()
-    for _, variant_row in product_variant_rows.iterrows():
-        sku = clean_value(variant_row.get("Variant SKU"))
-        size = clean_value(variant_row.get("Option1 Value"))
-        if not size:
-            continue
-        dedupe_key = (sku.upper(), size.upper())
-        if dedupe_key in seen_keys:
-            continue
-        payload = _variant_bulk_input_from_row(
-            variant_row,
-            option_id=option_id,
-            option_name=option_name,
-            fallback_price=fallback_price,
-            fallback_compare_at_price=fallback_compare_at_price,
-            force_option_name=force_option_name,
-        )
-        if payload:
-            variants.append(payload)
-            seen_keys.add(dedupe_key)
-    return variants
-
-
 def _size_option_from_product_data(product_data, fallback_name="Talla"):
     options = product_data.get("options") or []
     fallback = clean_value(fallback_name).lower()
@@ -12206,15 +11887,6 @@ def _size_option_from_product_data(product_data, fallback_name="Talla"):
         if clean_value(option.get("name")).lower() in ("talla", "size", "title"):
             return option
     return options[0] if options else {}
-
-
-def _existing_sizes_from_product_data(product_data, option_name):
-    sizes = set()
-    for variant in ((product_data.get("variants") or {}).get("nodes")) or []:
-        size = _selected_option_value(variant, option_name)
-        if size:
-            sizes.update(_size_lookup_keys(size))
-    return sizes
 
 
 def _price_fallback_from_product_data(product_data):
@@ -17868,24 +17540,6 @@ def render_sidebar_brand_card(config):
     )
 
 
-def render_active_site_card(config):
-    brand_name = escape(clean_value(config.get("brand_name")) or "Sitio")
-    brand_src = image_data_uri(resolve_logo_path(config.get("logo_path") or config.get("logo", "")))
-    logo_html = (
-        f'<img src="{brand_src}" alt="{brand_name}">'
-        if brand_src
-        else f'<span>{brand_name[:2].upper()}</span>'
-    )
-    render_html(
-        f"""
-        <div class="active-site-card">
-            <div class="active-site-logo">{logo_html}</div>
-        </div>
-        """,
-        sidebar=True,
-    )
-
-
 def render_allowed_brands_card(brand_config):
     allowed_brands = list(brand_config["allowed_arti_brands"])
     primary_brand = brand_config["label"].upper()
@@ -17990,10 +17644,6 @@ def render_top_header(config):
         </div>
         """,
     )
-
-
-def render_header(brand_config=None):
-    render_top_header(get_site_config(brand_config or get_brand_config()))
 
 
 def render_stepper(config, current_step=1):
@@ -18250,16 +17900,6 @@ def render_base_status_card(setup_rows):
             <div class="base-status-grid">{"".join(cards)}</div>
         </div>
         """
-    )
-
-
-def render_input_upload_card():
-    st.markdown(
-        """
-        <h2>Input comercial</h2>
-        <p>Sube el archivo comercial para analizar productos, variantes, precios y estructura Sial. Arrastra tu archivo o seleccionalo; formatos permitidos: .xlsx, .xls.</p>
-        """,
-        unsafe_allow_html=True,
     )
 
 
@@ -19295,6 +18935,8 @@ def construir_status_de_carga(catalogos, solicitudes):
         clase_de_tipo=_clase_de_tipo_para_status(),
         marcas_conocidas=configured_commercial_brands(),
         etiquetas_de_sitio=etiquetas,
+        marcas_por_sitio=marcas_por_sitio_configuradas(),
+        vendors_de_sitio=vendors_de_los_sitios(),
     )
     sitios = [etiquetas[key] for key in SITE_CONFIGS if key in catalogos]
 
@@ -19311,7 +18953,9 @@ def construir_status_de_carga(catalogos, solicitudes):
         "matriz": status_carga.matriz_marcas_por_sitio(filas, sitios),
         "clases": status_carga.resumen_por_clase(filas),
         "visibilidad": status_carga.estado_de_visibilidad(filas),
-        "no_visibles": status_carga.productos_no_visibles(filas),
+        # Ya como DataFrame: es de las dos tablas grandes del panel y se
+        # dibuja en cada rerun (ver `_tabla_status`).
+        "no_visibles": _tabla_status(status_carga.productos_no_visibles(filas)),
         "registro": status_carga.registro_de_cargas(solicitudes, estado_legible),
         "avance": status_carga.resumen_de_solicitudes(solicitudes, estado_legible, finales),
         "por_estado": status_carga.solicitudes_por_estado(solicitudes, estado_legible, orden),
@@ -19329,9 +18973,14 @@ def espejo_de_supermall(catalogos, etiquetas):
         catalogos,
         etiquetas_de_sitio=etiquetas,
         marcas_conocidas=configured_commercial_brands(),
+        marcas_por_sitio=marcas_por_sitio_configuradas(),
+        vendors_de_sitio=vendors_de_los_sitios(),
     )
     return {
         "filas": comparado["filas"],
+        # El detalle producto por producto, ya convertido: son decenas de miles
+        # de filas y la pestana se redibuja en cada rerun del Status de carga.
+        "tabla": _tabla_status(comparado["filas"]),
         "resumen": comparado["resumen"],
         "por_marca": espejo.por_marca(comparado["filas"]),
         "codigos": espejo.codigos_a_cargar(comparado["filas"]),
@@ -19339,6 +18988,16 @@ def espejo_de_supermall(catalogos, etiquetas):
 
 
 def _tabla_status(datos):
+    """La tabla como DataFrame. Un DataFrame ya armado pasa TAL CUAL.
+
+    Streamlit ejecuta el cuerpo de las SEIS pestanas del Status de carga en
+    cada rerun, asi que rehacer aqui el DataFrame del detalle -- decenas de
+    miles de filas del espejo, y otro tanto de los no visibles -- costaba ese
+    trabajo entero en cada clic de la pantalla, y el resultado era identico.
+    Las grandes se arman UNA vez, al actualizar el status.
+    """
+    if isinstance(datos, pd.DataFrame):
+        return datos
     return pd.DataFrame(datos) if datos else pd.DataFrame()
 
 
@@ -19426,7 +19085,7 @@ def render_espejo_supermall(datos):
         )
 
     st.markdown("#### Detalle producto por producto")
-    detalle = _tabla_status(filas)
+    detalle = _tabla_status(datos.get("tabla"))
     if not detalle.empty:
         st.dataframe(
             detalle.head(ESPEJO_DETALLE_FILAS),
@@ -19582,7 +19241,7 @@ def render_status_de_carga(ticket_actor):
         "Registro de cargas": _tabla_status(tablas["registro"]),
         "Avance por marca": _tabla_status(tablas["avance"]),
         "Solicitudes por estado": _tabla_status(tablas["por_estado"]),
-        "Espejo Supermall": _tabla_status((tablas.get("espejo") or {}).get("filas")),
+        "Espejo Supermall": _tabla_status((tablas.get("espejo") or {}).get("tabla")),
         "Espejo por marca": _tabla_status((tablas.get("espejo") or {}).get("por_marca")),
     }
     st.download_button(
@@ -20127,21 +19786,6 @@ def log_user_activity(action, detail="", user=None, site_key="", module="", extr
     except Exception:
         # La auditoria nunca debe bloquear login, carga o sincronizacion.
         return
-
-
-def read_user_activity_log(limit=300):
-    try:
-        eventos = get_audit_service().all_events()
-    except Exception:
-        eventos = []
-    if not eventos:
-        return pd.DataFrame(columns=USER_ACTIVITY_LOG_COLUMNS)
-    # all_events devuelve del mas reciente al mas antiguo; se conserva el orden
-    # cronologico ascendente que esperaban los consumidores actuales.
-    eventos = list(reversed(eventos))[-max(int(limit), 1):]
-    records = [{column: evento.get(column, "") for column in USER_ACTIVITY_LOG_COLUMNS}
-               for evento in eventos]
-    return pd.DataFrame(records, columns=USER_ACTIVITY_LOG_COLUMNS)
 
 
 def render_sidebar_account_card(username=None):
@@ -21036,29 +20680,6 @@ def require_login():
     return False
 
 
-def sidebar_card_choice(key, options, default, icons=None):
-    icons = icons or {}
-    if key not in st.session_state or st.session_state[key] not in options:
-        st.session_state[key] = default
-    selected = st.session_state[key]
-    for option in options:
-        active_class = " active" if option == selected else ""
-        icon = icons.get(option, "")
-        st.sidebar.markdown(
-            f"""
-            <div class="sidebar-choice-preview{active_class}">
-                <span>{escape(icon)}</span>
-                <strong>{escape(option)}</strong>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.sidebar.button(option, key=f"{key}_{slugify(option)}", help=option):
-            st.session_state[key] = option
-            st.rerun()
-    return st.session_state[key]
-
-
 def sidebar_nav_button(label, state_key, value, button_key, extra_state=None):
     selected = st.session_state.get(state_key) == value
     if selected:
@@ -21327,29 +20948,6 @@ def _ticket_summary_value(summary_df, indicator):
         return 0
     matches = summary_df[summary_df["Indicador"].astype(str).eq(indicator)]
     return int(matches.iloc[0].get("Valor", 0) or 0) if not matches.empty else 0
-
-
-def _ticket_table(tickets):
-    rows = []
-    for ticket in tickets:
-        rows.append(
-            {
-                "Ticket": ticket.get("code"),
-                "Fecha": clean_value(ticket.get("created_at")).replace("T", " ")[:16],
-                "Marca": ticket.get("brand"),
-                "Solicitante": ticket.get("requester"),
-                "Carga": "Completa" if ticket.get("load_type") == "complete" else "Parcial",
-                "Sitios": ", ".join(ticket.get("sites", [])),
-                "Productos": int(ticket.get("summary", {}).get("products", 0)),
-                "Prioridad": PRIORITY_LABELS.get(ticket.get("priority"), ticket.get("priority")),
-                "Responsable": ticket.get("assignee") or "Sin asignar",
-                "Antigüedad": f"{ticket_age_hours(ticket):.0f} h",
-                "Estado": STATE_LABELS.get(ticket.get("status"), ticket.get("status")),
-                "Vencido": "Sí" if ticket_is_overdue(ticket) else "No",
-                "Acción": "Abrir solicitud",
-            }
-        )
-    return pd.DataFrame(rows)
 
 
 FULL_LOAD_TICKET_STATES = {
@@ -24838,6 +24436,12 @@ def supermall_consolidar_origen(catalogos, codigos=()):
     """La mejor ficha de cada codigo, con todos los sitios en la mano.
 
     El paso que faltaba entre "que le falta a Supermall" y "generar la carga".
+
+    Se le pasan las marcas de cada sitio y el sitio propio de cada marca: sin
+    lo primero, todo el catalogo antiguo sale "Sin marca" y el panel del hueco
+    -- que reparte el trabajo POR marca -- no dice nada; sin lo segundo, un
+    producto de Columbia que esta en Columbia.pe y en Rockford.pe toma su ficha
+    de la web que caiga primero en el orden de `SITE_CONFIGS`.
     """
     etiquetas = {k: clean_value(c.get("site_label")) or k for k, c in SITE_CONFIGS.items()}
     return carga_supermall.consolidar(
@@ -24846,6 +24450,9 @@ def supermall_consolidar_origen(catalogos, codigos=()):
         etiquetas_de_sitio=etiquetas,
         marcas_conocidas=configured_commercial_brands(),
         orden_de_sitios=list(SITE_CONFIGS),
+        marcas_por_sitio=marcas_por_sitio_configuradas(),
+        sitio_de_marca=sitio_propio_de_cada_marca(),
+        vendors_de_sitio=vendors_de_los_sitios(),
     )
 
 
@@ -24860,8 +24467,14 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
     Se procesa por BLOQUES: con miles de codigos, una pasada unica que se cae a
     la mitad no deja constancia de nada.
     """
-    productos_origen = carga_supermall.productos_para_matrixify(fichas)
-    codigos = carga_supermall.codigos_cargables(fichas)
+    # Solo lo que FALTA. Ahora la consolidacion mira el catalogo entero de las
+    # demas webs -- para que el panel pueda repartir el total entre los cuatro
+    # estados -- asi que si la generacion tomara todo lo cargable reescribiria
+    # la ficha de miles de productos que ya estan en Supermall sin que nadie lo
+    # haya pedido. Es la misma regla que ya sigue el espejo.
+    situaciones = (carga_supermall.FALTA_CARGAR,)
+    productos_origen = carga_supermall.productos_para_matrixify(fichas, situaciones)
+    codigos = carga_supermall.codigos_cargables(fichas, situaciones)
     destino_df = shopify_products_to_matrixify_df(catalogos.get(carga_supermall.DESTINO) or [])
     origen_df = shopify_products_to_matrixify_df(productos_origen)
     arti_df, arti_source = session_arti_for_app(brand_config)
@@ -25044,17 +24657,29 @@ def render_carga_supermall():
     # --- 1. Que se va a cargar -------------------------------------------
     st.markdown('<div class="section-card"><h2>1. Qué se va a cargar</h2>', unsafe_allow_html=True)
     st.caption(
-        "Se leen los catálogos de **todos los sitios a la vez** y se restan los que ya están "
-        "en Supermall. Es la misma lectura que usa Status de carga, así que si ya la hiciste "
-        "en esta sesión no cuesta esperar otra vez."
+        "Se leen los catálogos de **todos los sitios a la vez** y se compara cada producto "
+        "contra el de Supermall. Es la misma lectura que usa Status de carga, así que si ya "
+        "la hiciste en esta sesión no cuesta esperar otra vez."
     )
     columna_modo, columna_excel = st.columns([1, 1], gap="large")
     with columna_modo:
+        # Antes la primera opcion era "Los que faltan en Supermall" y filtraba
+        # los codigos ANTES de consolidar, con la lista del espejo. Eso dejaba
+        # el panel de abajo incapaz de decir nada: de las cuatro situaciones
+        # solo podia salir "Falta cargar", asi que "consolidados", "se pueden
+        # cargar" y "se crean" daban siempre el MISMO numero y la cobertura
+        # siempre 0 %. Ahora se consolida TODO y la situacion de cada producto
+        # es un resultado, no un filtro previo. La carga sigue llevandose solo
+        # lo que falta.
         modo = st.radio(
             "Qué códigos",
-            ["Los que faltan en Supermall", "Una lista mía"],
+            ["Todo lo que hay en las demás webs", "Una lista mía"],
             key="supermall_modo",
-            help="Lo que falta sale de la resta entre los demás sitios y Supermall.",
+            help=(
+                "Con la primera opción se revisa el catálogo entero de los demás sitios y se "
+                "reparte entre lo que ya está visible en Supermall, lo cargado sin publicar, lo "
+                "que falta y lo que no se puede cargar. El archivo se genera solo con lo que falta."
+            ),
         )
         actualizar = st.checkbox(
             "Volver a leer los catálogos",
@@ -25080,11 +24705,23 @@ def render_carga_supermall():
             catalogos, estado_sitios = cargar_catalogos_de_todos_los_sitios(
                 force_refresh=bool(actualizar)
             )
-        if modo == "Los que faltan en Supermall":
-            etiquetas = {k: clean_value(c.get("site_label")) or k for k, c in SITE_CONFIGS.items()}
-            codigos_pedidos = espejo_de_supermall(catalogos, etiquetas)["codigos"]
+        if modo != "Una lista mía":
+            codigos_pedidos = []
         with st.spinner("Consolidando la información de las distintas webs..."):
             consolidado = supermall_consolidar_origen(catalogos, codigos_pedidos)
+            # La tabla y el hueco se calculan UNA vez, aqui, y no en cada
+            # rerun. Streamlit reejecuta el script entero en cada clic y esta
+            # pantalla tiene cuatro controles: con el catalogo completo, rehacer
+            # `filas_para_tabla` mas su DataFrame costaba 0,24 s medidos POR
+            # CLIC, y no cambia nada entre uno y otro. Es lo mismo que ya se
+            # hizo con `resumen_centry_para_pantalla`.
+            consolidado["tabla"] = pd.DataFrame(
+                carga_supermall.filas_para_tabla(consolidado["fichas"]))
+            consolidado["hueco"] = carga_supermall.hueco_por_marca(consolidado["fichas"])
+            consolidado["totales_hueco"] = carga_supermall.totales_del_hueco(
+                consolidado["hueco"])
+            consolidado["por_cargar"] = carga_supermall.codigos_cargables(
+                consolidado["fichas"], (carga_supermall.FALTA_CARGAR,))
         st.session_state["supermall_consolidado"] = consolidado
         st.session_state["supermall_catalogos"] = catalogos
         st.session_state["supermall_estado_sitios"] = estado_sitios
@@ -25101,11 +24738,27 @@ def render_carga_supermall():
         return
     fichas = consolidado["fichas"]
     if not fichas:
-        st.info("No hay productos en las demás webs que Supermall no tenga ya.")
+        st.info(
+            "La consolidación no devolvió ningún producto. Con una lista propia, revisa que "
+            "los códigos existan en alguna de las otras webs; si no, es que ningún catálogo "
+            "se pudo leer — mira el detalle de los sitios."
+        )
         return
 
     estado_sitios = st.session_state.get("supermall_estado_sitios") or []
     caidos = [e for e in estado_sitios if e.get("Estado") != "Leido"]
+    if estado_sitios:
+        # La tabla entera, con el DETALLE. Antes el aviso decia solo
+        # "Patagonia.pe (Error), Supermall.pe (Error)" y el motivo -- que en
+        # produccion era un HTTP 401 por token vencido -- no se veia en ninguna
+        # parte de esta pantalla: habia que ir al Dashboard del sitio a
+        # buscarlo. Un error sin su motivo no se puede arreglar.
+        with st.expander(
+            f"Catálogos leídos: {len(estado_sitios) - len(caidos)} de {len(estado_sitios)} sitios"
+            + (f" · {len(caidos)} con problema" if caidos else ""),
+            expanded=bool(caidos),
+        ):
+            st.dataframe(pd.DataFrame(estado_sitios), use_container_width=True, hide_index=True)
     if caidos:
         st.warning(
             "**No se pudieron leer todos los sitios**, así que la consolidación va con menos "
@@ -25114,15 +24767,41 @@ def render_carga_supermall():
             + ". Los productos que solo existan en esos sitios no aparecen aquí."
         )
 
+    # El destino AUSENTE no es el destino VACIO. Con el catalogo de Supermall
+    # sin leer, TODO sale como "falta cargar" y la pantalla diria que hay que
+    # cargar el catalogo entero; generar esa carga crearia miles de productos
+    # que ya existen. Se corta aqui, no se avisa y se sigue.
+    if not consolidado["resumen"].get("destino_leido", True):
+        detalle = next(
+            (clean_value(e.get("Detalle")) for e in estado_sitios
+             if e.get("Sitio") == clean_value(SITE_CONFIGS[espejo_key].get("site_label"))),
+            "",
+        )
+        st.error(
+            "**No se pudo leer el catálogo de Supermall.pe, así que no se puede comparar "
+            "contra nada.** Sin él, todos los productos saldrían como \"falta cargar\" aunque "
+            "ya estuvieran cargados, y generar esa carga crearía por duplicado lo que ya "
+            "existe."
+            + (f"\n\nLo que respondió Shopify: `{detalle}`" if detalle else "")
+            + "\n\nRevisa `[shopify_sites.supermall]` en Secrets (dominio y "
+            "`admin_api_access_token`) y vuelve a analizar."
+        )
+        return
+
     # --- 2. Que sale -------------------------------------------------------
     st.markdown('<div class="section-card"><h2>2. Qué sale de la consolidación</h2>', unsafe_allow_html=True)
     resumen = consolidado["resumen"]
+    # Las cinco tarjetas REPARTEN el total y suman el total. Antes eran
+    # "consolidados / se pueden cargar / se crean / se actualizan / bloqueados"
+    # y las tres primeras daban el mismo numero, porque la lista llegaba ya
+    # filtrada a lo que falta: tres tarjetas para un solo dato, y "se
+    # actualizan" clavado en 0.
     tarjetas = [
-        ("Productos consolidados", resumen["Productos consolidados"], "blue", "&#9633;"),
-        ("Se pueden cargar", resumen["Se pueden cargar"], "green", "&#10003;"),
-        ("Se crean", resumen["Se crean"], "purple", "+"),
-        ("Se actualizan", resumen["Se actualizan"], "blue", "&#8635;"),
-        ("Bloqueados", resumen["Bloqueados"], "orange", "!"),
+        ("Productos en las demás webs", resumen["Productos consolidados"], "blue", "&#9633;"),
+        (carga_supermall.YA_VISIBLE, resumen[carga_supermall.YA_VISIBLE], "green", "&#10003;"),
+        (carga_supermall.SIN_PUBLICAR, resumen[carga_supermall.SIN_PUBLICAR], "orange", "&#9678;"),
+        (carga_supermall.FALTA_CARGAR, resumen[carga_supermall.FALTA_CARGAR], "purple", "+"),
+        (carga_supermall.NO_CARGABLE, resumen[carga_supermall.NO_CARGABLE], "orange", "!"),
     ]
     render_html(
         '<div class="kpi-card-grid">'
@@ -25134,16 +24813,26 @@ def render_carga_supermall():
         + "</div>"
     )
     st.caption(
-        "Cada campo se toma de la primera web que lo tenga, mirando primero donde el producto "
-        "está **prendido y visible**. Ningún sitio manda sobre otro: Supermall no tiene marca "
-        "propia, las lleva todas. La columna **Origen por campo** dice de dónde salió cada dato."
+        f"**{resumen['Marcas']:,} marcas** · **{resumen['En mas de una web']:,} productos "
+        f"están en más de una web** (se cuentan una sola vez y la ficha se toma de la tienda "
+        f"de su marca) · **{resumen['Sin marca']:,} sin marca identificada**. "
+        "Cada campo se toma de la primera web que lo tenga, mirando primero la tienda propia "
+        "de la marca y después dónde está **prendido y visible**. La columna **Origen por "
+        "campo** dice de dónde salió cada dato."
     )
+    if resumen["Sin marca"]:
+        st.caption(
+            f"Los {resumen['Sin marca']:,} sin marca no tienen el metacampo `custom.marca`, "
+            "ni un tag de marca conocida, y están en una web que vende varias marcas "
+            "(Rockford.pe, HushPuppies.pe). Se cargan igual; lo que no se puede es contarlos "
+            "en su marca."
+        )
 
     # El hueco marca por marca, ANTES de cargar. Es la pregunta "que le falta a
     # Supermall comparado con las otras marcas", y se responde con las fichas
     # que ya estan consolidadas: no cuesta ninguna lectura extra.
-    hueco = carga_supermall.hueco_por_marca(fichas)
-    totales_hueco = carga_supermall.totales_del_hueco(hueco)
+    hueco = consolidado["hueco"]
+    totales_hueco = consolidado["totales_hueco"]
     st.markdown("#### Dónde está el hueco, marca por marca")
     st.caption(
         f"De los **{totales_hueco['Total']:,} productos** que existen en las otras webs, "
@@ -25153,11 +24842,35 @@ def render_carga_supermall():
     render_hueco_por_marca(hueco, totales_hueco)
     with st.expander(f"Ver la tabla con las {len(hueco):,} marcas"):
         st.dataframe(pd.DataFrame(hueco), use_container_width=True, hide_index=True)
-    tabla = pd.DataFrame(carga_supermall.filas_para_tabla(fichas))
-    solo_problemas = st.checkbox(
-        "Ver solo lo que tiene bloqueos o avisos", key="supermall_solo_problemas",
-    )
-    vista = tabla[tabla["Bloqueos"].ne("") | tabla["Avisos"].ne("")] if solo_problemas else tabla
+    tabla = consolidado["tabla"]
+    # Los dos filtros son de LECTURA: acotan lo que se dibuja, nunca lo que se
+    # genera. La tabla lleva ahora el catalogo entero de las demas webs, y sin
+    # poder acotarla por situacion o por marca no se puede responder "que le
+    # falta a Sorel" sin bajar el Excel.
+    st.markdown("#### Producto por producto")
+    columna_situacion, columna_marca, columna_problemas = st.columns([2, 2, 1], gap="medium")
+    with columna_situacion:
+        situaciones = st.multiselect(
+            "Situación", list(carga_supermall.SEGMENTOS), key="supermall_filtro_situacion",
+            placeholder="Todas",
+        )
+    with columna_marca:
+        marcas = st.multiselect(
+            "Marca", sorted(tabla["Marca"].dropna().unique()) if not tabla.empty else [],
+            key="supermall_filtro_marca", placeholder="Todas",
+        )
+    with columna_problemas:
+        solo_problemas = st.checkbox(
+            "Solo con bloqueos o avisos", key="supermall_solo_problemas",
+        )
+    vista = tabla
+    if situaciones:
+        vista = vista[vista["Situacion"].isin(situaciones)]
+    if marcas:
+        vista = vista[vista["Marca"].isin(marcas)]
+    if solo_problemas:
+        vista = vista[vista["Bloqueos"].ne("") | vista["Avisos"].ne("")]
+    st.caption(f"{len(vista):,} de {len(tabla):,} productos.")
     st.dataframe(vista.head(SUPERMALL_FILAS_VISTA), use_container_width=True, height=400, hide_index=True)
     if len(vista) > SUPERMALL_FILAS_VISTA:
         st.caption(f"Se muestran {SUPERMALL_FILAS_VISTA:,} de {len(vista):,} filas. El Excel las lleva todas.")
@@ -25171,12 +24884,28 @@ def render_carga_supermall():
 
     # --- 3. Generar --------------------------------------------------------
     st.markdown('<div class="section-card"><h2>3. Generar la carga</h2>', unsafe_allow_html=True)
+    por_cargar = consolidado["por_cargar"]
+    st.markdown(
+        f"El archivo lleva **{len(por_cargar):,} códigos**: solo los de "
+        f"**{carga_supermall.FALTA_CARGAR}**."
+    )
+    st.caption(
+        f"Los **{resumen[carga_supermall.SIN_PUBLICAR]:,} cargados sin publicar** quedan fuera "
+        "a propósito: esos se publican en Shopify, no se recargan — recargarlos les "
+        f"reescribiría la ficha sin que nadie lo pida. Los **{resumen[carga_supermall.YA_VISIBLE]:,} "
+        f"ya visibles** tampoco entran, y los **{resumen[carga_supermall.NO_CARGABLE]:,} que no se "
+        "pueden cargar** están listados arriba con su motivo."
+    )
     st.info(
         f"**Cómo entra en Supermall.pe:** activo y publicado · **sin precio** (lo sincroniza el "
         f"ERP) · con siblings · bodega SIAL "
         f"{', '.join(brand_config.get('sial_active_columns', [])) or 'sin definir'} · el calzado "
         "de las marcas con guía registrada, convertido a tallas PE."
     )
+    if not por_cargar:
+        st.success("No falta nada por cargar en Supermall.pe con los códigos analizados.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
     if st.button("Generar la carga de Supermall", type="primary", key="supermall_generar"):
         catalogos = st.session_state.get("supermall_catalogos") or {}
         barra = st.progress(0.0, text="Armando...")

@@ -4,8 +4,9 @@ Por que existe
 --------------
 El orden de las tallas lo decidian TRES criterios distintos en el repositorio
 -uno en `generate_columbia_matrixify`, otro en `app_matrixify` y una copia
-muerta en `engines/normalize`- y ninguno de los tres entendia mas que tres
-formas: letra de una tabla de doce, numero puro y `numero/numero`.
+muerta en `engines/normalize` (borrada en septiembre de 2026, no la importaba
+nadie)- y ninguno de los tres entendia mas que tres formas: letra de una tabla
+de doce, numero puro y `numero/numero`.
 
 Todo lo demas caia en un cajon que se ordenaba **alfabeticamente**. Medido
 sobre el maestro real (`data/arti.zip`, 653.431 filas), eso deja **361 de los

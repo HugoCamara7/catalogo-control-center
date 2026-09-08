@@ -88,12 +88,78 @@ def _texto(valor):
     return "" if valor is None else str(valor).strip()
 
 
+def _clave_texto(valor):
+    return _texto(valor).casefold()
+
+
+class _Candidato:
+    """Un producto en un sitio concreto, con su marca ya resuelta.
+
+    Antes esto era una tupla `(etiqueta, producto)` y la marca se resolvia
+    despues, sobre el producto suelto. Eso perdia el sitio, que es justo el
+    ultimo respaldo para leerla: un producto de Columbia.pe sin metacampo y sin
+    tag solo se puede saber que es Columbia porque esta en Columbia.pe.
+    """
+
+    __slots__ = ("site_key", "etiqueta", "producto", "marca")
+
+    def __init__(self, site_key, etiqueta, producto, marca):
+        self.site_key = site_key
+        self.etiqueta = etiqueta
+        self.producto = producto
+        self.marca = marca
+
+
 def _primero_no_vacio(candidatos):
     """El primer valor con contenido, y de que sitio salio."""
     for sitio, valor in candidatos:
         if _texto(valor):
             return _texto(valor), sitio
     return "", ""
+
+
+def _marca_del_grupo(candidatos):
+    """La marca del producto, mirando TODAS las webs donde esta.
+
+    `marca_de_producto` nunca devuelve vacio: cuando no la sabe devuelve la
+    cadena "Sin marca". Tomando "el primer valor no vacio" del grupo, ese
+    centinela GANABA -- un producto sin metacampo en la primera web salia "Sin
+    marca" aunque la segunda lo tuviera perfectamente etiquetado. Aqui se
+    salta el centinela y solo se cae en el cuando ninguna web sabe la marca.
+    """
+    for candidato in candidatos:
+        if candidato.marca and candidato.marca != SIN_MARCA:
+            return candidato.marca
+    return SIN_MARCA
+
+
+def _orden_de_candidatos(candidatos, marca, sitio_de_marca, posicion):
+    """En que orden se miran las webs de un mismo producto.
+
+    Tres criterios, en este orden:
+
+    1. **El sitio PROPIO de la marca primero.** Columbia se vende en
+       Columbia.pe y tambien en Rockford.pe; un producto de Columbia esta en
+       las dos y hay que quedarse con UNA ficha. La que vale es la de
+       Columbia.pe: es la tienda de la marca, la que su equipo mantiene, y la
+       que lleva la ficha completa. Sin este criterio la ficha salia de la web
+       que cayera primero en el orden de `SITE_CONFIGS`, o sea de Columbia.pe
+       o de Rockford.pe segun el alfabeto, que no es una razon.
+    2. **Prendido y visible antes que apagado**, porque ese es el que alguien
+       reviso de verdad.
+    3. **El orden declarado** (`SITE_CONFIGS`) como desempate final, nunca el
+       de llegada: una consolidacion que cambia en cada ejecucion no se puede
+       comparar con la anterior.
+    """
+    propio = sitio_de_marca.get(_clave_texto(marca), "")
+    return sorted(
+        candidatos,
+        key=lambda c: (
+            0 if propio and c.site_key == propio else 1,
+            0 if estado_web(c.producto) == PRENDIDO else 1,
+            posicion.get(c.site_key, len(posicion)),
+        ),
+    )
 
 
 def _orden_de_sitios(catalogos_por_sitio, orden_declarado=()):
@@ -116,7 +182,9 @@ def _orden_de_sitios(catalogos_por_sitio, orden_declarado=()):
 
 
 def consolidar(catalogos_por_sitio, codigos=(), destino=DESTINO,
-               etiquetas_de_sitio=None, marcas_conocidas=(), orden_de_sitios=()):
+               etiquetas_de_sitio=None, marcas_conocidas=(), orden_de_sitios=(),
+               marcas_por_sitio=None, sitio_de_marca=None, destino_leido=None,
+               vendors_de_sitio=()):
     """La mejor ficha de cada codigo, con el parte de de donde salio cada campo.
 
     `codigos` acota a una lista (la que entrega el espejo). Vacia = todos los
@@ -129,11 +197,27 @@ def consolidar(catalogos_por_sitio, codigos=(), destino=DESTINO,
     - `Sitios de origen` y `Estado en Supermall`,
     - `Bloqueos` y `Avisos`, que es lo que la pantalla tiene que ensenar antes
       de dejar generar nada.
+
+    `marcas_por_sitio` ({site_key: [marcas]}) es el ultimo respaldo para leer
+    la marca: en un sitio de una sola marca, un producto sin metacampo y sin
+    tag es de esa marca. `sitio_de_marca` ({marca: site_key}) dice cual es el
+    sitio PROPIO de cada marca -- ver `_orden_de_candidatos`.
+
+    `destino_leido` distingue el destino AUSENTE del destino VACIO. Si el
+    catalogo de Supermall no se pudo leer, todo saldria como "Crear" y eso se
+    leeria como "hay que cargar el catalogo entero"; peor todavia, generar esa
+    carga crearia productos que ya existen. Viaja en `resumen["destino_leido"]`
+    para que la pantalla corte.
     """
     catalogos_por_sitio = catalogos_por_sitio or {}
     etiquetas_de_sitio = etiquetas_de_sitio or {}
+    marcas_por_sitio = dict(marcas_por_sitio or {})
+    sitio_de_marca = {_clave_texto(m): s for m, s in (sitio_de_marca or {}).items()}
+    if destino_leido is None:
+        destino_leido = destino in catalogos_por_sitio
     pedidos = {_texto(c).upper() for c in codigos or [] if _texto(c)}
     sitios = _orden_de_sitios(catalogos_por_sitio, orden_de_sitios)
+    posicion = {site_key: indice for indice, site_key in enumerate(sitios)}
 
     en_destino = {}
     for producto in catalogos_por_sitio.get(destino) or []:
@@ -141,12 +225,13 @@ def consolidar(catalogos_por_sitio, codigos=(), destino=DESTINO,
         if clave:
             en_destino[clave] = producto
 
-    # Se agrupa por identidad. Dentro de cada grupo, los productos van en el
-    # orden de `sitios`, y los PRENDIDOS primero: a igualdad de dato manda el
-    # sitio donde el producto esta visible de verdad.
+    # Se agrupa por identidad -- el mismo Modelo-Color en Columbia.pe y en
+    # Rockford.pe es UN producto, no dos. El orden dentro del grupo lo decide
+    # `_orden_de_candidatos`, ya con la marca resuelta.
     grupos = {}
     for site_key in sitios:
         etiqueta = _texto(etiquetas_de_sitio.get(site_key)) or site_key
+        del_sitio = marcas_por_sitio.get(site_key) or ()
         for producto in catalogos_por_sitio.get(site_key) or []:
             clave = clave_de_producto(producto)
             if not clave:
@@ -154,34 +239,44 @@ def consolidar(catalogos_por_sitio, codigos=(), destino=DESTINO,
             codigo = modelo_color(producto)
             if pedidos and codigo.upper() not in pedidos and clave.upper() not in pedidos:
                 continue
-            grupos.setdefault(clave, []).append((etiqueta, producto))
+            marca = marca_de_producto(
+                producto, marcas_conocidas, del_sitio, vendors_de_sitio)
+            grupos.setdefault(clave, []).append(
+                _Candidato(site_key, etiqueta, producto, marca))
 
     fichas = []
     for clave, candidatos in grupos.items():
-        candidatos.sort(key=lambda par: 0 if estado_web(par[1]) == PRENDIDO else 1)
-        fichas.append(_ficha(clave, candidatos, en_destino, marcas_conocidas))
+        marca = _marca_del_grupo(candidatos)
+        candidatos = _orden_de_candidatos(candidatos, marca, sitio_de_marca, posicion)
+        fichas.append(_ficha(clave, candidatos, en_destino, marca))
 
     fichas.sort(key=lambda f: (f["Mod-Col"] or f["Clave"]))
-    return {"fichas": fichas, "resumen": resumen(fichas)}
+    return {"fichas": fichas, "resumen": resumen(fichas, destino_leido=destino_leido)}
 
 
-def _ficha(clave, candidatos, en_destino, marcas_conocidas):
-    principal = candidatos[0][1]
+def _ficha(clave, candidatos, en_destino, marca):
+    principal = candidatos[0].producto
     codigo = ""
-    for _etiqueta, producto in candidatos:
-        codigo = modelo_color(producto)
+    for candidato in candidatos:
+        codigo = modelo_color(candidato.producto)
         if codigo:
             break
 
     ficha = {
         "Clave": clave,
         "Mod-Col": codigo,
-        "Sitios de origen": ", ".join(dict.fromkeys(e for e, _ in candidatos)),
+        "Marca": marca or SIN_MARCA,
+        # El primero de la lista ya es el que manda: el sitio propio de la
+        # marca. Se nombra aparte porque cuando un producto esta en tres webs
+        # la pregunta siguiente siempre es de cual salio la ficha.
+        "Web principal": candidatos[0].etiqueta,
+        "Sitios de origen": ", ".join(dict.fromkeys(c.etiqueta for c in candidatos)),
+        "En cuantas webs": len(dict.fromkeys(c.etiqueta for c in candidatos)),
     }
     origen_por_campo = {}
     for campo in CAMPOS:
         valor, sitio = _primero_no_vacio(
-            (etiqueta, producto.get(campo)) for etiqueta, producto in candidatos
+            (c.etiqueta, c.producto.get(campo)) for c in candidatos
         )
         ficha[campo] = valor
         if valor:
@@ -190,11 +285,6 @@ def _ficha(clave, candidatos, en_destino, marcas_conocidas):
     # tallas, y sin el una zapatilla de Vans no se puede pasar a PE.
     ficha["Genero"] = ficha.get("Metafield: custom.genero [single_line_text_field]", "")
 
-    marca, _sitio_marca = _primero_no_vacio(
-        (etiqueta, marca_de_producto(producto, marcas_conocidas))
-        for etiqueta, producto in candidatos
-    )
-    ficha["Marca"] = marca or SIN_MARCA
     ficha["Origen por campo"] = ", ".join(
         f"{campo.split('.')[-1].split(' ')[0] or campo}={sitio}"
         for campo, sitio in origen_por_campo.items()
@@ -209,6 +299,7 @@ def _ficha(clave, candidatos, en_destino, marcas_conocidas):
     ficha["Bloqueos"] = "; ".join(bloqueos)
     ficha["Avisos"] = "; ".join(avisos)
     ficha["Se puede cargar"] = not bloqueos
+    ficha["Situacion"] = _situacion_de_ficha(ficha)
     ficha["_principal"] = principal
     return ficha
 
@@ -237,37 +328,69 @@ def _revisar(ficha):
     return bloqueos, avisos
 
 
-def resumen(fichas):
+def resumen(fichas, destino_leido=True):
     """Los numeros de arriba de la pantalla.
 
     Las CLAVES no llevan tilde, igual que en `engines/load_status`: una clave
     con tilde que la pantalla pide sin ella es un KeyError que tumba la
     pantalla, y con `.get()` es peor -- devuelve None y no aparece nunca.
+
+    Los cuatro numeros de SITUACION son los que hacen que la pantalla diga algo.
+    Antes las tarjetas eran "consolidados / se pueden cargar / se crean", y con
+    la lista ya filtrada a lo que falta los tres daban el MISMO numero: tres
+    tarjetas para un solo dato. Estos cuatro reparten el total y suman el total.
     """
     fichas = fichas or []
+    cuenta = {}
+    for ficha in fichas:
+        situacion = ficha.get("Situacion") or _situacion_de_ficha(ficha)
+        cuenta[situacion] = cuenta.get(situacion, 0) + 1
+    total = len(fichas)
+    ya = cuenta.get(YA_VISIBLE, 0)
     return {
-        "Productos consolidados": len(fichas),
+        "Productos consolidados": total,
         "Se pueden cargar": sum(1 for f in fichas if f["Se puede cargar"]),
         "Bloqueados": sum(1 for f in fichas if not f["Se puede cargar"]),
         "Con aviso": sum(1 for f in fichas if f["Avisos"]),
         "Se crean": sum(1 for f in fichas if f["Accion"] == "Crear" and f["Se puede cargar"]),
         "Se actualizan": sum(1 for f in fichas if f["Accion"] == "Actualizar" and f["Se puede cargar"]),
+        YA_VISIBLE: ya,
+        SIN_PUBLICAR: cuenta.get(SIN_PUBLICAR, 0),
+        FALTA_CARGAR: cuenta.get(FALTA_CARGAR, 0),
+        NO_CARGABLE: cuenta.get(NO_CARGABLE, 0),
+        "Marcas": len({_texto(f.get("Marca")) or SIN_MARCA for f in fichas}),
+        "Sin marca": sum(1 for f in fichas if (_texto(f.get("Marca")) or SIN_MARCA) == SIN_MARCA),
+        "En mas de una web": sum(1 for f in fichas if (f.get("En cuantas webs") or 1) > 1),
+        "Cobertura": round(100.0 * ya / total, 1) if total else 0.0,
+        "destino_leido": bool(destino_leido),
     }
 
 
-def codigos_cargables(fichas):
-    """Los codigos que se pueden pedir, sin repetir y sin los bloqueados."""
+def codigos_cargables(fichas, situaciones=None):
+    """Los codigos que se pueden pedir, sin repetir y sin los bloqueados.
+
+    `situaciones` acota a un subconjunto de `SEGMENTOS`. La pantalla pasa
+    `(FALTA_CARGAR,)`: lo que ya esta en Supermall no se vuelve a cargar --
+    recargarlo le reescribiria la ficha sin que nadie lo haya pedido, que es la
+    misma regla que ya sigue el espejo. Sin el parametro entran todos los
+    cargables, que es lo que hace falta cuando se quiere REHACER la ficha.
+    """
+    permitidas = set(situaciones) if situaciones else None
     codigos = []
+    vistos = set()
     for ficha in fichas or []:
         if not ficha.get("Se puede cargar"):
             continue
+        if permitidas is not None and (ficha.get("Situacion") or _situacion_de_ficha(ficha)) not in permitidas:
+            continue
         codigo = _texto(ficha.get("Mod-Col")).upper()
-        if codigo and codigo not in codigos:
+        if codigo and codigo not in vistos:
+            vistos.add(codigo)
             codigos.append(codigo)
     return codigos
 
 
-def productos_para_matrixify(fichas):
+def productos_para_matrixify(fichas, situaciones=None):
     """Las fichas con la forma de un producto de `fetch_products`.
 
     Es lo que se le pasa a `build_centry_matrixify_from_master` como catalogo
@@ -275,9 +398,12 @@ def productos_para_matrixify(fichas):
     descripcion, el tipo, los tags y los metacampos salen de la web donde el
     producto SI esta, que es el agujero que este modulo cierra.
     """
+    permitidas = set(situaciones) if situaciones else None
     productos = []
     for ficha in fichas or []:
         if not ficha.get("Se puede cargar"):
+            continue
+        if permitidas is not None and (ficha.get("Situacion") or _situacion_de_ficha(ficha)) not in permitidas:
             continue
         principal = ficha.get("_principal") or {}
         producto = dict(principal)
@@ -302,12 +428,15 @@ def filas_para_tabla(fichas):
         {
             "Mod-Col": f["Mod-Col"],
             "Marca": f["Marca"],
+            "Situacion": f.get("Situacion") or _situacion_de_ficha(f),
             "Producto": f.get("Title", ""),
             "Tipo": f.get("Type", ""),
             "Genero": f.get("Genero", ""),
             "Accion": f["Accion"],
             "Estado en Supermall": f["Estado en Supermall"],
+            "Web principal": f.get("Web principal", ""),
             "Sitios de origen": f["Sitios de origen"],
+            "En cuantas webs": f.get("En cuantas webs", 1),
             "Bloqueos": f["Bloqueos"],
             "Avisos": f["Avisos"],
             "Origen por campo": f["Origen por campo"],

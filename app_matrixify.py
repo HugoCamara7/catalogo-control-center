@@ -22589,25 +22589,88 @@ def _adjuntar_matrixify_antes_de_cargar(service, actor, codigo):
     a cargar solo vive en la sesion, la carga remota no tiene nada que cargar.
     Este es el puente entre las dos cosas.
 
-    Devuelve un aviso si no pudo, nunca levanta: el adaptador de carga ya
-    reporta la falta de Matrixify con un mensaje claro, y una excepcion aqui
-    impediria ejecutar la carga a mano, que sigue siendo un camino valido.
+    Devuelve un aviso si no pudo, nunca levanta: una excepcion aqui impediria
+    ejecutar la carga a mano, que sigue siendo un camino valido.
+
+    **Nunca devuelve "" sin haber adjuntado.** Antes tenia dos salidas
+    silenciosas -- cuando no habia nada apuntado en la sesion y cuando el
+    codigo apuntado no era el de esta solicitud -- y en las dos la carga
+    seguia adelante para morir en el adaptador con "La solicitud no tiene un
+    Matrixify adjunto. Genéralo en Carga completa (Analizar input)". Ese
+    mensaje culpa a la solicitud y manda a hacer algo que ya se hizo, asi que
+    no hay forma de salir del bucle.
+
+    El codigo apuntado puede NO coincidir: en la sesion solo cabe el ultimo
+    Matrixify analizado, y desde que la carga remota funciona sin solicitud ese
+    codigo puede venir vacio. Lo que de verdad tiene que coincidir es el
+    SITIO: un Matrixify de Vans.pe no se puede adjuntar a una solicitud de
+    Rockford.pe, y eso si se comprueba.
     """
+    codigo = clean_value(codigo)
     guardado = st.session_state.get(CLAVE_MATRIXIFY_SESION)
+
+    # Si la carga remota no esta activa, la carga se hace DENTRO de la sesion,
+    # por bloques, y no hay ningun runner que necesite el archivo en el
+    # repositorio. Ahi no hay nada que adjuntar y bloquear cortaria un camino
+    # valido: es la razon por la que esta funcion nacio devolviendo "" en
+    # silencio. Lo que estaba mal no era eso, era hacerlo tambien cuando el
+    # runner SI iba a buscar el archivo.
+    try:
+        remota_activa = bool(estado_carga_remota().get("sobrevive"))
+    except Exception:  # noqa: BLE001
+        remota_activa = False
+    if not remota_activa:
+        return ""
+
+    def _ya_tiene_adjunto():
+        """La solicitud ya trae un Matrixify de un intento anterior.
+
+        Se sigue con ese en vez de cortar: bloquear aqui convertiria un
+        reintento legitimo en un callejon sin salida.
+        """
+        # Se atrapa CUALQUIER fallo, no solo `TicketError`: el contrato de esta
+        # funcion es que nunca levanta, porque una excepcion aqui impediria
+        # ejecutar la carga a mano, que sigue siendo un camino valido. Si no se
+        # puede leer la solicitud, no se sabe si tiene adjunto: se responde que
+        # no y el aviso lo dice, en vez de reventar.
+        try:
+            ticket = service.get_ticket(actor, codigo)
+        except Exception:  # noqa: BLE001
+            return False
+        adjunto = ticket.get("matrixify") if isinstance(ticket.get("matrixify"), dict) else {}
+        return bool(clean_value(adjunto.get("path")))
+
     if not isinstance(guardado, dict):
-        return ""
-    if clean_value(guardado.get("codigo")) != clean_value(codigo):
-        return ""
+        if _ya_tiene_adjunto():
+            return ""
+        return (
+            "no hay ningún Matrixify analizado en esta sesión. Ve a **Carga completa**, "
+            "elige la solicitud, lee el archivo y pulsa «Analizar input»; después vuelve a "
+            "ejecutar la carga."
+        )
+
+    sitio_apuntado = clean_value(guardado.get("site_key"))
+    try:
+        ticket = service.get_ticket(actor, codigo)
+    except Exception:  # noqa: BLE001
+        # Sin poder leer la solicitud no se puede comprobar el sitio ni el
+        # adjunto previo, pero SI se puede adjuntar: se sigue con lo que hay.
+        ticket = {}
+    sitio_solicitud = clean_value(ticket.get("site_key"))
+    if sitio_apuntado and sitio_solicitud and sitio_apuntado != sitio_solicitud:
+        adjunto = ticket.get("matrixify") if isinstance(ticket.get("matrixify"), dict) else {}
+        if clean_value(adjunto.get("path")):
+            return ""
+        return (
+            f"el Matrixify analizado es de **{sitio_apuntado}** y esta solicitud es de "
+            f"**{sitio_solicitud}**. Vuelve a analizar el input con el sitio correcto "
+            "seleccionado en la barra lateral."
+        )
+
     payload = _leer_excel_de_disco(guardado.get("excel_path"))
     if not payload:
         # El contenedor se reinicio entre el analisis y el clic: el archivo de
-        # disco ya no esta. Si la solicitud YA tiene un Matrixify adjunto de un
-        # intento anterior, se sigue con ese en vez de cortar: bloquear aqui
-        # convertiria un reintento legitimo en un callejon sin salida.
-        try:
-            ticket = service.get_ticket(actor, codigo)
-        except TicketError:
-            ticket = {}
+        # disco ya no esta.
         adjunto = ticket.get("matrixify") if isinstance(ticket.get("matrixify"), dict) else {}
         if clean_value(adjunto.get("path")):
             return ""
@@ -22622,9 +22685,13 @@ def _adjuntar_matrixify_antes_de_cargar(service, actor, codigo):
             filename=guardado.get("filename") or f"Matrixify_{codigo}.xlsx",
             payload=payload,
             product_keys=guardado.get("product_keys") or [],
-            site_key=guardado.get("site_key"),
+            site_key=sitio_apuntado or sitio_solicitud,
             mode="complete",
         )
+        # Queda apuntado a ESTA solicitud: si se vuelve a ejecutar la carga sin
+        # analizar de nuevo, el codigo ya coincide y no hay que readjuntar.
+        guardado["codigo"] = codigo
+        st.session_state[CLAVE_MATRIXIFY_SESION] = guardado
         return ""
     except TicketError as exc:
         return f"No pude adjuntar el Matrixify a la solicitud: {exc}"

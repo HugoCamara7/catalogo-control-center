@@ -2014,7 +2014,49 @@ y misma reanudacion. No hay un segundo motor de carga.
 - Sin `[carga_remota]` en Secrets el boton dice **exactamente que falta** en vez
   de caer al camino local en silencio.
 
-`scripts/test_curva_y_carga_suelta.py` (32 pruebas) fija todo esto.
+### El puente a la solicitud fallaba EN SILENCIO
+
+Reportado con una captura: la solicitud decia *"La carga no llegó a iniciarse en
+GitHub Actions. La solicitud no tiene un Matrixify adjunto. Genéralo en Carga
+completa (Analizar input)"* justo despues de haberlo generado. El mensaje culpa
+a la solicitud y manda a hacer algo que ya se hizo, asi que no hay salida.
+
+`_adjuntar_matrixify_antes_de_cargar` tenia dos `return ""` -o sea "todo bien"-
+**sin haber adjuntado nada**: cuando no habia Matrixify apuntado en la sesion y
+cuando el codigo apuntado no era el de esa solicitud. En los dos casos la carga
+seguia adelante para morir en el adaptador.
+
+Y el segundo se hizo **mas probable** al permitir la carga remota sin solicitud:
+desde entonces el codigo apuntado puede venir vacio a proposito.
+
+Dos cambios:
+
+- **El codigo apuntado ya no tiene que coincidir.** En la sesion solo cabe el
+  ultimo Matrixify analizado, asi que si se ejecuta la carga de una solicitud
+  justo despues de analizar, ese ES el archivo. Lo que si tiene que coincidir es
+  el **SITIO**: un Matrixify de Vans.pe en una solicitud de Rockford.pe cargaria
+  el catalogo equivocado, y eso se comprueba y se corta con el motivo.
+- **Ninguna salida es silenciosa.** Cada caso dice exactamente que pasa: no hay
+  nada analizado, es de otro sitio, o el Excel ya no esta en disco. La unica
+  salida sin aviso que no adjunta es cuando la solicitud **ya tiene** un
+  Matrixify de un intento anterior -- ahi cortar convertiria un reintento
+  legitimo en un callejon sin salida.
+
+Tras adjuntar, el Matrixify queda apuntado a esa solicitud, para que un segundo
+clic no vuelva a subir el mismo archivo.
+
+**Pero solo se bloquea si la carga remota esta ACTIVA.** Sin `[carga_remota]` la
+carga se hace dentro de la sesion, por bloques, y no hay ningun runner que vaya
+a buscar el archivo al repositorio: ahi no hay nada que adjuntar y cortar
+romperia un camino valido. Eso es lo que la salida silenciosa protegia de
+verdad; lo que estaba mal era hacerlo **tambien** cuando el runner si iba a
+buscar el archivo. Lo destapo una prueba de la bandeja que se puso roja.
+
+Y la funcion atrapa **cualquier** fallo al leer la solicitud, no solo
+`TicketError`: su contrato es que nunca levanta, porque una excepcion aqui
+impediria ejecutar la carga a mano.
+
+`scripts/test_curva_y_carga_suelta.py` (42 pruebas) fija todo esto.
 
 ---
 
@@ -2223,7 +2265,7 @@ python scripts/test_orden_tallas_reales.py             # 17
 python scripts/test_guias_tallas.py                    # 21
 python scripts/test_carga_supermall.py                 # 31
 python scripts/test_carga_sial_campos.py               # 27
-python scripts/test_curva_y_carga_suelta.py            # 32
+python scripts/test_curva_y_carga_suelta.py            # 42
 python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33
 python scripts/test_rendimiento.py                     # 47

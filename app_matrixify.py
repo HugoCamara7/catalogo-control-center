@@ -19204,29 +19204,52 @@ def cargar_catalogos_de_todos_los_sitios(force_refresh=False):
     if pendientes:
         def _leer(site_key):
             try:
-                return site_key, fetch_products(pendientes[site_key][1]), None
+                # El parte de progreso del motor se RECOGE. Es lo unico que
+                # dice que la lectura masiva se cayo a la paginada o que se
+                # alcanzo el tope de productos, y sin eso un catalogo cortado
+                # se lee como "esto es todo lo que hay". Un hilo no puede tocar
+                # `st.session_state`, asi que solo se acumula texto.
+                avisos = []
+                productos = fetch_products(
+                    pendientes[site_key][1], progreso=avisos.append,
+                )
+                return site_key, productos, None, avisos
             except Exception as exc:  # un sitio caido no puede tumbar el resto
-                return site_key, None, exc
+                return site_key, None, exc, []
 
         with ThreadPoolExecutor(max_workers=min(len(pendientes), CATALOGOS_LECTURAS_PARALELAS)) as pool:
             resultados = list(pool.map(_leer, list(pendientes)))
-        for site_key, productos, error in resultados:
+        for site_key, productos, error, avisos in resultados:
             etiqueta, shopify_config = pendientes[site_key]
             if error is not None:
                 estado_sitios[site_key] = {
                     "Sitio": etiqueta,
                     "Estado": "Error",
                     "Productos": 0,
-                    "Detalle": str(error)[:300],
+                    # El TIPO del error, no solo su texto: un `URLError` a
+                    # secas dice "urlopen error" y no se sabe si es la red, el
+                    # token o la tienda.
+                    "Detalle": f"{type(error).__name__}: {error}"[:300],
                 }
                 continue
             guardar_shopify_products(site_key, shopify_config, productos)
             catalogos[site_key] = productos or []
+            # Del parte solo interesan dos cosas: que se cayo a la paginada y
+            # que se alcanzo el tope. Los avisos de avance ("1.200 productos
+            # leidos...") no dicen nada una vez terminada la lectura.
+            notas = [
+                a for a in avisos
+                if "tope" in a.lower() or "no disponible" in a.lower()
+            ]
+            # El estado se queda en "Leido": el sitio SE LEYO. Las pantallas
+            # comparan contra ese valor exacto para saber que sitios faltaron,
+            # asi que un estado nuevo tipo "Leido con avisos" contaria un sitio
+            # bueno como caido. El aviso viaja en `Detalle`.
             estado_sitios[site_key] = {
                 "Sitio": etiqueta,
                 "Estado": "Leido",
                 "Productos": len(productos or []),
-                "Detalle": "",
+                "Detalle": " · ".join(notas)[:300],
             }
 
     # Se devuelve en el orden de SITE_CONFIGS, no en el que fueron llegando:
@@ -19484,6 +19507,22 @@ def render_status_de_carga(ticket_actor):
             + ", ".join(f"{fila['Sitio']} ({fila['Estado']})" for _, fila in pendientes.iterrows())
             + ". Sus productos NO están contados abajo."
         )
+    # Un sitio LEIDO puede venir INCOMPLETO: que se alcanzara el tope de
+    # productos, o que la lectura masiva se cayera a la paginada. No es un
+    # sitio caido -- por eso no entra en el aviso de arriba -- pero cambia lo
+    # que se puede concluir de los totales, asi que se dice.
+    if not sitios_df.empty and "Detalle" in sitios_df.columns:
+        con_aviso = sitios_df[
+            (sitios_df["Estado"] == "Leido") & sitios_df["Detalle"].map(clean_value).ne("")
+        ]
+        if not con_aviso.empty:
+            st.warning(
+                "**Estos sitios se leyeron con avisos y su catálogo puede estar incompleto**: "
+                + " · ".join(
+                    f"**{fila['Sitio']}**: {clean_value(fila['Detalle'])}"
+                    for _, fila in con_aviso.iterrows()
+                )
+            )
 
     # Por que este aviso: los productos sin `custom.codigo_modelo_color` SI se
     # cuentan (uno por uno, por su handle), pero no pueden agruparse por codigo
@@ -25072,6 +25111,20 @@ def render_carga_supermall():
             "información de la que hay: "
             + ", ".join(f"{e['Sitio']} ({e['Estado']})" for e in caidos)
             + ". Los productos que solo existan en esos sitios no aparecen aquí."
+        )
+    # Un sitio LEIDO puede venir INCOMPLETO -- tope de productos alcanzado, o
+    # lectura masiva caida a la paginada -- y eso no lo cuenta `caidos`. Con un
+    # catalogo cortado, los productos que se quedaron fuera saldrian como "no
+    # esta en esa web": el mismo error que el destino sin leer, un escalon mas
+    # abajo.
+    con_aviso = [
+        e for e in estado_sitios
+        if e.get("Estado") == "Leido" and clean_value(e.get("Detalle"))
+    ]
+    if con_aviso:
+        st.warning(
+            "**Estos sitios se leyeron con avisos y su catálogo puede estar incompleto**: "
+            + " · ".join(f"**{e['Sitio']}**: {clean_value(e.get('Detalle'))}" for e in con_aviso)
         )
 
     # El destino AUSENTE no es el destino VACIO. Con el catalogo de Supermall

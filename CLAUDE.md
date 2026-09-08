@@ -2469,6 +2469,60 @@ pero cualquier herramienta que lea el archivo como texto se tropieza. Ya no est�
 
 ---
 
+## 5 duovicies. El catálogo se leía INCOMPLETO y no lo decía nadie (septiembre 2026)
+
+Dos fallos de la lectura de Shopify detrás de los dos síntomas reportados:
+`Patagonia.pe (Error), Supermall.pe (Error)` con los otros cuatro sitios bien,
+y totales que no cuadran con la tienda.
+
+### El tope de 5.000 productos, en silencio
+
+`fetch_products` tenía `max_products=5000` por defecto y `_bulk_reensamblar`
+hacía `break` **sin decir nada** al alcanzarlo. **Rockford.pe pasa de 9.000
+modelo-color.** Y ese catálogo es el dato con el que se decide si un producto se
+**crea** o se **actualiza**: lo que se quedaba fuera del tope se volvía a crear
+y quedaba **duplicado en la tienda**.
+
+`PRODUCTOS_MAXIMOS` son 50.000, ajustable con `max_products` en Secrets, y las
+tres lecturas comparten el tope (`_limite_de_productos`) — si una leyera hasta
+5.000 y otra hasta 50.000, el catálogo cambiaría según por dónde se leyó, que es
+lo que ya se paga con las dos `normalize_size`. Un tope alto no cuesta memoria
+por sí mismo: es un techo, no una reserva.
+
+Alcanzar el tope **se avisa**, por el mismo `progreso` que ya reporta el avance,
+y en las dos lecturas: masiva y paginada.
+
+### El respaldo de la lectura masiva atrapaba solo `ShopifyApiError`
+
+Un corte de red bajando el JSONL, un gzip a medias o un timeout se propagaban y
+el **sitio entero quedaba sin leer** — que es exactamente cómo se ven dos sitios
+en "(Error)" mientras los otros cuatro entran. La lectura paginada existe
+precisamente como respaldo, así que ahora se cae a ella ante **cualquier** fallo
+y lo dice.
+
+### Y el parte de la lectura se tiraba
+
+El aviso del motor es lo único que dice que se alcanzó el tope o que se cayó a
+la paginada. `cargar_catalogos_de_todos_los_sitios` lo **recoge** por sitio —
+dentro del hilo solo se acumula texto, porque `st.session_state` no se puede
+tocar desde un hilo — y lo deja en `Detalle`.
+
+- **El estado se queda en `"Leido"`.** Las pantallas comparan contra ese valor
+  exacto para saber qué sitios faltaron, así que un estado nuevo tipo "Leido con
+  avisos" contaría un sitio bueno como caído. Hay un test que recorre los
+  estados que la función escribe y falla si aparece uno más.
+- El error de un sitio lleva ahora el **tipo** de la excepción: un `URLError` a
+  secas dice "urlopen error" y no distingue la red del token.
+- **Las dos pantallas que leen los seis catálogos avisan igual** (Status de
+  carga y Carga Supermall). Si una avisara y la otra no, el mismo total se
+  leería bien en una pantalla y mal en la otra. El aviso mira solo los sitios
+  LEÍDOS: uno caído ya tiene el suyo.
+
+`scripts/test_lectura_completa_del_catalogo.py` (17 pruebas) fija todo esto; 15
+fallan con el código anterior.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -2679,6 +2733,7 @@ python scripts/test_mantenedor_tallas.py               # 41
 python scripts/test_orden_tallas_reales.py             # 17
 python scripts/test_guias_tallas.py                    # 21
 python scripts/test_carga_supermall.py                 # 57
+python scripts/test_lectura_completa_del_catalogo.py    # 17
 python scripts/test_colecciones.py                     # 54
 python scripts/test_tipos_de_prenda.py                 # 13
 python scripts/test_carga_sial_campos.py               # 27

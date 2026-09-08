@@ -14,7 +14,7 @@ import time
 import unicodedata
 import uuid
 import zipfile
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -519,6 +519,35 @@ def _repair_column_name(column):
     return repair_mojibake_text(column)
 
 
+_MOJIBAKE_MARCADORES = ("Ã", "Â", "â")
+_MOJIBAKE_REGEX = "[ÃÂâ]"
+
+
+def _columna_puede_tener_mojibake(serie):
+    """True solo si la columna DE VERDAD trae un marcador que reparar.
+
+    Antes se recorria celda a celda TODA columna del frame -- tambien las
+    numericas, donde un marcador no puede existir-- y eso son millones de
+    llamadas de Python en cada exportacion: medido, 2,3 s por hoja en un
+    Matrixify de 40.000 filas x 107 columnas, y ese frame se vuelve a exportar
+    en cada rerun que dibuje un boton de descarga.
+
+    El descarte es vectorizado y el resultado es EXACTAMENTE el mismo: una
+    columna sin marcador dejaba cada valor tal cual de todos modos.
+    """
+    try:
+        if (
+            pd.api.types.is_numeric_dtype(serie)
+            or pd.api.types.is_bool_dtype(serie)
+            or pd.api.types.is_datetime64_any_dtype(serie)
+        ):
+            return False
+        return bool(serie.str.contains(_MOJIBAKE_REGEX, regex=True, na=False).any())
+    except Exception:
+        # Ante la duda se repara, que es lo que se hacia antes de esta guarda.
+        return True
+
+
 def repair_mojibake_dataframe(df):
     if df is None:
         return df
@@ -536,13 +565,63 @@ def repair_mojibake_dataframe(df):
     # Es la misma guarda que ya tienen los VALORES tres lineas mas abajo: si no
     # hay marcador, no se toca.
     repaired.columns = [_repair_column_name(column) for column in repaired.columns]
-    for column in repaired.columns:
-        repaired[column] = repaired[column].map(
-            lambda value: repair_mojibake_text(value)
-            if isinstance(value, str) and any(marker in value for marker in ("Ã", "Â", "â"))
-            else value
+    # Se recorre POR POSICION, no por nombre: con dos columnas que se llaman
+    # igual, `repaired[nombre]` devuelve un DataFrame y el mapeo caia sobre las
+    # dos a la vez. Por posicion no hay ambiguedad.
+    for posicion in range(repaired.shape[1]):
+        columna = repaired.iloc[:, posicion]
+        if not _columna_puede_tener_mojibake(columna):
+            continue
+        repaired.isetitem(
+            posicion,
+            columna.map(
+                lambda value: repair_mojibake_text(value)
+                if isinstance(value, str) and any(marker in value for marker in _MOJIBAKE_MARCADORES)
+                else value
+            ),
         )
     return repaired
+
+
+def _filas_como_valores(df):
+    """Las filas del frame como arreglos de valores, o None si no se puede.
+
+    `df.apply(funcion, axis=1)` arma un Series de pandas POR FILA solo para que
+    la funcion lea sus valores: en una tabla de 20.000 filas son 20.000 objetos
+    de pandas que se crean y se tiran en cada rerun del buscador.
+
+    Cuando todas las columnas son `object` -- que es el caso de las tablas de
+    texto de la app -- `to_numpy()` entrega EXACTAMENTE los mismos valores sin
+    construir nada. Si el frame mezcla tipos se devuelve None y quien llama se
+    queda con `apply`: ahi el Series de la fila SI puede promover el tipo (un
+    entero al lado de un decimal sale como decimal) y el texto sobre el que se
+    busca cambiaria.
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    if any(dtype != object for dtype in df.dtypes):
+        return None
+    return df.to_numpy()
+
+
+def _mascara_de_busqueda(df, needle):
+    """Filas cuyo texto contiene `needle`, ya en minusculas.
+
+    Estaba escrito CUATRO veces, identico, en los tres paneles de pendientes y
+    en el de variantes. Una sola copia para que el buscador no se separe de si
+    mismo.
+    """
+    filas = _filas_como_valores(df)
+    if filas is None:
+        return df.apply(
+            lambda row: needle in " ".join(clean_value(value).lower() for value in row.values),
+            axis=1,
+        )
+    return pd.Series(
+        [needle in " ".join(clean_value(value).lower() for value in fila) for fila in filas],
+        index=df.index,
+        dtype=bool,
+    )
 
 
 def safe_float_value(value, default=0.0):
@@ -935,17 +1014,68 @@ def read_excel(uploaded_file):
     return pd.read_excel(uploaded_file, dtype=object).dropna(how="all")
 
 
+# Cuantos Excel del usuario se quedan en la sesion a la vez.
+#
+# El prefijo de estos lectores lleva el SITIO (`complete_input_vans`,
+# `complete_input_rockford`...), asi que pasar por tres sitios con un input
+# grande cargado dejaba tres DataFrames residentes, y ninguno se soltaba nunca:
+# es la degradacion que se nota al procesar varios archivos seguidos. Con un
+# tope, el cuarto suelta el primero; si esa pantalla lo vuelve a pedir, el
+# archivo sigue en el `file_uploader` y se relee. Cuesta una lectura, no la
+# memoria del contenedor, que da 1 GB POR APP.
+EXCEL_EN_SESION_MAXIMOS = 3
+CLAVE_EXCEL_EN_SESION = "_excel_en_sesion"
+
+
+def _registro_excel_en_sesion():
+    """El registro vive en `session_state`, no en un global del modulo.
+
+    Streamlit Cloud corre UN proceso para todas las personas conectadas: un
+    global lo compartirian todas, y el archivo que abre una haria soltar el de
+    otra. `session_state` ya esta separado por sesion.
+    """
+    registro = st.session_state.get(CLAVE_EXCEL_EN_SESION)
+    if not isinstance(registro, list):
+        registro = []
+        st.session_state[CLAVE_EXCEL_EN_SESION] = registro
+    return registro
+
+
+def _olvidar_excel_en_sesion(state_prefix):
+    registro = _registro_excel_en_sesion()
+    if state_prefix in registro:
+        registro.remove(state_prefix)
+
+
+def _registrar_excel_en_sesion(state_prefix):
+    """Anota el prefijo y suelta el mas viejo cuando se pasa del tope."""
+    registro = _registro_excel_en_sesion()
+    if state_prefix in registro:
+        registro.remove(state_prefix)
+    registro.append(state_prefix)
+    while len(registro) > EXCEL_EN_SESION_MAXIMOS:
+        viejo = registro.pop(0)
+        st.session_state.pop(f"{viejo}_df", None)
+        st.session_state.pop(f"{viejo}_fingerprint", None)
+
+
 def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=0):
     if not uploaded_file:
         st.session_state.pop(f"{state_prefix}_fingerprint", None)
         st.session_state.pop(f"{state_prefix}_df", None)
+        _olvidar_excel_en_sesion(state_prefix)
         return None
     fingerprint = uploaded_file_fingerprint(uploaded_file)
     if (
         st.session_state.get(f"{state_prefix}_fingerprint") == fingerprint
         and st.session_state.get(f"{state_prefix}_df") is not None
     ):
+        _registrar_excel_en_sesion(state_prefix)
         return st.session_state[f"{state_prefix}_df"]
+    # El anterior se suelta ANTES de leer el nuevo. Guardandolo despues, los dos
+    # convivian mientras se parseaba el segundo: el pico eran dos archivos.
+    st.session_state.pop(f"{state_prefix}_df", None)
+    st.session_state.pop(f"{state_prefix}_fingerprint", None)
     try:
         uploaded_file.seek(0)
     except Exception:
@@ -976,6 +1106,7 @@ def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=0):
     df = df.dropna(how="all")
     st.session_state[f"{state_prefix}_fingerprint"] = fingerprint
     st.session_state[f"{state_prefix}_df"] = df
+    _registrar_excel_en_sesion(state_prefix)
     return df
 
 
@@ -1087,13 +1218,22 @@ def catalogo_en_disco(site_key, shopify_config, minutos=CATALOGO_DISCO_MINUTOS):
             return None, None
         with open(ruta, "rb") as archivo:
             guardado = pickle.load(archivo)
+        # Un catalogo que ya no sirve se BORRA, no solo se ignora. El disco del
+        # contenedor es una cuota fija: seis sitios dejando cada uno su
+        # catalogo caducado la llenan, y cuando se llena la escritura falla y la
+        # app cae con "Error running app" sin decir por que.
         if guardado.get("meta") != _shopify_cache_meta(shopify_config):
+            _borrar_temporal(ruta)
             return None, None
         leido_en = datetime.fromisoformat(guardado.get("leido_en"))
         if datetime.now(timezone.utc) - leido_en > timedelta(minutes=minutos):
+            _borrar_temporal(ruta)
             return None, None
         return guardado.get("productos") or [], leido_en
     except Exception:
+        # Un pickle ilegible -- escritura cortada, version distinta -- tampoco
+        # va a servir nunca, y ocupa lo mismo.
+        _borrar_temporal(ruta)
         return None, None
 
 
@@ -1767,7 +1907,7 @@ def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
     matrixify_df = repair_mojibake_dataframe(matrixify_df)
     issues_df = repair_mojibake_dataframe(issues_df)
     buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+    with pd.ExcelWriter(buffer, engine=MOTOR_EXCEL, engine_kwargs=_kwargs_motor_excel()) as writer:
         matrixify_df.to_excel(writer, index=False, sheet_name="Matrixify")
         issues_df.to_excel(writer, index=False, sheet_name="Revision")
         repair_mojibake_dataframe(pd.DataFrame(
@@ -1781,11 +1921,7 @@ def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
             ]
         )).to_excel(writer, index=False, sheet_name="Mapeo detectado")
 
-        for sheet_name, width in {"Matrixify": 24, "Revision": 38, "Mapeo detectado": 28}.items():
-            ws = writer.book[sheet_name]
-            ws.freeze_panes = "A2"
-            for column_cells in ws.columns:
-                ws.column_dimensions[column_cells[0].column_letter].width = width
+        _dar_formato_hojas(writer, ancho=24)
 
     buffer.seek(0)
     return buffer
@@ -2019,7 +2155,7 @@ def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_d
     centry_df = repair_mojibake_dataframe(coalesce_duplicate_columns(centry_df))
     centry_issues_df = repair_mojibake_dataframe(coalesce_duplicate_columns(centry_issues_df))
     buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine=MOTOR_EXCEL) as writer:
+    with pd.ExcelWriter(buffer, engine=MOTOR_EXCEL, engine_kwargs=_kwargs_motor_excel()) as writer:
         matrixify_df.to_excel(writer, index=False, sheet_name="Products")
         summary_df.to_excel(writer, index=False, sheet_name="Resumen")
         issues_df.to_excel(writer, index=False, sheet_name="Revision")
@@ -2069,6 +2205,24 @@ def _motor_excel_disponible():
 
 MOTOR_EXCEL = _motor_excel_disponible()
 
+# xlsxwriter INTERPRETA el texto que escribe, y eso corrompe datos del usuario:
+#
+# - Una celda que empieza por "=" se escribe como FORMULA. Medido: "=1+1" se
+#   lee de vuelta como 0, no como el texto que puso la marca.
+# - Un texto que parece URL se escribe como HIPERVINCULO. El Matrixify lleva
+#   columnas enteras de URLs de imagen, y Excel admite 65.530 hipervinculos por
+#   hoja: pasado ese numero xlsxwriter avisa y DESCARTA el resto. Un catalogo
+#   grande perdia celdas por ahi sin que nadie se enterara.
+#
+# Las dos se apagan. El dato del usuario se escribe tal cual llego, que es lo
+# unico que puede hacer un exportador.
+OPCIONES_XLSXWRITER = {"strings_to_formulas": False, "strings_to_urls": False}
+
+
+def _kwargs_motor_excel(motor=None):
+    motor = clean_value(motor) or MOTOR_EXCEL
+    return {"options": dict(OPCIONES_XLSXWRITER)} if motor == "xlsxwriter" else {}
+
 
 def _dar_formato_hojas(writer, ancho=18):
     """Congela la fila de encabezados y fija el ancho, con cualquier motor."""
@@ -2091,28 +2245,121 @@ def update_to_excel_bytes(matrixify_df, issues_df):
     matrixify_df = repair_mojibake_dataframe(matrixify_df)
     issues_df = repair_mojibake_dataframe(issues_df)
     buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+    with pd.ExcelWriter(buffer, engine=MOTOR_EXCEL, engine_kwargs=_kwargs_motor_excel()) as writer:
         matrixify_df.to_excel(writer, index=False, sheet_name="Products")
         issues_df.to_excel(writer, index=False, sheet_name="Revision")
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for column_cells in sheet.columns:
-                sheet.column_dimensions[column_cells[0].column_letter].width = 22
+        _dar_formato_hojas(writer, ancho=22)
     buffer.seek(0)
     return buffer
 
 
-def dataframe_to_excel_bytes(sheets):
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+# Cache de exportaciones ya armadas, por CONTENIDO de las hojas.
+#
+# `st.download_button` exige los bytes POR ADELANTADO -no acepta un callable-,
+# asi que 17 botones de la app rearmaban su Excel entero en CADA rerun aunque
+# nadie pulsara nada. Es el mismo problema que ya tenian los adjuntos de las
+# solicitudes, solo que aqui no se paga red sino CPU y RAM.
+#
+# La clave es una huella del contenido, no la identidad de los DataFrames: asi
+# un frame que se modifica en el sitio vuelve a exportarse, y dos llamadas con
+# los mismos datos comparten el archivo. Medido con un Matrixify de 40.000
+# filas: armar el Excel son 70 s, calcular la huella 0,38 s.
+_EXCEL_MEMO = OrderedDict()
+# 32 MB de un contenedor de 1.024 que se comparte entre todas las sesiones. Con
+# exportaciones tipicas de 1 a 10 MB caben varias, y el tope evita que una
+# pantalla que exporta catalogos enteros se coma el margen de las demas.
+_EXCEL_MEMO_MAX_BYTES = 32 * 1024 * 1024
+# Streamlit corre un hilo por sesion sobre el MISMO proceso, asi que este
+# diccionario lo tocan varias a la vez. Sin cerrojo, dos desalojos simultaneos
+# pueden dejar `popitem` sobre un diccionario ya vacio.
+_EXCEL_MEMO_LOCK = threading.Lock()
+
+
+def _huella_de_hojas(sheets):
+    """Huella del contenido de las hojas, o None si no se puede calcular.
+
+    Devolver None NO es un error: significa "no memoices esta", y quien llama
+    arma el Excel como siempre. Pasa con celdas que no se pueden hashear
+    (listas, diccionarios), que es justo donde el atajo no seria seguro.
+    """
+    try:
+        hasher = hashlib.blake2b(digest_size=16)
         for sheet_name, df in sheets.items():
-            safe_name = sheet_name[:31]
+            hasher.update(str(sheet_name).encode("utf-8", "replace"))
+            if not isinstance(df, pd.DataFrame):
+                return None
+            hasher.update(f"|{df.shape[0]}x{df.shape[1]}|".encode())
+            for posicion, columna in enumerate(df.columns):
+                serie = df.iloc[:, posicion]
+                hasher.update(str(columna).encode("utf-8", "replace"))
+                hasher.update(str(serie.dtype).encode())
+                hasher.update(pd.util.hash_pandas_object(serie, index=False).to_numpy().tobytes())
+        return hasher.hexdigest()
+    except Exception:
+        return None
+
+
+def _memo_excel_guardar(huella, datos):
+    _EXCEL_MEMO[huella] = datos
+    _EXCEL_MEMO.move_to_end(huella)
+    total = sum(len(valor) for valor in _EXCEL_MEMO.values())
+    while len(_EXCEL_MEMO) > 1 and total > _EXCEL_MEMO_MAX_BYTES:
+        _, fuera = _EXCEL_MEMO.popitem(last=False)
+        total -= len(fuera)
+
+
+def dataframe_to_excel_bytes(sheets):
+    huella = _huella_de_hojas(sheets)
+    if huella is not None:
+        with _EXCEL_MEMO_LOCK:
+            guardado = _EXCEL_MEMO.get(huella)
+            if guardado is not None:
+                _EXCEL_MEMO.move_to_end(huella)
+        if guardado is not None:
+            # Un buffer NUEVO en cada llamada: devolver el mismo objeto dejaria
+            # que un lector moviera la posicion para el siguiente.
+            return io.BytesIO(guardado)
+    buffer = io.BytesIO()
+    # xlsxwriter, no openpyxl: openpyxl arma el libro entero como objetos Cell
+    # y es lo que tumbaba el proceso con el catalogo completo -- lo dice
+    # `requirements.txt` desde que se cambio `columbia_to_excel_bytes`, pero
+    # esta funcion, que es la que usan los 17 botones de descarga, se habia
+    # quedado atras. Medido con 40.000 filas x 107 columnas: openpyxl 70,8 s y
+    # +1,79 GB de RSS; xlsxwriter 42,5 s y +0,49 GB. El contenedor da 1 GB POR
+    # APP, asi que la version vieja se lo comia entero ella sola.
+    #
+    # `constant_memory` de xlsxwriter baja el pico a cero pero SE PIERDEN
+    # DATOS: comprobado, solo sobrevive la primera columna. No se usa.
+    with pd.ExcelWriter(buffer, engine=MOTOR_EXCEL, engine_kwargs=_kwargs_motor_excel()) as writer:
+        usados = set()
+        for sheet_name, df in sheets.items():
+            # Excel corta los nombres de hoja en 31 caracteres, asi que dos
+            # nombres largos que empiezan igual chocan y el motor levanta
+            # "Duplicate worksheet name": la pantalla entera se caia por el
+            # nombre de una hoja. Se desempatan con un numero.
+            safe_name = clean_value(sheet_name)[:31] or "Hoja"
+            if safe_name in usados:
+                for indice in range(2, 100):
+                    candidato = f"{safe_name[:28]}_{indice}"
+                    if candidato not in usados:
+                        safe_name = candidato
+                        break
+            usados.add(safe_name)
+            # Una hoja que llega como None ya no tumba la descarga: se escribe
+            # vacia. Varios llamadores lo guardan con `if ... is not None else
+            # pd.DataFrame()`, pero no todos, y basta uno para caerse.
+            if not isinstance(df, pd.DataFrame):
+                df = pd.DataFrame()
             df = repair_mojibake_dataframe(df)
             df.to_excel(writer, index=False, sheet_name=safe_name)
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for column_cells in sheet.columns:
-                sheet.column_dimensions[column_cells[0].column_letter].width = 22
+        # El ancho se fija por COLUMNA, no recorriendo las celdas: con
+        # openpyxl, `sheet.columns` materializa una tupla con todas las celdas
+        # de la hoja solo para leer la letra de la primera.
+        _dar_formato_hojas(writer, ancho=22)
+    datos = buffer.getvalue()
+    if huella is not None and len(datos) <= _EXCEL_MEMO_MAX_BYTES:
+        with _EXCEL_MEMO_LOCK:
+            _memo_excel_guardar(huella, datos)
     buffer.seek(0)
     return buffer
 
@@ -3162,11 +3409,14 @@ ACCIONES_POR_CAMPO = {
 
 def validate_brand_commercial_input(uploaded_file, brand_name):
     try:
-        xls = pd.ExcelFile(uploaded_file)
+        # Con `with`: `pd.ExcelFile` deja abierto el zip del libro entero, y
+        # aqui se abre uno por cada input que valida una marca. Sin cerrarlo se
+        # acumulaban hasta que pasara el recolector.
+        with pd.ExcelFile(uploaded_file) as xls:
+            sheet_name = "INPUT_COMERCIAL" if "INPUT_COMERCIAL" in xls.sheet_names else xls.sheet_names[0]
+            df = pd.read_excel(xls, sheet_name=sheet_name, dtype=object).dropna(how="all")
     except Exception as exc:
         return pd.DataFrame(), pd.DataFrame([{"Fila": "", "Campo": "Archivo", "Estado": "Bloqueado", "Mensaje": f"No se pudo leer Excel: {exc}"}]), pd.DataFrame()
-    sheet_name = "INPUT_COMERCIAL" if "INPUT_COMERCIAL" in xls.sheet_names else xls.sheet_names[0]
-    df = pd.read_excel(xls, sheet_name=sheet_name, dtype=object).dropna(how="all")
     df = repair_mojibake_dataframe(df)
     if df.empty:
         return df, pd.DataFrame([{"Fila": "", "Campo": "Archivo", "Estado": "Bloqueado", "Mensaje": "El input no tiene filas reales."}]), pd.DataFrame()
@@ -4198,23 +4448,27 @@ def load_centry_dimension_lookup():
     if path is None:
         return {"path": "", "lookup": lookup}
     try:
-        xl = pd.ExcelFile(path)
-        for sheet in xl.sheet_names:
-            df = pd.read_excel(path, sheet_name=sheet, dtype=object).dropna(how="all")
-            if "Tipo de Producto" not in df.columns:
-                continue
-            for _, row in df.iterrows():
-                product_type = clean_value(row.get("Tipo de Producto"))
-                if not product_type:
+        # Se reusa el libro ABIERTO en vez de volver a `pd.read_excel(path)`
+        # por hoja: asi se parsea el archivo una vez y no una por hoja. Y con
+        # `with` el zip se cierra en vez de quedar colgando.
+        with pd.ExcelFile(path) as xl:
+            hojas = list(xl.sheet_names)
+            for sheet in hojas:
+                df = pd.read_excel(xl, sheet_name=sheet, dtype=object).dropna(how="all")
+                if "Tipo de Producto" not in df.columns:
                     continue
-                height = first_non_empty(row.get("Product Height"), row.get("Unnamed: 5"), row.get("Alto (cm)"))
-                width = first_non_empty(row.get("Product Width"), row.get("Unnamed: 6"), row.get("Ancho (cm)"))
-                length = first_non_empty(row.get("Product Length"), row.get("Unnamed: 7"), row.get("Largo (cm)"))
-                weight = first_non_empty(row.get("Product Weight (gr)"), row.get("Unnamed: 8"), row.get("Peso (gr)"))
-                lookup.setdefault(
-                    centry_master_key(product_type),
-                    {"height": height, "width": width, "length": length, "weight": weight},
-                )
+                for _, row in df.iterrows():
+                    product_type = clean_value(row.get("Tipo de Producto"))
+                    if not product_type:
+                        continue
+                    height = first_non_empty(row.get("Product Height"), row.get("Unnamed: 5"), row.get("Alto (cm)"))
+                    width = first_non_empty(row.get("Product Width"), row.get("Unnamed: 6"), row.get("Ancho (cm)"))
+                    length = first_non_empty(row.get("Product Length"), row.get("Unnamed: 7"), row.get("Largo (cm)"))
+                    weight = first_non_empty(row.get("Product Weight (gr)"), row.get("Unnamed: 8"), row.get("Peso (gr)"))
+                    lookup.setdefault(
+                        centry_master_key(product_type),
+                        {"height": height, "width": width, "length": length, "weight": weight},
+                    )
     except Exception:
         return {"path": str(path), "lookup": {}}
     return {"path": str(path), "lookup": lookup}
@@ -4275,6 +4529,37 @@ def centry_mod_col_from_row(row):
         return mod_col
     sku = centry_value(row.get("Variant SKU"))
     return sku.rsplit("-", 1)[0].upper() if "-" in sku else sku.upper()
+
+
+def centry_keys_de_frame(df):
+    """`centry_mod_col_from_row` sobre el frame entero, sin un Series por fila.
+
+    Es la MISMA funcion sobre los MISMOS valores: se le pasa un diccionario con
+    las cuatro columnas que lee en vez del Series completo de la fila, que en el
+    catalogo son 107 columnas construidas y tiradas por cada producto.
+
+    Si el frame trae columnas repetidas se cae a `apply`: ahi `row.get(nombre)`
+    devuelve un Series y no un valor, y el atajo no diria lo mismo.
+    """
+    columnas_leidas = (
+        "Metafield: custom.codigo_modelo_color [id]",
+        "Mod-Col",
+        "COD MOD COL",
+        "Variant SKU",
+    )
+    if df is None or df.empty:
+        return []
+    if df.columns.duplicated().any():
+        return df.apply(centry_mod_col_from_row, axis=1).tolist()
+    vacia = [None] * len(df)
+    valores = [
+        df[nombre].to_numpy() if nombre in df.columns else vacia
+        for nombre in columnas_leidas
+    ]
+    return [
+        centry_mod_col_from_row(dict(zip(columnas_leidas, fila)))
+        for fila in zip(*valores)
+    ]
 
 
 def centry_output_is_accessory(row):
@@ -6465,7 +6750,7 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             ["Title", "Body HTML", "Vendor", "Type", "Tags", "Image Src",
              "Metafield: custom.codigo_modelo_color [id]"],
         )
-        shopify_df["__CENTRY_KEY"] = shopify_df.apply(centry_mod_col_from_row, axis=1)
+        shopify_df["__CENTRY_KEY"] = centry_keys_de_frame(shopify_df)
     else:
         shopify_df["__CENTRY_KEY"] = pd.Series(dtype=object)
 
@@ -6492,7 +6777,7 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                 destino_df,
                 ["Title", "Handle", "Metafield: custom.codigo_modelo_color [id]"],
             )
-            destino_df["__CENTRY_KEY"] = destino_df.apply(centry_mod_col_from_row, axis=1)
+            destino_df["__CENTRY_KEY"] = centry_keys_de_frame(destino_df)
     destino_lookup = {}
     if destino_df is not None and not destino_df.empty and "__CENTRY_KEY" in destino_df.columns:
         for key, group in destino_df.groupby("__CENTRY_KEY", sort=False):
@@ -7909,7 +8194,15 @@ def render_partial_diagnostic_panel(diagnostic_df, operation=""):
         filtered = filtered[filtered["Estado validacion"].map(clean_value) == status]
     if clean_value(search):
         needle = normalize_header(search)
-        searchable = filtered.apply(lambda row: " ".join(clean_value(value) for value in row.values), axis=1).map(normalize_header)
+        filas = _filas_como_valores(filtered)
+        if filas is None:
+            searchable = filtered.apply(lambda row: " ".join(clean_value(value) for value in row.values), axis=1).map(normalize_header)
+        else:
+            searchable = pd.Series(
+                [normalize_header(" ".join(clean_value(value) for value in fila)) for fila in filas],
+                index=filtered.index,
+                dtype=object,
+            )
         filtered = filtered[searchable.str.contains(re.escape(needle), na=False)]
     st.dataframe(filtered.head(500), use_container_width=True, height=360)
     return filtered
@@ -9617,7 +9910,15 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     arti["Mod-Col KPI"] = arti["Mod-Col"].where(arti["Mod-Col"].map(clean_value) != "", arti["COD MOD COL"])
     arti["Mod-Col KPI"] = arti["Mod-Col KPI"].map(lambda value: clean_value(value).upper())
     arti["Talla KPI"] = arti["TALNUM_MA"].map(normalize_size)
-    arti["Stock Key"] = arti.apply(lambda row: stock_key_from_parts(row.get("Mod-Col KPI"), row.get("Talla KPI")), axis=1)
+    # La MISMA funcion sobre los MISMOS dos valores, pero sin armar un Series
+    # por fila: el maestro ARTI son cientos de miles de filas y `apply(axis=1)`
+    # construia uno entero -con sus treinta y pico columnas- para leer dos.
+    arti["Stock Key"] = [
+        stock_key_from_parts(mod_col, talla)
+        for mod_col, talla in zip(
+            arti["Mod-Col KPI"].to_numpy(), arti["Talla KPI"].to_numpy()
+        )
+    ]
     expected = arti[(arti["Mod-Col KPI"] != "") & (arti["Stock Key"] != "")].copy()
     expected = filter_visible_kpi_sizes(expected)
 
@@ -13298,10 +13599,19 @@ def _sync_job_product_keys(df, mode="full"):
     return list(dict.fromkeys([key for key in keys.tolist() if clean_value(key)]))
 
 
-def _sync_job_subset_df(df, product_key, mode="full"):
+def _sync_job_subset_df(df, product_key, mode="full", keys=None):
+    """Las filas de un producto dentro del snapshot del job.
+
+    `keys` es la serie de claves YA calculada. Sin ella hay que recorrer el
+    frame entero -- varias columnas por `clean_value`, fila a fila -- y esto se
+    llama UNA VEZ POR PRODUCTO: con un Matrixify de 40.000 filas y 1.000
+    productos eran mil pasadas completas sobre el mismo frame para sacar
+    subconjuntos de unas pocas filas. El bloque la calcula una vez y la pasa.
+    """
     if df is None or df.empty:
         return pd.DataFrame()
-    keys = _sync_job_product_key_series(df, mode=mode)
+    if keys is None:
+        keys = _sync_job_product_key_series(df, mode=mode)
     subset = df.loc[keys == product_key].copy()
     return subset
 
@@ -13366,10 +13676,52 @@ def _create_sync_job(site_key, mode, source_df, batch_size=20, activate_inventor
         "created_at": _now_lima_text(),
         "updated_at": _now_lima_text(),
     }
+    # Sin `.copy()`: pickle serializa el frame tal cual, y la copia duplicaba
+    # el Matrixify entero -cientos de MB- justo en el peor momento.
     with _sync_job_data_path(job_id).open("wb") as data_file:
-        pickle.dump(source_df.copy(), data_file)
+        pickle.dump(source_df, data_file)
     _save_sync_job(job)
+    _purgar_jobs_de_sincronizacion_viejos()
     return job
+
+
+# Cada proceso de sincronizacion deja en disco su registro y un pickle con el
+# Matrixify ENTERO -- cientos de MB --, y nada los borraba nunca. El disco del
+# contenedor es una cuota fija: cuando se acaba, la escritura falla y la app cae
+# con "Error running app" sin decir de que. Ademas `_latest_sync_job` abre todos
+# los registros del directorio en cada rerun del panel.
+JOBS_SINCRONIZACION_MAXIMOS = 10
+JOBS_SINCRONIZACION_DIAS = 7
+
+
+def _purgar_jobs_de_sincronizacion_viejos(maximos=JOBS_SINCRONIZACION_MAXIMOS,
+                                          dias=JOBS_SINCRONIZACION_DIAS):
+    """Deja los `maximos` procesos mas recientes y tira los de mas de `dias`.
+
+    Se mira la FECHA DEL ARCHIVO, no la del registro: un registro ilegible
+    tambien ocupa disco. Nunca se toca un proceso reciente, que es el que
+    alguien puede estar retomando bloque a bloque.
+    """
+    try:
+        if not SYNC_JOB_DIR.exists():
+            return
+        registros = sorted(
+            SYNC_JOB_DIR.glob("*.json"),
+            key=lambda ruta: ruta.stat().st_mtime,
+            reverse=True,
+        )
+    except Exception:
+        return
+    limite = time.time() - dias * 24 * 3600
+    for posicion, ruta in enumerate(registros):
+        try:
+            sobra = posicion >= maximos or ruta.stat().st_mtime < limite
+        except Exception:
+            continue
+        if not sobra:
+            continue
+        _borrar_temporal(ruta)
+        _borrar_temporal(_sync_job_data_path(ruta.stem))
 
 
 def _latest_sync_job(site_key, mode):
@@ -13436,8 +13788,8 @@ def _is_transient_sync_error(message):
     return any(term in text for term in transient_terms)
 
 
-def _sync_job_run_one_product(shopify_config, source_df, product_key, mode, activate_inventory_locations, progress_callback=None):
-    product_df = _sync_job_subset_df(source_df, product_key, mode=mode)
+def _sync_job_run_one_product(shopify_config, source_df, product_key, mode, activate_inventory_locations, progress_callback=None, keys=None):
+    product_df = _sync_job_subset_df(source_df, product_key, mode=mode, keys=keys)
     if product_df.empty:
         return pd.DataFrame(
             [
@@ -13485,6 +13837,8 @@ def process_sync_job_next_block(job_id, shopify_config, max_retries=2, progress_
         _save_sync_job(job)
         return job
 
+    # Una sola pasada por bloque, no una por producto.
+    claves_del_snapshot = _sync_job_product_key_series(source_df, mode=job.get("mode") or "full")
     batch_size = max(1, int(job.get("batch_size") or 20))
     block_keys = pending_keys[:batch_size]
     job["status"] = "running"
@@ -13522,6 +13876,7 @@ def process_sync_job_next_block(job_id, shopify_config, max_retries=2, progress_
                     job.get("mode"),
                     bool(job.get("activate_inventory_locations")),
                     progress_callback=job_progress_callback,
+                    keys=claves_del_snapshot,
                 )
                 result_text = ""
                 message_text = ""
@@ -18302,7 +18657,7 @@ def render_actions_table(actions_df, key_prefix):
     if search:
         needle = clean_value(search).lower()
         filtered = filtered[
-            filtered.apply(lambda row: needle in " ".join(clean_value(value).lower() for value in row.values), axis=1)
+            _mascara_de_busqueda(filtered, needle)
         ].copy()
     if selected_problem != "Todos":
         filtered = filtered[filtered["Problema"].map(clean_value) == selected_problem].copy()
@@ -18430,7 +18785,7 @@ def render_missing_models_audit_table(missing_models_input_df, key_prefix):
     if search:
         needle = clean_value(search).lower()
         filtered = filtered[
-            filtered.apply(lambda row: needle in " ".join(clean_value(value).lower() for value in row.values), axis=1)
+            _mascara_de_busqueda(filtered, needle)
         ].copy()
     visible = filtered.head(12).copy()
     rows = []
@@ -18509,7 +18864,7 @@ def render_missing_variants_table(missing_variants_df, key_prefix):
     if search:
         needle = clean_value(search).lower()
         filtered = filtered[
-            filtered.apply(lambda row: needle in " ".join(clean_value(value).lower() for value in row.values), axis=1)
+            _mascara_de_busqueda(filtered, needle)
         ].copy()
     if selected_brand != "Todas":
         filtered = filtered[filtered["MARCA_MA"].map(clean_value) == selected_brand].copy()

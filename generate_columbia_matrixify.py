@@ -2322,20 +2322,23 @@ def load_known_types(path=KNOWN_TYPES_PATH):
                 if not values and len(df.columns):
                     values.update(normalize_type_key(value) for value in df.iloc[:, 0].dropna())
         else:
-            xl = pd.ExcelFile(path)
-            for sheet_name in xl.sheet_names:
-                df = pd.read_excel(path, sheet_name=sheet_name, dtype=object)
-                if df.empty:
-                    continue
-                candidate_columns = [
-                    column
-                    for column in df.columns
-                    if any(word in str(column).lower() for word in ["tipo", "type", "familia", "prenda"])
-                ]
-                if not candidate_columns and len(df.columns):
-                    candidate_columns = [df.columns[0]]
-                for column in candidate_columns:
-                    values.update(normalize_type_key(value) for value in df[column].dropna())
+            # Se reusa el libro ABIERTO en vez de volver a `pd.read_excel(path)`
+            # por hoja: asi el archivo se parsea una vez y no una por hoja. Y
+            # con `with` el zip del libro se cierra en vez de quedar colgando.
+            with pd.ExcelFile(path) as xl:
+                for sheet_name in list(xl.sheet_names):
+                    df = pd.read_excel(xl, sheet_name=sheet_name, dtype=object)
+                    if df.empty:
+                        continue
+                    candidate_columns = [
+                        column
+                        for column in df.columns
+                        if any(word in str(column).lower() for word in ["tipo", "type", "familia", "prenda"])
+                    ]
+                    if not candidate_columns and len(df.columns):
+                        candidate_columns = [df.columns[0]]
+                    for column in candidate_columns:
+                        values.update(normalize_type_key(value) for value in df[column].dropna())
 
     rule_names = catalog_rule_type_names()
     if rule_names:

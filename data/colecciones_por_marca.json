@@ -1,0 +1,95 @@
+{
+ "generado": "2026-09-08T16:50:14+00:00",
+ "marcas": {
+  "COLUMBIA": {
+   "sitios": {
+    "columbia": {
+     "colecciones": [],
+     "etiqueta": "Columbia.pe",
+     "leido": "",
+     "origen": "data/matrixify_modelo.xlsx (export real, 2.401 productos)",
+     "productos": 2401,
+     "vocabulario": {
+      "actividad": [
+       "Camping",
+       "Deportes De Agua",
+       "Everyday Outdoor",
+       "Hiking",
+       "Multifunción",
+       "Pesca",
+       "Ski/Nieve",
+       "Trail Running"
+      ],
+      "atributo": [
+       "Convertible",
+       "Impermeable",
+       "Inferior",
+       "Lluvia",
+       "Manga Corta",
+       "Manga Larga",
+       "Pluma",
+       "Sintético",
+       "Superior"
+      ],
+      "comercial": [
+       "Quiebre",
+       "Vtex"
+      ],
+      "linea": [
+       "Arctic",
+       "Heritage",
+       "Icons",
+       "Interchange",
+       "Landroamer",
+       "NEW ARRIVALS",
+       "OHI",
+       "PFG",
+       "ROC",
+       "Star Wars™",
+       "Titanium"
+      ],
+      "sin_clasificar": [
+       "AM8004-yFO",
+       "Cuelleras y pasamontañas",
+       "utensilios"
+      ],
+      "tecnologia": [
+       "Adapt Trax™",
+       "Amaze Puff",
+       "HeatSeal",
+       "Microban®",
+       "Navic Fit™",
+       "Omni-Freeze™",
+       "Omni-Freeze™ Zero",
+       "Omni-Grip™",
+       "Omni-Grip™ LT",
+       "Omni-Heat™ Arctic",
+       "Omni-Heat™ Infinity",
+       "Omni-Heat™ Reflective",
+       "Omni-MAX™",
+       "Omni-Shade™",
+       "Omni-Shade™ Broad Spectrum",
+       "Omni-Shield™",
+       "Omni-Shield™ Blood 'N Guts",
+       "Omni-Tech™",
+       "Omni-Wick™",
+       "OutDry™",
+       "OutDry™ Extreme",
+       "Outgrown™",
+       "Polygiene®",
+       "TechLite™",
+       "TechLite™ Live",
+       "TechLite™ Plus",
+       "TechLite™ Plush",
+       "Thermacool™",
+       "Thermarator™",
+       "Vibram®"
+      ]
+     }
+    }
+   }
+  }
+ },
+ "sitios_con_error": {},
+ "version": 1
+}

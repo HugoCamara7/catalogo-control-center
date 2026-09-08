@@ -82,6 +82,8 @@ app_matrixify.py        25.6xx lineas · 595 funciones · UI + routing + logica
 │   ├── ticket_flow.py  562 lin · 23 estados -> 5 visibles (55 pruebas)
 │   ├── load_status.py   diagnostico de carga de todos los sitios (37 pruebas)
 │   ├── espejo_supermall.py  que le falta al espejo (35 pruebas)
+│   ├── colecciones.py  colecciones por marca segun los tags (54 pruebas)
+│   ├── garment_types.py  el UNICO diccionario de tipos (60 tipos, 523 nombres)
 │   ├── orden_tallas.py  orden y escala de las tallas (34 pruebas)
 │   ├── tallas_calzado.py conversion US -> PE con la guia oficial de Vans
 │   └── storage_check.py 176 lin · diagnostico de persistencia
@@ -2136,6 +2138,155 @@ nada en Shopify**: es una vista previa, y hay un test que exige que ni el panel
 ni el resumen puedan tocar la tienda.
 
 `scripts/test_hueco_por_marca.py` (28 pruebas) fija todo esto.
+## 5 unvicies. Un solo diccionario de tipos, y el de colecciones por marca (septiembre 2026)
+
+`engines/colecciones.py` (sin Streamlit ni pandas) + `render_diccionario_colecciones()`,
+pantalla propia **Diccionarios** en el menu principal, al lado de Carga Supermall.
+`scripts/generar_diccionario_colecciones.py` + `data/colecciones_por_marca.json`.
+
+### El tipo de prenda se decidia en DOS tablas que se contradecian
+
+Habia dos diccionarios de tipos escritos a mano: `engines/garment_types` (el
+Excel que confirmo el usuario, con los nombres por sitio) y
+`catalog_rules.PRODUCT_TYPE_RULES` (con la clase, el grupo de guia de tallas y
+la talla unica). Medido: **186 nombres** que solo conocia una de las dos, y
+**diez prendas donde daban respuestas distintas**.
+
+| Nombre | garment_types | catalog_rules |
+|---|---|---|
+| buzo | Polerones | **Pantalon** |
+| falda | Faldas | **Short** |
+| beanie | Chullos | **Gorro** |
+| leggings | Leggings | **Pantalon** |
+| cartera | Carteras | **Bolso** |
+| jockey | Gorros | **Sombrero** |
+| bandana | Pañuelos | **Cuellera** |
+| overol | Overol | **Enterizo** |
+| chompa | Chompas | **Sweater** |
+| boot | Botines | **Bota** |
+
+La validacion del input comercial usaba una tabla y la columna `Type` que se
+escribe en Shopify usa la otra (`resolve_product_type` llama a
+`tipo_para_sitio`), asi que **el mismo producto se clasificaba distinto segun
+por donde pasara**. Es exactamente la trampa de las dos `normalize_size`.
+
+**Ahora `PRODUCT_TYPE_RULES` se DERIVA del maestro** y `normalize_product_type`
+le pregunta a el. La forma del diccionario no cambia: sus consumidores
+(`commercial_product_type_rules_for_brand`, `catalog_rule_type_names`,
+`resolve_size_guide`) siguen leyendo las mismas claves. Donde las dos se
+contradecian manda el maestro, que es el dato confirmado.
+
+Lo que gano el maestro:
+
+- **460+ sinonimos** (523 nombres indexados, antes 345). Entran los 31 que solo
+  conocia `catalog_rules` -- jogger, parka, morral, navaja, balaclava, bootie,
+  guillermina, miton, micropolar, sweatshirt, portalata, portafolio, banano,
+  gorro andino, gafa, trekking poles -- y ~150 formas nuevas medidas contra el
+  catalogo real.
+- **`Hoody` no estaba**, y son **91 productos vivos** en Columbia.pe.
+- **`grupo_talla` y `talla_unica`**, que solo vivian en `catalog_rules`. Con
+  eso se cierra el hueco de agosto: Chompas, Jeans, Enterizos, Blusas y
+  Chalecos Polares se quedaban **sin grupo**, y sin grupo las guias de TOPS y
+  BOTTOMS **empatan en prioridad 95** -- la elegida dependia del orden de la
+  lista, no del producto.
+- **`conflictos()`**. El indice es "gana el primero", asi que un nombre en dos
+  tipos no reventaba: mandaba uno de los dos en silencio. Destapo **dos errores
+  del propio maestro**: `Cremas Renovadoras` apuntaba a *Accesorios De
+  Limpieza* existiendo el tipo *Crema renovadora*, y `Overoles` a *Enterizos*
+  existiendo *Overol*.
+
+**Lo que NO se mapea, a proposito:** `calzado` y `footwear` ya no resuelven a
+Zapatilla. Son la **CLASE**, no el tipo, y con ese alias una sandalia declarada
+como "calzado" se publicaba como zapatilla. Sin mapeo, la validacion lo avisa.
+
+Medido: los **55 tipos del catalogo real** de Columbia.pe (2.401 productos) y
+los 55 de `data/tipos_shopify.xlsx` quedan reconocidos, y las dos capas
+coinciden en los 523 nombres.
+
+Tres esperados de `test_tipos_de_prenda` cambiaron, y son la consecuencia
+buscada: `"Ropa de Bano"` -> `"Ropa De Baño"`, `"Correa"` -> `"Cinturon"`, y
+`bucket hat` ahora es Gorro y no Sombrero.
+
+### El diccionario de colecciones
+
+En Shopify una coleccion automatica **no se llena a mano**: se llena sola a
+partir de una regla, y casi siempre la regla es un **TAG**. O sea que el tag
+que escribe la carga decide en que colecciones aparece el producto -- y eso no
+estaba escrito en ninguna parte. Nadie podia responder *"que le pongo a este
+producto para que salga en Hiking"* sin abrir Shopify tienda por tienda.
+
+**Va por MARCA y no por sitio** porque una marca vive en varias tiendas:
+Columbia se carga en Columbia.pe, Rockford.pe y Supermall.pe, y cada tienda
+tiene sus propias colecciones. "Las colecciones de Columbia" sin decir la
+tienda no tiene una sola respuesta.
+
+**El diccionario NO se escribe a mano: se LEE de Shopify.** Una lista inventada
+se leeria como cierta, que es peor que no tenerla.
+
+```
+python scripts/generar_diccionario_colecciones.py
+python scripts/generar_diccionario_colecciones.py --sitios columbia,vans
+```
+
+Lo que hay que saber para no romperlo:
+
+- **Se lee `ruleSet`, no solo el nombre.** `shopify_api.fetch_collections` pide
+  `appliedDisjunctively` y las reglas (`column`/`relation`/`condition`). Sin
+  eso el diccionario seria una lista de nombres. Hay un test que lo fija.
+- **Las colecciones se piden APARTE de los productos.** Metidas en la consulta
+  de productos el costo se paga por producto, y ahi ya se rozan los 1.000
+  puntos del maximo (seccion 5 decies). Son unas decenas por tienda: dos o tres
+  viajes.
+- **"No se puede evaluar" NO es "no".** Una regla por precio, peso o inventario
+  no se responde con los tags, y una coleccion manual tampoco. Devolver `False`
+  dejaria al producto fuera sin que nadie se entere. El motor devuelve
+  **`None`** y la pantalla lo dice, en vez de dar un numero falso.
+- **Lo declarado por la tienda manda sobre lo inferido.** Medido:
+  `Impermeable` esta en 149 productos de Columbia como **atributo** (la prenda
+  es impermeable), pero el diccionario maestro lo reconoce como el **tipo**
+  "Impermeables". El vocabulario curado gana; la inferencia es el respaldo.
+- **El generador no pisa el trabajo a mano.** Que "Hiking" sea una actividad y
+  "Omni-Tech(tm)" una tecnologia no lo sabe Shopify: es un dato curado. Se
+  conserva tal cual y los tags nuevos entran como `sin_clasificar`. Tampoco
+  borra los tags que ya no estan en la tienda ni los sitios que no se leyeron
+  esta vez -- se fusiona por sitio, no por archivo.
+- **Un sitio caido no se reporta como tienda sin colecciones.** Eso se leeria
+  como "no han creado ninguna". Su fallo viaja aparte y la pantalla avisa.
+- **Un producto que no cae en NINGUNA coleccion automatica** esta cargado y no
+  lo encuentra nadie navegando. Es la misma resta que el espejo de Supermall, y
+  se reporta.
+
+### Lo que se midio del catalogo real (Columbia.pe, 2.401 productos)
+
+| | |
+|---|---:|
+| tags distintos | 1.175 |
+| ...que son el codigo Modelo-Color del propio producto | **1.069** |
+| vocabulario real | **104** |
+
+**El codigo Modelo-Color se reconoce por IDENTIDAD, no por su forma.** La forma
+(mayusculas, digitos y guiones) se pierde `AM8004-yFO`, que esta en el catalogo
+con una minuscula. Con la lista de codigos del catalogo no hay que adivinar.
+Ese tag ademas **no es el codigo de ningun producto**: es basura, y por eso
+queda en `sin_clasificar` en vez de taparse.
+
+Otros dos hallazgos que la pantalla muestra:
+
+- **`Vtex` esta en 1.331 productos**, mas que ningun otro tag. Es de la epoca
+  de VTEX, que se retiro en septiembre de 2026 (seccion 5 sexies bis).
+- **`Mochila`/`mochila` y `Utensilios`/`utensilios`**. Shopify los trata como
+  tags **distintos**, asi que una coleccion por uno se deja fuera los del otro.
+
+### El estado del archivo hoy
+
+`data/colecciones_por_marca.json` trae el **vocabulario de Columbia.pe**,
+medido contra `data/matrixify_modelo.xlsx` y clasificado a mano (8 actividades,
+30 tecnologias, 11 lineas, 9 atributos, 2 comerciales). Las **colecciones
+siguen vacias**: hay que correr el generador con Secrets, que es lo unico que
+no se puede hacer sin acceso a las tiendas.
+
+`scripts/test_colecciones.py` (54 pruebas) fija todo esto, con un Shopify
+falso: no sale a la red.
 
 ---
 
@@ -2343,6 +2494,8 @@ python scripts/test_mantenedor_tallas.py               # 41
 python scripts/test_orden_tallas_reales.py             # 17
 python scripts/test_guias_tallas.py                    # 21
 python scripts/test_carga_supermall.py                 # 31
+python scripts/test_colecciones.py                     # 54
+python scripts/test_tipos_de_prenda.py                 # 13
 python scripts/test_carga_sial_campos.py               # 27
 python scripts/test_curva_y_carga_suelta.py            # 42
 python scripts/test_hueco_por_marca.py                 # 28

@@ -155,579 +155,72 @@ def aliases_for(field, fallback=None):
     return values
 
 
-PRODUCT_TYPE_RULES = [
-    {
-        "received": "zapatilla, zapatillas, footwear, sneaker, sneakers, calzado",
-        "normalized": "Zapatilla",
-        "singular": "Zapatilla",
-        "plural": "Zapatillas",
-        "category": "Calzado",
-        "subcategory": "Zapatillas",
-        "size_guide_family": "Calzado",
-        "can_one_size": False,
-        "examples": "Zapatilla Hombre Konos",
-    },
-    {
-        "received": "casaca, chaqueta, jacket, parka",
-        "normalized": "Casaca",
-        "singular": "Casaca",
-        "plural": "Casacas",
-        "category": "Vestuario",
-        "subcategory": "Casacas",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "TOPS",
-        "can_one_size": False,
-        "examples": "Casaca Impermeable Mujer",
-    },
-    {
-        "received": "polo, polos, camiseta, t-shirt, tshirt, polera, poleras, remera, remeras",
-        "normalized": "Polo",
-        "singular": "Polo",
-        "plural": "Polos",
-        "category": "Vestuario",
-        "subcategory": "Polos",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "TOPS",
-        "can_one_size": False,
-        "examples": "Polo Hombre",
-    },
-    {
-        "received": "poleron, polerón, hoodie, sweatshirt, hoody",
-        "normalized": "Poleron",
-        "singular": "Poleron",
-        "plural": "Polerones",
-        "category": "Vestuario",
-        "subcategory": "Polerones",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "TOPS",
-        "can_one_size": False,
-        "examples": "Poleron Mujer",
-    },
-    {
-        "received": "pantalon, pantalones, pants, jogger, joggers, buzo, leggings, legging",
-        "normalized": "Pantalon",
-        "singular": "Pantalon",
-        "plural": "Pantalones",
-        "category": "Vestuario",
-        "subcategory": "Pantalones",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "BOTTOMS",
-        "can_one_size": False,
-        "examples": "Pantalon Trekking Mujer",
-    },
-    {
-        "received": "short, shorts, bermuda, bermudas, falda, faldas",
-        "normalized": "Short",
-        "singular": "Short",
-        "plural": "Shorts",
-        "category": "Vestuario",
-        "subcategory": "Shorts",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "BOTTOMS",
-        "can_one_size": False,
-        "examples": "Short Hombre Outdoor",
-    },
-    {
-        "received": "gorro, gorros, beanie",
-        "normalized": "Gorro",
-        "singular": "Gorro",
-        "plural": "Gorros",
-        "category": "Accesorios",
-        "subcategory": "Gorros",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Gorro Cachalot",
-    },
-    {
-        "received": "bolso, bolsos, cartera, carteras, bag",
-        "normalized": "Bolso",
-        "singular": "Bolso",
-        "plural": "Bolsos",
-        "category": "Accesorios",
-        "subcategory": "Bolsos",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Bolso Outdoor",
-    },
-    {
-        "received": "slip on, slip-on",
-        "normalized": "Slip On",
-        "singular": "Slip On",
-        "plural": "Slip Ons",
-        "category": "Calzado",
-        "subcategory": "Slip Ons",
-        "size_guide_family": "Calzado",
-        "can_one_size": False,
-        "examples": "Slip On Vans",
-    },
-    {
-        "received": "crema renovadora, renovador, cleaner",
-        "normalized": "Crema renovadora",
-        "singular": "Crema renovadora",
-        "plural": "Cremas renovadoras",
-        "category": "Accesorios",
-        "subcategory": "Cuidado",
-        "size_guide_family": "Sin guia",
-        "can_one_size": True,
-        "examples": "Crema renovadora cuero",
-    },
-    {
-        "received": "polar, polares, fleece, microfleece, micropolar",
-        "normalized": "Polar",
-        "singular": "Polar",
-        "plural": "Polares",
-        "category": "Vestuario",
-        "subcategory": "Polares",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "TOPS",
-        "can_one_size": False,
-        "examples": "Polar Mujer Benton Springs",
-    },
-    {
-        "received": "chaleco, chalecos, vest",
-        "normalized": "Chaleco",
-        "singular": "Chaleco",
-        "plural": "Chalecos",
-        "category": "Vestuario",
-        "subcategory": "Chalecos",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "TOPS",
-        "can_one_size": False,
-        "examples": "Chaleco Hombre Powder Lite",
-    },
-    {
-        "received": "camisa, camisas, shirt",
-        "normalized": "Camisa",
-        "singular": "Camisa",
-        "plural": "Camisas",
-        "category": "Vestuario",
-        "subcategory": "Camisas",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "TOPS",
-        "can_one_size": False,
-        "examples": "Camisa Hombre Silver Ridge",
-    },
-    {
-        "received": "interior termico, interiores termicos, interior térmico, interiores térmicos, primera capa, baselayer, base layer",
-        "normalized": "Interior Termico",
-        "singular": "Interior Termico",
-        "plural": "Interiores Termicos",
-        "category": "Vestuario",
-        "subcategory": "Interiores Termicos",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "TOPS",
-        "can_one_size": False,
-        "examples": "Interior Termico Hombre Midweight",
-    },
-    {
-        "received": "ropa de bano, ropas de bano, ropa de baño, ropas de baño, traje de bano, traje de baño, swimwear, bikini, malla",
-        "normalized": "Ropa de Bano",
-        "singular": "Ropa de Bano",
-        "plural": "Ropas de Bano",
-        "category": "Vestuario",
-        "subcategory": "Ropas de Bano",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "BOTTOMS",
-        "can_one_size": False,
-        "examples": "Ropa de Bano Hombre",
-    },
-    {
-        "received": "guante, guantes, glove, gloves, mitones, miton",
-        "normalized": "Guante",
-        "singular": "Guante",
-        "plural": "Guantes",
-        "category": "Accesorios",
-        "subcategory": "Guantes",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Guantes Unisex Powder Lite",
-    },
-    {
-        "received": "cuellera, cuelleras, cuello, cuellos, neck gaiter, bandana",
-        "normalized": "Cuellera",
-        "singular": "Cuellera",
-        "plural": "Cuelleras",
-        "category": "Accesorios",
-        "subcategory": "Cuelleras",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Cuellera Unisex",
-    },
-    {
-        "received": "chullo, chullos, gorro andino",
-        "normalized": "Chullo",
-        "singular": "Chullo",
-        "plural": "Chullos",
-        "category": "Accesorios",
-        "subcategory": "Chullos",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Chullo Unisex",
-    },
-    {
-        "received": "sombrero, sombreros, hat, bucket hat, jockey",
-        "normalized": "Sombrero",
-        "singular": "Sombrero",
-        "plural": "Sombreros",
-        "category": "Accesorios",
-        "subcategory": "Sombreros",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Sombrero Unisex Bora Bora",
-    },
-    {
-        "received": "mochila, mochilas, backpack, morral",
-        "normalized": "Mochila",
-        "singular": "Mochila",
-        "plural": "Mochilas",
-        "category": "Accesorios",
-        "subcategory": "Mochilas",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Mochila Unisex Atlas Explorer",
-    },
-    {
-        "received": "maletin, maletines, maletín, maletines, briefcase, portafolio",
-        "normalized": "Maletin",
-        "singular": "Maletin",
-        "plural": "Maletines",
-        "category": "Accesorios",
-        "subcategory": "Maletines",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Maletin Unisex",
-    },
-    {
-        "received": "neceser, neceseres, cosmetiquero, toiletry",
-        "normalized": "Neceser",
-        "singular": "Neceser",
-        "plural": "Neceseres",
-        "category": "Accesorios",
-        "subcategory": "Neceseres",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Neceser Unisex",
-    },
-    {
-        "received": "canguro, canguros, rinonera, riñonera, banano, waist pack",
-        "normalized": "Canguro",
-        "singular": "Canguro",
-        "plural": "Canguros",
-        "category": "Accesorios",
-        "subcategory": "Canguros",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Canguro Unisex",
-    },
-    {
-        "received": "correa, correas, cinturon, cinturón, belt",
-        "normalized": "Correa",
-        "singular": "Correa",
-        "plural": "Correas",
-        "category": "Accesorios",
-        "subcategory": "Correas",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Correa Unisex",
-    },
+# --------------------------------------------------------------------------
+# Tipos de prenda: UNA sola tabla, la de engines/garment_types.
+#
+# Hasta septiembre de 2026 esta lista se escribia a mano al lado del
+# diccionario maestro, y las dos se habian separado: 186 nombres que solo
+# conocia una, y diez prendas donde se contradecian -- "buzo" era un pantalon
+# aqui y un poleron alla, "falda" un short aqui y una falda alla, "beanie" un
+# gorro aqui y un chullo alla. La validacion del input comercial usaba una y la
+# columna Type de Shopify la otra, asi que el mismo producto se clasificaba
+# distinto segun por donde pasara. Es la misma trampa que las dos
+# `normalize_size`.
+#
+# Ahora se DERIVA. La forma del diccionario no cambia -- sus consumidores
+# (`commercial_product_type_rules_for_brand`, `catalog_rule_type_names`,
+# `resolve_size_guide`) siguen leyendo las mismas claves.
+#
+# `received` queda como el listado legible de sinonimos. Ya NO es lo que
+# resuelve: `normalize_product_type` pregunta al diccionario maestro, que
+# ademas garantiza que ningun nombre apunte a dos tipos. Por eso se filtran los
+# nombres con separador ("Camisa M/C"): partidos por la coma darian alias
+# basura como "Camisa M".
+try:
+    from engines.garment_types import TIPOS as _TIPOS_MAESTROS
+    from engines.garment_types import nombres_de as _nombres_de_tipo
+    from engines.garment_types import resolver as _resolver_tipo
+except ImportError:  # pragma: no cover - el motor no tiene dependencias
+    _TIPOS_MAESTROS, _nombres_de_tipo, _resolver_tipo = [], lambda r: [], lambda v: None
 
-    # --- ampliacion del diccionario (agosto 2026) ------------------------
-    # Del analisis de los catalogos reales de los cuatro sitios. Cubre los 20
-    # tipos que la propia data/tipos_shopify.xlsx de la app no reconocia, y que
-    # eran el grueso de las advertencias de "tipo no reconocido".
-    #
-    # Criterio acordado: el canonico va en PLURAL (3 de 4 sitios ya lo usan;
-    # Vans escribe en singular y sus formas quedan como sinonimos).
-    #
-    # Calzado tenia solo 2 tipos (Zapatillas y Slip Ons) pese a ser marcas de
-    # calzado. De ahi salia el grueso de los avisos.
-    #
-    # Ningun alias puede apuntar a dos tipos: hay una prueba que lo comprueba.
-    # Por eso NO se agregaron tipos que ya tenian dueno en el diccionario:
-    #   buzo/buzos   -> ya es Pantalones (encajaria en Polerones)
-    #   chaqueta     -> ya es Casaca
-    #   falda        -> ya es Short
-    #   cartera      -> ya es Bolso
-    #   t-shirt      -> ya es Polo
-    #   hoodie       -> ya es Poleron (solo faltaba la forma "hoody")
-    # Y "Poleras" no se creo como tipo aparte: el analisis ya habia decidido
-    # que Polos = Poleras, asi que sus formas son sinonimos de Polo.
-    # Las tres primeras son decisiones de criterio del negocio, no tecnicas.
-    {
-        "received": "sweater, sweaters, chompa, chompas, jersey, jerseys, pullover",
-        "normalized": "Sweater",
-        "singular": "Sweater",
-        "plural": "Sweaters",
-        "category": "Vestuario",
-        "subcategory": "Sweaters",
-        "size_guide_family": "Vestuario",
-        "can_one_size": False,
-        "examples": "Sweater Mujer",
-    },
-    {
-        "received": "blusa, blusas, blouse",
-        "normalized": "Blusa",
-        "singular": "Blusa",
-        "plural": "Blusas",
-        "category": "Vestuario",
-        "subcategory": "Blusas",
-        "size_guide_family": "Vestuario",
-        "can_one_size": False,
-        "examples": "Blusa Mujer",
-    },
-    {
-        "received": "jean, jeans, pantalon jean, denim",
-        "normalized": "Jean",
-        "singular": "Jean",
-        "plural": "Jeans",
-        "category": "Vestuario",
-        "subcategory": "Jeans",
-        "size_guide_family": "Vestuario",
-        "can_one_size": False,
-        "examples": "Jean Hombre",
-    },
-    {
-        "received": "enterizo, enterizos, overol, overoles, jardinera, jardineras, mameluco, jumpsuit",
-        "normalized": "Enterizo",
-        "singular": "Enterizo",
-        "plural": "Enterizos",
-        "category": "Vestuario",
-        "subcategory": "Enterizos",
-        "size_guide_family": "Vestuario",
-        "can_one_size": False,
-        "examples": "Enterizo Mujer",
-    },
-    {
-        "received": "chaleco polar, chalecos polares",
-        "normalized": "Chaleco Polar",
-        "singular": "Chaleco Polar",
-        "plural": "Chalecos Polares",
-        "category": "Vestuario",
-        "subcategory": "Chalecos Polares",
-        "size_guide_family": "Vestuario",
-        "can_one_size": False,
-        "examples": "Chaleco Polar Hombre",
-    },
-    {
-        "received": "bota, botas, boot, boots",
-        "normalized": "Bota",
-        "singular": "Bota",
-        "plural": "Botas",
-        "category": "Calzado",
-        "subcategory": "Botas",
-        "size_guide_family": "Calzado",
-        "can_one_size": False,
-        "examples": "Bota Hombre",
-    },
-    {
-        "received": "botin, botines, bootie, booties",
-        "normalized": "Botin",
-        "singular": "Botin",
-        "plural": "Botines",
-        "category": "Calzado",
-        "subcategory": "Botines",
-        "size_guide_family": "Calzado",
-        "can_one_size": False,
-        "examples": "Botin Mujer",
-    },
-    {
-        "received": "sandalia, sandalias, sandal, sandals",
-        "normalized": "Sandalia",
-        "singular": "Sandalia",
-        "plural": "Sandalias",
-        "category": "Calzado",
-        "subcategory": "Sandalias",
-        "size_guide_family": "Calzado",
-        "can_one_size": False,
-        "examples": "Sandalia Mujer",
-    },
-    {
-        "received": "pantufla, pantuflas, slipper, slippers",
-        "normalized": "Pantufla",
-        "singular": "Pantufla",
-        "plural": "Pantuflas",
-        "category": "Calzado",
-        "subcategory": "Pantuflas",
-        "size_guide_family": "Calzado",
-        "can_one_size": False,
-        "examples": "Pantufla Unisex",
-    },
-    {
-        "received": "zapato, zapatos, shoe, shoes",
-        "normalized": "Zapato",
-        "singular": "Zapato",
-        "plural": "Zapatos",
-        "category": "Calzado",
-        "subcategory": "Zapatos",
-        "size_guide_family": "Calzado",
-        "can_one_size": False,
-        "examples": "Zapato Hombre",
-    },
-    {
-        "received": "mocasin, mocasines, loafer, loafers",
-        "normalized": "Mocasin",
-        "singular": "Mocasin",
-        "plural": "Mocasines",
-        "category": "Calzado",
-        "subcategory": "Mocasines",
-        "size_guide_family": "Calzado",
-        "can_one_size": False,
-        "examples": "Mocasin Hombre",
-    },
-    {
-        "received": "ballerina, ballerinas, guillermina, guilleminas, guillerminas, flat, flats",
-        "normalized": "Ballerina",
-        "singular": "Ballerina",
-        "plural": "Ballerinas",
-        "category": "Calzado",
-        "subcategory": "Ballerinas",
-        "size_guide_family": "Calzado",
-        "can_one_size": False,
-        "examples": "Ballerina Mujer",
-    },
-    {
-        "received": "media, medias, calcetin, calcetines, sock, socks",
-        "normalized": "Media",
-        "singular": "Media",
-        "plural": "Medias",
-        "category": "Accesorios",
-        "subcategory": "Medias",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Medias Unisex",
-    },
-    {
-        "received": "pasamontana, pasamontanas, balaclava, balaclavas",
-        "normalized": "Pasamontana",
-        "singular": "Pasamontana",
-        "plural": "Pasamontanas",
-        "category": "Accesorios",
-        "subcategory": "Pasamontanas",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Pasamontana Unisex",
-    },
-    {
-        "received": "lente, lentes, lentes de sol, gafa, gafas, gafas de sol, sunglasses",
-        "normalized": "Lente de Sol",
-        "singular": "Lente de Sol",
-        "plural": "Lentes de Sol",
-        "category": "Accesorios",
-        "subcategory": "Lentes de Sol",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Lentes de Sol Unisex",
-    },
-    {
-        "received": "billetera, billeteras, wallet, wallets, monedero, monederos",
-        "normalized": "Billetera",
-        "singular": "Billetera",
-        "plural": "Billeteras",
-        "category": "Accesorios",
-        "subcategory": "Billeteras",
-        "size_guide_family": "Accesorios",
-        "can_one_size": True,
-        "examples": "Billetera Hombre",
-    },
-    {
-        "received": "botella, botellas, bottle, termo, termos",
-        "normalized": "Botella",
-        "singular": "Botella",
-        "plural": "Botellas",
-        "category": "Accesorios",
-        "subcategory": "Botellas",
-        "size_guide_family": "Sin guia",
-        "can_one_size": True,
-        "examples": "Botella Termica",
-    },
-    {
-        "received": "cooler, coolers, conservadora, conservadoras",
-        "normalized": "Cooler",
-        "singular": "Cooler",
-        "plural": "Coolers",
-        "category": "Accesorios",
-        "subcategory": "Coolers",
-        "size_guide_family": "Sin guia",
-        "can_one_size": True,
-        "examples": "Cooler Portatil",
-    },
-    {
-        "received": "baston, bastones, trekking pole, trekking poles",
-        "normalized": "Baston",
-        "singular": "Baston",
-        "plural": "Bastones",
-        "category": "Accesorios",
-        "subcategory": "Bastones",
-        "size_guide_family": "Sin guia",
-        "can_one_size": True,
-        "examples": "Bastones de Trekking",
-    },
-    {
-        "received": "cuchilla, cuchillas, cuchillo, cuchillos, navaja, navajas, knife",
-        "normalized": "Cuchilla",
-        "singular": "Cuchilla",
-        "plural": "Cuchillas",
-        "category": "Accesorios",
-        "subcategory": "Cuchillas",
-        "size_guide_family": "Sin guia",
-        "can_one_size": True,
-        "examples": "Cuchilla Multiuso",
-    },
-    {
-        "received": "funda para lata, fundas para lata, portalata, portalatas, can cooler",
-        "normalized": "Funda para Lata",
-        "singular": "Funda para Lata",
-        "plural": "Fundas para Lata",
-        "category": "Accesorios",
-        "subcategory": "Fundas para Lata",
-        "size_guide_family": "Sin guia",
-        "can_one_size": True,
-        "examples": "Funda para Lata",
-    },
 
-    # --- vestidos (septiembre 2026) --------------------------------------
-    # "VESTIDOS" bloqueaba una carga de Rockford y parecia una restriccion de
-    # la marca. No lo era: el diccionario NO tenia ningun tipo para vestido,
-    # ni en singular ni en plural ni en ingles. Rockford admite Vestuario
-    # (COMMERCIAL_BRAND_ALLOWED_CLASSES), asi que en cuanto el tipo existe lo
-    # acepta igual que Columbia, Vans o Hush Puppies Kids: el filtro por marca
-    # es por CATEGORIA, nunca por tipo.
-    #
-    # Va con size_guide_group explicito. Sin el, "vestido" no cae ni en
-    # bottom_markers ni en top_markers de resolve_size_guide, el grupo queda
-    # vacio y las guias de TOPS y BOTTOMS empatan en prioridad 95: la elegida
-    # depende del orden de la lista, no del producto. TOPS es la que mide
-    # busto y cintura, que es como se talla un vestido.
-    #
-    # "falda" NO se toca aqui: sigue siendo alias de Short por decision previa
-    # del diccionario, y moverla es una decision de negocio aparte.
-    {
-        "received": "vestido, vestidos, dress, dresses",
-        "normalized": "Vestido",
-        "singular": "Vestido",
-        "plural": "Vestidos",
-        "category": "Vestuario",
-        "subcategory": "Vestidos",
-        "size_guide_family": "Vestuario",
-        "size_guide_group": "TOPS",
-        "can_one_size": False,
-        "examples": "Vestido Mujer Terra",
-    },
-]
+def _regla_de_tipo(regla):
+    """El tipo del diccionario maestro con la forma que espera esta capa."""
+    nombres = [n for n in _nombres_de_tipo(regla) if not re.search(r"[,;/|]", n)]
+    vistos, recibidos = set(), []
+    for nombre in nombres:
+        clave = normalize_key(nombre)
+        if clave and clave not in vistos:
+            vistos.add(clave)
+            recibidos.append(nombre.casefold())
+    return {
+        "received": ", ".join(recibidos),
+        "normalized": regla["singular"],
+        "singular": regla["singular"],
+        "plural": regla["tipo"],
+        "category": regla["categoria"],
+        "subcategory": regla["tipo"],
+        "size_guide_family": regla["categoria"],
+        "size_guide_group": regla["grupo_talla"],
+        "can_one_size": regla["talla_unica"],
+        "examples": f'{regla["singular"]} ({regla["categoria"]})',
+    }
+
+
+PRODUCT_TYPE_RULES = [_regla_de_tipo(regla) for regla in _TIPOS_MAESTROS]
 
 
 def normalize_product_type(value):
-    key = normalize_key(value)
-    if not key:
+    """La regla del tipo, o None si el diccionario maestro no lo reconoce.
+
+    Pregunta al diccionario maestro en vez de recorrer `received`: asi los 523
+    nombres que el maestro conoce valen tambien aqui, y no hay forma de que una
+    tabla acepte un nombre que la otra rechaza.
+    """
+    if not normalize_key(value):
         return None
-    for rule in PRODUCT_TYPE_RULES:
-        candidates = [rule["normalized"], rule["singular"], rule["plural"], rule["received"]]
-        candidate_keys = []
-        for candidate in candidates:
-            candidate_keys.extend(normalize_key(part) for part in re.split(r"[,;/|]", candidate))
-        if key in candidate_keys:
-            return dict(rule)
-    return None
+    regla = _resolver_tipo(value)
+    return _regla_de_tipo(regla) if regla else None
 
 
 SIZE_GUIDE_RULES = [

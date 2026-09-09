@@ -87,6 +87,10 @@ ESCALA_UNISEX = HOMBRE
 # es una salvedad que tiene que quedar por escrito.
 UNISEX = "unisex"
 
+# El numero NO esta en la columna que le toca a ese genero. No se busca en las
+# otras: son escalas distintas, no sinonimos. Se devuelve la talla de origen.
+FUERA_DE_ESCALA = "fuera de la escala del genero"
+
 
 def _texto(valor):
     if valor is None:
@@ -274,14 +278,28 @@ def talla_pe(valor, genero="", permitir_unisex=True):
         destino = POR_ESCALA[escala].get(clave)
         if destino:
             return destino, ""
-        # El genero dice una escala pero la talla no esta en ella. Antes de
-        # rendirse se miran las otras: un nino con talla de mujer pequena es
-        # justo la zona donde las dos columnas se cruzan.
-        for otra in (HOMBRE, MUJER, NINO):
-            destino = POR_ESCALA[otra].get(clave)
-            if destino:
-                return destino, "ambigua"
-        return clave, "desconocida"
+        # **NO se cruza de escala.** Antes, si el numero no estaba en la
+        # columna que le toca a ese genero, se buscaba en las otras y se
+        # publicaba esa respuesta con la nota "ambigua". Eso no es una
+        # ambiguedad: son ESCALAS DISTINTAS, y el mismo numero significa cosas
+        # distintas en cada una.
+        #
+        # Medido en el catalogo real de Columbia.pe: las "Sandalias Nino
+        # Techsun" (`1594632-3ZK`) traen la curva `80, 90, 100, 110, 120, 130`
+        # -- US 8 a 13 de NINO -- y se publicaban **40.5, 42, 43, 44.5, 46,
+        # 47**, o sea tallas de hombre en una sandalia de nino. Nueve productos
+        # de ese catalogo estaban asi, y los nueve son de nino.
+        #
+        # Un numero fuera de su escala se devuelve TAL CUAL y se reporta. Una
+        # talla en US se ve mal y alguien la corrige; una talla de hombre en un
+        # zapato de nino se ve bien y llega al comprador.
+        #
+        # Se distinguen dos cosas, porque no se arreglan igual: si el numero
+        # existe en OTRA columna, el producto trae la escala de otro genero --
+        # casi siempre calzado infantil -- y lo que hace falta es su guia. Si
+        # no esta en ninguna, no es una talla que la guia conozca.
+        en_otra = any(clave in POR_ESCALA[otra] for otra in (HOMBRE, MUJER, NINO))
+        return clave, (FUERA_DE_ESCALA if en_otra else "desconocida")
 
     # Sin genero. Si el numero solo existe en una escala, no hay duda.
     encontrados = {

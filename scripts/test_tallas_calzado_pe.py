@@ -102,6 +102,7 @@ class TestLaTablaOficial(unittest.TestCase):
         self.assertEqual(tc.talla_pe("12", "Masculino")[0], "46")
         self.assertEqual(tc.talla_pe("13", "Masculino")[0], "47")
         self.assertEqual(tc.talla_pe("12.5", "Masculino")[1], "desconocida")
+        self.assertEqual(tc.talla_pe("12.5", "Masculino")[0], "12.5", "no se inventa")
 
 
 class TestElGeneroCambiaLaTalla(unittest.TestCase):
@@ -343,6 +344,30 @@ class TestVansDePuntaAPunta(unittest.TestCase):
     def test_una_talla_que_ya_venia_en_pe_no_cambia(self):
         centry, _ = self._centry("Masculino", "Zapatillas", ["40.5", "42"])
         self.assertEqual(list(centry["Talla"]), ["40.5", "42"])
+
+
+class TestNoSeCruzaDeEscala(unittest.TestCase):
+    """El fallo mas grave que ha tenido la conversion: un numero que no estaba
+    en la columna del genero se buscaba en las OTRAS y se publicaba esa
+    respuesta. Medido en el catalogo real, una sandalia de nino con US 8 a 13
+    salia en PE 40.5 a 47 -- tallas de hombre."""
+
+    def test_un_US_8_de_nino_NO_se_convierte_con_la_columna_de_hombre(self):
+        talla, nota = tc.talla_pe("8", "Ninos")
+        self.assertEqual(talla, "8")
+        self.assertEqual(nota, tc.FUERA_DE_ESCALA)
+
+    def test_la_nota_distingue_los_dos_casos(self):
+        """No se arreglan igual: si el numero existe en otra columna, el
+        producto trae la escala de otro genero y hace falta su guia; si no
+        esta en ninguna, no es una talla que la guia conozca."""
+        self.assertEqual(tc.talla_pe("8", "Ninos")[1], tc.FUERA_DE_ESCALA)
+        self.assertEqual(tc.talla_pe("M", "Masculino")[1], "desconocida")
+
+    def test_el_adulto_convierte_exactamente_igual(self):
+        self.assertEqual(tc.talla_pe("8", "Masculino"), ("40.5", ""))
+        self.assertEqual(tc.talla_pe("8", "Femenino"), ("38.5", ""))
+        self.assertEqual(tc.talla_pe("4", "Ninos"), ("35", ""))
 
 
 if __name__ == "__main__":

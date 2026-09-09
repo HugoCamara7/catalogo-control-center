@@ -319,18 +319,47 @@ class TestSupermallEsUnaWEBnoUnaMARCA(unittest.TestCase):
         self.assertEqual(gt.convertir("10.5", "VANS", gt.CALZADO, "Masculino")[0], "44")
         self.assertEqual(gt.convertir("10.5C", "VANS", gt.CALZADO, "")[0], "27")
 
-    def test_el_aviso_de_AMBIGUA_no_dice_que_no_se_convirtio(self):
-        """Se convierten -- con la otra escala de la guia -- y el aviso decia
-        "se publican SIN convertir a PE". Medido: 7 tallas de una carga real de
-        Columbia. Es el mismo fallo que ya se corrigio con la nota de lectura.
+    def test_un_calzado_de_NINO_no_puede_salir_en_tallas_de_HOMBRE(self):
+        """El fallo mas grave que ha tenido la conversion de tallas.
+
+        Si el numero no estaba en la columna del genero, `talla_pe` lo buscaba
+        en las OTRAS y publicaba esa respuesta con la nota "ambigua". Eso no es
+        una ambiguedad: son ESCALAS DISTINTAS.
+
+        Medido en el catalogo real de Columbia.pe: las **Sandalias Nino
+        Techsun** (`1594632-3ZK`) traen la curva `80, 90, 100, 110, 120, 130`
+        -- US 8 a 13 de nino -- y se publicaban `40.5, 42, 43, 44.5, 46, 47`.
+        Nueve productos de ese catalogo estaban asi, y los nueve de nino.
         """
-        convertida, nota = gt.convertir("8", "VANS", gt.CALZADO, "Ninos")
-        self.assertEqual(nota, "ambigua")
-        self.assertNotEqual(convertida, "8", "la talla SI se convirtio")
+        curva = ["80", "90", "100", "110", "120", "130"]
+        publicadas = [
+            g.display_size_for_site(v, SUPERMALL, gender="Niños",
+                                    product_type="Sandalias", marca="COLUMBIA",
+                                    curva=curva, valor_crudo=v)
+            for v in curva
+        ]
+        self.assertEqual(publicadas, ["8", "9", "10", "11", "12", "13"])
+        for talla in publicadas:
+            self.assertNotIn(talla, ("40.5", "42", "43", "44.5", "46", "47"))
+
+    def test_y_se_REPORTA_en_vez_de_publicar_una_talla_inventada(self):
+        """Una talla en US se ve mal y alguien la corrige; una talla de hombre
+        en un zapato de nino se ve bien y llega al comprador."""
+        convertida, nota = gt.convertir("8", "COLUMBIA", gt.CALZADO, "Ninos")
+        self.assertEqual(convertida, "8")
+        self.assertEqual(nota, gt.FUERA_DE_ESCALA)
         problema = g.avisos_de_talla_a_issues(
-            [{"Talla": "8", "Marca": "VANS", "Motivo": nota}])[0]["Problema"]
-        self.assertIn("convirtieron a PE", problema)
-        self.assertNotIn("SIN convertir", problema)
+            [{"Talla": "8", "Marca": "COLUMBIA", "Motivo": nota}])[0]["Problema"]
+        self.assertIn("SIN convertir", problema)
+        self.assertIn("NINO", problema)
+
+    def test_el_adulto_sigue_convirtiendo_igual(self):
+        """La guarda solo puede quitar cruces de escala, nunca conversiones
+        buenas."""
+        for genero, esperado in (("Masculino", "40.5"), ("Femenino", "39")):
+            with self.subTest(genero=genero):
+                self.assertEqual(
+                    gt.convertir("8", "COLUMBIA", gt.CALZADO, genero), (esperado, ""))
 
     def test_un_sitio_que_publica_en_ORIGEN_no_convierte_el_unisex(self):
         columbia = app.SITE_CONFIGS["columbia"]

@@ -3726,6 +3726,122 @@ las 4 nuevas fallan con el codigo anterior.
 
 ---
 
+## 5 quatertrigies. Una sandalia de nino salia en talla 47 (septiembre 2026)
+
+Reportado con dos capturas del Excel filtrando `Option1 Value`: tallas `1.6`,
+`1.7`, `1.8` y una columna entera de `12.5`. *"Las tallas siguen mal, necesito
+mejores logicas, si no tendre problemas de tallas y eso seria grave"*.
+
+Tenia razon, y buscando el origen aparecio algo mucho peor que el `1.6`.
+
+### El `1.6` ya no existe, y venia de Hush Puppies
+
+Curva real `160, 170, 180` (mas el `0` de cabecera). No cabe directa -- 160 no
+es ni US ni PE --, pero **entre cien** da `1.6, 1.7, 1.8`, que si entra en el
+rango del US. La guarda de media talla de la seccion 5 duotrigies ya lo
+descarta, asi que hoy esa curva sale `16, 17, 18` -- la talla del maestro -- y
+se reporta. La captura del usuario era de un Excel anterior al arreglo.
+
+**Lo que hay que mirar ahi es el producto**, no la app: `16, 17, 18` tampoco es
+una curva de calzado. Son 14 modelo-color de Hush Puppies.
+
+### Lo grave: el conversor CRUZABA de escala
+
+`talla_pe` hacia esto cuando el numero no estaba en la columna del genero:
+
+```python
+for otra in (HOMBRE, MUJER, NINO):
+    destino = POR_ESCALA[otra].get(clave)
+    if destino:
+        return destino, "ambigua"
+```
+
+O sea: si un producto de NINO traia `8`, y el 8 no esta en la columna
+infantil, se buscaba en la de hombre y se publicaba **PE 40.5**.
+
+Medido contra el catalogo real de Columbia.pe, con su maestro:
+
+```
+1594632-3ZK  "Sandalias Nino Techsun"
+curva del maestro   80, 90, 100, 110, 120, 130     (US 8 a 13 de nino)
+se publicaba        40.5, 42, 43, 44.5, 46, 47     <-- tallas de HOMBRE
+```
+
+**Nueve productos de ese catalogo estaban asi, y los nueve son de nino.** Una
+zapatilla infantil publicada en talla 47 no se ve rara en la ficha: se ve como
+una talla normal, y llega al comprador.
+
+**Eso no es una ambiguedad: son ESCALAS DISTINTAS.** El US 8 de nino y el US 8
+de hombre no son el mismo pie, y ninguna tabla dice que lo sean. La nota se
+llamaba "ambigua" y encima estaba clasificada como conversion hecha.
+
+### La regla nueva: no se cruza de escala
+
+Si el numero no esta en la columna que le toca a ese genero, **se devuelve la
+talla de origen y se reporta** (`FUERA_DE_ESCALA`). Nunca se busca en otra
+columna.
+
+> Una talla en US se ve mal y alguien la corrige. Una talla de hombre en un
+> zapato de nino se ve bien y llega al comprador.
+
+La misma regla entra por las dos puertas -- la guia del codigo y la que llega
+por `registrar_tabla` --, porque escrita en una sola, una marca con guia propia
+seguiria cruzando.
+
+**Lo que NO cambia:** el adulto convierte exactamente igual (US 8 de hombre
+sigue siendo PE 40.5 y de mujer 39), el unisex sigue resolviendose con la
+escala de la guia y una talla que ya viene en PE se queda como esta.
+
+**Una prueba cambio de esperado y es la consecuencia buscada.** Un `040` de
+mujer se sigue leyendo como US 4 -- esa es la regla de la curva y no se toca --,
+pero la guia de Vans **no tiene un US 4 de mujer**: su columna empieza en el 5.
+Antes salia `35`, que es el US 4 de HOMBRE. Ahora sale `4` y se reporta.
+
+### El efecto sobre el catalogo real, medido
+
+Los 428 productos de calzado de Columbia.pe, con su maestro, cargados a
+Supermall.pe:
+
+| | |
+|---|---:|
+| convierten a PE limpio | **416** |
+| salen con la talla de ORIGEN y avisados | **12** |
+
+De esos 12: **nueve son los de nino** que antes salian en tallas de hombre;
+uno es el producto mal tipificado (`2138331-XP9`, unos guantes con
+`Type = Zapatillas` y tallas S y M); y dos son botines de hombre cuya curva
+trae un `170` suelto -- un US 17 que no existe en ninguna columna -- al lado de
+tallas normales.
+
+O sea: **la guarda no le quito la conversion a ningun producto que la tuviera
+bien.**
+
+### Y por que no lo vio la suite: la lista de validacion estaba incompleta
+
+`test_tallas_calzado_pe.py` -- que es **justo el archivo que fija la conversion
+de tallas** -- **no estaba en la lista de la seccion 12**. Ni el, ni otros 21.
+La lista se mantenia a mano, y una lista que hay que acordarse de actualizar no
+sirve para validar.
+
+La seccion 12 ya no lleva rutas: dice que se corran **todos** los
+`scripts/test_*.py`. Son 67 archivos y ~1.995 pruebas.
+
+### Lo que hace falta para cerrarlo del todo
+
+**La guia infantil de las marcas.** El calzado de nino usa su propia escala
+(US 1C a 13C y despues 1Y a 7Y) y la tabla que hay solo cubre `10.5C` a `13.5C`
+y `1Y` a `3Y`. Mientras no este, el calzado de nino con numeracion infantil se
+publica con la talla del maestro y sale avisado -- que es lo correcto, pero no
+es lo deseable.
+
+Los datos que ya se tienen y no alcanzan: Columbia publica su tabla infantil en
+**centimetros** (`Little Kids` US 8 = 13 cm ... US 13 = 18 cm) y la columna
+PE/cm de la guia **empieza en 16,5 cm**, asi que de esa tabla solo se podrian
+derivar dos filas. Con eso no se cierra la curva: hace falta la guia infantil
+oficial, marca por marca, y entra por `data/guias_tallas.xlsx` sin tocar codigo.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -3917,54 +4033,23 @@ escrita a mano y por eso no atrapó a Supermall.
 
 ## 12. Cómo validar antes de entregar
 
+**La suite entera, no una lista escrita a mano.**
+
 ```bash
-python scripts/test_brand_commercial_input.py          # 6
-python scripts/test_carga_desde_solicitud.py           # 31
-python scripts/test_carga_remota.py                    # 40
-python scripts/test_engines_audit.py                   # 45
-python scripts/test_engines_metrics.py                 # 26
-python scripts/test_engines_notify.py                  # 88
-python scripts/test_engines_price_check.py             # 19
-python scripts/test_engines_stock.py                   # 35
-python scripts/test_engines_ticket_flow.py             # 55
-python scripts/test_engines_load_status.py             # 37
-python scripts/test_engines_video_media.py             # 106
-python scripts/test_carga_sial_parcial.py               # 30
-python scripts/test_lectura_catalogo.py                # 30
-python scripts/test_espejo_supermall.py                # 35
-python scripts/test_mantenedor_tallas.py               # 42
-python scripts/test_orden_tallas_reales.py             # 17
-python scripts/test_guias_tallas.py                    # 42
-python scripts/test_carga_supermall.py                 # 57
-python scripts/test_lectura_completa_del_catalogo.py    # 21
-python scripts/test_colecciones.py                     # 54
-python scripts/test_tipos_de_prenda.py                 # 13
-python scripts/test_carga_sial_campos.py               # 27
-python scripts/test_curva_y_carga_suelta.py            # 46
-python scripts/test_hueco_por_marca.py                 # 28
-python scripts/test_memoria.py                         # 15
-python scripts/test_css_movil.py                       # 33
-python scripts/test_rendimiento.py                     # 47
-python scripts/test_sincronizacion_y_limpieza.py       # 19
-python scripts/test_bandeja_solicitudes.py             # 57
-python scripts/test_partial_maintenance_validations.py # 6
-python scripts/test_siblings_carga_completa.py         # 24
-python scripts/test_siblings_referencias.py            # 14
-python scripts/test_siblings_tipos.py                  # 20
-python scripts/test_ticket_system.py                   # 28
-python scripts/test_tipos_vestido_y_bloqueos.py       # 24
-python scripts/test_optimizacion_memoria_excel.py       # 38
-python scripts/test_carga_supermall_rendimiento.py     # 16
-python scripts/test_handle_tipo_y_duplicados.py         # 18
-python scripts/test_pantallas_reales.py                 # 10
-python scripts/test_bigquery_storage.py                 # 10
-python scripts/test_supermall_pico_de_memoria.py        # 27
-python scripts/test_tallas_de_calzado_en_supermall.py   # 39
-python scripts/test_export_matrixify_y_validacion.py    # 42
+for f in scripts/test_*.py; do
+    echo "== $(basename $f)"; python "$f" 2>&1 | tail -3
+done
 ```
 
+Son **67 archivos y ~1.995 pruebas**. Aquí había una lista de 43 rutas mantenida
+a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
+que es justo el que fija la conversión de tallas. En septiembre de 2026 un
+cambio en el conversor lo rompió y no se vio hasta correr la suite completa,
+porque la lista no lo nombraba. Una lista que hay que acordarse de actualizar
+no sirve para validar: **se corren todos**.
+
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes
-> de estos cambios. El segundo espera `auth_role_label`, que ya no existe.
+> de todo esto. El segundo espera `auth_role_label`, que ya no existe.
 
 Además, siempre:
 

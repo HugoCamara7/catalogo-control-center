@@ -298,8 +298,12 @@ class TestLaGuiaDeColumbia(unittest.TestCase):
         self.assertEqual(nota, gt.FUERA_DE_LA_GUIA)
 
     def test_pero_lo_que_no_esta_en_NINGUNA_no_se_inventa(self):
+        """La nota es ahora `FUERA_DE_ESCALA` y no `desconocida`: dice cual es
+        el problema -- ese numero no esta en la columna de ESE genero -- en vez
+        de "no esta en la guia" a secas. Lo que no cambia es lo importante: la
+        talla sale como venia y se reporta."""
         self.assertEqual(gt.convertir("99", "COLUMBIA", gt.CALZADO, "Masculino"),
-                         ("99", "desconocida"))
+                         ("99", gt.FUERA_DE_ESCALA))
 
     def test_sin_genero_sigue_sin_convertirse(self):
         self.assertEqual(gt.convertir("8", "COLUMBIA", gt.CALZADO, "")[1], gt.SIN_GENERO)
@@ -308,14 +312,14 @@ class TestLaGuiaDeColumbia(unittest.TestCase):
         self.assertEqual(gt.convertir("40.5", "COLUMBIA", gt.CALZADO, "Masculino"),
                          ("40.5", ""))
 
-    def test_una_talla_de_NINO_con_numeracion_de_adulto_se_resuelve_y_se_dice(self):
-        """La tabla infantil de Columbia llega al US 7 y el maestro trae curvas
-        de nino que siguen con numeracion de adulto. El respaldo la convierte y
-        la nota explica por que -- antes el respaldo se negaba en cuanto la
-        guia por defecto traia cualquier nota, y la talla se publicaba en US."""
+    def test_una_talla_de_NINO_fuera_de_su_columna_NO_se_cruza_de_escala(self):
+        """La tabla infantil llega al US 7 y el maestro trae curvas de nino con
+        numeracion infantil (US 8 a 13). Antes se buscaba ese numero en la
+        columna de HOMBRE y se publicaba `43`: una zapatilla de nino en talla
+        de adulto. Ahora se devuelve la de origen y se reporta."""
         convertida, nota = gt.convertir("10", "COLUMBIA", gt.CALZADO, "Ninos")
-        self.assertEqual(convertida, "43")
-        self.assertEqual(nota, "ambigua")
+        self.assertEqual(convertida, "10")
+        self.assertEqual(nota, gt.FUERA_DE_ESCALA)
 
     def test_las_marcas_sin_tabla_verificada_NO_se_inventan(self):
         """Se buscaron en la web (septiembre 2026) y no entraron: sus sitios

@@ -2138,6 +2138,9 @@ nada en Shopify**: es una vista previa, y hay un test que exige que ni el panel
 ni el resumen puedan tocar la tienda.
 
 `scripts/test_hueco_por_marca.py` (28 pruebas) fija todo esto.
+
+---
+
 ## 5 unvicies. Un solo diccionario de tipos, y el de colecciones por marca (septiembre 2026)
 
 `engines/colecciones.py` (sin Streamlit ni pandas) + `render_diccionario_colecciones()`,
@@ -2290,7 +2293,7 @@ falso: no sale a la red.
 
 ---
 
-## 5 unvicies. Carga Supermall: la marca, la duplicidad y el panel que no decía nada (septiembre 2026)
+## 5 novemvicies. Carga Supermall: la marca, la duplicidad y el panel que no decía nada (septiembre 2026)
 
 Reportado con dos capturas: el panel decía **8.815 consolidados · 8.815 se
 pueden cargar · 8.815 se crean · 0 se actualizan · 0 bloqueados**, y la tabla
@@ -2403,7 +2406,7 @@ productos en cinco sitios, y se paga una vez por análisis.
 
 ---
 
-## 5 duovicies. Limpieza: 700 líneas sin llamador y los archivos corrompidos (septiembre 2026)
+## 5 tricies. Limpieza: 700 líneas sin llamador y los archivos corrompidos (septiembre 2026)
 
 Pendientes 5 y 6 de la sección 8, y la regla 6 ("nunca dejes una función sin
 llamador"), que llevaba **16 funciones** incumplida.
@@ -3077,9 +3080,9 @@ archivos.
 4. **Extraer `engines/shopify_sync.py`** y arreglar la inversión de
    `catalog_engine.py`.
 5. ~~Borrar los archivos corrompidos de la raíz del repo.~~ **Hecho** en
-   septiembre de 2026 — ver la sección 5 duovicies.
+   septiembre de 2026 — ver la sección 5 tricies.
 6. ~~Limpiar `engines/normalize.py` y `engines/excel_io.py`.~~ **Hecho** en
-   septiembre de 2026 — ver la sección 5 duovicies. El archivo suelto llamado
+   septiembre de 2026 — ver la sección 5 tricies. El archivo suelto llamado
    `engines` ya no existía.
 7. **Mover el trabajo pesado al worker.** Streamlit reejecuta el script en
    cada clic y guarda todo en `session_state`; un catálogo de 300.000 SKUs
@@ -3174,7 +3177,7 @@ importaba nadie: queda **una sola**, la que usa la app.
 
 ## 10. Archivos corrompidos en el repositorio — BORRADOS (septiembre 2026)
 
-Ya no están: se borraron en septiembre de 2026 (sección 5 duovicies) después de
+Ya no están: se borraron en septiembre de 2026 (sección 5 tricies) después de
 volver a verificar por firma binaria que eran lo que esta tabla decía. Se deja
 la tabla porque explica por qué existían y por dónde buscarlos en el historial
 de git si alguna vez hicieran falta. La app lee los originales de `data/` y los

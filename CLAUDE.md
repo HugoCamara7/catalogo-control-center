@@ -3374,6 +3374,216 @@ HTML no se vuelve a envolver.
 
 ---
 
+## 5 duotrigies. Supermall es una WEB, no una marca (septiembre 2026)
+
+Pedido literal: *"la guia de tallas de vans cambiala en todo supermall porque
+supermall es una web no una marca entonces tiene que verse igual la talla de
+todos los calzados"*.
+
+La guia de Vans ya era la guia POR DEFECTO del calzado (seccion 5 trigies) y
+Supermall.pe ya publica en PE (`escala_calzado`), asi que el calzado de
+Columbia, Sorel o Keds ya salia convertido. **Quedaban cuatro huecos**, y todos
+dejaban unas zapatillas en `8, 9, 10` justo al lado de otras en `40.5, 42, 43`
+-- que es exactamente lo que el filtro de talla de la tienda no puede resolver.
+Y ademas se busco la guia propia de Columbia, que era el siguiente pedido.
+
+### 1. El calzado UNISEX no se convertia
+
+`escala_de_genero("Unisex")` devuelve `""`, **igual que un producto sin
+genero**, y el conversor trataba los dos casos como "no se sabe". Pero no son
+lo mismo:
+
+- **No saber el genero** obliga a no convertir: un US 8 de hombre es PE 40.5 y
+  uno de mujer 38.5, y adivinar publica una talla inventada como si fuera
+  cierta.
+- **Unisex es un DATO**, y la guia ya tenia respuesta: publica el calzado
+  unisex en la escala de `ESCALA_UNISEX` -- la de hombre --, que es como lo
+  publica Vans. Eso ya estaba escrito en `engines/tallas_calzado`; lo que
+  faltaba era preguntarlo.
+
+`es_unisex` distingue las dos cosas y `talla_pe_unisex` resuelve la primera.
+Medido en el catalogo real de Columbia.pe: **7 de 428 productos de calzado**
+son unisex, y los 7 se publicaban en US.
+
+**La misma regla entra tambien por `registrar_tabla`**, que es la puerta de las
+guias que llegan por Excel. Escrita solo en la guia del codigo, una marca con
+guia propia dejaria su calzado unisex en US y el mismo producto saldria
+distinto segun de que marca fuera.
+
+**Las dos salvedades se leen las dos.** Una marca sin guia propia Y un producto
+unisex son dos cosas que hay que poder ver en la hoja de Revision, asi que
+`convertir` las compone (`guia por defecto, escala unisex`) en vez de pisar una
+con la otra. Antes cualquier nota mandaba sobre `POR_DEFECTO`; ahora solo mandan
+los PROBLEMAS de verdad -- sin genero, talla desconocida --, que es lo que hay
+que arreglar.
+
+### 2. La carga completa preguntaba el genero de otra forma
+
+`build_columbia_matrixify` usaba `product_gender`, que lee **solo el dato
+declarado**; la carga por codigos usa `centry_gender`, que ademas lee el titulo
+de la ficha. O sea que **la misma bota se convertia a PE por un camino y se
+quedaba en US por el otro**: la trampa de las dos `normalize_size`.
+
+La cascada vive ahora en `generate_columbia_matrixify.genero_de_producto` y
+`centry_gender` **delega**. Comprobado sobre las **11.158 filas** del catalogo
+real: **cero diferencias** con la implementacion anterior.
+
+**`product_gender` NO se toco, a proposito.** De ahi salen la columna `Genero`
+de la hoja Carga Sial y los bullets, donde el almacen espera el valor del
+maestro tal cual (`MUJER`), no el normalizado (`Femenino`). Un titulo no puede
+inventarle un genero a la hoja del almacen; para decidir una TALLA si, porque
+ahi la alternativa es publicar en la escala equivocada.
+
+### 3. `MARCAS_TALLA_PE` decia lo contrario y ya no la usaba nadie
+
+Era una lista escrita a mano -- `("VANS",)` -- que declaraba que solo Vans
+publica en PE. Desde que la guia de Vans es la por defecto eso es falso, y el
+Mantenedor de Tallas ya pregunta por `hay_conversion`. Solo la referenciaba su
+propia prueba: se fue, con `marca_publica_en_pe`. Una lista que contradice al
+codigo que ya no la usa es una trampa para el siguiente que la lea.
+
+### Lo que sigue sin convertirse, y por que
+
+**Un producto de calzado sin genero en NINGUNA fuente** -- ni el metacampo, ni
+`Genero`/`GENERO_MA` del maestro, ni el titulo -- se publica en la escala de
+origen y sale avisado en la hoja de Revision. Medido en el catalogo real:
+**0 de 428 productos de calzado** estan en ese caso.
+
+Y no se convierte "lo que se pueda" de esa curva: solo 20 de los 34 numeros de
+la guia son inequivocos sin genero (`4`, `12`...`16` y los infantiles con
+sufijo), asi que convertir esos y dejar los demas partiria **un mismo producto
+en dos escalas** -- peor que dejarlo entero en US.
+
+### 4. Y el calzado de NINO no salia en PE en ninguna tienda
+
+Destapado al validar contra el catalogo real: **todas** las botas y zapatillas
+de nino de Columbia.pe traen la curva `10, 20, 30, 40, 45` -- o sea `1, 2, 3,
+4, 4.5` -- y esos numeros **no estaban en ninguna columna de la guia**, asi que
+el producto entero se quedaba sin convertir. En Supermall.pe eso deja las de
+nino en `1, 2, 3, 4` justo al lado de las de adulto en `39, 40, 41`.
+
+`1Y` y `1` son la MISMA talla: la guia trae la columna infantil con sufijo
+hasta el `3Y` y sigue sin el (`3.5`, `4`, `4.5`), asi que el sufijo es
+notacion, no una escala aparte -- y el maestro escribe la forma sin sufijo.
+Con el alias, la curva sale `31.5, 32.5, 34, 35, 36`.
+
+**Solo se alian las `Y`, nunca las `C`.** Las de bebe van de `10.5C` a `13.5C`
+y esos numeros SI existen en la columna de adulto: un `10.5` de hombre es PE
+44, no el PE 27 de un `10.5C`. Aliadas, un adulto sin genero pasaba a ser
+ambiguo y podia salir en talla de bebe. Las `Y` van de `1Y` a `3Y` y no chocan
+con nada, porque en adulto no hay 1, 2 ni 3.
+
+### Y un aviso que decia lo contrario de lo que pasaba
+
+La nota `ambigua` -- el numero no esta en la escala que le toca a ese genero
+pero si en otra, asi que se resuelve con esa -- estaba en la tabla de los
+PROBLEMAS, asi que la hoja de Revision decia *"se publican SIN convertir a PE"*
+sobre tallas que **si** se convirtieron. Medido: 7 tallas de una carga real de
+Columbia. Es el mismo fallo que ya se corrigio con la nota de lectura, y la
+frase nueva ademas dice que suele ser un producto de nino con numeracion de
+adulto, que es lo que hay que ir a revisar.
+
+### 5. La guia de COLUMBIA, buscada en la web
+
+Pedido del usuario a continuacion: *"sobre la guia de tallas de columbia
+podrias buscar en la web sus equivalencias"*.
+
+**`columbia.com` y `help.columbia.com` estan BLOQUEADOS** por la politica de
+salida de este entorno, asi que la tabla sale de la copia de la guia oficial
+que publica un distribuidor (Peter Glenn, en S3) y se cruzo con lo que publica
+RunRepeat: los dos coinciden en el largo de pie por talla.
+
+**Columbia publica US -> LARGO DE PIE en cm, no US -> EU**, y su traduccion a
+EU tiene fama de poco fiable. Por eso el PE se deriva del **centimetro**, que
+es el dato fisico, con la misma columna CM de la tabla que ya usa la tienda.
+Asi el catalogo entero sigue en una sola escala en vez de tener dos PE segun la
+marca. Hay una prueba que exige que cada fila de `TABLA_COLUMBIA` cuadre con
+esa columna.
+
+Lo que cambia respecto de usar la guia de Vans:
+
+| | |
+|---|---|
+| HOMBRE | **identico** -- las dos marcas dan el mismo cm para el mismo US |
+| NINO | **identico** |
+| MUJER | **media talla**: la mujer de Columbia calza 0,5 cm mas en el mismo numero US. Su US 8 son 25 cm -> **PE 39**, y con la tabla de Vans salia **38.5** |
+
+O sea que **el calzado de mujer de Columbia se publica media talla mas arriba
+que antes**. Es un cambio visible en la tienda y sale de la guia de la propia
+marca; si el equipo comercial lo quiere al reves, se quita el registro y
+vuelve a mandar la de Vans.
+
+**Una talla fuera de SU tabla cae a la guia por defecto** y se reporta
+(`FUERA_DE_LA_GUIA`). Las guias publicadas empiezan donde empieza su catalogo
+-- la de Columbia, en el US 7 de hombre -- y el maestro trae numeros por
+debajo: sin respaldo se quedarian en US justo al lado de las que si se
+convirtieron, que es lo que la guia por defecto existe para evitar.
+
+### Las otras marcas: se buscaron y NO se registraron
+
+El usuario pidio meter tambien las de las demas marcas. Se buscaron; no entran,
+y el motivo es concreto en cada caso:
+
+- **Hush Puppies, Keds**: sus sitios y los de los distribuidores que publican
+  su tabla estan **bloqueados** por la politica de salida. Lo unico que llega
+  son fragmentos de buscador, y un fragmento tiene erratas que no se ven --
+  el que se obtuvo salta de `EUR 43` a `EUR 45` sin el 44.
+- **Sorel**: la copia alcanzable (Peter Glenn) da US -> PULGADAS y su columna
+  de hombre es **internamente inconsistente**: pone el 10 en 27,5 cm y el 11,5
+  en 29, o sea corrida una fila respecto de todas las demas marcas. Muy
+  probablemente le falta la fila del 9,5. Transcribirla asi publicaria media
+  talla de error en todo el calzado de Sorel.
+- **Rockford** no publica tabla: es marca de casa y entrega casi todo su
+  calzado ya en PE (medido: 2.078 mod-col en PE contra 328 en US).
+
+**No se inventa una tabla para rellenar el hueco.** Las cuatro siguen
+convirtiendo con la guia por defecto y saliendo avisadas marca por marca, que
+es exactamente para lo que existe esa salvedad.
+
+### Y para que la proxima no haga falta un commit: `data/guias_tallas.xlsx`
+
+El docstring de `registrar_tabla` prometia ese Excel desde que se escribio y
+**no lo leia nadie**, asi que agregar una guia seguia siendo tocar codigo.
+`cargar_guias_de_tallas` lo lee ahora:
+
+- **Una hoja por marca**, y el nombre de la hoja ES la marca.
+- Cinco columnas: `US Men`, `US Women`, `US Boy`, `PE`, `CM` -- la misma forma
+  que `TABLA_VANS` y `TABLA_COLUMBIA`, o sea la de las guias oficiales.
+- **Lo del Excel manda sobre lo del codigo**: la guia oficial de una marca que
+  aqui este aproximada gana sin tener que borrar nada.
+- **Perezoso y memoizado.** Leerlo en tiempo de import costaria en cada
+  arranque de la app, se convierta una talla o no -- es la leccion de
+  `CENTRY_COLUMNS` --, y leerlo por talla seria un viaje a disco por variante.
+- **Nunca levanta.** Que el archivo no este es el caso normal; una hoja rota se
+  reporta y deja las demas en pie, porque perder la conversion de todas las
+  marcas por una columna mal escrita seria peor que el problema.
+
+Ojo con lo que se gana de verdad: **Hush Puppies entrega 8.165 mod-col ya en
+PE** y solo 2.752 en US, asi que la mayor parte de su calzado no se convierte
+en ningun caso.
+
+### Lo que la validacion con el catalogo REAL dejo a la vista
+
+200 codigos de calzado del catalogo de Columbia.pe cruzados con el maestro real
+(1.974 filas de Matrixify), cargados a Supermall.pe:
+
+| | antes | ahora |
+|---|---:|---:|
+| filas publicadas FUERA de la escala PE | 59 | **2** |
+
+Las 2 que quedan son un producto **mal tipificado en Shopify**: `2138331-XP9`
+son unos *"Guantes Arctic Crest"* con `Type = Zapatillas`, y sus tallas son `S`
+y `M`. La app hace lo correcto -- no hay talla PE para una S -- y lo reporta;
+lo que hay que arreglar es el tipo del producto en la tienda.
+
+`scripts/test_tallas_de_calzado_en_supermall.py` pasa de 17 a **34 pruebas** y
+`test_guias_tallas.py` de 25 a **42**. Seis pruebas de tres archivos cambiaron
+de esperado y son la consecuencia buscada: las que usaban a Columbia como
+ejemplo de marca SIN guia propia (ahora ese papel lo hace Sorel) y las que
+fijaban su talla de mujer.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -3582,7 +3792,7 @@ python scripts/test_lectura_catalogo.py                # 30
 python scripts/test_espejo_supermall.py                # 35
 python scripts/test_mantenedor_tallas.py               # 42
 python scripts/test_orden_tallas_reales.py             # 17
-python scripts/test_guias_tallas.py                    # 25
+python scripts/test_guias_tallas.py                    # 42
 python scripts/test_carga_supermall.py                 # 57
 python scripts/test_lectura_completa_del_catalogo.py    # 17
 python scripts/test_colecciones.py                     # 54
@@ -3607,7 +3817,7 @@ python scripts/test_handle_tipo_y_duplicados.py         # 18
 python scripts/test_pantallas_reales.py                 # 10
 python scripts/test_bigquery_storage.py                 # 10
 python scripts/test_supermall_pico_de_memoria.py        # 27
-python scripts/test_tallas_de_calzado_en_supermall.py   # 17
+python scripts/test_tallas_de_calzado_en_supermall.py   # 34
 python scripts/test_export_matrixify_y_validacion.py    # 42
 ```
 

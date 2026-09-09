@@ -166,6 +166,7 @@ from generate_columbia_matrixify import (
     sial_size_value,
     escala_de_calzado,
     estado_al_cargar,
+    genero_de_producto,
     avisos_de_talla_a_issues,
     siblings_ya_publicados,
     unir_siblings,
@@ -4680,37 +4681,12 @@ def centry_is_footwear(row):
 def centry_gender(row):
     """Genero del producto. Primero el DATO, y solo despues el texto.
 
-    Antes solo adivinaba leyendo Title/Tags/Body/Type. Un "Canguro Empacable
-    Uniex Lightweight" (con el typo) no contiene "unisex", asi que devolvia
-    vacio aunque BigQuery/ARTI trajera GENERO_MA = UNISEX. Ahora manda el campo
-    real y la heuristica de texto queda como ultimo recurso.
+    **La cascada vive en `generate_columbia_matrixify.genero_de_producto`**, no
+    aqui: la misma pregunta la hacen la carga completa (para decidir la escala
+    de una talla de calzado) y la carga por codigos. Escrita dos veces, la
+    misma bota se convertia a PE por un camino y se quedaba en US por el otro.
     """
-    declarado = first_non_empty(
-        row.get("Metafield: custom.genero [single_line_text_field]"),
-        row.get("Genero"),
-        row.get("GENERO_MA"),
-        row.get("Género"),
-    )
-    declarado_normalizado = centry_value(declarado).lower()
-    if declarado_normalizado:
-        if "unisex" in declarado_normalizado:
-            return "Unisex"
-        if "mujer" in declarado_normalizado or "femenino" in declarado_normalizado or "dama" in declarado_normalizado:
-            return "Femenino"
-        if "hombre" in declarado_normalizado or "masculino" in declarado_normalizado or "varon" in declarado_normalizado:
-            return "Masculino"
-        if "nino" in declarado_normalizado or "niño" in declarado_normalizado or "nina" in declarado_normalizado or "niña" in declarado_normalizado or "kids" in declarado_normalizado or "infantil" in declarado_normalizado:
-            return "Niños"
-    text = " ".join(centry_value(row.get(column)).lower() for column in ("Title", "Tags", "Body HTML", "Type"))
-    if "unisex" in text:
-        return "Unisex"
-    if "mujer" in text or "femenino" in text:
-        return "Femenino"
-    if "hombre" in text or "masculino" in text:
-        return "Masculino"
-    if "niño" in text or "nino" in text or "kids" in text:
-        return "Niños"
-    return ""
+    return genero_de_producto(row)
 
 
 def centry_category(row):

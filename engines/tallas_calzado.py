@@ -83,6 +83,10 @@ NINO = "boy"
 # basta; la conversion avisa cuantas resolvio de esta forma.
 ESCALA_UNISEX = HOMBRE
 
+# La conversion SI se hizo, con la escala unisex de la guia. No es un fallo:
+# es una salvedad que tiene que quedar por escrito.
+UNISEX = "unisex"
+
 
 def _texto(valor):
     if valor is None:
@@ -143,6 +147,38 @@ POR_ESCALA, POR_CM, TALLAS_PE = _indices()
 INFANTILES = {clave for clave in POR_ESCALA[NINO] if clave.endswith(("C", "Y"))}
 
 
+def _alias_infantiles_sin_sufijo():
+    """`1Y` y `1` son la MISMA talla; el maestro escribe la segunda.
+
+    La guia trae la columna infantil con sufijo hasta el `3Y` y sigue sin el
+    (`3.5`, `4`, `4.5`), asi que el sufijo es notacion, no una escala aparte.
+    El maestro escribe el calzado de nino sin sufijo y multiplicado por diez
+    -- `10, 20, 30, 40, 45` es `1, 2, 3, 4, 4.5` --, asi que sin este alias
+    `1`, `2` y `3` no estaban en ninguna columna y el producto entero se
+    quedaba sin convertir. Medido en el catalogo real de Columbia.pe: **todas**
+    las botas y zapatillas de nino salian en `1, 2, 3, 4` al lado de las de
+    adulto en `39, 40, 41`.
+
+    **Solo las `Y`, nunca las `C`.** Las de bebe van de `10.5C` a `13.5C`, y
+    esos numeros SI existen en la columna de adulto: un `10.5` de hombre es PE
+    44, no el PE 27 de un `10.5C`. Aliadas, un adulto sin genero pasaba a ser
+    ambiguo y podia salir en talla de bebe. Las `Y` van de `1Y` a `3Y` y no
+    chocan con nada: en adulto no hay 1, 2 ni 3.
+
+    Va con `setdefault`: un numero que la columna infantil ya tenga por su
+    cuenta manda sobre el alias.
+    """
+    for clave in sorted(INFANTILES):
+        if not clave.endswith("Y"):
+            continue
+        sin_sufijo = clave[:-1]
+        if sin_sufijo:
+            POR_ESCALA[NINO].setdefault(sin_sufijo, POR_ESCALA[NINO][clave])
+
+
+_alias_infantiles_sin_sufijo()
+
+
 # Se compara por PALABRA COMPLETA, no por subcadena. "femenino" contiene "men"
 # y con `in` caia en la escala de hombre: un 8 de mujer salia PE 40.5 en vez de
 # 38.5, dos tallas y media de mas.
@@ -170,9 +206,45 @@ def escala_de_genero(genero):
     return ""
 
 
+# Palabras con las que una ficha DICE que el producto es unisex. No es lo
+# mismo que no saber el genero: "no lo se" obliga a no convertir, y "unisex"
+# es un dato que la guia si sabe responder.
+_PALABRAS_UNISEX = ("unisex", "unisexo", "uni")
+
+
+def es_unisex(genero):
+    """True si el genero DICE unisex.
+
+    `escala_de_genero` devuelve "" tanto para un unisex declarado como para un
+    producto sin genero, y las dos cosas no se tratan igual: la primera tiene
+    respuesta en la guia (Vans publica el calzado unisex en tallas de hombre) y
+    la segunda no se puede adivinar.
+    """
+    texto = _texto(genero).lower()
+    palabras = set(re.findall(r"[a-z]+", texto))
+    return bool(palabras & set(_PALABRAS_UNISEX))
+
+
 def ya_es_pe(valor):
     """True si la talla ya esta en la escala peruana."""
     return normalizar_talla(valor) in TALLAS_PE
+
+
+def talla_pe_unisex(valor):
+    """La talla PE de un calzado declarado UNISEX. `(talla, nota)`.
+
+    **No es una adivinanza.** La guia publica el calzado unisex en la escala de
+    `ESCALA_UNISEX` -- hoy la de hombre --, asi que la respuesta sale de la
+    tabla igual que las demas. Lo que si hay que dejar por escrito es que se
+    resolvio asi, y para eso esta la nota `UNISEX`.
+
+    Sin esto un producto unisex se quedaba en US: `escala_de_genero("Unisex")`
+    devuelve "" y el conversor lo trataba como "no se sabe el genero". En una
+    tienda que publica en PE eso deja unas zapatillas en `8, 9, 10` justo al
+    lado de otras en `40.5, 42, 43`.
+    """
+    convertida, nota = talla_pe(valor, "", permitir_unisex=True)
+    return convertida, UNISEX if nota == "ambigua" else nota
 
 
 def talla_pe(valor, genero="", permitir_unisex=True):

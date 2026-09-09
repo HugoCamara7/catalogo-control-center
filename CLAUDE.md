@@ -3562,6 +3562,88 @@ Ojo con lo que se gana de verdad: **Hush Puppies entrega 8.165 mod-col ya en
 PE** y solo 2.752 en US, asi que la mayor parte de su calzado no se convierte
 en ningun caso.
 
+### 6. No existe una talla 2.1
+
+Reportado por el usuario: *"vi que habian tallas que decian 2.1 eso no tiene
+sentido"*. Tenia razon y no era un caso raro de laboratorio.
+
+`interpretar_curva` elegia el divisor **solo por el RANGO numerico**: probaba
+directa, entre diez y entre cien, y se quedaba con la primera que dejara todas
+las tallas dentro de US (1-16.5) o PE (26-50). Una curva `42, 44, 46, 48, 50,
+52` -- que no es de calzado, son tallas de vestuario en un producto tipificado
+como calzado -- no cabe directa (el 52 se pasa del PE), pero **entre diez cabe
+de sobra en el rango del US**, asi que se publicaba `4.2, 4.4, 4.6, 4.8, 5,
+5.2`.
+
+**Las escalas de calzado van de media en media.** Un `2.1` no es una talla: es
+la prueba de que ese divisor no era el bueno. `_es_media_talla` lo comprueba, y
+una division que deja cualquier otro decimal se descarta.
+
+**Solo se comprueba al DIVIDIR.** La lectura directa no transforma nada -- lo
+que trae el maestro sale tal cual --, asi que ahi no hay nada que verificar;
+dividir SI inventa un numero, y si el numero inventado no es una talla, el
+divisor estaba mal.
+
+Medido sobre el maestro real (653.431 filas): **18 modelo-color** lo hacian, 16
+de Rockford y 2 de Columbia:
+
+```
+RK111021393-176   42, 44, 46, 48, 50, 52  ->  4.2, 4.4, 4.6, 4.8, 5, 5.2
+TL8258-EN5        12, 36, 38, 40, 42      ->  1.2, 3.6, 3.8, 4, 4.2
+```
+
+Ahora los dos se publican con la talla del maestro y la Revision dice *"la
+curva no cabe en ninguna escala de calzado conocida"*, que es la verdad: eso no
+es una curva de calzado, y lo que hay que revisar es el tipo del producto.
+
+Comprobado que **la guarda no cuesta ninguna lectura buena**: las siete formas
+que el maestro trae hoy -- `50,55,60`, `390,400,410`, `800,850`, `085`,
+`040,050`, `10,20,30,40,45` y `70,75,80` -- se leen exactamente igual.
+
+### 7. `'str' object has no attribute 'strftime'`: el boton moria en el clic
+
+Reportado con una captura de **Carga Supermall**: el panel decia *"Se envia a
+un runner de GitHub Actions: 8.113 productos"*, y al pulsar **Cargar a Shopify
+en el servidor** la pantalla entera se caia con
+
+```
+AttributeError: 'str' object has no attribute 'strftime'
+```
+
+`start_suelto` armaba el codigo de la carga asi:
+
+```python
+codigo = f"{CODIGO_CARGA_SUELTA}-{site_key.upper()}-{ahora_utc().strftime('%Y%m%d-%H%M%S')}"
+```
+
+y **`ahora_utc()` devuelve TEXTO** -- el ISO, que es lo que se guarda en el
+registro del job --, no un `datetime`. O sea que `start_suelto` **nunca pudo
+ejecutarse**: estaba roto desde que se escribio.
+
+Ahora hay `sello_de_tiempo(formato)`, que es la que da la hora formateada, y la
+usan las dos: `nuevo_id_job` y `start_suelto`. Con las dos funciones separadas
+y con nombre, la pregunta "¿esto es un `datetime` o ya es texto?" tiene una
+respuesta a la vista.
+
+**Por que no lo vio ninguna de las 42 pruebas de `test_curva_y_carga_suelta`:**
+las ocho que cubren `start_suelto` leen su **codigo fuente** con
+`inspect.getsource` -- que suba el archivo antes que el registro, que use
+`nuevo_registro_job`, que llame a `self._disparar` -- y **ninguna la llamaba**.
+
+> **Leer el codigo no es ejecutarlo.** Una prueba que solo mira el texto de una
+> funcion no puede ver un `AttributeError`.
+
+Hay tres pruebas nuevas: una que **ejecuta** `start_suelto` con un almacen y un
+disparador falsos, otra que ejecuta el **pegamento con la pantalla**
+(`lanzar_carga_remota_suelta`, que es lo que pulsa el boton) y una que falla si
+`ahora_utc().strftime` vuelve a aparecer en el modulo. Las tres fallan con el
+codigo anterior, y la primera con el mismo `AttributeError` que veia el
+usuario.
+
+Comprobado ademas con AST que **es el unico** `.strftime` del repositorio sobre
+algo que pueda no ser un `datetime`: los demas reciben un `datetime.now(...)` o
+estan detras de un `isinstance`.
+
 ### Lo que la validacion con el catalogo REAL dejo a la vista
 
 200 codigos de calzado del catalogo de Columbia.pe cruzados con el maestro real
@@ -3576,11 +3658,71 @@ son unos *"Guantes Arctic Crest"* con `Type = Zapatillas`, y sus tallas son `S`
 y `M`. La app hace lo correcto -- no hay talla PE para una S -- y lo reporta;
 lo que hay que arreglar es el tipo del producto en la tienda.
 
-`scripts/test_tallas_de_calzado_en_supermall.py` pasa de 17 a **34 pruebas** y
+`scripts/test_tallas_de_calzado_en_supermall.py` pasa de 17 a **39 pruebas** y
 `test_guias_tallas.py` de 25 a **42**. Seis pruebas de tres archivos cambiaron
 de esperado y son la consecuencia buscada: las que usaban a Columbia como
 ejemplo de marca SIN guia propia (ahora ese papel lo hace Sorel) y las que
 fijaban su talla de mujer.
+
+---
+
+## 5 tertrigies. "Se queda pegada la imagen anterior": no es cache (septiembre 2026)
+
+Reportado con una captura entrando a **KPIs de catalogo** desde Carga
+Supermall: arriba el titulo nuevo y el spinner *"Cargando dashboard
+actualizado..."*, y **debajo, en gris, la pantalla anterior entera**. La
+lectura del usuario fue *"hay mucho cache por eso se pone lenta"*.
+
+### Lo gris de abajo es de Streamlit, y no se puede quitar
+
+Mientras el script corre, Streamlit **deja a la vista los elementos de la
+ejecucion anterior**, atenuados, y solo los poda cuando la ejecucion termina.
+Los indices que la pantalla nueva YA escribio se reemplazan (por eso el titulo
+viejo desaparece y el nuevo ocupa su sitio); los que todavia no ha escrito
+siguen mostrando lo de antes.
+
+Medido con Chromium sobre un repro de 30 lineas -- dos pantallas y un trabajo
+lento de 5 s --, contando lo que se VE (no lo que esta en el DOM):
+
+| | titulo viejo visible | lineas viejas visibles |
+|---|---:|---:|
+| como esta hoy | 0 | **6** |
+| cuerpo en un `st.empty()` que se vacia al entrar | 0 | **6** |
+| cuerpo en un `st.container(key=...)` por pantalla | 0 | **6** |
+| pintar la pantalla y `st.rerun()` antes del trabajo | 0 | **6** |
+
+**Los cuatro dan lo mismo.** No hay forma de blanquear la pantalla desde el
+script: lo unico que quita el gris es que la ejecucion TERMINE. Asi que la
+respuesta no es tocar el arbol de elementos -- es no hacer esperar.
+
+> Y ojo con la conclusion contraria: la duplicacion de la seccion 5 terdecies
+> **si** era nuestra y **si** se arreglo. Aquella cambiaba la FORMA del arbol
+> (un `st.empty()` creado dentro de una rama) y dejaba el bloque nuevo DEBAJO
+> del viejo. Esto otro es el gris de siempre, que aparece en cualquier app de
+> Streamlit que tarde.
+
+### Lo que si era nuestro: el Dashboard se saltaba la cache
+
+`load_catalog_kpi_result` llamaba a **`fetch_products` directo**, o sea que era
+la unica pantalla que no pasaba por `leer_catalogo_del_sitio` y se saltaba la
+cache de sesion **y la de disco (2 horas)** que usan todas las demas. Entrar a
+KPIs justo despues de que Status de carga o Carga Supermall hubieran leido ese
+mismo sitio volvia a leer la tienda entera. En Vans.pe son minutos -- con la
+pantalla anterior en gris todo ese rato, que es exactamente como se ve un
+"esta lentisima".
+
+Ahora lee por la misma puerta que el resto, y **"Actualizar" pasa
+`force_refresh=True`**: la cache no puede convertirse en una trampa, el boton
+existe justo para pasar por encima de ella.
+
+Hay una prueba AST que recorre TODO el archivo y **falla si alguien vuelve a
+llamar a `fetch_products` fuera de los dos sitios que si pueden**:
+`session_shopify_products`, que cachea, y el lector en paralelo, que consulta
+la cache antes en el hilo de la pantalla porque `st.session_state` no se puede
+tocar desde un hilo.
+
+`scripts/test_lectura_completa_del_catalogo.py` pasa de 17 a **21 pruebas**;
+las 4 nuevas fallan con el codigo anterior.
 
 ---
 
@@ -3794,11 +3936,11 @@ python scripts/test_mantenedor_tallas.py               # 42
 python scripts/test_orden_tallas_reales.py             # 17
 python scripts/test_guias_tallas.py                    # 42
 python scripts/test_carga_supermall.py                 # 57
-python scripts/test_lectura_completa_del_catalogo.py    # 17
+python scripts/test_lectura_completa_del_catalogo.py    # 21
 python scripts/test_colecciones.py                     # 54
 python scripts/test_tipos_de_prenda.py                 # 13
 python scripts/test_carga_sial_campos.py               # 27
-python scripts/test_curva_y_carga_suelta.py            # 42
+python scripts/test_curva_y_carga_suelta.py            # 46
 python scripts/test_hueco_por_marca.py                 # 28
 python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33
@@ -3817,7 +3959,7 @@ python scripts/test_handle_tipo_y_duplicados.py         # 18
 python scripts/test_pantallas_reales.py                 # 10
 python scripts/test_bigquery_storage.py                 # 10
 python scripts/test_supermall_pico_de_memoria.py        # 27
-python scripts/test_tallas_de_calzado_en_supermall.py   # 34
+python scripts/test_tallas_de_calzado_en_supermall.py   # 39
 python scripts/test_export_matrixify_y_validacion.py    # 42
 ```
 

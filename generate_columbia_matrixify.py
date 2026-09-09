@@ -1978,8 +1978,32 @@ def resolve_product_type(row, brand_config=None):
         return valor, "input"
     if not resolver(valor):
         return valor, "input"
+    return tipo_de_prenda_para_sitio(valor, brand_config), "input"
+
+
+def tipo_de_prenda_para_sitio(valor, brand_config=None):
+    """Como se escribe ese tipo en ESE sitio, sin perder nunca el dato.
+
+    Vive aparte porque la usan los DOS caminos: la carga completa
+    (`resolve_product_type`) y la carga por codigos, que sirve a Centry, a la
+    Carga Sial parcial y a Supermall. Escrita dos veces, el mismo producto se
+    clasificaria distinto segun por donde pasara -- que es exactamente la
+    trampa de las dos `normalize_size`.
+
+    La cascada es: nombre del sitio -> canonico -> el valor tal cual. El
+    ultimo escalon importa: `tipo_para_sitio` devuelve "" cuando el sitio no
+    vende esa prenda (Rockford no vende ocho de los sesenta tipos), y dejar el
+    Type VACIO seria perder el dato en vez de traducirlo.
+    """
+    valor = clean(valor)
+    if not valor:
+        return ""
+    try:
+        from engines.garment_types import tipo_para_sitio
+    except ImportError:
+        return valor
     sitio = clean((brand_config or {}).get("site_key"))
-    return (tipo_para_sitio(valor, sitio) or tipo_para_sitio(valor, "")), "input"
+    return tipo_para_sitio(valor, sitio) or tipo_para_sitio(valor, "") or valor
 
 COLOR_WEB_COLUMNS = [
     "Color Web", "Color", "Color Name", "Color Nombre", "Nombre Color", "Color Comercial",

@@ -150,12 +150,39 @@ class TestGeneroYTipoNuncaVacios(unittest.TestCase):
         shopify.loc[0, "Handle"] = "casaca-cb100-001"
         shopify.loc[0, "Metafield: custom.codigo_modelo_color [id]"] = CODIGO
         shopify.loc[0, "Metafield: custom.genero [single_line_text_field]"] = "HOMBRE"
-        shopify.loc[0, "Type"] = "Chaquetas"
+        # Dos tipos que NO son sinonimos entre si, para que se pueda ver cual
+        # de las dos fuentes gano. Antes eran "Chaquetas" (Shopify) y "Casacas"
+        # (BigQuery), pero desde que el tipo se traduce al vocabulario del
+        # sitio los dos salen "Casacas" y la prueba ya no distinguia nada.
+        shopify.loc[0, "Type"] = "Polerones"
         salida, _ = construir(["S"], shopify=shopify, Genero="MUJER", TipoProducto="Casacas")
         self.assertEqual(
             salida["Metafield: custom.genero [single_line_text_field]"].iloc[0], "HOMBRE"
         )
-        self.assertEqual(salida["Type"].iloc[0], "Chaquetas")
+        self.assertEqual(salida["Type"].iloc[0], "Polerones")
+
+    def test_el_tipo_se_traduce_al_vocabulario_del_SITIO(self):
+        """"Chaquetas" es un sinonimo; el nombre que usan las tiendas es
+        "Casacas". Antes la carga por codigos copiaba el Type del catalogo de
+        ORIGEN tal cual, asi que una carga de Supermall se llevaba los nombres
+        de la web de la que viniera el producto y Rockford -- que es
+        multimarca -- heredaba la clasificacion de otra marca."""
+        shopify = pd.DataFrame([{columna: "" for columna in app.MATRIXIFY_COLUMNS}])
+        shopify.loc[0, "Handle"] = "casaca-cb100-001"
+        shopify.loc[0, "Metafield: custom.codigo_modelo_color [id]"] = CODIGO
+        shopify.loc[0, "Type"] = "Chaquetas"
+        salida, _ = construir(["S"], shopify=shopify, TipoProducto="")
+        self.assertEqual(salida["Type"].iloc[0], "Casacas")
+
+    def test_un_tipo_desconocido_NO_se_vacia(self):
+        """Traducir no puede perder el dato: si el diccionario no lo reconoce,
+        se deja tal cual y la validacion lo avisa."""
+        shopify = pd.DataFrame([{columna: "" for columna in app.MATRIXIFY_COLUMNS}])
+        shopify.loc[0, "Handle"] = "casaca-cb100-001"
+        shopify.loc[0, "Metafield: custom.codigo_modelo_color [id]"] = CODIGO
+        shopify.loc[0, "Type"] = "ChismeQueNadieConoce"
+        salida, _ = construir(["S"], shopify=shopify, TipoProducto="")
+        self.assertEqual(salida["Type"].iloc[0], "ChismeQueNadieConoce")
 
     def test_avisa_cuando_no_esta_en_ninguna_fuente(self):
         _, avisos = construir(["S"])

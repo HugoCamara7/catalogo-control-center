@@ -3224,6 +3224,156 @@ convierte".
 
 ---
 
+## 5 untrigies. La hoja `Products` no era Matrixify (septiembre 2026)
+
+Reportado con una captura del Excel: la hoja `Products` -- la que se sube a
+Shopify -- llevaba `Temporada`, `Coleccion`, `Ocasion`, `Deporte`, `Categoria`
+y `SubCategoria`, y `Categoria` con valores del maestro como **`CORE`,
+`TRAIL`, `VN_AC_C MENS`, `COLUMBIA`, `MALETINES`**, que ni son columnas de
+Matrixify ni son una categoria.
+
+El propio codigo ya lo decia desde que se escribieron -- *"No son columnas
+Matrixify: viajan solo entre esta funcion y el constructor de Centry"* -- pero
+**nadie las quitaba al escribir la hoja**.
+
+### La regla, en un solo sitio
+
+`es_columna_matrixify` decide, y `solo_columnas_matrixify` aplica. Se ejecuta
+al **ESCRIBIR**, nunca antes: las hojas Carga Sial y Centry se arman del mismo
+frame y necesitan esas columnas, y la sincronizacion con Shopify tambien.
+
+Va dentro de `dataframe_to_excel_bytes`, asi que **una hoja que se llama
+`Products` sale limpia la escriba quien la escriba** -- Carga Supermall, la
+carga completa o la parcial --, sin que una pantalla nueva tenga que acordarse.
+
+**Se quita por lista, no por adivinanza.** Las columnas de acarreo estan
+enumeradas (`COLUMNAS_INTERNAS_DEL_MATRIXIFY`) y todo lo que empieza por `__`
+se va; lo demas se conserva si esta en la lista estandar o empieza por un
+prefijo que Matrixify acepta (`Metafield: `, `Inventory Available: `...).
+Quitar de mas seria PERDER un dato, que es peor que dejar una columna de mas:
+por eso lo que no encaja en ninguna de las dos listas **se reporta** en la hoja
+de Validacion en vez de desaparecer en silencio.
+
+### `Categoria` solo puede ser tres cosas
+
+Accesorios, Calzado o Vestuario. Manda el diccionario de tipos, que es el dato
+confirmado -- un ALPARGATA es Calzado se escriba lo que se escriba en el
+maestro --, despues lo declarado y solo al final el texto de la ficha.
+`categoria_de_catalogo` es la unica puerta, asi que la hoja Carga Sial y el
+metacampo no pueden discrepar.
+
+**Y van como METACAMPO.** `custom.categoria` y `custom.sub_categoria` estan en
+la plantilla oficial y son lo que lee la tienda. La carga completa ya los
+escribia (via `engines/catalog_map`); **la carga por codigos no**, asi que un
+producto cargado por Supermall llegaba a Shopify sin categoria. La
+subcategoria es el TIPO de prenda, y los dos salen en Nombre Propio.
+
+### `Body HTML` salia en texto plano
+
+El `Body HTML` de Shopify es HTML. Lo que llega del maestro (`DescripcionWeb`)
+y de algunas webs es texto plano, y se copiaba tal cual: la ficha salia en una
+sola tira, sin parrafos, y un `&` suelto rompia el marcado.
+
+`asegurar_body_html` **respeta entero lo que ya trae etiquetas** -- reformatear
+una ficha que alguien dejo como queria seria cambiarla -- y convierte lo que
+no: un `<p>` por parrafo, `<br>` por salto suelto y los especiales escapados.
+Un producto sin descripcion en ninguna fuente sale avisado.
+
+### El color solo salia de Shopify
+
+`color` se leia UNICAMENTE del catalogo de origen. Un producto que no esta en
+esa web -- o que la tiene sin el metacampo `custom.color` -- se quedaba **sin
+color**, y con el se van el `Option2 Value`, el metacampo y el trozo de color
+del handle. Todo lo demas (titulo, descripcion, tipo, genero) ya caia al
+maestro; el color era el unico que no, con `ColorNombre` en la fila de al lado.
+
+Y sin color se escribia `Option2 Name: Color` con el valor vacio: **una opcion
+sin valor**, que Shopify rechaza. Ahora la opcion 2 solo existe si hay color, y
+la falta se reporta.
+
+### La validacion, ANTES de exportar
+
+`validar_matrixify` es una FOTO del archivo que se va a subir -- solo lee lo
+que el Matrixify ya trae, no es una segunda fuente de verdad -- y sale en su
+propia hoja, **Validacion**, y en la pantalla.
+
+La regla critica -- **Modelo + Color no se duplica** -- se comprueba por los
+tres caminos por los que se puede romper:
+
+| Sintoma | Que pasaria en Shopify |
+|---|---|
+| el mismo codigo con dos handles | serian dos productos separados |
+| dos codigos con el mismo handle | Shopify los fundiria en uno |
+| el mismo par codigo+SKU dos veces | variante duplicada |
+
+Ademas: campos obligatorios vacios **por producto** (una fila de variante sin
+`Title` es lo normal en Matrixify -- los campos de producto van solo en la
+primera fila --, asi que se mira si NINGUNA fila del handle lo trae), opciones
+sin valor, variantes sin talla, categorias fuera de las tres y productos que
+mezclan tallas de letra y de numero.
+
+**Las columnas de acarreo conocidas NO se reportan**: un aviso que salta
+siempre enseña a ignorar el panel.
+
+### La carga a Shopify desde el servidor
+
+El runner de GitHub Actions ya existia (seccion 5 nonies) con todo lo que
+hacia falta -- cola persistente, bloques de 20, reanudacion, reintento y
+registro del avance en el repositorio de datos --, pero **solo se podia lanzar
+desde Carga completa**. Quien carga Supermall tenia que bajar el Excel y
+subirlo a mano, o pasar por otra pantalla: de ahi que la carga "no continuara"
+al apagar la laptop.
+
+- `lanzar_carga_remota_suelta` acepta ahora el archivo explicito. Carga
+  Supermall pasa el suyo -- ahi el Excel se arma entero en la pantalla y no
+  pasa por `recordar_matrixify_de_carga` --. **No se escribio un segundo
+  lanzador**: dos motores de carga se separan sin que nadie lo note.
+- **No se puede lanzar con bloqueos**: si la validacion encuentra duplicados o
+  campos obligatorios vacios, el boton no ejecuta.
+- `render_estado_carga_remota` dibuja **Pendiente → Procesando → Completado /
+  Error** leyendo el registro REAL del job, el que el runner publica despues
+  de cada bloque. No es una barra de la pantalla: se puede cerrar la pestaña y
+  volver mañana. Lleva cargados, parciales, con error y pendientes, el enlace a
+  la ejecucion y cuando se actualizo.
+
+### La validacion final, releyendo el Excel
+
+Con 400 codigos del maestro real, exportando y **releyendo el archivo**: la
+hoja Products sale con 45 columnas y **todas son de Matrixify**; ninguna se
+llama Centry; todos los productos traen Handle, Title, Type, SKU y talla;
+ningun handle es el codigo pelado; las tallas salen ordenadas y sin mezclar
+letras con numeros; la categoria es una de las tres y en Nombre Propio; ni un
+producto se queda en texto plano; todos salen con color y ninguna opcion tiene
+nombre sin valor; y **cero duplicados de Modelo+Color** por los tres caminos.
+
+Con la bota real `1424692-2KQ`: `34.5, 35, 36, 36.5, 37, 38, 38.5, 39, 40, 41`
+en orden, color `Negro`, categoria `Calzado`, subcategoria `Botas`, handle
+`bota-para-mujer-waterproof-1424692-2kq-negro` y la hoja Sial diciendo lo mismo
+que la tienda. Cero hallazgos en la validacion.
+
+**Una clase inventada BORRA el producto.** `categoria_de_catalogo` devuelve
+"" cuando nada la dice, y el Matrixify pasa `por_defecto=""`: poniendole
+"Vestuario" a un producto sin tipo, `final_variant_filter` lo trata como
+vestuario y le **borra la talla 0** -- que en un producto de una sola talla es
+el producto entero. La hoja Carga Sial conserva su valor por defecto, que es
+lo que hacia. Lo destapo una prueba de `test_genero_tipo_tallas` que se puso
+roja.
+
+**Y tres orfanas que la limpieza de septiembre no vio.** El detector por AST
+encuentra `build_matrixify`, `_missing_variant_inputs` y `render_sidebar` sin un
+solo llamador en todo el repositorio, y las tres vienen del primer commit: son
+**preexistentes**, no de este trabajo. No se borraron aqui porque borrarlas es
+una decision aparte y este cambio ya toca la exportacion entera.
+
+`scripts/test_export_matrixify_y_validacion.py` (42 pruebas) fija todo esto;
+39 de 40 fallaban con el codigo anterior. Y una prueba de
+`test_enriquecimiento` cambio de esperado, que es la consecuencia buscada del
+`Body HTML`: la descripcion del maestro sale ahora `<p>Alpargata de verano</p>`
+y no en texto plano. Se le agrego el caso complementario -- un body que YA es
+HTML no se vuelve a envolver.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -3458,6 +3608,7 @@ python scripts/test_pantallas_reales.py                 # 10
 python scripts/test_bigquery_storage.py                 # 10
 python scripts/test_supermall_pico_de_memoria.py        # 27
 python scripts/test_tallas_de_calzado_en_supermall.py   # 17
+python scripts/test_export_matrixify_y_validacion.py    # 42
 ```
 
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes

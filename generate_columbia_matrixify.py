@@ -3,6 +3,7 @@ import os
 import re
 import unicodedata
 from functools import lru_cache
+from html import escape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -1065,6 +1066,35 @@ def strip_html(value):
     )
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def asegurar_body_html(value):
+    """La descripcion como HTML valido. Nunca deja un producto en texto plano.
+
+    El `Body HTML` de Shopify es HTML: un texto plano se publica en una sola
+    tira, sin parrafos ni saltos, y ademas un `&` o un `<` sueltos rompen el
+    marcado de la ficha. La carga por codigos copiaba tal cual lo que trajera
+    la web de origen o el maestro (`DescripcionWeb`), que muchas veces es texto
+    plano.
+
+    Lo que YA trae etiquetas se respeta entero -- se devuelve tal cual, sin
+    tocar una coma --; lo que no, se convierte: un `<p>` por parrafo, `<br>`
+    por salto suelto y los caracteres especiales escapados.
+    """
+    texto = clean(value)
+    if not texto:
+        return ""
+    # Con etiquetas ya es HTML: no se reescribe. Reformatearlo seria cambiar
+    # una ficha que alguien ya dejo como queria.
+    if re.search(r"<\s*[a-zA-Z][^>]*>", texto):
+        return texto
+    parrafos = [bloque.strip() for bloque in re.split(r"\n\s*\n", texto) if bloque.strip()]
+    if not parrafos:
+        return ""
+    return "".join(
+        "<p>" + "<br>".join(escape(linea.strip()) for linea in parrafo.splitlines() if linea.strip()) + "</p>"
+        for parrafo in parrafos
+    )
 
 
 def texto_plano_de_body(value):

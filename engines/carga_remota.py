@@ -150,8 +150,21 @@ def texto_publico(valor, largo=LARGO_MAXIMO_LOG):
 CODIGO_CARGA_SUELTA = "CARGA"
 
 
+def sello_de_tiempo(formato="%Y%m%d%H%M%S"):
+    """La hora UTC formateada, para un id o un codigo legible.
+
+    **No es `ahora_utc`**, que devuelve el ISO en TEXTO para guardarlo en el
+    registro del job. Confundirlas costo un `AttributeError: 'str' object has
+    no attribute 'strftime'` que tumbaba la pantalla entera en el primer clic
+    de "Cargar a Shopify en el servidor" -- `start_suelto` le pedia `.strftime`
+    al texto. Con las dos funciones separadas y con nombre, la pregunta "¿esto
+    es un `datetime` o ya es texto?" tiene una respuesta a la vista.
+    """
+    return datetime.now(timezone.utc).strftime(formato)
+
+
 def nuevo_id_job(codigo_solicitud=""):
-    marca_tiempo = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    marca_tiempo = sello_de_tiempo()
     sufijo = uuid.uuid4().hex[:8]
     base = re.sub(r"[^A-Za-z0-9]+", "-", _texto(codigo_solicitud)).strip("-").lower()
     return f"{base}-{marca_tiempo}-{sufijo}" if base else f"job-{marca_tiempo}-{sufijo}"
@@ -739,7 +752,7 @@ class AdaptadorCargaActions:
 
         # El codigo es sintetico y se ve como lo que es: no hay solicitud, y
         # inventar un CAT-#### haria creer que existe una.
-        codigo = f"{CODIGO_CARGA_SUELTA}-{site_key.upper()}-{ahora_utc().strftime('%Y%m%d-%H%M%S')}"
+        codigo = f"{CODIGO_CARGA_SUELTA}-{site_key.upper()}-{sello_de_tiempo('%Y%m%d-%H%M%S')}"
         job = nuevo_registro_job(
             codigo_solicitud=codigo,
             site_key=site_key,

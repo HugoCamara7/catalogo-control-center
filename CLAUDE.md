@@ -3600,6 +3600,50 @@ Comprobado que **la guarda no cuesta ninguna lectura buena**: las siete formas
 que el maestro trae hoy -- `50,55,60`, `390,400,410`, `800,850`, `085`,
 `040,050`, `10,20,30,40,45` y `70,75,80` -- se leen exactamente igual.
 
+### 7. `'str' object has no attribute 'strftime'`: el boton moria en el clic
+
+Reportado con una captura de **Carga Supermall**: el panel decia *"Se envia a
+un runner de GitHub Actions: 8.113 productos"*, y al pulsar **Cargar a Shopify
+en el servidor** la pantalla entera se caia con
+
+```
+AttributeError: 'str' object has no attribute 'strftime'
+```
+
+`start_suelto` armaba el codigo de la carga asi:
+
+```python
+codigo = f"{CODIGO_CARGA_SUELTA}-{site_key.upper()}-{ahora_utc().strftime('%Y%m%d-%H%M%S')}"
+```
+
+y **`ahora_utc()` devuelve TEXTO** -- el ISO, que es lo que se guarda en el
+registro del job --, no un `datetime`. O sea que `start_suelto` **nunca pudo
+ejecutarse**: estaba roto desde que se escribio.
+
+Ahora hay `sello_de_tiempo(formato)`, que es la que da la hora formateada, y la
+usan las dos: `nuevo_id_job` y `start_suelto`. Con las dos funciones separadas
+y con nombre, la pregunta "¿esto es un `datetime` o ya es texto?" tiene una
+respuesta a la vista.
+
+**Por que no lo vio ninguna de las 42 pruebas de `test_curva_y_carga_suelta`:**
+las ocho que cubren `start_suelto` leen su **codigo fuente** con
+`inspect.getsource` -- que suba el archivo antes que el registro, que use
+`nuevo_registro_job`, que llame a `self._disparar` -- y **ninguna la llamaba**.
+
+> **Leer el codigo no es ejecutarlo.** Una prueba que solo mira el texto de una
+> funcion no puede ver un `AttributeError`.
+
+Hay tres pruebas nuevas: una que **ejecuta** `start_suelto` con un almacen y un
+disparador falsos, otra que ejecuta el **pegamento con la pantalla**
+(`lanzar_carga_remota_suelta`, que es lo que pulsa el boton) y una que falla si
+`ahora_utc().strftime` vuelve a aparecer en el modulo. Las tres fallan con el
+codigo anterior, y la primera con el mismo `AttributeError` que veia el
+usuario.
+
+Comprobado ademas con AST que **es el unico** `.strftime` del repositorio sobre
+algo que pueda no ser un `datetime`: los demas reciben un `datetime.now(...)` o
+estan detras de un `isinstance`.
+
 ### Lo que la validacion con el catalogo REAL dejo a la vista
 
 200 codigos de calzado del catalogo de Columbia.pe cruzados con el maestro real
@@ -3836,7 +3880,7 @@ python scripts/test_lectura_completa_del_catalogo.py    # 17
 python scripts/test_colecciones.py                     # 54
 python scripts/test_tipos_de_prenda.py                 # 13
 python scripts/test_carga_sial_campos.py               # 27
-python scripts/test_curva_y_carga_suelta.py            # 42
+python scripts/test_curva_y_carga_suelta.py            # 46
 python scripts/test_hueco_por_marca.py                 # 28
 python scripts/test_memoria.py                         # 15
 python scripts/test_css_movil.py                       # 33

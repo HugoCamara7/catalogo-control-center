@@ -228,6 +228,88 @@ class TestCargaRemotaSinSolicitud(unittest.TestCase):
         self.assertIn("self._disparar", cuerpo)
         self.assertIn("self.workflow", cuerpo)
 
+    def test_start_suelto_SE_EJECUTA_de_verdad(self):
+        """Las demas pruebas de este bloque leen el CODIGO de `start_suelto`
+        con `inspect.getsource`; ninguna lo llamaba.
+
+        Por eso paso a produccion un `AttributeError: 'str' object has no
+        attribute 'strftime'`: la funcion le pedia `.strftime` a `ahora_utc()`,
+        que devuelve el ISO en TEXTO. Reventaba en el primer clic de "Cargar a
+        Shopify en el servidor" y se llevaba la pantalla entera. **Leer el
+        codigo no es ejecutarlo.**
+        """
+        guardados, disparos = [], []
+
+        class AlmacenFalso:
+            prefix = "catalog_tickets"
+
+            def ruta_de_matrixify(self, job_id, filename):
+                return f"catalog_tickets/catalog_jobs/{job_id}/{filename}"
+
+            def guardar_archivo(self, ruta, contenido, mensaje=""):
+                guardados.append((ruta, len(contenido)))
+
+            def guardar(self, job, mensaje=""):
+                guardados.append((job["id"], job["status"]))
+
+        adaptador = cr.AdaptadorCargaActions(
+            AlmacenFalso(), owner="o", repo="r", workflow="carga-shopify.yml",
+            token="t", disparador=lambda **kwargs: disparos.append(kwargs))
+        resumen = adaptador.start_suelto(
+            matrixify_bytes=b"xlsx", claves_producto=["AB-1", "AB-2"],
+            filename="matrixify_supermall.xlsx", site_key="supermall",
+            creado_por="hugo", marca="Columbia", modo="complete")
+
+        self.assertNotEqual(resumen.get("status"), cr.JOB_SIN_DISPARAR, resumen.get("message"))
+        self.assertTrue(resumen.get("id"))
+        self.assertEqual(len(disparos), 1)
+        self.assertEqual(disparos[0]["inputs"]["site_key"], "supermall")
+        # El archivo va PRIMERO y despues el registro.
+        self.assertEqual(guardados[0][0].endswith("matrixify_supermall.xlsx"), True)
+
+    def test_el_PEGAMENTO_con_la_pantalla_tambien_se_ejecuta(self):
+        """`lanzar_carga_remota_suelta` es lo que pulsa el boton de Carga
+        Supermall. Si el adaptador cambia de firma o la pantalla le pasa un
+        argumento de mas, el fallo sale en produccion y no en las pruebas:
+        aqui vive el pegamento, que es donde se cuelan estos errores."""
+        recibido = {}
+
+        class AdaptadorFalso:
+            def start_suelto(self, **kwargs):
+                recibido.update(kwargs)
+                return {"id": "job-1", "status": "queued"}
+
+        original_adaptador = app.get_job_adapter
+        original_log = app.log_user_activity
+        app.get_job_adapter = lambda: AdaptadorFalso()
+        app.log_user_activity = lambda *a, **k: None
+        try:
+            ok, mensaje = app.lanzar_carga_remota_suelta(
+                app.SITE_CONFIGS["supermall"],
+                matrixify_bytes=b"xlsx",
+                claves_producto=["AB-1"],
+                filename="carga_supermall.xlsx",
+                site_key="supermall",
+                modulo="Carga Supermall",
+            )
+        finally:
+            app.get_job_adapter = original_adaptador
+            app.log_user_activity = original_log
+        self.assertTrue(ok, mensaje)
+        self.assertEqual(recibido["site_key"], "supermall")
+        self.assertEqual(recibido["matrixify_bytes"], b"xlsx")
+        self.assertEqual(recibido["claves_producto"], ["AB-1"])
+
+    def test_el_codigo_de_una_carga_suelta_lleva_la_fecha(self):
+        """Es lo que rompia: el sello de tiempo se sacaba de un texto."""
+        self.assertRegex(cr.sello_de_tiempo("%Y%m%d-%H%M%S"), r"^\d{8}-\d{6}$")
+
+    def test_ahora_utc_es_TEXTO_y_no_se_le_puede_pedir_strftime(self):
+        """Las dos existen y hacen cosas distintas; el nombre lo dice."""
+        self.assertIsInstance(cr.ahora_utc(), str)
+        fuente = inspect.getsource(cr)
+        self.assertNotIn("ahora_utc().strftime", fuente)
+
     def test_recordar_matrixify_ya_no_exige_codigo(self):
         """Era la puerta cerrada: sin solicitud no se apuntaba nada, asi que no
         habia con que lanzar la carga remota."""

@@ -296,8 +296,22 @@ class TestMaestroCompletaLoQueShopifyNoTiene(unittest.TestCase):
         self.assertEqual(str(salida["Composición"].iloc[0]), "100% Cuero")
 
     def test_la_descripcion_tambien_sale_del_maestro(self):
+        """El texto sale del maestro y llega envuelto en HTML.
+
+        Desde septiembre de 2026 `Body HTML` nunca se queda en texto plano
+        (`asegurar_body_html`): Shopify lo publica como HTML, asi que un texto
+        suelto sale sin parrafo y sin saltos de linea. Lo que esta prueba fija
+        sigue siendo lo suyo -- que la descripcion venga del maestro --, no la
+        envoltura.
+        """
         salida, _ = self._construir(DescripcionWeb="Alpargata de verano")
-        self.assertEqual(str(salida["Body HTML"].iloc[0]), "Alpargata de verano")
+        self.assertEqual(str(salida["Body HTML"].iloc[0]), "<p>Alpargata de verano</p>")
+
+    def test_un_body_que_YA_es_HTML_no_se_vuelve_a_envolver(self):
+        salida, _ = self._construir(DescripcionWeb="<p>Alpargata <b>de verano</b></p>")
+        self.assertEqual(
+            str(salida["Body HTML"].iloc[0]), "<p>Alpargata <b>de verano</b></p>"
+        )
 
     def test_llegan_hasta_la_hoja_centry(self):
         matrixify, _ = self._construir(

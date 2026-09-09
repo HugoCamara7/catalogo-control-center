@@ -153,6 +153,8 @@ from generate_columbia_matrixify import (
     SITE_CONFIGS,
     MissingInputColumnError,
     build_body_html as build_matrixify_body_html,
+    asegurar_body_html,
+    nombre_propio,
     build_columbia_matrixify,
     build_matrixify_updates,
     brand_display_name,
@@ -377,6 +379,98 @@ MATRIXIFY_COLUMNS = [
     "Metafield: custom.estilo [single_line_text_field]",
     "Metafield: custom.color [single_line_text_field]",
 ]
+
+# --- Que sale en la hoja `Products`, y que no --------------------------------
+#
+# El Matrixify que arma la carga por codigos lleva columnas que **no son de
+# Matrixify**: viajan entre el constructor y las hojas de Centry y Carga Sial,
+# que las leen por su nombre. El propio codigo lo dice desde que se escribieron
+# ("No son columnas Matrixify: viajan solo entre esta funcion y el constructor
+# de Centry"), pero nadie las quitaba antes de escribir la hoja.
+#
+# Resultado, reportado con una captura: el archivo que se sube a Shopify salia
+# con `Temporada`, `Coleccion`, `Ocasion`, `Deporte`, `Categoria` y
+# `SubCategoria`, y `Categoria` con valores del maestro como `VN_AC_C MENS`,
+# `CORE` o `TRAIL` -- que ademas no son una categoria.
+#
+# Se quitan al ESCRIBIR, nunca antes: las hojas Carga Sial y Centry se arman
+# del mismo frame y las necesitan, y la sincronizacion con Shopify tambien.
+COLUMNAS_INTERNAS_DEL_MATRIXIFY = frozenset({
+    "Composición",
+    "Cuidados",
+    "Listado de características",
+    "Temporada",
+    "Coleccion",
+    "Ocasion",
+    "Deporte",
+    "Categoria",
+    "SubCategoria",
+})
+
+# Los prefijos que Matrixify acepta con cualquier nombre detras.
+PREFIJOS_COLUMNA_MATRIXIFY = (
+    "Metafield: ",
+    "Variant Metafield: ",
+    "Inventory Available: ",
+    "Inventory Qty: ",
+    "Inventory Incoming: ",
+    "Inventory Committed: ",
+    "Inventory On Hand: ",
+)
+
+# Las columnas de la hoja Products de Matrixify, en SU orden. Sale de
+# `data/matrixify_modelo.xlsx`, que es un export real de la tienda, mas las que
+# la app escribe y ese export no traia por no tener valor en ese momento.
+COLUMNAS_MATRIXIFY_ESTANDAR = (
+    "ID", "Handle", "Command", "Title", "Body HTML", "Vendor", "Type", "Tags",
+    "Tags Command", "Created At", "Updated At", "Status", "Published",
+    "Published At", "Published Scope", "Template Suffix", "Gift Card", "URL",
+    "Total Inventory Qty", "Row #", "Top Row", "SEO Title", "SEO Description",
+    "Custom Collections", "Smart Collections",
+    "Image Type", "Image Src", "Image Command", "Image Position", "Image Width",
+    "Image Height", "Image Alt Text",
+    "Variant Inventory Item ID", "Variant ID", "Variant Command",
+    "Option1 Name", "Option1 Value", "Option2 Name", "Option2 Value",
+    "Option3 Name", "Option3 Value", "Variant Position", "Variant SKU",
+    "Variant Barcode", "Variant Image", "Variant Price",
+    "Variant Compare At Price", "Variant Cost", "Variant Inventory Qty",
+    "Variant Inventory Tracker", "Variant Inventory Policy",
+    "Variant Fulfillment Service", "Variant Requires Shipping",
+    "Variant Taxable", "Variant Tax Code", "Variant Weight",
+    "Variant Weight Unit", "Variant HS Code", "Variant Country of Origin",
+)
+_ORDEN_MATRIXIFY = {nombre: posicion for posicion, nombre in enumerate(COLUMNAS_MATRIXIFY_ESTANDAR)}
+
+
+def es_columna_matrixify(nombre):
+    """Si Matrixify entiende esa columna en la hoja Products."""
+    nombre = str(nombre)
+    if nombre in COLUMNAS_INTERNAS_DEL_MATRIXIFY or nombre.startswith("__"):
+        return False
+    if nombre in _ORDEN_MATRIXIFY:
+        return True
+    return nombre.startswith(PREFIJOS_COLUMNA_MATRIXIFY)
+
+
+def solo_columnas_matrixify(df):
+    """La hoja `Products` con SOLO lo que Matrixify entiende, en su orden.
+
+    Quita las columnas de acarreo y las `__` internas. No inventa ninguna: lo
+    que se va es lo que Matrixify no sabe leer, y lo que se queda mantiene su
+    valor tal cual.
+
+    El orden es el de la plantilla oficial y los metacampos van al final, que
+    es como Matrixify exporta. Un archivo que se revisa a mano se lee mucho
+    mejor asi, y a la importacion le da igual.
+    """
+    if df is None or not isinstance(df, pd.DataFrame):
+        return df
+    columnas = [columna for columna in df.columns if es_columna_matrixify(columna)]
+    columnas.sort(key=lambda nombre: (_ORDEN_MATRIXIFY.get(nombre, len(_ORDEN_MATRIXIFY)),))
+    if list(df.columns) == columnas:
+        return df
+    return df[columnas]
+
 
 SIZE_ORDER_GROUPS = [
     ["XXXS", "3XS"],
@@ -2209,8 +2303,201 @@ def _leer_excel_de_disco(ruta):
         return None
 
 
+# --- La validacion del archivo, ANTES de subirlo -----------------------------
+#
+# Hasta ahora el Excel se revisaba a ojo. Estas son las comprobaciones que un
+# archivo tiene que pasar para poder subirse a Shopify sin romper nada, y
+# salen en su propia hoja: **Validacion**.
+VALIDACION_BLOQUEA = "Bloquea"
+VALIDACION_AVISA = "Aviso"
+
+# Lo que un producto no puede no tener. `Body HTML` avisa y no bloquea: una
+# ficha sin descripcion se publica y se corrige despues; una sin handle o sin
+# titulo no se puede ni crear.
+CAMPOS_OBLIGATORIOS_MATRIXIFY = (
+    ("Handle", VALIDACION_BLOQUEA),
+    ("Title", VALIDACION_BLOQUEA),
+    ("Type", VALIDACION_BLOQUEA),
+    ("Vendor", VALIDACION_AVISA),
+    ("Body HTML", VALIDACION_AVISA),
+)
+
+CLAVE_MOD_COL = "Metafield: custom.codigo_modelo_color [id]"
+CLAVE_CATEGORIA = "Metafield: custom.categoria [single_line_text_field]"
+
+
+def validar_matrixify(matrixify_df):
+    """Lo que hay que mirar antes de subir el archivo. Devuelve un DataFrame.
+
+    Es una FOTO del archivo que se va a subir, no una segunda fuente de
+    verdad: solo lee lo que el Matrixify ya trae. Si algo aparece aqui es que
+    esta en el archivo.
+
+    La regla critica -- **Modelo + Color no se duplica** -- se comprueba por
+    los tres caminos por los que se puede romper: el mismo codigo con dos
+    handles (serian dos productos), el mismo par codigo+SKU dos veces (seria
+    una variante duplicada) y dos codigos compartiendo handle (Shopify los
+    fundiria en uno).
+    """
+    columnas = ["Gravedad", "Campo", "Mod-Col", "Problema"]
+    if matrixify_df is None or not isinstance(matrixify_df, pd.DataFrame) or matrixify_df.empty:
+        return pd.DataFrame(columns=columnas)
+    df = coalesce_duplicate_columns(matrixify_df)
+    hallazgos = []
+
+    def anotar(gravedad, campo, mod_col, problema):
+        hallazgos.append({
+            "Gravedad": gravedad, "Campo": campo,
+            "Mod-Col": clean_value(mod_col), "Problema": problema,
+        })
+
+    def texto(columna):
+        if columna not in df.columns:
+            return pd.Series([""] * len(df), index=df.index, dtype=object)
+        return df[columna].map(clean_value)
+
+    claves = texto(CLAVE_MOD_COL).str.upper()
+    handles = texto("Handle")
+    # El Matrixify escribe los campos de producto SOLO en su primera fila, asi
+    # que un campo vacio en una fila de variante es lo normal. Se mira por
+    # PRODUCTO: si ninguna fila del handle lo trae, entonces falta de verdad.
+    por_handle = df.assign(__CLAVE=claves, __HANDLE=handles)
+
+    for campo, gravedad in CAMPOS_OBLIGATORIOS_MATRIXIFY:
+        valores = texto(campo)
+        if campo == "Handle":
+            faltan = por_handle.loc[valores == "", "__CLAVE"]
+            for clave in sorted({c for c in faltan if c} or ([""] if len(faltan) else [])):
+                anotar(gravedad, campo, clave, "Sin Handle: el producto no se puede crear")
+            continue
+        con_valor = set(por_handle.loc[valores != "", "__HANDLE"])
+        sin_valor = sorted({
+            (h, c) for h, c in zip(por_handle["__HANDLE"], por_handle["__CLAVE"])
+            if h and h not in con_valor
+        })
+        for handle, clave in sin_valor:
+            anotar(gravedad, campo, clave or handle, f"Sin {campo} en ninguna fila del producto")
+
+    # --- Modelo + Color no se duplica -------------------------------------
+    con_clave = por_handle[por_handle["__CLAVE"] != ""]
+    if not con_clave.empty:
+        handles_por_clave = con_clave.groupby("__CLAVE")["__HANDLE"].nunique()
+        for clave in sorted(handles_por_clave[handles_por_clave > 1].index):
+            cuantos = safe_int_value(handles_por_clave[clave])
+            anotar(VALIDACION_BLOQUEA, "Modelo + Color", clave,
+                   f"El mismo codigo Modelo-Color sale con {cuantos} handles distintos: "
+                   "serian dos productos separados en la tienda")
+        claves_por_handle = con_clave.groupby("__HANDLE")["__CLAVE"].nunique()
+        for handle in sorted(claves_por_handle[claves_por_handle > 1].index):
+            anotar(VALIDACION_BLOQUEA, "Handle", handle,
+                   "Dos codigos Modelo-Color distintos comparten este handle: "
+                   "Shopify los fundiria en un solo producto")
+
+    skus = texto("Variant SKU")
+    pares = pd.DataFrame({"clave": claves, "sku": skus})
+    pares = pares[(pares["clave"] != "") & (pares["sku"] != "")]
+    if not pares.empty:
+        repetidos = pares.groupby(["clave", "sku"]).size()
+        for (clave, sku), veces in repetidos[repetidos > 1].items():
+            anotar(VALIDACION_BLOQUEA, "Variante", clave,
+                   f"El SKU {sku} sale {safe_int_value(veces)} veces en el mismo "
+                   "Modelo-Color: es una variante duplicada")
+
+    # --- Tallas y opciones -------------------------------------------------
+    nombres_opcion2 = texto("Option2 Name")
+    valores_opcion2 = texto("Option2 Value")
+    huerfanas = (nombres_opcion2 != "") & (valores_opcion2 == "")
+    for clave in sorted({c for c, malo in zip(claves, huerfanas) if malo}):
+        anotar(VALIDACION_BLOQUEA, "Option2", clave,
+               "La opcion 2 tiene nombre pero no valor: Shopify rechaza una "
+               "opcion sin valor")
+    tallas = texto("Option1 Value")
+    sin_talla = sorted({c for c, v, sku in zip(claves, tallas, skus) if sku and not v})
+    for clave in sin_talla:
+        anotar(VALIDACION_BLOQUEA, "Option1", clave, "Hay variantes sin talla")
+
+    # Dos NOTACIONES de talla dentro del mismo producto. Una curva `S, M, 40`
+    # no es una curva: es un producto con dos escalas pegadas. Y `30` junto a
+    # `30/32` son cintura sola y cintura/largo, que en la ficha se leen como
+    # dos cosas distintas.
+    #
+    # Avisa, no bloquea: el maestro trae curvas asi de verdad y parar una carga
+    # de miles por esto seria peor. Lo que no puede es que no lo sepa nadie.
+    def notacion(valor):
+        limpio = clean_value(valor).upper()
+        if not limpio:
+            return ""
+        if re.fullmatch(r"[0-9]+([.,][0-9]+)?", limpio):
+            return "numero"
+        if re.fullmatch(r"[0-9]+([.,][0-9]+)?\s*/\s*[0-9]+([.,][0-9]+)?", limpio):
+            return "cintura/largo"
+        return "letra"
+
+    notaciones = pd.DataFrame({"clave": claves, "notacion": [notacion(v) for v in tallas]})
+    notaciones = notaciones[(notaciones["clave"] != "") & (notaciones["notacion"] != "")]
+    if not notaciones.empty:
+        mezcladas = notaciones.groupby("clave")["notacion"].nunique()
+        for clave in sorted(mezcladas[mezcladas > 1].index):
+            formas = sorted(set(notaciones.loc[notaciones["clave"] == clave, "notacion"]))
+            vistas = sorted({
+                clean_value(v) for c, v in zip(claves, tallas) if c == clave and clean_value(v)
+            })
+            anotar(VALIDACION_AVISA, "Tallas", clave,
+                   f"El producto mezcla tallas de {' y de '.join(formas)}: "
+                   + ", ".join(vistas[:10]))
+
+    # --- Categoria ---------------------------------------------------------
+    categorias = texto(CLAVE_CATEGORIA)
+    for clave in sorted({
+        c for c, cat in zip(claves, categorias)
+        if cat and cat not in CATEGORIAS_DE_CATALOGO
+    }):
+        valor = next(cat for c, cat in zip(claves, categorias) if c == clave and cat)
+        anotar(VALIDACION_BLOQUEA, "Categoria", clave,
+               f"Categoria fuera de las tres permitidas ({', '.join(CATEGORIAS_DE_CATALOGO)}): {valor}")
+
+    # --- Columnas que nadie sabe clasificar --------------------------------
+    #
+    # Las de acarreo (`Temporada`, `Categoria`, `__CENTRY_RAW_SIZE`...) NO se
+    # reportan: se quitan a proposito y estan enumeradas. Un aviso que salta
+    # siempre por algo que esta bien enseña a ignorar el panel.
+    #
+    # Lo que si se reporta es lo que no es ni una cosa ni la otra: una columna
+    # nueva que alguien agregue y que se quedaria fuera del archivo sin que
+    # nadie se entere.
+    for columna in df.columns:
+        nombre = str(columna)
+        if es_columna_matrixify(nombre):
+            continue
+        if nombre in COLUMNAS_INTERNAS_DEL_MATRIXIFY or nombre.startswith("__"):
+            continue
+        anotar(VALIDACION_AVISA, "Columna", "",
+               f"La columna {nombre!r} no es de Matrixify ni una de acarreo "
+               "conocida: no se escribe en la hoja Products")
+
+    return pd.DataFrame(hallazgos, columns=columnas)
+
+
+def resumen_de_validacion(validacion_df):
+    """(bloqueos, avisos) de la hoja de validacion."""
+    if validacion_df is None or validacion_df.empty or "Gravedad" not in validacion_df.columns:
+        return 0, 0
+    gravedad = validacion_df["Gravedad"]
+    return (
+        safe_int_value((gravedad == VALIDACION_BLOQUEA).sum()),
+        safe_int_value((gravedad == VALIDACION_AVISA).sum()),
+    )
+
+
 def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_df=None, skipped_df=None, sial_df=None, centry_df=None, centry_issues_df=None):
+    # La hoja `Products` es el archivo que se sube a Shopify: solo columnas de
+    # Matrixify. Las de acarreo se quitan AQUI, no antes, porque las hojas
+    # Carga Sial y Centry se arman del mismo frame y las necesitan.
     matrixify_df = repair_mojibake_dataframe(coalesce_duplicate_columns(matrixify_df))
+    # La validacion se hace ANTES de recortar columnas: asi puede decir cuales
+    # se quedaron fuera en vez de callarselo.
+    validacion_matrixify_df = validar_matrixify(matrixify_df)
+    matrixify_df = solo_columnas_matrixify(matrixify_df)
     summary_df = repair_mojibake_dataframe(coalesce_duplicate_columns(summary_df))
     issues_df = repair_mojibake_dataframe(coalesce_duplicate_columns(issues_df))
     type_warnings_df = repair_mojibake_dataframe(coalesce_duplicate_columns(type_warnings_df))
@@ -2223,6 +2510,9 @@ def columbia_to_excel_bytes(matrixify_df, summary_df, issues_df, type_warnings_d
         matrixify_df.to_excel(writer, index=False, sheet_name="Products")
         summary_df.to_excel(writer, index=False, sheet_name="Resumen")
         issues_df.to_excel(writer, index=False, sheet_name="Revision")
+        # Lo que hay que mirar ANTES de subir el archivo. Va siempre, aunque
+        # este vacia: una hoja que falta se lee como "no se comprobo".
+        validacion_matrixify_df.to_excel(writer, index=False, sheet_name="Validacion")
         if sial_df is not None:
             sial_df.to_excel(writer, index=False, sheet_name="Carga Sial")
         if centry_df is not None:
@@ -2306,7 +2596,7 @@ def _dar_formato_hojas(writer, ancho=18):
 
 
 def update_to_excel_bytes(matrixify_df, issues_df):
-    matrixify_df = repair_mojibake_dataframe(matrixify_df)
+    matrixify_df = solo_columnas_matrixify(repair_mojibake_dataframe(matrixify_df))
     issues_df = repair_mojibake_dataframe(issues_df)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine=MOTOR_EXCEL, engine_kwargs=_kwargs_motor_excel()) as writer:
@@ -2414,6 +2704,12 @@ def dataframe_to_excel_bytes(sheets):
             # pd.DataFrame()`, pero no todos, y basta uno para caerse.
             if not isinstance(df, pd.DataFrame):
                 df = pd.DataFrame()
+            # Una hoja que se llama `Products` ES el Matrixify, la escriba
+            # quien la escriba: Carga Supermall, Centry o la carga parcial.
+            # La regla vive aqui para que una pantalla nueva no tenga que
+            # acordarse de aplicarla.
+            if safe_name == "Products":
+                df = solo_columnas_matrixify(df)
             if hoja_necesita_reparacion(df):
                 df = repair_mojibake_dataframe(df)
             df.to_excel(writer, index=False, sheet_name=safe_name)
@@ -4304,6 +4600,58 @@ def centry_garment_class(product_type):
         return ""
     _, clase, _ = _centry_motor("resolver_tipo", ("", "", ""), tipo)
     return clean_value(clase)
+
+
+# La CATEGORIA de un producto solo puede ser una de estas tres. Cualquier otra
+# cosa -- `CORE`, `TRAIL`, `VN_AC_C MENS`, `COLUMBIA` -- es un campo del maestro
+# que no es una categoria, y salia tal cual en el archivo.
+CATEGORIAS_DE_CATALOGO = ("Accesorios", "Calzado", "Vestuario")
+
+
+def categoria_de_catalogo(product_type, row=None, categoria_declarada="",
+                          por_defecto="Vestuario"):
+    """Accesorios, Calzado o Vestuario. **Nunca** otra cosa.
+
+    Manda el diccionario de tipos, que es el dato confirmado: un ALPARGATA es
+    Calzado se escriba lo que se escriba en el maestro. Despues lo declarado, y
+    solo al final el texto de la ficha. Es la cascada que ya usaba la hoja
+    Carga Sial, aqui escrita una sola vez para que la hoja y el metacampo no
+    puedan discrepar.
+
+    `por_defecto` es lo que sale cuando NADA lo dice. La hoja Carga Sial se
+    queda con "Vestuario", que es lo que hacia; el Matrixify pasa `""` a
+    proposito: un producto sin tipo ya sale avisado, y ponerle una clase
+    inventada hace que `final_variant_filter` lo trate como vestuario y le
+    **borre la talla 0**, que en un producto de una sola talla es el producto
+    entero.
+    """
+    for candidata in (centry_garment_class(product_type), categoria_declarada):
+        clave = fold_accents(clean_value(candidata)).lower()
+        if not clave:
+            continue
+        if clave.startswith("calzado"):
+            return "Calzado"
+        if clave.startswith("accesorio"):
+            return "Accesorios"
+        if clave.startswith("vestuario") or clave.startswith("ropa"):
+            return "Vestuario"
+    if row is not None and centry_is_footwear(row):
+        return "Calzado"
+    if "accesorio" in fold_accents(clean_value(categoria_declarada)).lower():
+        return "Accesorios"
+    return por_defecto
+
+
+def subcategoria_de_catalogo(product_type):
+    """El TIPO de prenda, en Nombre Propio. Es la subcategoria del producto."""
+    return _nombre_propio_app(product_type)
+
+
+def _nombre_propio_app(valor):
+    """`nombre_propio`, el del generador. No se copia: dos versiones de
+    "Nombre Propio" se separan sin que nadie lo note, que es la trampa de las
+    dos `normalize_size`."""
+    return nombre_propio(valor)
 
 
 def centry_is_footwear(row):
@@ -7106,6 +7454,11 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             issues.append({"Mod-Col": key, "Problema": "Todas las variantes fueron omitidas por duplicidad de SKU"})
             continue
         variants = variants.sort_values("__SIZE", key=lambda series: series.map(master_size_sort_key))
+        # La fila del maestro que representa al producto. Se toma AQUI, en
+        # cuanto las variantes estan filtradas y ordenadas, porque de ella
+        # salen el color, la temporada y los textos, y el color hace falta ya
+        # para armar el handle.
+        maestro = variants.iloc[0]
         # Recuento explicito por modelo-color. Es lo que permite comprobar de un
         # vistazo si el producto salio con todas sus tallas, en vez de contar a
         # mano en el Excel.
@@ -7141,11 +7494,18 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             issues.append({"Mod-Col": key, "Problema": "Sin nombre de producto en Shopify ni en BigQuery/ARTI"})
         # La descripcion tambien se completa desde el maestro cuando el
         # producto no esta en Shopify: el ARTI trae `DescripcionWeb`.
-        body_html = first_non_empty(
+        # El `Body HTML` de Shopify es HTML. Lo que llega del maestro
+        # (`DescripcionWeb`) y de algunas webs es texto plano, y se copiaba tal
+        # cual: la ficha salia en una sola tira, sin parrafos, y un `&` suelto
+        # rompia el marcado. `asegurar_body_html` respeta lo que ya trae
+        # etiquetas y convierte lo que no.
+        body_html = asegurar_body_html(first_non_empty(
             product_row.get("Body HTML") if product_row is not None else "",
             product_row.get("Metafield: custom.descripcion_corta [single_line_text_field]") if product_row is not None else "",
-            variants.iloc[0].get("DescripcionWeb"),
-        )
+            maestro.get("DescripcionWeb"),
+        ))
+        if not clean_value(body_html):
+            issues.append({"Mod-Col": key, "Problema": "Sin descripcion (Body HTML) en Shopify ni en BigQuery/ARTI"})
         # Genero y Tipo NUNCA pueden quedar vacios: manda Shopify y, si no
         # tiene el dato, se completa desde SIAL/BigQuery (el ARTI ya trae
         # "TipoProducto" y "Genero" en ARTI_OPTIONAL_COLUMNS).
@@ -7189,7 +7549,6 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         # si no lo tiene, el maestro. Antes SOLO se miraba Shopify, asi que un
         # producto que no esta en Shopify salia sin ninguno de los cuatro
         # aunque BigQuery/ARTI los trajera en Material / Cuidado / Tecnologia.
-        maestro = variants.iloc[0]
         materiality = first_non_empty(
             product_row.get("Metafield: custom.materialidad [single_line_text_field]") if product_row is not None else "",
             _enriquecer("material", [maestro], marca=vendor, resolutor=resolutor_maestro),
@@ -7201,7 +7560,21 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         composition_master = _enriquecer("composicion", [maestro], marca=vendor, resolutor=resolutor_maestro)
         care_master = _enriquecer("cuidados", [maestro], marca=vendor, resolutor=resolutor_maestro)
         features_master = clean_value(maestro.get("Caracteristicas"))
-        color = centry_color_name_from_row(product_row, split_model_color(key)[1]) if product_row is not None else ""
+        # El color, con RESPALDO en el maestro. Antes solo salia del catalogo de
+        # origen: un producto que no esta en esa web -- o que la tiene sin el
+        # metacampo `custom.color` -- se quedaba SIN color, y con el se va el
+        # `Option2 Value`, el metacampo y el trozo de color del handle. Todo lo
+        # demas (titulo, descripcion, tipo, genero) ya caia al maestro; el color
+        # era el unico que no, y `ColorNombre` estaba en la fila de al lado.
+        codigo_de_color = split_model_color(key)[1]
+        color = first_non_empty(
+            centry_color_name_from_row(product_row, codigo_de_color) if product_row is not None else "",
+            "" if centry_looks_like_color_code(maestro.get("ColorNombre"), codigo_de_color)
+            else maestro.get("ColorNombre"),
+        )
+        color = _nombre_propio_app(color)
+        if not clean_value(color):
+            issues.append({"Mod-Col": key, "Problema": "Sin color en Shopify ni en BigQuery/ARTI"})
         if product_row is None:
             issues.append({"Mod-Col": key, "Problema": "No existe en Shopify; se completo Centry con BigQuery/ARTI y fotos S3"})
 
@@ -7217,6 +7590,17 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         # El que YA existe en el destino conserva el suyo: cambiarselo romperia
         # su URL y Shopify lo trataria como un producto nuevo.
         handle_existente = clean_value(fila_destino.get("Handle")) if fila_destino is not None else ""
+        # La clase y el tipo, normalizados, una sola vez por producto. La clase
+        # solo puede ser Accesorios, Calzado o Vestuario.
+        categoria_producto = categoria_de_catalogo(
+            product_type,
+            row=product_row,
+            categoria_declarada=first_non_empty(
+                maestro.get("Categoria"), maestro.get("SubCategoria")),
+            # Sin tipo NO se inventa una clase: ver `categoria_de_catalogo`.
+            por_defecto="",
+        )
+        subcategoria_producto = subcategoria_de_catalogo(product_type)
         handle_producto = handle_existente or build_product_handle(title, key, color) or key.lower()
         # Los siblings SIEMPRE se cargan. Sin ellos la ficha no ofrece los
         # otros colores del modelo, y hasta ahora esta rama -- la de carga por
@@ -7293,7 +7677,10 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                     "__CENTRY_RAW_SIZE": clean_value(variant.get("TALNUM_MA")),
                     "Option1 Name": "Talla",
                     "Option1 Value": size,
-                    "Option2 Name": "Color",
+                    # La opcion 2 SOLO existe si hay color. Un `Option2 Name`
+                    # con el valor vacio es una opcion sin valor: Shopify la
+                    # rechaza o crea una variante con la opcion en blanco.
+                    "Option2 Name": "Color" if clean_value(color) else "",
                     "Option2 Value": color,
                     "Variant Barcode": clean_value(variant.get("CodBarras")),
                     "Variant Price": (
@@ -7330,8 +7717,19 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                     "Coleccion": clean_value(maestro.get("Coleccion")),
                     "Ocasion": clean_value(maestro.get("Ocasion")),
                     "Deporte": clean_value(maestro.get("Deporte")),
-                    "Categoria": clean_value(maestro.get("Categoria")),
-                    "SubCategoria": clean_value(maestro.get("SubCategoria")),
+                    # La CATEGORIA es la clase -- Accesorios, Calzado o
+                    # Vestuario --, no lo que traiga el maestro en su columna
+                    # `Categoria`, que trae cosas como `CORE`, `TRAIL` o
+                    # `VN_AC_C MENS`. Y la SUBCATEGORIA es el tipo de prenda.
+                    "Categoria": categoria_producto,
+                    "SubCategoria": subcategoria_producto,
+                    # Los dos van tambien como METACAMPO, que es donde los lee
+                    # la tienda. La carga completa ya los escribia (via
+                    # `engines/catalog_map`); esta rama no, asi que un producto
+                    # cargado por codigos llegaba a Shopify sin categoria.
+                    "Metafield: custom.categoria [single_line_text_field]": categoria_producto,
+                    "Metafield: custom.sub_categoria [single_line_text_field]": subcategoria_producto,
+                    "Metafield: custom.tipo [single_line_text_field]": subcategoria_producto,
                     "Metafield: custom.nombre_corto [single_line_text_field]": clean_value(
                         product_row.get("Metafield: custom.nombre_corto [single_line_text_field]")
                     ) if product_row is not None else "",
@@ -23154,18 +23552,35 @@ def recordar_matrixify_de_carga(codigo, matrixify_df, site_key, excel_path="", f
 
 
 
-def lanzar_carga_remota_suelta(brand_config):
-    """Manda a GitHub Actions el Matrixify recien analizado, sin solicitud.
+def lanzar_carga_remota_suelta(brand_config, *, matrixify_bytes=None,
+                               claves_producto=None, filename="", site_key="",
+                               modulo="Carga completa"):
+    """Manda a GitHub Actions un Matrixify, con o sin solicitud.
 
     Devuelve `(ok, mensaje)`. Es el mismo recorrido que la carga desde una
     solicitud -- mismo registro de job, mismo workflow, mismo worker, mismo
     avance por bloques y misma reanudacion --; lo unico que cambia es de donde
     sale el archivo.
+
+    Sin `matrixify_bytes` se toma el Matrixify apuntado en la sesion, que es el
+    camino de Carga completa. **Carga Supermall pasa el suyo**: ahi el archivo
+    no pasa por `recordar_matrixify_de_carga` -- se arma entero en la pantalla
+    --, y sin esta puerta esa carga no tenia forma de ejecutarse fuera de la
+    sesion. Escribir un segundo lanzador seria tener dos motores de carga que
+    se separan sin que nadie lo note.
     """
-    guardado = st.session_state.get(CLAVE_MATRIXIFY_SESION)
-    if not isinstance(guardado, dict):
-        return False, "No hay un Matrixify analizado. Pulsa «Analizar input» primero."
-    payload = _leer_excel_de_disco(guardado.get("excel_path"))
+    if matrixify_bytes is not None:
+        payload = matrixify_bytes
+        guardado = {
+            "site_key": site_key or brand_config.get("site_key"),
+            "filename": filename,
+            "product_keys": list(claves_producto or []),
+        }
+    else:
+        guardado = st.session_state.get(CLAVE_MATRIXIFY_SESION)
+        if not isinstance(guardado, dict):
+            return False, "No hay un Matrixify analizado. Pulsa «Analizar input» primero."
+        payload = _leer_excel_de_disco(guardado.get("excel_path"))
     if not payload:
         return False, (
             "El Matrixify ya no está en disco (la app se reinició). "
@@ -23193,7 +23608,7 @@ def lanzar_carga_remota_suelta(brand_config):
         "Carga remota sin solicitud",
         f"Job {clean_value(resumen.get('id'))} lanzado para "
         f"{clean_value(brand_config.get('site_label'))}.",
-        module="Carga completa",
+        module=modulo,
     )
     return True, (
         f"Carga lanzada en GitHub Actions (job `{clean_value(resumen.get('id'))}`). "
@@ -23242,6 +23657,75 @@ def render_boton_carga_remota(brand_config):
     ultimo = st.session_state.get("carga_remota_ultimo_job")
     if isinstance(ultimo, dict) and clean_value(ultimo.get("id")):
         st.caption(f"Último job lanzado: `{clean_value(ultimo.get('id'))}`")
+
+
+def render_estado_carga_remota(prefijo="", titulo="Estado de la carga en el servidor"):
+    """Pendiente → Procesando → Completado / Error, leido del registro REAL.
+
+    No es una barra de la pantalla: el avance lo publica el runner en el
+    repositorio de datos despues de CADA bloque, asi que esto se puede cerrar y
+    volver a abrir mañana y sigue diciendo la verdad. Sin este panel, lo unico
+    que se veia del job era su identificador.
+    """
+    ultimo = st.session_state.get("carga_remota_ultimo_job")
+    job_id = clean_value(ultimo.get("id")) if isinstance(ultimo, dict) else ""
+    if not job_id:
+        return
+    st.markdown(f"#### {titulo}")
+    almacen = get_job_store()
+    job = None
+    if almacen is not None:
+        try:
+            job, _sha = almacen.leer(job_id)
+        except Exception as exc:  # el panel nunca puede tumbar la pantalla
+            st.warning(f"No se pudo leer el avance del job `{job_id}`: {type(exc).__name__}.")
+    if not isinstance(job, dict):
+        # Recien lanzado, el registro puede tardar unos segundos en aparecer.
+        st.info(f"Job `{job_id}` lanzado. Todavía no hay avance publicado.")
+        st.button("Actualizar estado", key=f"{prefijo}job_refrescar_vacio")
+        return
+    resumen = job_resumen(job)
+    etapa = (
+        "Error" if resumen["estado"] in ("failed", "not_dispatched")
+        else "Completado" if resumen["terminado"]
+        else "Procesando" if resumen["procesados"] else "Pendiente"
+    )
+    dibujar = st.error if etapa == "Error" else st.success if etapa == "Completado" else st.info
+    dibujar(
+        f"**{etapa}** — {resumen['etiqueta']} · "
+        f"{resumen['procesados']:,} de {resumen['total']:,} productos"
+        + (f" · bloque {resumen['bloque']:,} de {resumen['bloques']:,}" if resumen["bloques"] else "")
+    )
+    if resumen["total"]:
+        st.progress(min(max(resumen["porcentaje"], 0.0), 1.0))
+    render_html(
+        '<div class="ticket-result-grid">'
+        + "".join(
+            f"<div><small>{titulo_kpi}</small><strong>{format_kpi_number(valor)}</strong></div>"
+            for titulo_kpi, valor in (
+                ("Cargados", resumen["ok"]),
+                ("Parciales", resumen["parciales"]),
+                ("Con error", resumen["errores"]),
+                ("Pendientes", resumen["pendientes"]),
+            )
+        )
+        + "</div>"
+    )
+    if clean_value(resumen.get("error")):
+        st.error(clean_value(resumen["error"]))
+    if clean_value(resumen.get("mensaje")):
+        st.caption(clean_value(resumen["mensaje"]))
+    columna_boton, columna_enlace = st.columns([1, 2], gap="medium")
+    with columna_boton:
+        st.button("Actualizar estado", key=f"{prefijo}job_refrescar")
+    with columna_enlace:
+        if clean_value(resumen.get("run_url")):
+            st.markdown(f"[Ver la ejecución en GitHub Actions]({clean_value(resumen['run_url'])})")
+    st.caption(
+        f"Job `{job_id}` · actualizado {clean_value(resumen.get('actualizado')) or 'todavía no'}. "
+        "El avance se guarda por bloques: si el runner se queda sin tiempo, el siguiente "
+        "intento retoma donde quedó en vez de repetir el catálogo."
+    )
 
 
 def _adjuntar_matrixify_antes_de_cargar(service, actor, codigo):
@@ -26011,12 +26495,19 @@ def render_carga_supermall():
             .map(lambda v: clean_value(v).upper()).replace("", pd.NA).nunique()
         ) if "Metafield: custom.codigo_modelo_color [id]" in matrixify_df.columns else 0
         filas_sial = len(sial_df)
+        # La validacion, ANTES de recortar columnas y antes de que el archivo
+        # salga de aqui: duplicados de Modelo+Color, campos obligatorios
+        # vacios, opciones sin valor y categorias fuera de las tres.
+        with st.spinner("Validando el archivo antes de armarlo..."):
+            validacion_df = validar_matrixify(matrixify_df)
+        bloqueos_validacion, avisos_validacion = resumen_de_validacion(validacion_df)
         with st.spinner("Armando el Excel de la carga..."):
             excel = dataframe_to_excel_bytes({
                 "Products": matrixify_df,
                 "Carga Sial": sial_df,
                 "Resumen por marca": resumen_marcas,
                 "Consolidacion": tabla,
+                "Validacion": validacion_df,
                 "Revision": revision_df,
             })
         # En cuanto el Excel esta armado, los tres frames grandes ya no los lee
@@ -26032,6 +26523,12 @@ def render_carga_supermall():
             "filas": filas_generadas,
             "modelos": modelos_generados,
             "sial": filas_sial,
+            "validacion": validacion_df,
+            "bloqueos": bloqueos_validacion,
+            "avisos": avisos_validacion,
+            # Las claves del job: es lo que el runner usa para saber cuantos
+            # productos son y cuales quedan pendientes al reanudar.
+            "codigos": list(por_cargar),
             "fuente": arti_source,
         }
         log_user_activity(
@@ -26054,6 +26551,31 @@ def render_carga_supermall():
         if resumen_marcas is not None and not resumen_marcas.empty:
             st.markdown("##### Qué lleva el archivo, marca por marca")
             st.dataframe(resumen_marcas, width="stretch", hide_index=True)
+        # La validacion del archivo, ANTES de bajarlo. Hasta ahora habia que
+        # abrirlo y revisarlo a ojo.
+        validacion_df = resultado.get("validacion")
+        bloqueos = safe_int_value(resultado.get("bloqueos") or 0)
+        avisos = safe_int_value(resultado.get("avisos") or 0)
+        st.markdown("##### Validación del archivo")
+        if bloqueos:
+            st.error(
+                f"**{bloqueos:,} problemas que bloquean la carga** y {avisos:,} avisos. "
+                "Están en la hoja **Validacion** del Excel, con el código y el motivo de "
+                "cada uno. Súbelo solo cuando estén resueltos."
+            )
+        elif avisos:
+            st.warning(
+                f"Sin bloqueos, con **{avisos:,} avisos**. La carga se puede subir; los "
+                "avisos están en la hoja **Validacion**."
+            )
+        else:
+            st.success(
+                "Sin duplicados de Modelo+Color, sin campos obligatorios vacíos y sin "
+                "categorías fuera de las tres permitidas."
+            )
+        if validacion_df is not None and not validacion_df.empty:
+            with st.expander(f"Ver las {len(validacion_df):,} observaciones"):
+                st.dataframe(validacion_df, width="stretch", hide_index=True)
         st.info(
             "**Todavía no se ha escrito nada en Shopify.** Este archivo es la vista previa "
             "completa de la carga: descárgalo, revísalo y solo entonces súbelo."
@@ -26066,12 +26588,52 @@ def render_carga_supermall():
             key="supermall_descargar",
             on_click=log_descarga, args=(SUPERMALL_LABEL, "render_carga_supermall"),
         )
+        # La carga en el SERVIDOR, para que no dependa de esta pestaña. Hasta
+        # ahora esta pantalla solo sabia entregar el Excel: quien cargaba
+        # Supermall tenia que subirlo a mano o pasar por Carga completa.
+        st.markdown("---")
+        st.markdown("#### Cargar a Shopify desde el servidor")
+        estado_remoto = estado_carga_remota()
+        if not estado_remoto["sobrevive"]:
+            st.warning(
+                "**La carga remota no está configurada**, así que desde aquí solo se puede "
+                "descargar el archivo y subirlo a mano. Abajo está exactamente qué falta."
+            )
+            render_aviso_carga_remota()
+        else:
+            st.caption(
+                f"Se envía a un runner de GitHub Actions: **{resultado['modelos']:,} "
+                "productos**. Puedes cerrar la pestaña, el navegador o apagar la laptop; el "
+                "avance se guarda por bloques en el repositorio de datos y se reanuda donde "
+                "quedó."
+            )
+            if bloqueos:
+                st.error(
+                    f"No se puede cargar con **{bloqueos:,} problemas que bloquean**. "
+                    "Resuélvelos y vuelve a generar."
+                )
+            elif st.button(
+                "Cargar a Shopify en el servidor",
+                type="primary",
+                key="supermall_carga_remota",
+            ):
+                with st.spinner("Subiendo el archivo y disparando el runner..."):
+                    ok, mensaje = lanzar_carga_remota_suelta(
+                        brand_config,
+                        matrixify_bytes=resultado["excel"].getvalue(),
+                        claves_producto=resultado.get("codigos") or [],
+                        filename=f"carga_supermall_{datetime.now().strftime('%d%m%Y')}.xlsx",
+                        modulo=SUPERMALL_LABEL,
+                    )
+                (st.success if ok else st.error)(mensaje)
+            render_estado_carga_remota(prefijo="supermall_")
         st.caption(
-            "El Excel lleva cinco hojas: **Products** (el Matrixify que se sube a Shopify), "
-            "**Carga Sial** en el formato de Supermall, **Resumen por marca** (cuántos "
-            "productos lleva cada una), **Consolidacion** (de qué web salió cada dato) y "
-            "**Revision** (todo lo que hubo que avisar, incluidas las tallas de calzado que se "
-            "publican sin convertir)."
+            "El Excel lleva seis hojas: **Products** (el Matrixify que se sube a Shopify, "
+            "solo con columnas que Matrixify entiende), **Carga Sial** en el formato de "
+            "Supermall, **Resumen por marca** (cuántos productos lleva cada una), "
+            "**Consolidacion** (de qué web salió cada dato), **Validacion** (duplicados, "
+            "campos vacíos y categorías fuera de rango) y **Revision** (todo lo que hubo que "
+            "avisar, incluidas las tallas de calzado que se publican sin convertir)."
         )
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -28153,6 +28715,7 @@ api_version = "{DEFAULT_API_VERSION}"
                 # protege sola y no dibuja nada si la carga viene de una
                 # solicitud -- ese camino es la barra de acciones.
                 render_boton_carga_remota(brand_config)
+                render_estado_carga_remota(prefijo="completa_")
 
                 # Cerrar la solicitud va AQUI, no dentro del `if confirm_complete`
                 # de arriba. Estaba anidado tres niveles: hacia falta estar en

@@ -218,7 +218,10 @@ class TestElColorNoSeTiraPorElCamino(unittest.TestCase):
             {"label": "Columbia", "site_key": "rockford",
              "allowed_arti_brands": ["COLUMBIA"]},
             destino_matrixify_df=vacio)
-        self.assertEqual(app.clean_value(salida["Option2 Value"].iloc[0]), "AZUL MARINO")
+        # En Nombre Propio desde septiembre de 2026: los campos descriptivos
+        # se publican asi, no en mayuscula sostenida como los guarda el
+        # maestro. Lo que importa aqui sigue siendo que el color LLEGA.
+        self.assertEqual(app.clean_value(salida["Option2 Value"].iloc[0]), "Azul Marino")
         self.assertIn("azul-marino", salida["Handle"].iloc[0])
 
 

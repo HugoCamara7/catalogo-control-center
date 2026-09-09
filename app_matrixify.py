@@ -188,6 +188,8 @@ from generate_columbia_matrixify import (
     is_zero_size,
     read_arti_source,
     sial_tail_row,
+    build_product_handle,
+    tipo_de_prenda_para_sitio,
 )
 try:
     from catalog_rules import (
@@ -6870,7 +6872,13 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
     **actualiza** (los de Vans.pe no valen en Supermall.pe), y los siblings que
     la tienda destino ya tiene publicados.
     """
-    codes = [clean_value(code).upper() for code in codes if clean_value(code)]
+    # Sin `dict.fromkeys` un codigo repetido en la lista se procesa dos veces.
+    # Dentro de una llamada el `groupby` lo colapsa, pero la carga va POR
+    # BLOQUES: el mismo codigo en dos bloques distintos deja el producto dos
+    # veces en el Matrixify concatenado, y Modelo+Color es la clave del
+    # producto. Se conserva el ORDEN de la primera aparicion.
+    codes = list(dict.fromkeys(
+        clean_value(code).upper() for code in codes if clean_value(code)))
     if not codes:
         return pd.DataFrame(columns=MATRIXIFY_COLUMNS), pd.DataFrame(columns=["Mod-Col", "Problema"])
 
@@ -6888,16 +6896,12 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
     # Los SIBLINGS del destino: los colores del mismo modelo que ya viven en
     # esa tienda. Se calculan con la MISMA funcion que la carga completa
     # (`unir_siblings`), no con una regla nueva.
+    # Los handles de los hermanos se recogen DENTRO del bucle, segun se van
+    # armando las filas, y los siblings se rellenan al final. Aqui se calculaban
+    # otra vez con la regla vieja (`code.lower()`), asi que el producto se
+    # listaba a si mismo como hermano con un handle que no existe en la tienda:
+    # el handle estaba escrito en DOS sitios y solo uno se arreglo.
     handles_de_la_carga = {}
-    for code in codes:
-        modelo = codigo_de_modelo(code)
-        if modelo:
-            fila_destino = destino_lookup.get(code)
-            handle = (
-                clean_value(fila_destino.get("Handle")) if fila_destino is not None else ""
-            ) or code.lower()
-            handles_de_la_carga.setdefault(modelo, []).append(handle)
-    siblings_por_modelo = unir_siblings(handles_de_la_carga, siblings_publicados)
 
     arti = contexto["arti"]
     allowed = {clean_value(value).upper() for value in brand_config.get("allowed_arti_brands", [])}
@@ -7018,13 +7022,21 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             product_row.get("Metafield: custom.genero [single_line_text_field]") if product_row is not None else "",
             variants.iloc[0].get("Genero"),
         )
+        # El tipo se traduce al vocabulario del sitio DESTINO, con la misma
+        # regla que la carga completa. Antes se copiaba tal cual el del sitio
+        # de ORIGEN: una carga de Supermall se llevaba los nombres de
+        # Columbia.pe, y Rockford -- que es multimarca -- heredaba la
+        # clasificacion de la marca de la que viniera el producto en vez de la
+        # suya. `tipo_de_prenda_para_sitio` nunca vacia el dato: si el sitio no
+        # vende esa prenda cae al canonico, y si no se reconoce lo deja igual.
+        product_type = tipo_de_prenda_para_sitio(product_type, brand_config)
         if not clean_value(product_type):
             # Ultimo intento: la subcategoria del maestro, y SOLO si el
             # diccionario de tipos la reconoce. No se inventa un tipo a partir
             # de un texto libre; si no lo reconoce, el producto sale avisado.
             candidata = clean_value(variants.iloc[0].get("SubCategoria"))
             if candidata and centry_garment_class(candidata):
-                product_type = candidata
+                product_type = tipo_de_prenda_para_sitio(candidata, brand_config)
                 issues.append({
                     "Mod-Col": key,
                     "Problema": f"Tipo de prenda tomado de la subcategoria del maestro: {candidata}",
@@ -7059,13 +7071,30 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             issues.append({"Mod-Col": key, "Problema": "No existe en Shopify; se completo Centry con BigQuery/ARTI y fotos S3"})
 
         fila_destino = destino_lookup.get(key)
+        # El HANDLE, con la MISMA funcion que la carga completa
+        # (`build_product_handle`). Antes, un producto que no estaba en la
+        # tienda destino salia con `key.lower()` -- o sea el codigo pelado,
+        # `10001330-n11` -- mientras la carga completa del mismo producto
+        # armaba `cooler-pfg-welded-harbody-10001330-n11-negro`. Medido sobre
+        # una carga real: 2.448 de 2.448 filas salian con el handle a medias, y
+        # el handle es la URL del producto en la tienda.
+        #
+        # El que YA existe en el destino conserva el suyo: cambiarselo romperia
+        # su URL y Shopify lo trataria como un producto nuevo.
+        handle_existente = clean_value(fila_destino.get("Handle")) if fila_destino is not None else ""
+        handle_producto = handle_existente or build_product_handle(title, key, color) or key.lower()
         # Los siblings SIEMPRE se cargan. Sin ellos la ficha no ofrece los
         # otros colores del modelo, y hasta ahora esta rama -- la de carga por
         # codigos -- no los escribia: solo los escribia la carga completa.
-        handle_propio = (
-            clean_value(fila_destino.get("Handle")) if fila_destino is not None else ""
-        ) or key.lower()
-        hermanos = siblings_por_modelo.get(codigo_de_modelo(key), "") or handle_propio
+        # El MISMO handle que va en la fila: si aqui saliera otro, el producto
+        # se listaria a si mismo como hermano con un nombre que no existe.
+        handle_propio = handle_producto
+        modelo_del_producto = codigo_de_modelo(key)
+        if modelo_del_producto:
+            handles_de_la_carga.setdefault(modelo_del_producto, []).append(handle_producto)
+        # Se rellena despues del bucle, cuando ya se conocen los handles de
+        # TODOS los colores del modelo que entran en esta carga.
+        hermanos = ""
         # El ESTADO con el que nace el producto lo decide el sitio. Supermall
         # entra activo y publicado; los demas conservan lo que ya tenian.
         estado_destino, publicado_destino = estado_al_cargar(brand_config, fila_destino)
@@ -7099,9 +7128,7 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                     # contra otro producto. Cuando destino y origen son el mismo
                     # -- Centry, Carga Sial -- `fila_destino` ES `product_row`.
                     "ID": clean_value(fila_destino.get("ID")) if fila_destino is not None else "",
-                    "Handle": (
-                        clean_value(fila_destino.get("Handle")) if fila_destino is not None else ""
-                    ) or key.lower(),
+                    "Handle": handle_producto,
                     "Title": title,
                     "Body HTML": body_html,
                     "Vendor": vendor,
@@ -7159,6 +7186,34 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
                     ) if product_row is not None else "",
                 }
             )
+
+    # Un codigo que no dejo ninguna fila -- porque no esta en el maestro -- se
+    # sigue contando como hermano, con el handle que tenga en el destino, que
+    # es lo que se hacia antes. Cambiar QUIENES son hermanos es otra decision;
+    # aqui solo se arregla CON QUE handle se les nombra.
+    con_filas = {
+        clean_value(fila.get("Metafield: custom.codigo_modelo_color [id]")).upper()
+        for fila in rows
+    }
+    for code in codes:
+        modelo = codigo_de_modelo(code)
+        if not modelo or code in con_filas:
+            continue
+        fila_destino = destino_lookup.get(code)
+        handles_de_la_carga.setdefault(modelo, []).append(
+            (clean_value(fila_destino.get("Handle")) if fila_destino is not None else "")
+            or code.lower()
+        )
+    siblings_por_modelo = unir_siblings(handles_de_la_carga, siblings_publicados)
+    for fila in rows:
+        hermanos = siblings_por_modelo.get(
+            codigo_de_modelo(clean_value(fila.get(
+                "Metafield: custom.codigo_modelo_color [id]")).upper()),
+            "",
+        ) or clean_value(fila.get("Handle"))
+        for columna in ("Metafield: theme.siblings [single_line_text_field]",
+                        "Metafield: custom.siblings [single_line_text_field]"):
+            fila[columna] = hermanos
 
     issues.extend(avisos_de_talla_a_issues(avisos_de_talla))
 
@@ -9052,6 +9107,13 @@ def shopify_products_to_matrixify_df(shopify_products):
         "Metafield: custom.materialidad [single_line_text_field]",
         "Metafield: custom.tecnologia [list.single_line_text_field]",
         "Metafield: custom.logo [list.metaobject_reference]",
+        # `custom.color` va en esta lista o NO EXISTE como columna: el frame se
+        # construye con `columns=default_columns`, asi que el valor que el
+        # `row.update` de abajo le asigna se tiraba en silencio. Y lo lee
+        # `shopify_api.fetch_products`, esta en la plantilla de escritura y
+        # `CENTRY_COLUMNAS_COLOR` lo busca como fuente del color: el dato se
+        # leia de la tienda, se asignaba, y se perdia por el camino.
+        "Metafield: custom.color [single_line_text_field]",
         "Metafield: custom.color_forus [single_line_text_field]",
         "Metafield: custom.grupo_color [single_line_text_field]",
         "Metafield: custom.genero [single_line_text_field]",
@@ -25268,7 +25330,13 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
     # haya pedido. Es la misma regla que ya sigue el espejo.
     situaciones = (carga_supermall.FALTA_CARGAR,)
     productos_origen = carga_supermall.productos_para_matrixify(fichas, situaciones)
-    codigos = carga_supermall.codigos_cargables(fichas, situaciones)
+    # Unicos ANTES de partir en bloques. Dentro de un bloque el `groupby` por
+    # Modelo-Color colapsa el repetido, pero entre bloques distintos no hay
+    # quien lo haga: el mismo codigo en dos bloques deja el producto DOS VECES
+    # en el Matrixify concatenado, y Modelo+Color es LA clave del producto.
+    # Se conserva el orden de la primera aparicion.
+    codigos = list(dict.fromkeys(
+        carga_supermall.codigos_cargables(fichas, situaciones)))
     destino_df = shopify_products_to_matrixify_df(catalogos.get(carga_supermall.DESTINO) or [])
     origen_df = shopify_products_to_matrixify_df(productos_origen)
     arti_df, arti_source = session_arti_for_app(brand_config)

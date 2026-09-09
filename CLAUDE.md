@@ -2834,6 +2834,98 @@ pesado al worker --, no un ajuste mas.
 
 ---
 
+## 5 sexvicies. El Handle salia a medias, y el tipo no se traducia (septiembre 2026)
+
+Reportado como *"el Handle y otros campos salen incompletos/incorrectos"*. Eran
+**cuatro** fallos distintos, todos en la carga POR CODIGOS -- la que sirve a
+Centry, a la Carga Sial parcial y a **Carga Supermall** --, y todos reproducidos
+contra el maestro real antes de tocar nada.
+
+### 1. El Handle era el codigo pelado
+
+Un producto que no esta en la tienda destino recibia `key.lower()`:
+`10001330-n11`. La carga completa del MISMO producto arma
+`cooler-pfg-welded-harbody-10001330-n11-negro` con `build_product_handle`.
+
+Medido sobre una carga real: **2.448 de 2.448 filas** salian asi. Y el handle
+**es la URL del producto** en la tienda.
+
+Ahora las dos rutas llaman a `build_product_handle`. El que YA existe en el
+destino conserva el suyo: cambiarselo romperia su URL y Shopify lo trataria
+como un producto nuevo.
+
+### 2. El handle estaba escrito en DOS sitios
+
+Lo destapo una prueba nueva despues de arreglar el primero: los **siblings** se
+armaban en un bloque aparte, ANTES del bucle, con la regla vieja. O sea que el
+producto se listaba a si mismo como hermano con un handle **que no existe**.
+
+Ahora el handle se calcula UNA vez, en el bucle, y los siblings se rellenan al
+terminar, cuando ya se conocen los handles de todos los colores del modelo. Un
+codigo que no dejo ninguna fila se sigue contando como hermano, igual que antes:
+lo que cambia es CON QUE handle se le nombra, no QUIENES son hermanos.
+
+### 3. El Type se copiaba del ORIGEN sin traducir
+
+La carga por codigos nunca llamaba a `resolve_product_type`. Copiaba el `Type`
+del catalogo de origen tal cual, asi que una carga de Supermall se llevaba los
+nombres de Columbia.pe y **Rockford -- que es multimarca -- heredaba la
+clasificacion de la marca de la que viniera el producto** en vez de la suya.
+
+La regla vive ahora en `tipo_de_prenda_para_sitio`, que usan las DOS rutas.
+Escrita dos veces, el mismo producto se clasificaria distinto segun por donde
+pasara: es la trampa de las dos `normalize_size`.
+
+**Traducir no puede vaciar el dato.** La cascada es: nombre del sitio ->
+canonico -> el valor tal cual. El ultimo escalon importa porque
+`tipo_para_sitio` devuelve `""` cuando el sitio no vende esa prenda, y
+**Rockford no vende ocho de los sesenta tipos**. Medido: `Chaquetas` -> `Casacas`,
+`Poleras` -> `Polos`, y un tipo que el diccionario no conoce sale igual que entro.
+
+### 4. `custom.color` se leia de la tienda y se TIRABA
+
+`shopify_api.fetch_products` lo lee, esta en la plantilla de escritura, y
+`CENTRY_COLUMNAS_COLOR` lo busca como fuente del color. Pero
+`shopify_products_to_matrixify_df` construye el frame con
+`columns=default_columns` y esa columna **no estaba en la lista**: el valor que
+el `row.update` le asignaba se descartaba en silencio.
+
+Consecuencia: el color no llegaba ni a `Option2 Value` ni al handle. Con la
+columna en su sitio, `AZUL MARINO` llega hasta
+`casaca-hombre-bm1-a-azul-marino`.
+
+Se recorrieron con AST todas las claves que ese `row.update` asigna contra las
+columnas que el frame conserva: **era la unica** que se perdia.
+
+### Y Modelo+Color no se puede duplicar
+
+Dentro de una llamada el `groupby` colapsa un codigo repetido, pero la carga va
+**por bloques de 200**: el mismo codigo en dos bloques distintos deja el
+producto DOS VECES en el Matrixify concatenado. Se deduplica en los dos sitios
+-- al entrar en `build_centry_matrixify_from_master` y, sobre todo, **antes** de
+partir en bloques en `supermall_generar` --, conservando el orden de la primera
+aparicion.
+
+Verificado sobre 1.200 codigos del maestro real (5.529 filas): **0 pares
+(Mod-Col, SKU) repetidos, 0 Mod-Col con mas de un handle, 0 handles compartidos
+por dos Mod-Col**.
+
+### Una prueba que se quedo obsoleta a proposito
+
+`test_shopify_tiene_prioridad` distinguia las dos fuentes por sus valores:
+Shopify `"Chaquetas"` y BigQuery `"Casacas"`. Desde que el tipo se traduce, los
+dos salen `"Casacas"` y **la prueba ya no distinguia nada**. Se reescribio con
+dos tipos que no son sinonimos, para que siga comprobando lo suyo, y se le
+agregaron dos casos: que el sinonimo se normaliza y que un tipo desconocido no
+se vacia.
+
+`scripts/test_handle_tipo_y_duplicados.py` (18 pruebas) fija todo esto; **10
+fallan con el codigo anterior**. Las 8 que pasan en las dos versiones son las
+que exigen que **nada cambie**: SKU y tallas intactos, sin duplicados, y el
+handle de un producto que ya existe.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -3063,6 +3155,7 @@ python scripts/test_ticket_system.py                   # 28
 python scripts/test_tipos_vestido_y_bloqueos.py       # 24
 python scripts/test_optimizacion_memoria_excel.py       # 38
 python scripts/test_carga_supermall_rendimiento.py     # 16
+python scripts/test_handle_tipo_y_duplicados.py         # 18
 ```
 
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes

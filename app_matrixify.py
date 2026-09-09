@@ -1342,7 +1342,7 @@ def render_catalogo_leido(site_key):
             "esperar la lectura completa."
         )
     with columna_boton:
-        if st.button("Volver a leer", key=f"releer_catalogo_{site_key}", use_container_width=True):
+        if st.button("Volver a leer", key=f"releer_catalogo_{site_key}", width="stretch"):
             clear_shopify_products_cache(site_key)
             st.session_state.pop("complete_data_context", None)
             st.rerun()
@@ -2040,7 +2040,7 @@ def render_panel_memoria():
     filas = inventario_de_memoria()
     if filas:
         st.caption(f"Lo que ocupa la sesión (desde {MEMORIA_OBJETO_MINIMO_MB} MB):")
-        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(filas), width="stretch", hide_index=True)
     else:
         st.caption(f"Nada en la sesión pesa más de {MEMORIA_OBJETO_MINIMO_MB} MB.")
     st.caption(
@@ -3362,7 +3362,7 @@ def _render_resumen_observaciones(report_df):
     """
     st.markdown(ESTILOS_OBSERVACIONES, unsafe_allow_html=True)
     if "Campo" not in report_df.columns:
-        st.dataframe(report_df, use_container_width=True, hide_index=True)
+        st.dataframe(report_df, width="stretch", hide_index=True)
         return
     bloques = []
     # Primero lo que impide enviar. Con el orden del archivo, la unica tarjeta
@@ -3748,7 +3748,7 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
                     for site in sites
                 ]
             )
-            st.dataframe(site_rules, use_container_width=True, hide_index=True)
+            st.dataframe(site_rules, width="stretch", hide_index=True)
 
         workbook_bytes = build_brand_commercial_input_workbook_bytes(selected_brand)
         file_date = datetime.now().strftime("%Y%m%d")
@@ -3858,7 +3858,7 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
                     f"Para **{selected_brand}** se esperan:"
                 )
                 st.markdown("\n".join(f"- {_c}" for _c in _columnas_esperadas))
-            st.dataframe(report_df, use_container_width=True, hide_index=True)
+            st.dataframe(report_df, width="stretch", hide_index=True)
         elif _resumen_vacio and st.session_state.get("brand_input_validated_hash"):
             st.warning(
                 "El archivo se leyó pero no quedó ninguna fila utilizable. "
@@ -3871,12 +3871,12 @@ def render_commercial_input_center(download_only=False, forced_brands=None, acto
                 cols[idx % len(cols)].metric(clean_value(row.get("Indicador")), int(row.get("Valor", 0)))
             if isinstance(preview_df, pd.DataFrame) and not preview_df.empty:
                 st.subheader("Vista previa")
-                st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                st.dataframe(preview_df, width="stretch", hide_index=True)
             if isinstance(report_df, pd.DataFrame) and not report_df.empty:
                 st.subheader("Qué hay que revisar")
                 _render_resumen_observaciones(report_df)
                 with st.expander("Ver el detalle fila por fila"):
-                    st.dataframe(report_df, use_container_width=True, hide_index=True)
+                    st.dataframe(report_df, width="stretch", hide_index=True)
             st.download_button(
                 "Descargar reporte de validacion",
                 data=(validation_report_bytes := dataframe_to_excel_bytes(
@@ -6616,7 +6616,7 @@ def render_centry_preview_desde_resumen(resumen, issues_df=None, title="Vista pr
         )
         st.dataframe(
             bloqueantes_df[["Mod-Col", "Campo", "Problema", "Variantes"]],
-            use_container_width=True, height=300, hide_index=True,
+            width="stretch", height=300, hide_index=True,
         )
     elif validacion_df is not None:
         st.success("Sin hallazgos bloqueantes: el archivo se puede enviar.")
@@ -6632,19 +6632,19 @@ def render_centry_preview_desde_resumen(resumen, issues_df=None, title="Vista pr
                 .reset_index()
                 .sort_values("Modelo-colores", ascending=False)
             )
-            st.dataframe(por_campo, use_container_width=True, hide_index=True)
+            st.dataframe(por_campo, width="stretch", hide_index=True)
             st.caption("Detalle completo:")
             st.dataframe(
                 advertencias_df[["Mod-Col", "Campo", "Problema"]],
-                use_container_width=True, height=260, hide_index=True,
+                width="stretch", height=260, hide_index=True,
             )
 
     with st.expander(f"Vista previa del archivo ({format_kpi_number(total_rows)} filas)", expanded=False):
-        st.dataframe(df, use_container_width=True, height=360)
+        st.dataframe(df, width="stretch", height=360)
 
     if issues_df is not None and not issues_df.empty:
         with st.expander(f"Cómo se generó ({len(issues_df):,} notas del proceso)", expanded=False):
-            st.dataframe(issues_df, use_container_width=True, hide_index=True)
+            st.dataframe(issues_df, width="stretch", hide_index=True)
 
 
 def model_codes_from_text(value):
@@ -8352,7 +8352,7 @@ def render_partial_diagnostic_panel(diagnostic_df, operation=""):
                 dtype=object,
             )
         filtered = filtered[searchable.str.contains(re.escape(needle), na=False)]
-    st.dataframe(filtered.head(500), use_container_width=True, height=360)
+    st.dataframe(filtered.head(500), width="stretch", height=360)
     return filtered
 
 
@@ -8907,7 +8907,7 @@ def make_sync_progress_callback(label="Sincronizacion"):
                 "Segundos": elapsed,
             }
         )
-        log_box.dataframe(pd.DataFrame(events[-12:]), use_container_width=True, height=220)
+        log_box.dataframe(pd.DataFrame(events[-12:]), width="stretch", height=220)
 
     return progress_callback
 
@@ -11861,7 +11861,7 @@ def render_png_maintainer_lote(update_df, brand_config, shopify_config, image_mo
         st.caption(f"Se quitaron {duplicados} filas repetidas del Excel.")
     if descartes:
         with st.expander(f"Ver los {len(descartes)} descartados y por qué", expanded=not validos):
-            st.dataframe(pd.DataFrame(descartes), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(descartes), width="stretch", hide_index=True)
     if not validos:
         st.error("No quedó ningún código válido que buscar. Revisa la columna Código Modelo Color.")
         return
@@ -11932,7 +11932,7 @@ def render_png_maintainer_lote(update_df, brand_config, shopify_config, image_mo
     totales[3].metric("Ya existentes", safe_int_value(resumen_df["Ya existentes"].sum()))
     totales[4].metric("Sin PNG", safe_int_value(resumen_df["Sin PNG"].sum()))
     totales[5].metric("Errores", safe_int_value(resumen_df["Errores"].sum()))
-    st.dataframe(resumen_df, use_container_width=True, height=380, hide_index=True)
+    st.dataframe(resumen_df, width="stretch", height=380, hide_index=True)
 
     sin_producto = [item["mod_col"] for item in resultados if item["producto"] is None]
     if sin_producto:
@@ -14318,7 +14318,7 @@ def render_persistent_sync_job_panel(
     result_df = _sync_job_result_df(job)
     if not result_df.empty:
         render_sync_result_summary(result_df, label)
-        st.dataframe(result_df.tail(100), use_container_width=True)
+        st.dataframe(result_df.tail(100), width="stretch")
     event_df = pd.DataFrame(job.get("events") or [])
     report_bytes = dataframe_to_excel_bytes(
         {
@@ -17796,7 +17796,7 @@ def inject_custom_css(config):
             /* `st.form_submit_button` no es `.stButton`: sin este selector el
                boton de Ingresar se quedaba en 140px en el login. */
             /* Mismo caso que en el login: el contenedor mide lo que el texto,
-               asi que un boton sin `use_container_width` no crece por mas
+               asi que un boton sin `width="stretch"` no crece por mas
                `width:100%` que lleve encima. */
             [data-testid="stElementContainer"]:has(> [data-testid="stFormSubmitButton"]),
             [data-testid="stElementContainer"]:has(> .stButton),
@@ -18346,7 +18346,7 @@ def render_preview_table(input_df):
         """,
     )
     if input_df is not None and not input_df.empty:
-        st.dataframe(input_df.head(20), use_container_width=True, height=330)
+        st.dataframe(input_df.head(20), width="stretch", height=330)
 
 
 def render_validations_card():
@@ -19479,7 +19479,7 @@ def _render_probador_de_tags(colecciones, vocabulario):
         pd.DataFrame(
             [{"Familia": f, "Tags": ", ".join(v)} for f, v in clasificados.items() if v]
         ),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
     sueltos = clasificados.get("sin_clasificar") or []
     if sueltos:
@@ -19586,7 +19586,7 @@ def render_diccionario_colecciones():
 
         tabla = _tabla_colecciones(colecciones)
         if not tabla.empty:
-            st.dataframe(tabla, use_container_width=True, hide_index=True)
+            st.dataframe(tabla, width="stretch", hide_index=True)
 
         st.markdown("##### Vocabulario de tags de la tienda")
         st.caption(
@@ -19598,7 +19598,7 @@ def render_diccionario_colecciones():
         if vocab_df.empty:
             st.caption("Sin vocabulario curado para esta tienda todavía.")
         else:
-            st.dataframe(vocab_df, use_container_width=True, hide_index=True)
+            st.dataframe(vocab_df, width="stretch", hide_index=True)
 
         _render_probador_de_tags(colecciones, vocabulario)
 
@@ -19639,7 +19639,7 @@ def render_diccionario_colecciones():
                     f"“{clean_value(buscar)}” no está en el diccionario. En una carga eso se "
                     "avisa en la validación previa: no se inventa un tipo."
                 )
-        st.dataframe(tipos_df, use_container_width=True, hide_index=True)
+        st.dataframe(tipos_df, width="stretch", hide_index=True)
         st.download_button(
             "Descargar diccionario de tipos de prenda",
             data=dataframe_to_excel_bytes({"Tipos de prenda": _tabla_tipos_de_prenda()}),
@@ -19903,7 +19903,7 @@ def render_espejo_supermall(datos):
         )
 
     st.markdown("#### Dónde está el hueco")
-    st.dataframe(_tabla_status(datos.get("por_marca")), use_container_width=True, hide_index=True)
+    st.dataframe(_tabla_status(datos.get("por_marca")), width="stretch", hide_index=True)
 
     codigos = datos.get("codigos") or []
     if codigos:
@@ -19929,7 +19929,7 @@ def render_espejo_supermall(datos):
     if not detalle.empty:
         st.dataframe(
             detalle.head(ESPEJO_DETALLE_FILAS),
-            use_container_width=True, height=420, hide_index=True,
+            width="stretch", height=420, hide_index=True,
         )
         if len(detalle) > ESPEJO_DETALLE_FILAS:
             st.caption(
@@ -19959,7 +19959,7 @@ def render_status_de_carga(ticket_actor):
     estado_key = "status_carga_resultado"
     izquierda, derecha = st.columns([0.78, 0.22], vertical_alignment="center")
     with derecha:
-        actualizar = st.button("Actualizar status", type="primary", use_container_width=True, key="status_carga_refresh")
+        actualizar = st.button("Actualizar status", type="primary", width="stretch", key="status_carga_refresh")
     if actualizar or st.session_state.get(estado_key) is None:
         with st.spinner("Leyendo el catálogo de cada sitio y las solicitudes..."):
             try:
@@ -20069,23 +20069,23 @@ def render_status_de_carga(ticket_actor):
             "Cargado no es lo mismo que visible: un producto puede existir en Shopify y no verlo nadie, "
             "por estar en borrador o activo sin publicar en el canal Online Store."
         )
-        st.dataframe(_tabla_status(tablas["visibilidad"]), use_container_width=True, hide_index=True)
+        st.dataframe(_tabla_status(tablas["visibilidad"]), width="stretch", hide_index=True)
         no_visibles = _tabla_status(tablas["no_visibles"])
         if not no_visibles.empty:
             st.markdown(f"#### Detalle de los {len(no_visibles):,} que no se ven")
-            st.dataframe(no_visibles.head(300), use_container_width=True, height=320, hide_index=True)
+            st.dataframe(no_visibles.head(300), width="stretch", height=320, hide_index=True)
     with pestanas[1]:
         render_espejo_supermall(tablas.get("espejo"))
     with pestanas[2]:
-        st.dataframe(_tabla_status(tablas["matriz"]), use_container_width=True, hide_index=True)
+        st.dataframe(_tabla_status(tablas["matriz"]), width="stretch", hide_index=True)
     with pestanas[3]:
-        st.dataframe(_tabla_status(tablas["clases"]), use_container_width=True, hide_index=True)
+        st.dataframe(_tabla_status(tablas["clases"]), width="stretch", hide_index=True)
     with pestanas[4]:
-        st.dataframe(_tabla_status(tablas["registro"]), use_container_width=True, height=420, hide_index=True)
+        st.dataframe(_tabla_status(tablas["registro"]), width="stretch", height=420, hide_index=True)
     with pestanas[5]:
-        st.dataframe(_tabla_status(tablas["avance"]), use_container_width=True, hide_index=True)
+        st.dataframe(_tabla_status(tablas["avance"]), width="stretch", hide_index=True)
         st.markdown("#### Dónde están paradas las solicitudes")
-        st.dataframe(_tabla_status(tablas["por_estado"]), use_container_width=True, hide_index=True)
+        st.dataframe(_tabla_status(tablas["por_estado"]), width="stretch", hide_index=True)
 
     hojas = {
         "Resumen": pd.DataFrame([{"Indicador": k, "Valor": v} for k, v in kpis.items()]),
@@ -20902,7 +20902,7 @@ def render_audit_center():
         resultado = f2[2].selectbox("Resultado", ["Todos", "ok", "error", "aviso"],
                                     key="audit_resultado")
         f2[3].markdown("&nbsp;", unsafe_allow_html=True)
-        if f2[3].button("Limpiar filtros", key="audit_limpiar", use_container_width=True):
+        if f2[3].button("Limpiar filtros", key="audit_limpiar", width="stretch"):
             for clave in ["audit_buscar", "audit_usuario", "audit_rol", "audit_modulo",
                           "audit_accion", "audit_marca", "audit_resultado",
                           "audit_desde", "audit_hasta", "audit_pagina"]:
@@ -20954,7 +20954,7 @@ def render_audit_center():
     } for e in datos["filas"]])
     st.dataframe(
         tabla,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "Fecha": st.column_config.TextColumn("Fecha y hora", width="medium"),
@@ -20971,11 +20971,11 @@ def render_audit_center():
 
     nav = st.columns([1, 1, 3, 1.4, 1.4])
     if nav[0].button("Anterior", key="audit_prev", disabled=datos["pagina"] <= 1,
-                     use_container_width=True):
+                     width="stretch"):
         st.session_state["audit_pagina"] = datos["pagina"] - 1
         st.rerun()
     if nav[1].button("Siguiente", key="audit_next", disabled=datos["pagina"] >= datos["paginas"],
-                     use_container_width=True):
+                     width="stretch"):
         st.session_state["audit_pagina"] = datos["pagina"] + 1
         st.rerun()
     nav[2].markdown(
@@ -20990,14 +20990,14 @@ def render_audit_center():
         "Excel", data=dataframe_to_excel_bytes({"Auditoria": export_df}),
         file_name="auditoria_catalog_control_center.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="audit_xlsx", use_container_width=True,
+        key="audit_xlsx", width="stretch",
         help=f"Descarga los {len(filas_export):,} registros filtrados, no solo esta pagina.",
         on_click=log_descarga, args=("Excel", "render_audit_center"),
     )
     nav[4].download_button(
         "CSV", data=export_df.to_csv(index=False).encode("utf-8-sig"),
         file_name="auditoria_catalog_control_center.csv", mime="text/csv",
-        key="audit_csv", use_container_width=True,
+        key="audit_csv", width="stretch",
         help=f"Descarga los {len(filas_export):,} registros filtrados, no solo esta pagina.",
         on_click=log_descarga, args=("CSV", "render_audit_center"),
     )
@@ -21014,7 +21014,7 @@ def render_audit_center():
     st.markdown('<p class="audit-h">Auditoria por usuario</p>', unsafe_allow_html=True)
     st.caption("Resumen de lo que hizo cada persona dentro de los filtros aplicados.")
     st.dataframe(pd.DataFrame(servicio.por_usuario(filtrados)),
-                 use_container_width=True, hide_index=True)
+                 width="stretch", hide_index=True)
 
 
 def render_sidebar_storage_status(username=None):
@@ -21556,7 +21556,7 @@ def sidebar_nav_button(label, state_key, value, button_key, extra_state=None):
             """,
             unsafe_allow_html=True,
         )
-    if st.button(label, key=button_key, use_container_width=True):
+    if st.button(label, key=button_key, width="stretch"):
         st.session_state[state_key] = value
         for extra_key, extra_value in (extra_state or {}).items():
             st.session_state[extra_key] = extra_value
@@ -22193,18 +22193,18 @@ def _render_acciones_solicitud_tras_carga():
 
     st.caption(f"Etapa actual: **{flujo_etiqueta(estado)}**. Elige como queda tras esta carga.")
     columnas = st.columns(4)
-    if columnas[0].button("Observar", key=f"tras_carga_observar_{codigo}", use_container_width=True,
+    if columnas[0].button("Observar", key=f"tras_carga_observar_{codigo}", width="stretch",
                           help="Devuelve la solicitud a la marca para que corrija."):
         st.session_state[f"tras_carga_modo_{codigo}"] = "observar"
-    if columnas[1].button("Continuar después", key=f"tras_carga_seguir_{codigo}", use_container_width=True,
+    if columnas[1].button("Continuar después", key=f"tras_carga_seguir_{codigo}", width="stretch",
                           help="Deja la solicitud en curso; la retomas cuando quieras."):
         st.session_state.pop(f"tras_carga_modo_{codigo}", None)
         st.info("La solicitud queda en curso. Puedes retomarla desde Solicitudes.")
-    if columnas[2].button("Completar carga", key=f"tras_carga_completar_{codigo}", use_container_width=True,
+    if columnas[2].button("Completar carga", key=f"tras_carga_completar_{codigo}", width="stretch",
                           help="Cierra la solicitud como finalizada, sin pasar por precios."):
         st.session_state[f"tras_carga_modo_{codigo}"] = "completar"
     if columnas[3].button("Carga SIAL terminada", key=f"tras_carga_sial_{codigo}", type="primary",
-                          use_container_width=True,
+                          width="stretch",
                           help="Guarda el archivo Carga SIAL en la solicitud y habilita el pedido de precios."):
         filas, modelos = _conteo_carga_sial()
         contenido, nombre = _archivo_carga_sial(codigo, ticket.get("brand"))
@@ -22454,7 +22454,7 @@ def _render_cadena_cierre_carga(servicio, actor, ticket):
         informe = st.session_state.get(f"precios_informe_{codigo}")
         if informe and informe.get("problemas"):
             st.dataframe(pd.DataFrame(filas_precio_informe(informe)),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
         return
 
     if estado == STATE_READY_CLOSE:
@@ -22643,7 +22643,7 @@ def render_full_load_ticket_queue(brand_config):
                     "No hay solicitudes pendientes para el sitio activo. Hay solicitudes pendientes para otra web; "
                     "cambia el Sitio activo a la web indicada para prepararlas, cargarlas y cerrarlas."
                 )
-                st.dataframe(pd.DataFrame(site_rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(site_rows), width="stretch", hide_index=True)
             else:
                 st.markdown(
                 '<div class="cola-vacia"><b>Todo al día</b>'
@@ -22685,7 +22685,7 @@ def render_full_load_ticket_queue(brand_config):
                 }
             )
         with st.expander(f"Ver las {len(queue_rows)} solicitudes en cola", expanded=False):
-            st.dataframe(pd.DataFrame(queue_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(queue_rows), width="stretch", hide_index=True)
 
         ticket_codes = [clean_value(ticket.get("code")) for ticket in tickets]
         selected_code = st.selectbox(
@@ -22738,7 +22738,7 @@ def render_full_load_ticket_queue(brand_config):
                     file_name=latest_version.get("filename") or ticket.get("filename") or "input_validado.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"full_load_download_input_{selected_code}",
-                    use_container_width=True,
+                    width="stretch",
                     on_click=log_descarga, args=("Descargar input validado", "render_full_load_ticket_queue"),
                 )
             except (TicketError, OSError) as exc:
@@ -22751,7 +22751,7 @@ def render_full_load_ticket_queue(brand_config):
                     file_name=f"validacion_{selected_code}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"full_load_download_report_{selected_code}",
-                    use_container_width=True,
+                    width="stretch",
                     on_click=log_descarga, args=("Descargar validación", "render_full_load_ticket_queue"),
                 )
             except (TicketError, OSError) as exc:
@@ -22764,7 +22764,7 @@ def render_full_load_ticket_queue(brand_config):
             if st.button(
                 "Asignarme esta carga",
                 key=f"full_load_assign_me_{selected_code}",
-                use_container_width=True,
+                width="stretch",
             ):
                 try:
                     service.assign(actor, selected_code, actor.get("user"))
@@ -23446,7 +23446,7 @@ def _render_tarjeta_ticket(service, actor, ticket, seleccionado, operativo, role
             # que lee un lector de pantalla.
             if st.button(
                 f"Abrir {codigo}", key=f"tkopen_{role_key}_{clave}",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state["selected_catalog_ticket"] = codigo
                 st.rerun()
@@ -23469,7 +23469,7 @@ def _render_tarjeta_ticket(service, actor, ticket, seleccionado, operativo, role
                 return
             if accion_col.button(
                 accion["etiqueta"], key=f"quick_{role_key}_{codigo}",
-                use_container_width=True, help=accion["ayuda"],
+                width="stretch", help=accion["ayuda"],
             ):
                 ok, mensaje = _ejecutar_accion_ticket(service, actor, codigo, accion)
                 if ok:
@@ -23566,12 +23566,12 @@ def render_ticket_inbox(service, actor, brand_view=False):
     with refresh_head:
         # La lista se guarda unos segundos para no bajar un archivo por
         # solicitud en cada clic. Esto la tira y vuelve a leer de GitHub.
-        if st.button("Actualizar", key=f"{filter_prefix}_refresh", use_container_width=True,
+        if st.button("Actualizar", key=f"{filter_prefix}_refresh", width="stretch",
                      help="Vuelve a leer la bandeja desde GitHub, sin usar la copia guardada."):
             _refrescar_bandeja(service)
             st.rerun()
     with clear_head:
-        if st.button("Limpiar", key=f"{filter_prefix}_clear", use_container_width=True):
+        if st.button("Limpiar", key=f"{filter_prefix}_clear", width="stretch"):
             for key in clear_keys:
                 st.session_state.pop(key, None)
             st.session_state[quick_key] = "all"
@@ -23785,7 +23785,7 @@ def _render_acciones_masivas(service, actor, tickets, seleccionados, seleccion_k
         unsafe_allow_html=True,
     )
     if not claves:
-        if st.button("Quitar selección", key="bulk_limpiar", use_container_width=False):
+        if st.button("Quitar selección", key="bulk_limpiar", width="content"):
             st.session_state[seleccion_key] = []
             st.rerun()
         return
@@ -23797,10 +23797,10 @@ def _render_acciones_masivas(service, actor, tickets, seleccionados, seleccion_k
         if columna.button(
             f'{accion["etiqueta"]} ({len(codigos)})',
             key=f"bulk_{clave}", type="primary" if clave == claves[0] else "secondary",
-            use_container_width=True, help=accion["ayuda"],
+            width="stretch", help=accion["ayuda"],
         ):
             _aplicar_en_lote(service, actor, [(c, accion) for c in codigos], seleccion_key)
-    if columnas[len(claves)].button("Quitar", key="bulk_limpiar", use_container_width=True):
+    if columnas[len(claves)].button("Quitar", key="bulk_limpiar", width="stretch"):
         st.session_state[seleccion_key] = []
         st.rerun()
 
@@ -23826,7 +23826,7 @@ def _render_paginacion(pagina, total_paginas, pagina_key):
     anchos = [1] + [0.55] * min(total_paginas, 7) + [1]
     columnas = st.columns(anchos, gap="small")
     if columnas[0].button("‹ Anterior", key=f"{pagina_key}_prev",
-                          disabled=pagina <= 1, use_container_width=True):
+                          disabled=pagina <= 1, width="stretch"):
         st.session_state[pagina_key] = pagina - 1
         st.rerun()
     # Con muchas paginas se muestra una ventana alrededor de la actual.
@@ -23836,12 +23836,12 @@ def _render_paginacion(pagina, total_paginas, pagina_key):
         if columna.button(
             str(numero), key=f"{pagina_key}_p{numero}",
             type="primary" if numero == pagina else "secondary",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state[pagina_key] = numero
             st.rerun()
     if columnas[-1].button("Siguiente ›", key=f"{pagina_key}_next",
-                           disabled=pagina >= total_paginas, use_container_width=True):
+                           disabled=pagina >= total_paginas, width="stretch"):
         st.session_state[pagina_key] = pagina + 1
         st.rerun()
 
@@ -24047,7 +24047,7 @@ def render_barra_acciones(service, actor, ticket, prefijo=""):
             if not columna.button(
                 accion["etiqueta"], key=f"accion_{prefijo}{accion['clave']}_{codigo}",
                 type="primary" if accion.get("principal") else "secondary",
-                use_container_width=True, help=ayuda,
+                width="stretch", help=ayuda,
             ):
                 continue
             ok, mensaje = _ejecutar_accion_ticket(service, actor, codigo, accion)
@@ -24090,7 +24090,7 @@ def render_acciones_con_comentario(service, actor, ticket, con_comentario, prefi
             for columna, accion in zip(columnas, con_comentario):
                 if not columna.button(
                     accion["etiqueta"], key=f"accion_{prefijo}{accion['clave']}_{codigo}",
-                    use_container_width=True, help=accion["ayuda"],
+                    width="stretch", help=accion["ayuda"],
                 ):
                     continue
                 if accion["clave"] == "observar" and observaciones:
@@ -24176,7 +24176,7 @@ def render_ticket_detail(service, actor, code):
         if model_colors:
             st.dataframe(
                 pd.DataFrame({"Código modelo-color": model_colors}),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=min(360, 38 + (len(model_colors) * 35)),
             )
@@ -24211,7 +24211,7 @@ def render_ticket_detail(service, actor, code):
             with st.expander(f"Observaciones activas ({len(ticket['observations'])})", expanded=status == STATE_OBSERVED):
                 observations_df = pd.DataFrame(ticket["observations"])
                 if not observations_df.empty:
-                    st.dataframe(observations_df, use_container_width=True, hide_index=True)
+                    st.dataframe(observations_df, width="stretch", hide_index=True)
     with tab_summary:
         st.caption(
             f"Versión {latest_version.get('number', 1)} de {len(ticket.get('versions', []))} · "
@@ -24273,7 +24273,7 @@ def render_ticket_detail(service, actor, code):
                     key=f"ticket_priority_{code}",
                 )
                 if selected_priority != current_priority and st.button(
-                    "Guardar prioridad", key=f"save_ticket_priority_{code}", use_container_width=True
+                    "Guardar prioridad", key=f"save_ticket_priority_{code}", width="stretch"
                 ):
                     try:
                         service.set_priority(actor, code, selected_priority)
@@ -24292,7 +24292,7 @@ def render_ticket_detail(service, actor, code):
                     key=f"assign_user_{code}",
                 )
                 if assignee != current_assignee and st.button(
-                    "Reasignar", key=f"assign_other_{code}", use_container_width=True
+                    "Reasignar", key=f"assign_other_{code}", width="stretch"
                 ):
                     try:
                         service.assign(actor, code, assignee)
@@ -24958,7 +24958,7 @@ def render_video_pasos(pasos):
                 "Detalle": clean_value(paso.get("detalle")),
             }
         )
-    st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(filas), width="stretch", hide_index=True)
 
 
 def render_video_resultados(resultados, site_key):
@@ -24977,7 +24977,7 @@ def render_video_resultados(resultados, site_key):
         st.error("No se publicó ningún video. Revisa el detalle de cada código.")
 
     tabla = pd.DataFrame([video_fila_de_resultado(item) for item in resultados])
-    st.dataframe(tabla, use_container_width=True, hide_index=True)
+    st.dataframe(tabla, width="stretch", hide_index=True)
 
     detalle = pd.DataFrame(video_detalle_de_pasos(resultados))
     if len(resultados) == 1:
@@ -24987,7 +24987,7 @@ def render_video_resultados(resultados, site_key):
         render_video_pasos(resultados[0].get("pasos"))
     else:
         with st.expander(f"Ver los {len(VIDEO_PASOS)} pasos de cada código"):
-            st.dataframe(detalle, use_container_width=True, hide_index=True)
+            st.dataframe(detalle, width="stretch", hide_index=True)
         for fallido in [item for item in resultados if not item.get("ok")]:
             with st.expander(f"❌ {fallido.get('Código Modelo Color')} — ¿dónde se cortó?"):
                 render_video_pasos(fallido.get("pasos"))
@@ -25015,7 +25015,7 @@ def render_video_galeria(shopify_config, product_gid, titulo="Galería del produ
     st.markdown(f"**{titulo}** · {resumen['imagenes']} fotos · {resumen['videos']} videos")
     st.dataframe(
         pd.DataFrame(video_motor.filas_de_media(media)),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -25039,7 +25039,7 @@ def render_video_analisis(filas):
             {k: v for k, v in fila.items() if k not in ("Product ID", "URL")}
             for fila in filas
         ]),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -25575,7 +25575,7 @@ def render_carga_supermall():
                 st.caption(f"{len(codigos_pedidos):,} códigos leídos del Excel.")
                 if descartados:
                     with st.expander(f"{len(descartados):,} filas descartadas"):
-                        st.dataframe(pd.DataFrame(descartados), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(descartados), width="stretch", hide_index=True)
 
     if st.button("Analizar qué se puede cargar", type="primary", key="supermall_analizar"):
         with st.spinner("Leyendo los catálogos de todos los sitios..."):
@@ -25635,7 +25635,7 @@ def render_carga_supermall():
             + (f" · {len(caidos)} con problema" if caidos else ""),
             expanded=bool(caidos),
         ):
-            st.dataframe(pd.DataFrame(estado_sitios), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(estado_sitios), width="stretch", hide_index=True)
     if caidos:
         st.warning(
             "**No se pudieron leer todos los sitios**, así que la consolidación va con menos "
@@ -25732,7 +25732,7 @@ def render_carga_supermall():
     )
     render_hueco_por_marca(hueco, totales_hueco)
     with st.expander(f"Ver la tabla con las {len(hueco):,} marcas"):
-        st.dataframe(pd.DataFrame(hueco), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(hueco), width="stretch", hide_index=True)
     tabla = consolidado["tabla"]
     # Los dos filtros son de LECTURA: acotan lo que se dibuja, nunca lo que se
     # genera. La tabla lleva ahora el catalogo entero de las demas webs, y sin
@@ -25762,7 +25762,7 @@ def render_carga_supermall():
     if solo_problemas:
         vista = vista[vista["Bloqueos"].ne("") | vista["Avisos"].ne("")]
     st.caption(f"{len(vista):,} de {len(tabla):,} productos.")
-    st.dataframe(vista.head(SUPERMALL_FILAS_VISTA), use_container_width=True, height=400, hide_index=True)
+    st.dataframe(vista.head(SUPERMALL_FILAS_VISTA), width="stretch", height=400, hide_index=True)
     if len(vista) > SUPERMALL_FILAS_VISTA:
         st.caption(f"Se muestran {SUPERMALL_FILAS_VISTA:,} de {len(vista):,} filas. El Excel las lleva todas.")
     if resumen["Bloqueados"]:
@@ -25846,7 +25846,7 @@ def render_carga_supermall():
         resumen_marcas = resultado.get("resumen_marcas")
         if resumen_marcas is not None and not resumen_marcas.empty:
             st.markdown("##### Qué lleva el archivo, marca por marca")
-            st.dataframe(resumen_marcas, use_container_width=True, hide_index=True)
+            st.dataframe(resumen_marcas, width="stretch", hide_index=True)
         st.info(
             "**Todavía no se ha escrito nada en Shopify.** Este archivo es la vista previa "
             "completa de la carga: descárgalo, revísalo y solo entonces súbelo."
@@ -25941,7 +25941,7 @@ def render_mantenedor_tallas(brand_config, shopify_config):
         st.caption(f"{len(codigos):,} códigos leídos del Excel.")
         if descartados:
             with st.expander(f"{len(descartados):,} filas descartadas del Excel"):
-                st.dataframe(pd.DataFrame(descartados), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(descartados), width="stretch", hide_index=True)
 
     if st.button("Revisar tallas", type="primary", key=f"tallas_analizar_{site_key}"):
         with st.spinner("Leyendo el catálogo del sitio..."):
@@ -25976,7 +25976,7 @@ def render_mantenedor_tallas(brand_config, shopify_config):
             key=f"tallas_solo_pendientes_{site_key}",
         )
         vista = tabla[tabla["Cambia escala"].eq("SI") | tabla["Cambia orden"].eq("SI")] if solo_pendientes else tabla
-        st.dataframe(vista.head(400), use_container_width=True, height=380, hide_index=True)
+        st.dataframe(vista.head(400), width="stretch", height=380, hide_index=True)
         if len(vista) > 400:
             st.caption(f"Se muestran 400 de {len(vista):,} filas. El Excel las lleva todas.")
         st.download_button(
@@ -25992,7 +25992,7 @@ def render_mantenedor_tallas(brand_config, shopify_config):
         with st.expander(f"{len(avisos):,} productos con aviso"):
             st.dataframe(
                 pd.DataFrame([{"Mod-Col": p["Mod-Col"], "Producto": p["Title"], "Aviso": p["Nota"]} for p in avisos]),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
             )
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -26043,7 +26043,7 @@ def render_mantenedor_tallas(brand_config, shopify_config):
         st.error(f"{fallidos:,} productos no se pudieron arreglar. El detalle está en la tabla.")
     else:
         st.success(f"{len(resultados):,} productos arreglados.")
-    st.dataframe(tabla_resultados, use_container_width=True, height=320, hide_index=True)
+    st.dataframe(tabla_resultados, width="stretch", height=320, hide_index=True)
     log_user_activity(
         "Mantenimiento de tallas",
         f"{len(resultados):,} productos procesados, {fallidos:,} con error.",
@@ -26156,7 +26156,7 @@ def render_video_maintainer(brand_config, shopify_config):
     if descartados:
         with st.expander(f"⚠️ {len(descartados)} filas descartadas del Excel y por qué",
                          expanded=not trabajos):
-            st.dataframe(pd.DataFrame(descartados), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(descartados), width="stretch", hide_index=True)
     if not trabajos:
         st.error("No quedó ningún código válido. Revisa la columna Código Modelo Color.")
         return
@@ -26931,7 +26931,7 @@ api_version = "{DEFAULT_API_VERSION}"
                                 f"{CARGA_SIAL_LABEL} generada con {len(sial_df):,} filas de talla "
                                 f"({modelos:,} modelo-color) para {len(codes):,} codigos consultados."
                             )
-                            st.dataframe(sial_df.head(200), use_container_width=True, height=380)
+                            st.dataframe(sial_df.head(200), width="stretch", height=380)
                             st.download_button(
                                 f"Descargar {CARGA_SIAL_LABEL}",
                                 data=st.session_state.get("sial_maintainer_excel_bytes")
@@ -26955,7 +26955,7 @@ api_version = "{DEFAULT_API_VERSION}"
                             )
                         if sial_issues_df is not None and not sial_issues_df.empty:
                             with st.expander(f"Revision de la {CARGA_SIAL_LABEL}"):
-                                st.dataframe(sial_issues_df, use_container_width=True, height=280)
+                                st.dataframe(sial_issues_df, width="stretch", height=280)
                     return
 
                 if update_operation == "centry":
@@ -27023,7 +27023,7 @@ api_version = "{DEFAULT_API_VERSION}"
                             render_centry_preview(centry_df, centry_issues_df, "Centry generado")
                             if centry_sial_df is not None and not centry_sial_df.empty:
                                 st.write("Vista previa Carga Sial Centry")
-                                st.dataframe(centry_sial_df.head(100), use_container_width=True, height=320)
+                                st.dataframe(centry_sial_df.head(100), width="stretch", height=320)
                             missing_ean_count = centry_missing_ean_count(centry_df)
                             st.download_button(
                                 "Descargar Centry",
@@ -27099,7 +27099,7 @@ api_version = "{DEFAULT_API_VERSION}"
                         columnas[2].metric("Ya existentes", conteo.get(PNG_ESTADO_YA_EXISTE, 0))
                         columnas[3].metric("Sin PNG", conteo.get(PNG_ESTADO_NO_EXISTE, 0))
                         columnas[4].metric("Errores", conteo.get("Error", 0) + conteo.get(PNG_ESTADO_ERROR_CARGA, 0))
-                        st.dataframe(vistas_df, use_container_width=True, height=380)
+                        st.dataframe(vistas_df, width="stretch", height=380)
 
                         vista_previa = [
                             fila for fila in filas_png
@@ -27146,7 +27146,7 @@ api_version = "{DEFAULT_API_VERSION}"
                             st.success(f"{cargadas} vistas PNG cargadas en {png_mod_col}.")
                         else:
                             st.error(f"No se cargó ninguna vista PNG en {png_mod_col}.")
-                        st.dataframe(resultado_df, use_container_width=True, height=380)
+                        st.dataframe(resultado_df, width="stretch", height=380)
                         st.download_button(
                             "Descargar resultado PNG",
                             data=dataframe_to_excel_bytes({"Vistas PNG": resultado_df}),
@@ -27216,10 +27216,10 @@ api_version = "{DEFAULT_API_VERSION}"
                                 f"{len(locations):,} sucursales = {estimated_pairs:,} pares potenciales. "
                                 "La ejecución solo activará las sucursales faltantes."
                             )
-                            st.dataframe(preview_df.head(200), use_container_width=True, height=360)
+                            st.dataframe(preview_df.head(200), width="stretch", height=360)
                         if issues_df is not None and not issues_df.empty:
                             st.warning(f"Hay {len(issues_df):,} observaciones.")
-                            st.dataframe(issues_df, use_container_width=True)
+                            st.dataframe(issues_df, width="stretch")
                         st.download_button(
                             "Descargar vista previa activación",
                             data=dataframe_to_excel_bytes(
@@ -27257,8 +27257,8 @@ api_version = "{DEFAULT_API_VERSION}"
                                 st.session_state["inventory_activation_result_df"] = result_df
                                 summary_df = _inventory_activation_summary_df(result_df)
                                 if summary_df is not None and not summary_df.empty:
-                                    st.dataframe(summary_df, use_container_width=True, hide_index=True)
-                                st.dataframe(result_df, use_container_width=True, height=360)
+                                    st.dataframe(summary_df, width="stretch", hide_index=True)
+                                st.dataframe(result_df, width="stretch", height=360)
                                 st.download_button(
                                     "Descargar reporte de activación",
                                     data=dataframe_to_excel_bytes(
@@ -27278,8 +27278,8 @@ api_version = "{DEFAULT_API_VERSION}"
                             st.markdown("#### Último resultado de activación")
                             saved_summary_df = _inventory_activation_summary_df(saved_result_df)
                             if saved_summary_df is not None and not saved_summary_df.empty:
-                                st.dataframe(saved_summary_df, use_container_width=True, hide_index=True)
-                            st.dataframe(saved_result_df, use_container_width=True, height=360)
+                                st.dataframe(saved_summary_df, width="stretch", hide_index=True)
+                            st.dataframe(saved_result_df, width="stretch", height=360)
                     return
 
                 if st.button(f"Analizar carga parcial: {update_label}", type="primary"):
@@ -27330,11 +27330,11 @@ api_version = "{DEFAULT_API_VERSION}"
                         else:
                             summary_df = partial_preview_summary(preview_df, issues_df)
                             st.write("Resumen de carga parcial")
-                            st.dataframe(summary_df, use_container_width=True, hide_index=True)
-                            st.dataframe(preview_df.head(100), use_container_width=True)
+                            st.dataframe(summary_df, width="stretch", hide_index=True)
+                            st.dataframe(preview_df.head(100), width="stretch")
                     if issues_df is not None and not issues_df.empty:
                         st.warning(f"Hay {len(issues_df):,} observaciones.")
-                        st.dataframe(issues_df, use_container_width=True)
+                        st.dataframe(issues_df, width="stretch")
 
                     excel_key = f"shopify_preview_excel_{brand_config['site_key']}_{update_operation}"
                     excel_bytes = st.session_state.get(excel_key)
@@ -27454,10 +27454,10 @@ api_version = "{DEFAULT_API_VERSION}"
                             diagnostic_df = build_partial_diagnostic_table(matrixify_df, issues_df, update_operation)
                             render_partial_diagnostic_panel(diagnostic_df, update_operation)
                         else:
-                            st.dataframe(matrixify_df.head(100), use_container_width=True)
+                            st.dataframe(matrixify_df.head(100), width="stretch")
                     if issues_df is not None and not issues_df.empty:
                         st.warning(f"Hay {len(issues_df):,} observaciones.")
-                        st.dataframe(issues_df, use_container_width=True)
+                        st.dataframe(issues_df, width="stretch")
                     if update_operation in ("body", "photos", "size_guides"):
                         excel_bytes = dataframe_to_excel_bytes(
                             {
@@ -27848,16 +27848,16 @@ api_version = "{DEFAULT_API_VERSION}"
                     st.error("No se pudo generar ninguna fila Matrixify.")
                     if issues_df is not None and not issues_df.empty:
                         st.warning(f"Hay {len(issues_df):,} observaciones para revisar.")
-                        st.dataframe(issues_df, use_container_width=True)
+                        st.dataframe(issues_df, width="stretch")
                     if skipped_df is not None and not skipped_df.empty:
                         st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
-                        st.dataframe(skipped_df, use_container_width=True)
+                        st.dataframe(skipped_df, width="stretch")
                 else:
                     st.success(f"Vista previa generada con {len(matrixify_df):,} variantes.")
                     matrixify_tab, centry_tab, revision_tab = st.tabs(["Matrixify", "Centry", "Revision"])
                     with matrixify_tab:
-                        st.dataframe(summary_df, use_container_width=True)
-                        st.dataframe(matrixify_df.head(100), use_container_width=True, height=360)
+                        st.dataframe(summary_df, width="stretch")
+                        st.dataframe(matrixify_df.head(100), width="stretch", height=360)
                     with centry_tab:
                         if centry_resumen:
                             render_centry_preview_desde_resumen(centry_resumen, centry_issues_df)
@@ -27866,7 +27866,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     with revision_tab:
                         if issues_df is not None and not issues_df.empty:
                             st.warning(f"Hay {len(issues_df):,} observaciones para revisar.")
-                            st.dataframe(issues_df, use_container_width=True)
+                            st.dataframe(issues_df, width="stretch")
                         else:
                             st.success("Sin observaciones Matrixify.")
                         if type_warnings_df is not None and not type_warnings_df.empty:
@@ -27874,13 +27874,13 @@ api_version = "{DEFAULT_API_VERSION}"
                                 "Tipos de prenda nuevos detectados. Revisa la hoja Tipos nuevos y la Revision antes de sincronizar: "
                                 "hay que confirmar si el Type existe en la web destino o agregarlo al diccionario por web."
                             )
-                            st.dataframe(type_warnings_df, use_container_width=True)
+                            st.dataframe(type_warnings_df, width="stretch")
                         if skipped_df is not None and not skipped_df.empty:
                             st.info(f"{len(skipped_df):,} productos fueron omitidos porque no presentaban cambios.")
-                            st.dataframe(skipped_df, use_container_width=True)
+                            st.dataframe(skipped_df, width="stretch")
                         if sial_muestra is not None and not sial_muestra.empty:
                             st.write("Vista previa Carga Sial")
-                            st.dataframe(sial_muestra, use_container_width=True, height=320)
+                            st.dataframe(sial_muestra, width="stretch", height=320)
 
                 excel_bytes = _leer_excel_de_disco(st.session_state.get("complete_excel_path"))
                 if excel_bytes is None:
@@ -27968,7 +27968,24 @@ api_version = "{DEFAULT_API_VERSION}"
             st.error("No pude procesar los archivos.")
             st.exception(exc)
     else:
-        st.info("Carga el input comercial para comenzar. Si no usas Shopify API, tambien sube el respaldo Excel del sitio.")
+        # Se dice EXACTAMENTE que falta. El aviso era el mismo en los dos casos
+        # -- "Carga el input comercial" --, asi que quien ya lo habia cargado y
+        # solo le faltaba el respaldo leia que le faltaba lo que si tenia, y el
+        # boton de Analizar no estaba por ninguna parte. Un boton que no se
+        # dibuja y no explica por que se lee como "no funciona".
+        faltan = []
+        if not input_file:
+            faltan.append("**el input comercial** (el Excel de la marca)")
+        if complete_source != "Shopify API" and not template_file:
+            faltan.append(
+                "**el respaldo Excel del catálogo del sitio** (lo pide el origen "
+                "«Respaldo Excel»; con «Shopify API» no hace falta)"
+            )
+        st.info(
+            "Para analizar falta " + " y ".join(faltan) + "."
+            if faltan else
+            "Carga el input comercial para comenzar."
+        )
 
     st.markdown(
         """

@@ -2926,6 +2926,70 @@ handle de un producto que ya existe.
 
 ---
 
+## 5 septvicies. `use_container_width` estaba caducado, y las pantallas no se probaban (septiembre 2026)
+
+### La bomba de relojeria: 105 llamadas a un parametro retirado
+
+Streamlit avisaba en cada arranque: *"`use_container_width` will be removed
+after 2025-12-31"*. Esa fecha **paso hace nueve meses**. La app lo usaba **105
+veces** (76 `dataframe`, 25 `button`, 4 `download_button`): el dia que Streamlit
+lo quite de verdad, cada una de esas llamadas levanta `TypeError` y **no queda
+ni una pantalla en pie**.
+
+Cambiado a `width="stretch"` / `width="content"`. Antes de tocarlo se
+comprobo lo unico que importaba: que **streamlit 1.50** -- el minimo que declara
+`requirements.txt` -- ya acepta `width` en los tres elementos. Se instalo esa
+version en un entorno aparte para verlo, no se supuso.
+
+### Y lo que faltaba de verdad: entrar a la app
+
+Las ~1.800 pruebas del repo cubren los MOTORES. Los fallos que llegan a
+produccion viven en el **pegamento** con la pantalla, y este repo ya se llevo
+dos:
+
+- `render_status_de_carga` pedia `kpis["Marcas con catálogo"]` con tilde: un
+  `KeyError` que tumbaba la pantalla entera (seccion 5 quater).
+- Tres fallos dejaron el Mantenedor de Tallas sin efecto y **ninguna de sus 34
+  pruebas los vio**, porque todas prueban el motor (seccion 5 sexdecies).
+
+`scripts/test_pantallas_reales.py` entra a la app -- `authenticated` en
+`session_state`, sin credenciales -- y **recorre cada pantalla del menu, cada
+opcion de Carga parcial, cada sitio de `SITE_CONFIGS` y pulsa todos los botones
+de accion**, mirando `at.error` ademas de `at.exception` (regla 4).
+
+Sin Secrets cada pantalla toma su camino de "no configurado", que es tambien un
+camino que hay que probar. Esos avisos se distinguen de un fallo por texto
+(`AVISOS_DE_CONFIGURACION`): son el comportamiento correcto, no un error.
+
+**Resultado: las 8 pantallas se dibujan, los 6 sitios se dibujan, todas las
+opciones de Carga parcial se dibujan y ningun boton levanta una excepcion.**
+
+### "Analizar Input no ejecuta"
+
+No estaba roto: **sin input el boton no se dibuja**, que es correcto. Lo que
+estaba mal era el aviso. `can_process_complete` pide dos cosas -- el input
+comercial y, con origen "Respaldo Excel", el respaldo del sitio -- y el `else`
+decia siempre lo mismo: *"Carga el input comercial para comenzar"*. Quien ya lo
+habia cargado y solo le faltaba el respaldo leia que le faltaba **lo que si
+tenia**, y del boton no habia ni rastro.
+
+Ahora se nombra exactamente lo que falta. Es la misma regla que ya seguia
+`render_boton_carga_remota`: **un boton que no se dibuja y no explica por que se
+lee como "no funciona"**.
+
+### Lo que NO se pudo medir
+
+Los reruns por pantalla salen todos en ~1,2 s, y **eso no es tiempo de la app**:
+el perfil lo desmiente -- son 117 `time.sleep` del poller de `AppTest`, que
+espera al hilo del script. `AppTest` no sirve para medir rendimiento; sirve para
+comprobar que la pantalla se dibuja. Las mediciones de rendimiento buenas siguen
+siendo las de las secciones 5 tervicies, quatervicies y quinvicies, hechas con
+cProfile sobre las funciones pesadas.
+
+`scripts/test_pantallas_reales.py` (10 pruebas).
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -3156,6 +3220,7 @@ python scripts/test_tipos_vestido_y_bloqueos.py       # 24
 python scripts/test_optimizacion_memoria_excel.py       # 38
 python scripts/test_carga_supermall_rendimiento.py     # 16
 python scripts/test_handle_tipo_y_duplicados.py         # 18
+python scripts/test_pantallas_reales.py                 # 10
 ```
 
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes

@@ -417,6 +417,9 @@ class TestWorkerReanuda(unittest.TestCase):
         modulo.shopify_config_from_env = lambda site_key: {
             "shop_domain": "x.myshopify.com", "admin_access_token": "t",
         }
+        # El doble tiene que traer lo mismo que el modulo real: el worker le
+        # pide `_env_name` para nombrar la credencial que falta.
+        modulo._env_name = lambda site_key, sufijo: f"{site_key.upper()}_{sufijo}"
         return modulo
 
     def _app_falsa(self):
@@ -619,6 +622,100 @@ class TestSinStreamlit(unittest.TestCase):
     def test_el_motor_no_importa_streamlit(self):
         fuente = (ROOT / "engines" / "carga_remota.py").read_text(encoding="utf-8")
         self.assertNotIn("import streamlit", fuente)
+
+
+class TestCredencialesQueFaltan(unittest.TestCase):
+    """El log tiene que decir QUE secreto falta, no "revisa los secretos".
+
+    Caso real: se disparo una carga de Supermall.pe y el runner murio con
+    "Faltan credenciales de Shopify para el sitio supermall. Revisa los
+    secretos del repositorio". El sitio estaba dado de alta en SITE_CONFIGS y
+    mapeado en el workflow --lo que la prueba de mas abajo comprueba-- pero sus
+    secretos de Actions nunca se crearon. El mensaje no lo decia, y desde la
+    pantalla lo unico que se ve es que la carga fallo.
+    """
+
+    def setUp(self):
+        self.worker = _worker()
+
+    def test_nombra_las_dos_variables_del_sitio(self):
+        faltantes = self.worker._credenciales_que_faltan(
+            "supermall", {"shop_domain": "", "admin_access_token": ""})
+        self.assertEqual(
+            faltantes, ["SUPERMALL_SHOP_DOMAIN", "SUPERMALL_ADMIN_API_ACCESS_TOKEN"])
+
+    def test_nombra_solo_la_que_falta(self):
+        faltantes = self.worker._credenciales_que_faltan(
+            "vans", {"shop_domain": "vans.myshopify.com", "admin_access_token": "   "})
+        self.assertEqual(faltantes, ["VANS_ADMIN_API_ACCESS_TOKEN"])
+
+    def test_hush_puppies_lleva_el_nombre_de_la_VARIABLE(self):
+        """No el del secreto guardado, que va sin guion (HUSHPUPPIES_*).
+
+        Quien lea el log tiene que poder buscar ese nombre en el bloque `env:`
+        del workflow y ver de que secreto sale.
+        """
+        faltantes = self.worker._credenciales_que_faltan(
+            "hush_puppies", {"shop_domain": "", "admin_access_token": ""})
+        self.assertEqual(faltantes[0], "HUSH_PUPPIES_SHOP_DOMAIN")
+
+    def test_el_nombre_acabado_en_TOKEN_sobrevive_al_saneado(self):
+        """`texto_publico` enmascara un "TOKEN" seguido de un espacio.
+
+        Comprobado: "SUPERMALL_ADMIN_API_ACCESS_TOKEN llegaron vacias" sale
+        como "SUPERMALL_ADMIN_API_[oculto] vacias". El mensaje pone un punto
+        detras del ultimo nombre justamente por eso, y esta prueba es lo que
+        impide que una reescritura del texto se lleve el dato por delante.
+        """
+        faltantes = ["SUPERMALL_SHOP_DOMAIN", "SUPERMALL_ADMIN_API_ACCESS_TOKEN"]
+        mensaje = self.worker._error_de_credenciales("supermall", faltantes)
+        # Doble saneado: el del registro del job (500) y el de _decir (300).
+        en_el_log = cr.texto_publico("ERROR: " + cr.texto_publico(mensaje, 500), 300)
+        for nombre in faltantes:
+            self.assertIn(nombre, en_el_log)
+        # Y entra entero en el log: recortado, la parte que dice donde
+        # agregarlos seria lo primero en irse.
+        self.assertNotIn("…", en_el_log)
+
+    def test_el_mensaje_no_lleva_ningun_VALOR(self):
+        """Solo nombres de variable. El log de Actions es publico."""
+        configuracion = {"shop_domain": "supermall.myshopify.com",
+                         "admin_access_token": ""}
+        faltantes = self.worker._credenciales_que_faltan("supermall", configuracion)
+        mensaje = self.worker._error_de_credenciales("supermall", faltantes)
+        self.assertNotIn("supermall.myshopify.com", mensaje)
+
+    def test_se_EJECUTA_y_levanta_con_el_nombre_dentro(self):
+        """Se corre `_ejecutar` de verdad, no se lee su codigo.
+
+        Es la leccion de `start_suelto`: ocho pruebas leian su fuente con
+        `inspect.getsource` y ninguna lo llamaba, asi que nadie vio el
+        `AttributeError` que lo tumbaba en el primer clic. Leer el codigo no es
+        ejecutarlo.
+        """
+        import types
+
+        previos = {nombre: sys.modules.get(nombre)
+                   for nombre in ("catalog_engine", "app_matrixify")}
+        falso = types.ModuleType("catalog_engine")
+        falso.read_matrixify_excel = lambda ruta: None
+        falso.shopify_config_from_env = lambda site_key: {
+            "shop_domain": "", "admin_access_token": "",
+        }
+        falso._env_name = lambda site_key, sufijo: f"{site_key.upper()}_{sufijo}"
+        sys.modules["catalog_engine"] = falso
+        sys.modules["app_matrixify"] = types.ModuleType("app_matrixify")
+        try:
+            with self.assertRaises(RuntimeError) as caja:
+                self.worker._ejecutar({}, "sha", None, "supermall", 60)
+        finally:
+            for nombre, modulo in previos.items():
+                if modulo is None:
+                    sys.modules.pop(nombre, None)
+                else:
+                    sys.modules[nombre] = modulo
+        self.assertIn("SUPERMALL_SHOP_DOMAIN", str(caja.exception))
+        self.assertIn("SUPERMALL_ADMIN_API_ACCESS_TOKEN", str(caja.exception))
 
 
 class TestWorkflow(unittest.TestCase):

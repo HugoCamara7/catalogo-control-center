@@ -163,20 +163,22 @@ class TestSupermallYVansUsanLaMismaGuia(unittest.TestCase):
             self.assertEqual(g.escala_de_calzado(g.get_brand_config(site_key)), "PE")
 
 
-class TestHushKedsSorelSeQuedanComoEstan(unittest.TestCase):
-    """Decision del usuario: sin guia propia, su calzado se publica como viene."""
+class TestHushKedsSorelUsanLaGuiaPorDefecto(unittest.TestCase):
+    """Septiembre de 2026: el usuario pidio que TODO el calzado saliera con la
+    guia. Ninguna de estas marcas tiene la suya, asi que caen en la de Vans --
+    la unica confirmada -- y cada conversion se REPORTA."""
 
-    def test_no_tienen_guia_registrada(self):
+    def test_siguen_sin_guia_PROPIA_registrada(self):
         from engines import guias_tallas as gt
         for marca in ("HUSH PUPPIES", "KEDS", "SOREL", "COLUMBIA"):
             self.assertIsNone(gt.guia_para(marca, gt.CALZADO), marca)
 
-    def test_su_talla_no_se_convierte(self):
+    def test_su_talla_se_convierte_con_la_por_defecto_y_queda_avisada(self):
         from engines import guias_tallas as gt
         for marca in ("HUSH PUPPIES", "KEDS", "SOREL"):
             talla, nota = gt.convertir("8", marca, gt.CALZADO, "Masculino")
-            self.assertEqual(talla, "8", marca)
-            self.assertEqual(nota, gt.SIN_GUIA, marca)
+            self.assertEqual(talla, "40.5", marca)
+            self.assertEqual(nota, gt.POR_DEFECTO, marca)
 
 
 class TestCargaRemotaSinSolicitud(unittest.TestCase):

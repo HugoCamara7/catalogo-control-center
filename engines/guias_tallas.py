@@ -47,6 +47,9 @@ VESTUARIO = "VESTUARIO"
 # Lo que devuelve una conversion que no se pudo hacer, para poder REPORTARLA.
 SIN_GUIA = "sin guia"
 SIN_GENERO = "sin genero"
+# La conversion SI se hizo, pero con la guia por defecto porque la marca no
+# tiene la suya. No es un fallo: es una salvedad que hay que dejar por escrito.
+POR_DEFECTO = "guia por defecto"
 
 
 def _clave(marca, clase):
@@ -102,11 +105,46 @@ def _convertir_con_vans(talla, genero=""):
 
 
 _GUIAS = {}
+_POR_DEFECTO = {}
 
 
 def registrar_guia(marca, clase, guia):
     _GUIAS[_clave(marca, clase)] = guia
     return guia
+
+
+def registrar_guia_por_defecto(clase, guia):
+    """La guia que se usa cuando la marca no tiene la suya.
+
+    Se agrego en septiembre de 2026 a peticion del usuario: *"las tallas no se
+    estan generando por las guias de tallas que te pase de Vans"*. Hasta
+    entonces, sin guia propia el calzado se publicaba con la talla de origen, y
+    en Supermall.pe -- que publica en PE -- eso deja US y PE mezclados en la
+    misma tienda, que es justo lo que el filtro de talla no puede resolver.
+
+    **Lo que se gana y lo que se arriesga.** Se gana que el catalogo salga
+    entero en una sola escala. Se arriesga que la equivalencia de Vans no sea
+    la de la otra marca: un US 8 de Vans es PE 40.5, y otra marca puede calzar
+    distinto. Por eso toda conversion hecha con esta guia se REPORTA en la hoja
+    de Revision, marca por marca -- si alguna no cuadra, se ve y se le registra
+    la suya con `registrar_tabla`, que es una hoja de Excel, no un `if`.
+    """
+    _POR_DEFECTO[_clave("", clase)[1]] = guia
+    return guia
+
+
+def guia_por_defecto(clase=CALZADO):
+    return _POR_DEFECTO.get(_clave("", clase)[1])
+
+
+def hay_conversion(marca, clase=CALZADO):
+    """Si esa marca se puede convertir, con su guia o con la por defecto.
+
+    La usan la CARGA y el Mantenedor de Tallas. Escrita dos veces, una
+    convertiria y la otra no, y el mismo producto saldria distinto segun por
+    donde pasara: es la trampa de las dos `normalize_size`.
+    """
+    return guia_para(marca, clase) is not None or guia_por_defecto(clase) is not None
 
 
 def registrar_tabla(nombre, marca, clase, filas):
@@ -169,9 +207,22 @@ def convertir(talla, marca, clase, genero=""):
     convierte una talla, y tiene que poder decir por que no lo hizo.
     """
     guia = guia_para(marca, clase)
-    if guia is None:
+    if guia is not None:
+        return guia.convertir(talla, genero)
+    respaldo = guia_por_defecto(clase)
+    if respaldo is None:
         return talla, SIN_GUIA
-    return guia.convertir(talla, genero)
+    convertida, nota = respaldo.convertir(talla, genero)
+    if nota:
+        # Un problema de verdad -- sin genero, talla desconocida -- manda sobre
+        # la salvedad: lo que hay que arreglar es eso, no de que guia salio.
+        return convertida, nota
+    if respaldo.ya_en_destino(talla):
+        # La talla ya venia en la escala de destino: no se convirtio nada, asi
+        # que no hay nada que advertir. Es el caso de Hush Puppies y Rockford,
+        # que entregan la mayor parte de su calzado ya en PE.
+        return convertida, ""
+    return convertida, POR_DEFECTO
 
 
 # --- Las guias que vienen en el codigo ------------------------------------
@@ -183,3 +234,9 @@ registrar_guia(
          convertidor=_convertir_con_vans,
          ya_en_destino=tallas_calzado.ya_es_pe),
 )
+
+# Y es tambien la guia POR DEFECTO del calzado: es la unica confirmada, y sin
+# ella el calzado de Columbia, Keds y Sorel -- que entregan todo en US -- se
+# publicaba en US dentro de una tienda que publica en PE. Ver
+# `registrar_guia_por_defecto` para lo que esto gana y lo que arriesga.
+registrar_guia_por_defecto(CALZADO, guia_para("VANS", CALZADO))

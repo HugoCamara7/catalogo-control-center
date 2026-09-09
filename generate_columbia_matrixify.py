@@ -1290,13 +1290,39 @@ def _talla_unica_bloqueada(product_type):
     return clase in ("calzado", "vestuario")
 
 
+def curva_de_tallas_reales(curva):
+    """La curva SIN lo que no es una talla: el `0` y las internas `K`.
+
+    El maestro trae, junto a las tallas de verdad, un `0` (el SKU de cabecera
+    del modelo) y codigos internos tipo `K901`. Los dos se descartan mas
+    adelante -- `final_variant_filter` los borra y `talla_sirve_para_sial` los
+    deja fuera de la hoja --, pero se colaban en la CURVA, que es lo que decide
+    en que escala esta el calzado.
+
+    Y una curva con `0` y `K901` dentro no cabe en ningun rango de tallas, asi
+    que `interpretar_curva` contestaba "no cabe en ninguna escala conocida" y
+    **el producto entero se quedaba sin convertir**. Medido con una bota real
+    de Columbia:
+
+        0, 50, 55, 60, ..., 100, K901  ->  no cabe en ninguna escala
+        50, 55, 60, ..., 100           ->  entre diez: la curva esta en US
+
+    Un valor que no es una talla no puede votar sobre la escala de las que si
+    lo son.
+    """
+    return [
+        valor for valor in (curva or [])
+        if clean(valor) and not is_zero_size(valor) and not is_internal_k_size(valor)
+    ]
+
+
 def _interpretar_curva_de_calzado(curva, gender=""):
     """`(divisor, escala, nota)` de la curva. Envuelve el motor con su import."""
     try:
         from engines.tallas_calzado import interpretar_curva
     except ImportError:
         return 1, "", ""
-    return interpretar_curva(curva, gender)
+    return interpretar_curva(curva_de_tallas_reales(curva), gender)
 
 
 def _dividir_talla(value, divisor):
@@ -1407,12 +1433,23 @@ def display_size_for_site(value, brand_config=None, gender="", product_type="", 
         if escala_curva:
             talla = _dividir_talla(valor_crudo, divisor)
         if nota_de_curva and avisos is not None:
+            # `Clase: lectura` -- la nota dice COMO se leyo la curva, no que la
+            # talla se haya quedado sin convertir. Sin distinguirlas, la hoja de
+            # Revision decia "se publican SIN convertir a PE porque numeros
+            # leidos entre 10: la curva esta en US" sobre tallas que si se
+            # convirtieron: manda a buscar un problema que no existe.
             avisos.append({
-                "Talla": clean(valor_crudo), "Marca": clean(marca), "Motivo": nota_de_curva,
+                "Talla": clean(valor_crudo), "Marca": clean(marca),
+                "Motivo": nota_de_curva, "Clase": "lectura",
             })
     if escala_de_calzado(brand_config) != "PE":
         return talla
     if not product_type or not es_calzado(product_type):
+        return talla
+    # El `0` de cabecera y las internas `K` no son tallas: se borran mas
+    # adelante y pedirle al conversor que las traduzca solo llenaba la hoja de
+    # Revision de avisos sobre filas que nadie va a ver.
+    if is_zero_size(talla) or is_internal_k_size(talla):
         return talla
     convertida, nota = talla_calzado_pe(talla, gender, marca=marca or brand_config.get("label"))
     if nota and avisos is not None:
@@ -4264,6 +4301,16 @@ AVISO_TALLA_MOTIVOS = {
     "ambigua": "el numero existe en dos escalas de la guia",
 }
 
+# Avisos de tallas que SI se convirtieron. No son un fallo -- la talla salio
+# convertida --, pero llevan una salvedad que tiene que quedar por escrito.
+AVISO_TALLA_CONVERTIDAS = {
+    "guia por defecto": (
+        "esa marca no tiene guia propia registrada, asi que se convirtieron con "
+        "la guia de Vans, que es la unica confirmada. Si alguna equivalencia no "
+        "cuadra, hay que registrar la guia de la marca"
+    ),
+}
+
 
 def avisos_de_talla_a_issues(avisos):
     """Las tallas de calzado que no se pudieron convertir, agrupadas.
@@ -4277,11 +4324,13 @@ def avisos_de_talla_a_issues(avisos):
         return []
     agrupados = {}
     for aviso in avisos:
-        clave = (clean(aviso.get("Marca")).upper(), clean(aviso.get("Motivo")))
+        clave = (clean(aviso.get("Marca")).upper(), clean(aviso.get("Motivo")),
+                 clean(aviso.get("Clase")))
         agrupados.setdefault(clave, set()).add(clean(aviso.get("Talla")))
     filas = []
-    for (marca, motivo), tallas_vistas in sorted(agrupados.items()):
+    for (marca, motivo, clase), tallas_vistas in sorted(agrupados.items()):
         explicacion = AVISO_TALLA_MOTIVOS.get(motivo, motivo)
+        convertidas = AVISO_TALLA_CONVERTIDAS.get(motivo)
         # El desempate es la talla en TEXTO, y no es cosmetico: `tallas_vistas`
         # es un `set`, asi que cuando dos tallas empatan en `size_sort_key`
         # -- "6" y "60", "SM" y "S/M" -- el orden lo decidia la iteracion del
@@ -4290,13 +4339,30 @@ def avisos_de_talla_a_issues(avisos):
         # avisos distintos en la hoja de Revision. Un informe que cambia entre
         # ejecuciones no se puede comparar con el anterior.
         ordenadas = sorted(tallas_vistas, key=lambda talla: (size_sort_key(talla), talla))
+        # Un aviso que dice "SIN convertir" sobre unas tallas que SI se
+        # convirtieron es peor que no avisar: manda a buscar un problema que no
+        # existe. Los dos casos se cuentan aparte y con su propia frase.
+        if clase == "lectura":
+            cabecera = (
+                f"{marca or 'sin marca'}: {len(tallas_vistas):,} tallas de calzado del "
+                f"maestro se leyeron asi -- {explicacion}. "
+            )
+        elif convertidas:
+            cabecera = (
+                f"{marca or 'sin marca'}: {len(tallas_vistas):,} tallas de calzado se "
+                f"convirtieron a PE, pero {convertidas}. "
+            )
+        else:
+            cabecera = (
+                f"{marca or 'sin marca'}: {len(tallas_vistas):,} tallas de calzado se "
+                f"publican SIN convertir a PE porque {explicacion}. "
+            )
         filas.append({
             "Mod-Col": "Escala de tallas",
             "Problema": (
-                f"{marca or 'sin marca'}: {len(tallas_vistas):,} tallas de calzado se "
-                f"publican SIN convertir a PE porque {explicacion}. "
-                f"Tallas: {', '.join(ordenadas[:14])}"
-                f"{' ...' if len(ordenadas) > 14 else ''}"
+                cabecera
+                + f"Tallas: {', '.join(ordenadas[:14])}"
+                + (" ..." if len(ordenadas) > 14 else "")
             ),
         })
     return filas

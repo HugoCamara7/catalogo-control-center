@@ -184,9 +184,23 @@ class TestPorMarcaYNoPorSitio(unittest.TestCase):
         prod = producto(["8"], marca="Vans", tipo="Zapatilla")
         self.assertIsNotNone(self.app.tallas_convertidor_para(prod, self.supermall))
 
-    def test_otra_marca_del_mismo_sitio_no_convierte(self):
+    def test_otra_marca_del_mismo_sitio_convierte_con_la_guia_por_defecto(self):
+        """Septiembre de 2026: el usuario pidio que TODO el calzado saliera con
+        la guia. El mantenedor tiene que decir lo MISMO que la carga -- si la
+        carga convierte y el mantenedor no, el mismo producto sale distinto
+        segun por donde pase."""
         prod = producto(["8"], marca="Hush Puppies", tipo="Zapatilla")
-        self.assertIsNone(self.app.tallas_convertidor_para(prod, self.supermall))
+        self.assertIsNotNone(self.app.tallas_convertidor_para(prod, self.supermall))
+
+    def test_sin_ninguna_guia_el_mantenedor_no_convierte(self):
+        from engines import guias_tallas as gt
+        respaldo = gt.guia_por_defecto(gt.CALZADO)
+        gt._POR_DEFECTO.pop(gt._clave("", gt.CALZADO)[1], None)
+        try:
+            prod = producto(["8"], marca="Hush Puppies", tipo="Zapatilla")
+            self.assertIsNone(self.app.tallas_convertidor_para(prod, self.supermall))
+        finally:
+            gt.registrar_guia_por_defecto(gt.CALZADO, respaldo)
 
     def test_el_vestuario_de_vans_tampoco_convierte(self):
         """En vestuario una talla "12" es de nino, no un US 12."""

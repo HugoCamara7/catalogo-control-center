@@ -3816,6 +3816,16 @@ tallas normales.
 O sea: **la guarda no le quito la conversion a ningun producto que la tuviera
 bien.**
 
+### Y por que no lo vio la suite: la lista de validacion estaba incompleta
+
+`test_tallas_calzado_pe.py` -- que es **justo el archivo que fija la conversion
+de tallas** -- **no estaba en la lista de la seccion 12**. Ni el, ni otros 21.
+La lista se mantenia a mano, y una lista que hay que acordarse de actualizar no
+sirve para validar.
+
+La seccion 12 ya no lleva rutas: dice que se corran **todos** los
+`scripts/test_*.py`. Son 67 archivos y ~1.995 pruebas.
+
 ### Lo que hace falta para cerrarlo del todo
 
 **La guia infantil de las marcas.** El calzado de nino usa su propia escala
@@ -4023,54 +4033,23 @@ escrita a mano y por eso no atrapó a Supermall.
 
 ## 12. Cómo validar antes de entregar
 
+**La suite entera, no una lista escrita a mano.**
+
 ```bash
-python scripts/test_brand_commercial_input.py          # 6
-python scripts/test_carga_desde_solicitud.py           # 31
-python scripts/test_carga_remota.py                    # 40
-python scripts/test_engines_audit.py                   # 45
-python scripts/test_engines_metrics.py                 # 26
-python scripts/test_engines_notify.py                  # 88
-python scripts/test_engines_price_check.py             # 19
-python scripts/test_engines_stock.py                   # 35
-python scripts/test_engines_ticket_flow.py             # 55
-python scripts/test_engines_load_status.py             # 37
-python scripts/test_engines_video_media.py             # 106
-python scripts/test_carga_sial_parcial.py               # 30
-python scripts/test_lectura_catalogo.py                # 30
-python scripts/test_espejo_supermall.py                # 35
-python scripts/test_mantenedor_tallas.py               # 42
-python scripts/test_orden_tallas_reales.py             # 17
-python scripts/test_guias_tallas.py                    # 42
-python scripts/test_carga_supermall.py                 # 57
-python scripts/test_lectura_completa_del_catalogo.py    # 21
-python scripts/test_colecciones.py                     # 54
-python scripts/test_tipos_de_prenda.py                 # 13
-python scripts/test_carga_sial_campos.py               # 27
-python scripts/test_curva_y_carga_suelta.py            # 46
-python scripts/test_hueco_por_marca.py                 # 28
-python scripts/test_memoria.py                         # 15
-python scripts/test_css_movil.py                       # 33
-python scripts/test_rendimiento.py                     # 47
-python scripts/test_sincronizacion_y_limpieza.py       # 19
-python scripts/test_bandeja_solicitudes.py             # 57
-python scripts/test_partial_maintenance_validations.py # 6
-python scripts/test_siblings_carga_completa.py         # 24
-python scripts/test_siblings_referencias.py            # 14
-python scripts/test_siblings_tipos.py                  # 20
-python scripts/test_ticket_system.py                   # 28
-python scripts/test_tipos_vestido_y_bloqueos.py       # 24
-python scripts/test_optimizacion_memoria_excel.py       # 38
-python scripts/test_carga_supermall_rendimiento.py     # 16
-python scripts/test_handle_tipo_y_duplicados.py         # 18
-python scripts/test_pantallas_reales.py                 # 10
-python scripts/test_bigquery_storage.py                 # 10
-python scripts/test_supermall_pico_de_memoria.py        # 27
-python scripts/test_tallas_de_calzado_en_supermall.py   # 41
-python scripts/test_export_matrixify_y_validacion.py    # 42
+for f in scripts/test_*.py; do
+    echo "== $(basename $f)"; python "$f" 2>&1 | tail -3
+done
 ```
 
+Son **67 archivos y ~1.995 pruebas**. Aquí había una lista de 43 rutas mantenida
+a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
+que es justo el que fija la conversión de tallas. En septiembre de 2026 un
+cambio en el conversor lo rompió y no se vio hasta correr la suite completa,
+porque la lista no lo nombraba. Una lista que hay que acordarse de actualizar
+no sirve para validar: **se corren todos**.
+
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes
-> de estos cambios. El segundo espera `auth_role_label`, que ya no existe.
+> de todo esto. El segundo espera `auth_role_label`, que ya no existe.
 
 Además, siempre:
 

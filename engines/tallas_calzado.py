@@ -293,7 +293,13 @@ def talla_pe(valor, genero="", permitir_unisex=True):
         # Un numero fuera de su escala se devuelve TAL CUAL y se reporta. Una
         # talla en US se ve mal y alguien la corrige; una talla de hombre en un
         # zapato de nino se ve bien y llega al comprador.
-        return clave, FUERA_DE_ESCALA
+        #
+        # Se distinguen dos cosas, porque no se arreglan igual: si el numero
+        # existe en OTRA columna, el producto trae la escala de otro genero --
+        # casi siempre calzado infantil -- y lo que hace falta es su guia. Si
+        # no esta en ninguna, no es una talla que la guia conozca.
+        en_otra = any(clave in POR_ESCALA[otra] for otra in (HOMBRE, MUJER, NINO))
+        return clave, (FUERA_DE_ESCALA if en_otra else "desconocida")
 
     # Sin genero. Si el numero solo existe en una escala, no hay duda.
     encontrados = {

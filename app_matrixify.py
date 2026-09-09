@@ -11084,14 +11084,30 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     }
 
 
-def load_catalog_kpi_result(brand_config, shopify_config):
+def load_catalog_kpi_result(brand_config, shopify_config, force_refresh=False, aviso=None):
+    """Los KPIs del sitio. `force_refresh` vuelve a leer el catalogo de Shopify.
+
+    **El catalogo sale de `leer_catalogo_del_sitio`, no de `fetch_products`.**
+    Llamando al fetch directo, el dashboard se saltaba la cache que usan todas
+    las demas pantallas -sesion y disco, 2 horas- y volvia a leer la tienda
+    entera aunque Status de carga o Carga Supermall acabaran de leer ese mismo
+    sitio en esta sesion. En Vans.pe eso son minutos de espera con la pantalla
+    anterior a la vista, que es como se ve un "esta lentisima".
+
+    `aviso` es el hueco donde se cuenta por donde va la lectura, y **lo crea el
+    llamador**: creado aqui solo existiria en los reruns que leen, y eso cambia
+    la forma del arbol de elementos entre un rerun y el siguiente.
+    """
     arti_df, arti_source = read_arti_for_app(brand_config)
     stock_df = read_current_stock_from_bigquery(get_bigquery_config())
     if stock_df.empty:
         raise RuntimeError(
             "BigQuery devolvio 0 filas de stock. No se actualizo el dashboard para evitar pisar KPIs validos con ceros."
         )
-    shopify_products = fetch_products(shopify_config)
+    shopify_products = leer_catalogo_del_sitio(
+        brand_config.get("site_key"), shopify_config,
+        force_refresh=force_refresh, aviso=aviso,
+    )
     result = build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config)
     allowed_ecomm_codes = ecomm_stock_rule_codes_for_site(brand_config)
     result["meta"] = {
@@ -19656,6 +19672,11 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
             st.session_state[run_key] = result
         else:
             result = None
+    # El hueco del avance de la lectura se crea SIEMPRE, no dentro del `if`:
+    # creado en la rama, solo existe en los reruns que leen, y eso cambia la
+    # forma del arbol de elementos de un rerun al siguiente. Ver
+    # `leer_catalogo_del_sitio`.
+    aviso_lectura_kpis = st.empty()
     if result is None:
         cached_before_refresh = load_cached_catalog_kpi_result(brand_config["site_key"])
         spinner_text = (
@@ -19663,7 +19684,8 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         )
         with st.spinner(spinner_text):
             try:
-                result = load_catalog_kpi_result(brand_config, shopify_config)
+                result = load_catalog_kpi_result(
+                    brand_config, shopify_config, aviso=aviso_lectura_kpis)
                 st.session_state[run_key] = result
                 save_cached_catalog_kpi_result(brand_config["site_key"], result)
             except Exception as exc:
@@ -19706,7 +19728,10 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
     if manual_refresh:
         with st.spinner("Actualizando dashboard..."):
             try:
-                result = load_catalog_kpi_result(brand_config, shopify_config)
+                # "Actualizar" es justo la orden de NO usar la cache: vuelve a
+                # leer Shopify aunque el catalogo este en sesion o en disco.
+                result = load_catalog_kpi_result(
+                    brand_config, shopify_config, force_refresh=True, aviso=aviso_lectura_kpis)
                 st.session_state[run_key] = result
                 save_cached_catalog_kpi_result(brand_config["site_key"], result)
                 st.rerun()

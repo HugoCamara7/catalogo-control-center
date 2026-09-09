@@ -3666,6 +3666,66 @@ fijaban su talla de mujer.
 
 ---
 
+## 5 tertrigies. "Se queda pegada la imagen anterior": no es cache (septiembre 2026)
+
+Reportado con una captura entrando a **KPIs de catalogo** desde Carga
+Supermall: arriba el titulo nuevo y el spinner *"Cargando dashboard
+actualizado..."*, y **debajo, en gris, la pantalla anterior entera**. La
+lectura del usuario fue *"hay mucho cache por eso se pone lenta"*.
+
+### Lo gris de abajo es de Streamlit, y no se puede quitar
+
+Mientras el script corre, Streamlit **deja a la vista los elementos de la
+ejecucion anterior**, atenuados, y solo los poda cuando la ejecucion termina.
+Los indices que la pantalla nueva YA escribio se reemplazan (por eso el titulo
+viejo desaparece y el nuevo ocupa su sitio); los que todavia no ha escrito
+siguen mostrando lo de antes.
+
+Medido con Chromium sobre un repro de 30 lineas -- dos pantallas y un trabajo
+lento de 5 s --, contando lo que se VE (no lo que esta en el DOM):
+
+| | titulo viejo visible | lineas viejas visibles |
+|---|---:|---:|
+| como esta hoy | 0 | **6** |
+| cuerpo en un `st.empty()` que se vacia al entrar | 0 | **6** |
+| cuerpo en un `st.container(key=...)` por pantalla | 0 | **6** |
+| pintar la pantalla y `st.rerun()` antes del trabajo | 0 | **6** |
+
+**Los cuatro dan lo mismo.** No hay forma de blanquear la pantalla desde el
+script: lo unico que quita el gris es que la ejecucion TERMINE. Asi que la
+respuesta no es tocar el arbol de elementos -- es no hacer esperar.
+
+> Y ojo con la conclusion contraria: la duplicacion de la seccion 5 terdecies
+> **si** era nuestra y **si** se arreglo. Aquella cambiaba la FORMA del arbol
+> (un `st.empty()` creado dentro de una rama) y dejaba el bloque nuevo DEBAJO
+> del viejo. Esto otro es el gris de siempre, que aparece en cualquier app de
+> Streamlit que tarde.
+
+### Lo que si era nuestro: el Dashboard se saltaba la cache
+
+`load_catalog_kpi_result` llamaba a **`fetch_products` directo**, o sea que era
+la unica pantalla que no pasaba por `leer_catalogo_del_sitio` y se saltaba la
+cache de sesion **y la de disco (2 horas)** que usan todas las demas. Entrar a
+KPIs justo despues de que Status de carga o Carga Supermall hubieran leido ese
+mismo sitio volvia a leer la tienda entera. En Vans.pe son minutos -- con la
+pantalla anterior en gris todo ese rato, que es exactamente como se ve un
+"esta lentisima".
+
+Ahora lee por la misma puerta que el resto, y **"Actualizar" pasa
+`force_refresh=True`**: la cache no puede convertirse en una trampa, el boton
+existe justo para pasar por encima de ella.
+
+Hay una prueba AST que recorre TODO el archivo y **falla si alguien vuelve a
+llamar a `fetch_products` fuera de los dos sitios que si pueden**:
+`session_shopify_products`, que cachea, y el lector en paralelo, que consulta
+la cache antes en el hilo de la pantalla porque `st.session_state` no se puede
+tocar desde un hilo.
+
+`scripts/test_lectura_completa_del_catalogo.py` pasa de 17 a **21 pruebas**;
+las 4 nuevas fallan con el codigo anterior.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -3876,7 +3936,7 @@ python scripts/test_mantenedor_tallas.py               # 42
 python scripts/test_orden_tallas_reales.py             # 17
 python scripts/test_guias_tallas.py                    # 42
 python scripts/test_carga_supermall.py                 # 57
-python scripts/test_lectura_completa_del_catalogo.py    # 17
+python scripts/test_lectura_completa_del_catalogo.py    # 21
 python scripts/test_colecciones.py                     # 54
 python scripts/test_tipos_de_prenda.py                 # 13
 python scripts/test_carga_sial_campos.py               # 27

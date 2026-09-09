@@ -188,5 +188,68 @@ class TestElParteDeLaLecturaSeREPORTA(unittest.TestCase):
         self.assertIn('e.get("Estado") == "Leido" and clean_value(e.get("Detalle"))', fuente)
 
 
+class TestNadieSeSaltaLaCacheDelCatalogo(unittest.TestCase):
+    """El Dashboard leia la tienda entera aunque ya estuviera en cache.
+
+    Reportado como *"hay mucho cache por eso se pone lenta"*. Era al reves: el
+    problema es que el Dashboard **no usaba** la cache. `load_catalog_kpi_result`
+    llamaba a `fetch_products` directo, saltandose la de sesion y la de disco
+    (2 horas) que usan todas las demas pantallas: se entraba a KPIs justo
+    despues de que Status de carga o Carga Supermall hubieran leido ese mismo
+    sitio, y volvia a leerlo entero. En Vans.pe son minutos.
+    """
+
+    def _fuente(self, nombre):
+        import app_matrixify as app
+        return inspect.getsource(getattr(app, nombre))
+
+    def test_el_dashboard_lee_por_la_puerta_con_cache(self):
+        cuerpo = self._fuente("load_catalog_kpi_result")
+        self.assertIn("leer_catalogo_del_sitio(", cuerpo)
+        self.assertNotIn("fetch_products(", cuerpo)
+
+    def test_solo_DOS_sitios_llaman_a_fetch_products(self):
+        """`session_shopify_products` (que cachea) y el lector en paralelo, que
+        consulta la cache antes en el hilo de la pantalla. Cualquier tercero se
+        estaria saltando la cache."""
+        import pathlib
+        import app_matrixify as app
+        arbol = ast.parse(pathlib.Path(app.__file__).read_text(encoding="utf-8"))
+        duenos = set()
+        for fn in [n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef)]:
+            for nodo in ast.walk(fn):
+                if (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name)
+                        and nodo.func.id == "fetch_products"):
+                    duenos.add(fn.name)
+        # `_leer` es el cuerpo del hilo dentro de `cargar_catalogos_de_todos_los_sitios`:
+        # ahi la cache ya se consulto ANTES, en el hilo de la pantalla, porque
+        # `st.session_state` no se puede tocar desde un hilo.
+        permitidos = {"session_shopify_products", "cargar_catalogos_de_todos_los_sitios", "_leer"}
+        self.assertEqual(
+            duenos, permitidos,
+            f"alguien mas llama a fetch_products y se salta la cache: {sorted(duenos - permitidos)}",
+        )
+
+    def test_Actualizar_SI_fuerza_la_relectura(self):
+        """La cache no puede convertirse en una trampa: el boton existe para
+        pasar por encima de ella."""
+        cuerpo = self._fuente("render_catalog_kpi_dashboard")
+        self.assertIn("force_refresh=True", cuerpo)
+
+    def test_el_hueco_del_avance_NO_se_crea_dentro_de_una_rama(self):
+        """Creado dentro del `if`, solo existe en los reruns que leen, y eso
+        cambia la forma del arbol de elementos entre un rerun y el siguiente.
+
+        El nombre lleva sufijo (`_kpis`) a proposito: `test_lectura_catalogo`
+        localiza el hueco de Carga completa por su nombre con `.index()`, y dos
+        variables iguales en archivos distintos le dan la posicion equivocada.
+        """
+        cuerpo = self._fuente("render_catalog_kpi_dashboard")
+        lineas = [l for l in cuerpo.splitlines() if "aviso_lectura_kpis = st.empty()" in l]
+        self.assertEqual(len(lineas), 1)
+        sangria = len(lineas[0]) - len(lineas[0].lstrip())
+        self.assertEqual(sangria, 4, "el hueco quedo dentro de una rama")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

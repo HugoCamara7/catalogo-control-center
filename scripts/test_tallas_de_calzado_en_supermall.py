@@ -387,5 +387,67 @@ class TestUnaSolaPreguntaPorElGENERO(unittest.TestCase):
         self.assertEqual(g.genero_de_producto({"Genero": "#N/D", "Title": "Zapatilla"}), "")
 
 
+class TestNoExisteUnaTalla2Punto1(unittest.TestCase):
+    """Reportado por el usuario: *"vi que habian tallas que decian 2.1 eso no
+    tiene sentido"*.
+
+    `interpretar_curva` elegia el divisor solo por el RANGO numerico, asi que
+    una curva `42, 44, 46, 48, 50, 52` -- que no es de calzado: son tallas de
+    vestuario -- entraba en el rango del US al dividirla entre diez y se
+    publicaba `4.2, 4.4, 4.6, 4.8, 5, 5.2`.
+
+    Medido sobre el maestro real (653.431 filas): **18 modelo-color** lo
+    hacian, 16 de Rockford y 2 de Columbia.
+    """
+
+    def _leer(self, curva, genero=""):
+        from engines.tallas_calzado import interpretar_curva
+        divisor, escala, _nota = interpretar_curva(curva, genero)
+        return divisor, escala, [g._dividir_talla(v, divisor) for v in curva]
+
+    def test_la_curva_real_de_Rockford_ya_no_se_divide(self):
+        divisor, escala, salida = self._leer(["42", "44", "46", "48", "50", "52"])
+        self.assertEqual((divisor, escala), (1, ""))
+        self.assertEqual(salida, ["42", "44", "46", "48", "50", "52"])
+
+    def test_la_curva_real_de_Columbia_tampoco(self):
+        _d, _e, salida = self._leer(["12", "36", "38", "40", "42"])
+        self.assertEqual(salida, ["12", "36", "38", "40", "42"])
+
+    def test_ninguna_division_puede_dejar_un_decimal_que_no_sea_medio(self):
+        """Las escalas de calzado van de media en media. Un `2.1` no es una
+        talla: es la prueba de que el divisor no era el bueno."""
+        for curva in (["21", "22", "23"], ["210", "220", "230"], ["25", "26", "27"],
+                      ["11", "13", "17"], ["42", "44", "46"]):
+            with self.subTest(curva=curva):
+                _d, _e, salida = self._leer(curva)
+                for talla in salida:
+                    if "." in talla:
+                        self.assertTrue(talla.endswith(".5"), f"{curva} -> {salida}")
+
+    def test_y_las_curvas_de_verdad_se_siguen_leyendo_IGUAL(self):
+        """La guarda no puede costar ninguna lectura buena: son las mismas
+        curvas que el maestro trae hoy."""
+        esperado = {
+            ("50", "55", "60", "65", "70"): ["5", "5.5", "6", "6.5", "7"],
+            ("390", "400", "410"): ["39", "40", "41"],
+            ("800", "850"): ["8", "8.5"],
+            ("085", "090"): ["8.5", "9"],
+            ("040", "050", "060", "070"): ["4", "5", "6", "7"],
+            ("10", "20", "30", "40", "45"): ["1", "2", "3", "4", "4.5"],
+            ("70", "75", "80", "85", "90", "100"): ["7", "7.5", "8", "8.5", "9", "10"],
+        }
+        for curva, salida in esperado.items():
+            with self.subTest(curva=curva):
+                self.assertEqual(self._leer(list(curva))[2], salida)
+
+    def test_la_lectura_DIRECTA_no_se_toca(self):
+        """La directa no transforma nada -- lo que trae el maestro sale tal
+        cual --, asi que ahi no hay nada que comprobar. Solo dividir inventa un
+        numero."""
+        from engines.tallas_calzado import interpretar_curva
+        self.assertEqual(interpretar_curva(["38.5", "39", "40"], "")[:2], (1, "PE"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

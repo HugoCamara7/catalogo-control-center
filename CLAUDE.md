@@ -3562,6 +3562,44 @@ Ojo con lo que se gana de verdad: **Hush Puppies entrega 8.165 mod-col ya en
 PE** y solo 2.752 en US, asi que la mayor parte de su calzado no se convierte
 en ningun caso.
 
+### 6. No existe una talla 2.1
+
+Reportado por el usuario: *"vi que habian tallas que decian 2.1 eso no tiene
+sentido"*. Tenia razon y no era un caso raro de laboratorio.
+
+`interpretar_curva` elegia el divisor **solo por el RANGO numerico**: probaba
+directa, entre diez y entre cien, y se quedaba con la primera que dejara todas
+las tallas dentro de US (1-16.5) o PE (26-50). Una curva `42, 44, 46, 48, 50,
+52` -- que no es de calzado, son tallas de vestuario en un producto tipificado
+como calzado -- no cabe directa (el 52 se pasa del PE), pero **entre diez cabe
+de sobra en el rango del US**, asi que se publicaba `4.2, 4.4, 4.6, 4.8, 5,
+5.2`.
+
+**Las escalas de calzado van de media en media.** Un `2.1` no es una talla: es
+la prueba de que ese divisor no era el bueno. `_es_media_talla` lo comprueba, y
+una division que deja cualquier otro decimal se descarta.
+
+**Solo se comprueba al DIVIDIR.** La lectura directa no transforma nada -- lo
+que trae el maestro sale tal cual --, asi que ahi no hay nada que verificar;
+dividir SI inventa un numero, y si el numero inventado no es una talla, el
+divisor estaba mal.
+
+Medido sobre el maestro real (653.431 filas): **18 modelo-color** lo hacian, 16
+de Rockford y 2 de Columbia:
+
+```
+RK111021393-176   42, 44, 46, 48, 50, 52  ->  4.2, 4.4, 4.6, 4.8, 5, 5.2
+TL8258-EN5        12, 36, 38, 40, 42      ->  1.2, 3.6, 3.8, 4, 4.2
+```
+
+Ahora los dos se publican con la talla del maestro y la Revision dice *"la
+curva no cabe en ninguna escala de calzado conocida"*, que es la verdad: eso no
+es una curva de calzado, y lo que hay que revisar es el tipo del producto.
+
+Comprobado que **la guarda no cuesta ninguna lectura buena**: las siete formas
+que el maestro trae hoy -- `50,55,60`, `390,400,410`, `800,850`, `085`,
+`040,050`, `10,20,30,40,45` y `70,75,80` -- se leen exactamente igual.
+
 ### Lo que la validacion con el catalogo REAL dejo a la vista
 
 200 codigos de calzado del catalogo de Columbia.pe cruzados con el maestro real
@@ -3576,7 +3614,7 @@ son unos *"Guantes Arctic Crest"* con `Type = Zapatillas`, y sus tallas son `S`
 y `M`. La app hace lo correcto -- no hay talla PE para una S -- y lo reporta;
 lo que hay que arreglar es el tipo del producto en la tienda.
 
-`scripts/test_tallas_de_calzado_en_supermall.py` pasa de 17 a **34 pruebas** y
+`scripts/test_tallas_de_calzado_en_supermall.py` pasa de 17 a **39 pruebas** y
 `test_guias_tallas.py` de 25 a **42**. Seis pruebas de tres archivos cambiaron
 de esperado y son la consecuencia buscada: las que usaban a Columbia como
 ejemplo de marca SIN guia propia (ahora ese papel lo hace Sorel) y las que
@@ -3817,7 +3855,7 @@ python scripts/test_handle_tipo_y_duplicados.py         # 18
 python scripts/test_pantallas_reales.py                 # 10
 python scripts/test_bigquery_storage.py                 # 10
 python scripts/test_supermall_pico_de_memoria.py        # 27
-python scripts/test_tallas_de_calzado_en_supermall.py   # 34
+python scripts/test_tallas_de_calzado_en_supermall.py   # 39
 python scripts/test_export_matrixify_y_validacion.py    # 42
 ```
 

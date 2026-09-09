@@ -335,6 +335,23 @@ def _cabe(valor, rango):
     return rango[0] <= valor <= rango[1]
 
 
+def _es_media_talla(valor):
+    """True si el numero cae en un escalon de talla real: entero o `.5`.
+
+    **No existe una talla 2.1.** Las escalas de calzado van de media en media,
+    asi que una division que deja `2.1, 2.2, 2.3` no es una lectura de la
+    curva: es la prueba de que ese divisor no era el bueno. Sin esta guarda,
+    una curva `21, 22, 23` -- que en el maestro son tallas PE de nino, o
+    centimetros -- entraba en el rango numerico del US y se publicaba dividida
+    entre diez.
+
+    Se comprueba sobre el doble para no comparar decimales: `2.5 * 2` es 5, y
+    `2.1 * 2` es 4.2.
+    """
+    doble = valor * 2
+    return abs(doble - round(doble)) < 1e-9
+
+
 # Una curva de calzado de MUJER no empieza en la 40. Las tallas PE de mujer van
 # de la 34.5 a la 43, asi que una curva de mujer cuyo minimo leido como PE sea
 # 40 o mas no esta en PE: es US mal escrito. Es la regla que dio el usuario --
@@ -370,6 +387,12 @@ def interpretar_curva(valores, genero=""):
     descartadas_por_mujer = []
     for divisor in DIVISORES:
         convertidos = [n / divisor for n in numeros]
+        # Una DIVISION tiene que dejar tallas reales. La lectura directa no
+        # transforma nada -- lo que trae el maestro sale tal cual --, asi que
+        # ahi no hay nada que comprobar; dividir SI inventa un numero, y si el
+        # numero inventado no es una talla, el divisor estaba mal.
+        if divisor != 1 and not all(_es_media_talla(n) for n in convertidos):
+            continue
         if all(_cabe(n, RANGO_PE) for n in convertidos):
             # La regla de mujer DESCARTA la lectura PE, no elige otra: si la
             # curva de mujer empezara en la 40 leida en PE, no es PE.

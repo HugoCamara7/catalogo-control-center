@@ -1195,12 +1195,74 @@ def clase_de_tipo(product_type):
 
 
 def product_gender(product):
+    """El genero TAL Y COMO viene declarado, sin normalizar.
+
+    Es lo que va a la hoja Carga Sial y a los bullets, donde el almacen espera
+    el valor del maestro. Para decidir una TALLA no sirve: ahi hace falta la
+    cascada completa (`genero_de_producto`), porque un producto sin el
+    metacampo puesto igual dice "Mujer" en el titulo.
+    """
     return first_non_empty(
         product.get("Metafield: custom.genero [single_line_text_field]"),
         product.get("Genero"),
         product.get("Género"),
         product.get("Gender"),
     )
+
+
+# Valores del maestro que significan "vacio". Un "#N/D" no es un genero.
+_GENERO_SIN_DATO = {"#N/D", "#ND", "#N/A", "NAN", "NONE", "NULL"}
+
+
+def _valor_de_genero(value):
+    text = clean(value)
+    return "" if not text or text.upper() in _GENERO_SIN_DATO else text
+
+
+def genero_de_producto(row):
+    """Masculino / Femenino / Unisex / Niños, o "" si no se sabe.
+
+    **Primero el DATO y solo despues el texto de la ficha.** Un "Canguro
+    Empacable Uniex Lightweight" (con el typo) no contiene "unisex", asi que la
+    heuristica de texto sola devolvia vacio aunque el maestro trajera
+    `GENERO_MA = UNISEX`.
+
+    Vive aqui, y no en la capa de pantalla, porque la pregunta la hacen las DOS
+    rutas de carga: la completa (`display_size_for_site`) y la de codigos
+    (`centry_gender`, que delega aqui). Escrita dos veces, la misma bota se
+    convertia a PE por un camino y se quedaba en US por el otro -- es la trampa
+    de las dos `normalize_size`.
+    """
+    declarado = first_non_empty(
+        _valor_de_genero(row.get("Metafield: custom.genero [single_line_text_field]")),
+        _valor_de_genero(row.get("Genero")),
+        _valor_de_genero(row.get("GENERO_MA")),
+        _valor_de_genero(row.get("Género")),
+        _valor_de_genero(row.get("Gender")),
+    )
+    declarado_normalizado = _valor_de_genero(declarado).lower()
+    if declarado_normalizado:
+        if "unisex" in declarado_normalizado:
+            return "Unisex"
+        if "mujer" in declarado_normalizado or "femenino" in declarado_normalizado or "dama" in declarado_normalizado:
+            return "Femenino"
+        if "hombre" in declarado_normalizado or "masculino" in declarado_normalizado or "varon" in declarado_normalizado:
+            return "Masculino"
+        if ("nino" in declarado_normalizado or "niño" in declarado_normalizado
+                or "nina" in declarado_normalizado or "niña" in declarado_normalizado
+                or "kids" in declarado_normalizado or "infantil" in declarado_normalizado):
+            return "Niños"
+    text = " ".join(_valor_de_genero(row.get(column)).lower()
+                    for column in ("Title", "Tags", "Body HTML", "Type"))
+    if "unisex" in text:
+        return "Unisex"
+    if "mujer" in text or "femenino" in text:
+        return "Femenino"
+    if "hombre" in text or "masculino" in text:
+        return "Masculino"
+    if "niño" in text or "nino" in text or "kids" in text:
+        return "Niños"
+    return ""
 
 
 def product_technology(product, tech_col):
@@ -1489,17 +1551,83 @@ def display_size_for_site(value, brand_config=None, gender="", product_type="", 
     return convertida or talla
 
 
+GUIAS_TALLAS_XLSX = Path("data/guias_tallas.xlsx")
+
+_guias_del_excel = None
+
+
+def cargar_guias_de_tallas(ruta=GUIAS_TALLAS_XLSX):
+    """Registra las guias de `data/guias_tallas.xlsx`. Devuelve `(marcas, avisos)`.
+
+    **Una guia nueva tiene que poder entrar sin tocar codigo.** El docstring de
+    `registrar_tabla` prometia este Excel desde que se escribio y no lo leia
+    nadie, asi que agregar la guia de Hush Puppies o de Keds seguia siendo un
+    commit. Ahora es una hoja.
+
+    Formato: **una hoja por marca**, el nombre de la hoja ES la marca, y cinco
+    columnas -- `US Men`, `US Women`, `US Boy`, `PE`, `CM` --. Es la misma forma
+    que `TABLA_VANS` y que `TABLA_COLUMBIA`, o sea la de las guias oficiales.
+
+    **Lo del Excel manda sobre lo del codigo**: si alguien registra la guia
+    oficial de una marca que aqui esta aproximada, la suya gana sin tener que
+    borrar nada.
+
+    Nunca levanta. Un archivo que no esta no es un problema -- es el caso
+    normal --, y uno roto se reporta en `avisos` y deja el resto de las guias
+    en pie: perder la conversion de todas las marcas porque una hoja tiene una
+    columna mal escrita seria peor que el problema.
+    """
+    global _guias_del_excel
+    if _guias_del_excel is not None:
+        return _guias_del_excel
+    marcas, avisos = [], []
+    ruta = Path(ruta)
+    try:
+        if ruta.exists():
+            from engines import guias_tallas
+            columnas = ("US Men", "US Women", "US Boy", "PE", "CM")
+            with pd.ExcelFile(ruta) as libro:
+                for hoja in libro.sheet_names:
+                    marca = clean(hoja).upper()
+                    try:
+                        tabla = pd.read_excel(libro, sheet_name=hoja, dtype=str).fillna("")
+                        faltan = [c for c in columnas if c not in tabla.columns]
+                        if faltan:
+                            avisos.append(f"{hoja}: le faltan las columnas {', '.join(faltan)}")
+                            continue
+                        filas = [tuple(clean(fila[c]) for c in columnas)
+                                 for fila in tabla.to_dict("records")]
+                        filas = [f for f in filas if f[3]]
+                        if not filas:
+                            avisos.append(f"{hoja}: no tiene ninguna fila con PE")
+                            continue
+                        guias_tallas.registrar_tabla(
+                            f"Guia de Tallas {hoja} (data/guias_tallas.xlsx)",
+                            marca, guias_tallas.CALZADO, filas)
+                        marcas.append(marca)
+                    except Exception as error:  # noqa: BLE001 - una hoja rota no tumba las demas
+                        avisos.append(f"{hoja}: {type(error).__name__}: {error}")
+    except Exception as error:  # noqa: BLE001 - el contrato es que nunca levanta
+        avisos.append(f"{ruta}: {type(error).__name__}: {error}")
+    _guias_del_excel = (marcas, avisos)
+    return _guias_del_excel
+
+
 def talla_calzado_pe(value, gender="", marca=""):
     """(talla PE, nota). La unica puerta por la que se convierte una talla.
 
     Sin `marca` se usa la guia de Vans, que era el unico comportamiento que
     habia antes de que existiera el registro. Con marca se busca la suya y, si
-    no tiene, **no se convierte**: la nota dice "sin guia".
+    no tiene, se usa la guia por defecto y se deja constancia.
     """
     try:
         from engines import guias_tallas
     except ImportError:
         return clean(value), ""
+    # Perezoso y memoizado: leer el Excel en tiempo de import costaria en cada
+    # arranque de la app, se convierta una talla o no. Es la leccion de
+    # `CENTRY_COLUMNS`.
+    cargar_guias_de_tallas()
     clave = clean(marca).upper() or "VANS"
     return guias_tallas.convertir(value, clave, guias_tallas.CALZADO, gender)
 
@@ -4328,7 +4456,6 @@ AVISO_TALLA_MOTIVOS = {
         "distintas (un 8 de hombre es PE 40.5 y uno de mujer PE 38.5)"
     ),
     "desconocida": "la talla no esta en la guia de esa marca",
-    "ambigua": "el numero existe en dos escalas de la guia",
 }
 
 # Avisos de tallas que SI se convirtieron. No son un fallo -- la talla salio
@@ -4338,6 +4465,30 @@ AVISO_TALLA_CONVERTIDAS = {
         "esa marca no tiene guia propia registrada, asi que se convirtieron con "
         "la guia de Vans, que es la unica confirmada. Si alguna equivalencia no "
         "cuadra, hay que registrar la guia de la marca"
+    ),
+    "unisex": (
+        "el producto es unisex y el numero existe en dos escalas, asi que se "
+        "resolvio con la escala unisex de la guia -- la de hombre, que es como "
+        "se publica el calzado unisex"
+    ),
+    "guia por defecto, escala unisex": (
+        "el producto es unisex y su marca no tiene guia propia: se convirtio "
+        "con la escala unisex de la guia de Vans, que es la unica confirmada"
+    ),
+    # "ambigua" estaba en la tabla de arriba, o sea que la hoja de Revision
+    # decia "se publican SIN convertir a PE" sobre tallas que SI se
+    # convirtieron -- medido: 7 tallas de una carga real de Columbia. Es el
+    # mismo fallo que ya se corrigio con la nota de lectura: un aviso que manda
+    # a buscar un problema que no existe es peor que no avisar.
+    "fuera de la guia de la marca": (
+        "esa talla no esta en la tabla publicada de la marca -- las guias "
+        "empiezan donde empieza su catalogo y el maestro trae numeros por "
+        "debajo --, asi que se convirtio con la guia de Vans"
+    ),
+    "ambigua": (
+        "el numero no esta en la escala que le toca a ese genero pero si en "
+        "otra de la guia, asi que se resolvio con esa. Suele ser un producto "
+        "de nino con numeracion de adulto: conviene revisar la equivalencia"
     ),
 }
 
@@ -4755,7 +4906,11 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
             is_first = position == 1
             display_size = display_size_for_site(
                 variant["__SIZE"], brand_config,
-                gender=product_gender(product), product_type=product_type,
+                # La cascada COMPLETA, la misma que la carga por codigos. Con
+                # `product_gender` -- solo el dato declarado -- una bota sin el
+                # metacampo se quedaba en US aunque el titulo dijera "Mujer", y
+                # el mismo producto salia distinto segun por donde pasara.
+                gender=genero_de_producto(product), product_type=product_type,
                 # La MARCA decide la tabla de conversion, no el sitio: en
                 # Supermall.pe conviven marcas que entregan en US con marcas
                 # que ya entregan en PE.

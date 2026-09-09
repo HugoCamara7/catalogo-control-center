@@ -29,14 +29,6 @@ Sin Streamlit y sin pandas, como el resto de `engines/`.
 # opcion escrita de varias formas; el orden no importa, se compara normalizado.
 NOMBRES_DE_TALLA = ("talla", "tallas", "size", "sizes", "talle")
 
-# Marcas cuyo CALZADO se publica en escala PE/EU y no en US.
-#
-# Va por MARCA y no por sitio a proposito. `tallas_calzado_pe` es una bandera
-# del sitio, y eso alcanzaba mientras Vans vivia solo en Vans.pe; con
-# Supermall.pe -- que lleva Vans, Columbia, Hush Puppies y el resto en la misma
-# tienda -- una bandera de sitio convertiria TODO el calzado del sitio o nada.
-MARCAS_TALLA_PE = ("VANS",)
-
 # Situaciones en las que puede quedar un producto.
 ORDENADO = "Ordenado"
 DESORDENADO = "Fuera de orden"
@@ -52,10 +44,6 @@ def _texto(valor):
 
 def _clave(valor):
     return _texto(valor).casefold()
-
-
-def marca_publica_en_pe(marca, marcas=MARCAS_TALLA_PE):
-    return _texto(marca).upper() in {_texto(m).upper() for m in marcas}
 
 
 def nombre_de_opcion_de_talla(variantes):

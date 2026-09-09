@@ -104,7 +104,10 @@ class TestElGeneroSaleDeLaFichaSiNoEstaElDato(unittest.TestCase):
         return [app.clean_value(v) for v in mx["Option1 Value"]]
 
     def test_sin_el_metacampo_el_titulo_dice_el_genero(self):
-        self.assertEqual(self._matrixify(), ["34.5", "36", "38.5"])
+        # Media talla mas arriba que en la guia de Vans: la mujer de Columbia
+        # calza 0,5 cm mas en el mismo numero US, y desde septiembre de 2026
+        # Columbia tiene su propia tabla (`TABLA_COLUMBIA`).
+        self.assertEqual(self._matrixify(), ["35", "36.5", "39"])
 
     def test_con_el_metacampo_manda_el_metacampo(self):
         """El DATO gana al texto: un titulo que diga "Mujer" no puede pisar un
@@ -113,15 +116,16 @@ class TestElGeneroSaleDeLaFichaSiNoEstaElDato(unittest.TestCase):
 
 
 class TestLaGuiaPorDefecto(unittest.TestCase):
-    def test_columbia_se_convierte_aunque_no_tenga_guia_propia(self):
-        self.assertIsNone(gt.guia_para("COLUMBIA", gt.CALZADO))
+    def test_sorel_se_convierte_aunque_no_tenga_guia_propia(self):
+        # El ejemplo era Columbia hasta que Columbia tuvo la suya.
+        self.assertIsNone(gt.guia_para("SOREL", gt.CALZADO))
         self.assertEqual(
-            gt.convertir("8", "COLUMBIA", gt.CALZADO, "Femenino"), ("38.5", gt.POR_DEFECTO))
+            gt.convertir("8", "SOREL", gt.CALZADO, "Femenino"), ("38.5", gt.POR_DEFECTO))
 
     def test_y_la_carga_lo_deja_por_escrito(self):
         avisos = []
         g.display_size_for_site("8", SUPERMALL, gender="Femenino",
-                                product_type="Zapatilla", marca="COLUMBIA", avisos=avisos)
+                                product_type="Zapatilla", marca="SOREL", avisos=avisos)
         filas = g.avisos_de_talla_a_issues(avisos)
         self.assertEqual(len(filas), 1)
         texto = filas[0]["Problema"]
@@ -163,7 +167,7 @@ class TestLaHojaSialDiceLaMismaTallaQueLaTienda(unittest.TestCase):
 
     def test_talla_web_es_la_talla_PUBLICADA(self):
         self.assertEqual(
-            [app.clean_value(v) for v in self.sial["Talla Web "]], ["34.5", "36", "38.5"])
+            [app.clean_value(v) for v in self.sial["Talla Web "]], ["35", "36.5", "39"])
 
     def test_y_coincide_con_lo_que_se_escribe_en_shopify(self):
         """Dos lectores del mismo producto no pueden decir tallas distintas."""
@@ -180,7 +184,7 @@ class TestLaHojaSialDiceLaMismaTallaQueLaTienda(unittest.TestCase):
     def test_la_hoja_de_Centry_tambien_publica_la_talla_convertida(self):
         centry = app.build_centry_sial_from_matrixify(self.mx, SUPERMALL)
         self.assertEqual(
-            [app.clean_value(v) for v in centry["Talla Web "]], ["34.5", "36", "38.5"])
+            [app.clean_value(v) for v in centry["Talla Web "]], ["35", "36.5", "39"])
 
 
 class TestLoQueNoCambia(unittest.TestCase):
@@ -211,6 +215,176 @@ class TestLoQueNoCambia(unittest.TestCase):
                                     product_type="Zapatilla", marca="COLUMBIA"),
             "8",
         )
+
+class TestSupermallEsUnaWEBnoUnaMARCA(unittest.TestCase):
+    """Todo el calzado de Supermall.pe tiene que verse en la misma escala.
+
+    Pedido del usuario en septiembre de 2026: *"la guia de tallas de vans
+    cambiala en todo supermall porque supermall es una web no una marca
+    entonces tiene que verse igual la talla de todos los calzados"*.
+
+    La guia por defecto ya cubria las marcas sin guia propia, pero quedaba un
+    hueco: el calzado **UNISEX**. `escala_de_genero("Unisex")` devuelve "" --
+    igual que un producto sin genero -- y el conversor lo trataba como "no se
+    sabe", asi que unas zapatillas unisex se publicaban en `8, 9, 10` justo al
+    lado de otras en `40.5, 42, 43`.
+    """
+
+    def _publicadas(self, marca, genero, curva):
+        return [
+            g.display_size_for_site(
+                valor, SUPERMALL, gender=genero, product_type="Zapatillas",
+                marca=marca, curva=curva, valor_crudo=valor,
+            )
+            for valor in curva
+        ]
+
+    def test_el_calzado_unisex_TAMBIEN_sale_en_PE(self):
+        self.assertEqual(
+            self._publicadas("COLUMBIA", "Unisex", ["70", "80", "90"]),
+            ["39", "40.5", "42"],
+        )
+
+    def test_todas_las_marcas_de_supermall_publican_en_la_misma_escala(self):
+        """La misma curva US, en cualquier marca, da la misma talla PE.
+
+        Es la pregunta del usuario: Supermall es una web, no una marca. Con una
+        marca sin convertir, el filtro de talla de la tienda no sirve.
+        """
+        esperado = ["39", "40.5", "42"]
+        for marca in ("VANS", "COLUMBIA", "HUSH PUPPIES", "SOREL", "KEDS", "ROCKFORD"):
+            for genero in ("Masculino", "Unisex"):
+                with self.subTest(marca=marca, genero=genero):
+                    self.assertEqual(
+                        self._publicadas(marca, genero, ["70", "80", "90"]), esperado)
+
+    def test_una_curva_que_ya_viene_en_PE_no_se_toca(self):
+        self.assertEqual(
+            self._publicadas("HUSH PUPPIES", "Unisex", ["390", "400", "410"]),
+            ["39", "40", "41"],
+        )
+
+    def test_la_conversion_unisex_QUEDA_por_escrito(self):
+        """Convertida no es lo mismo que convertida sin salvedades: la escala
+        unisex es una decision de la guia y tiene que poder leerse."""
+        _convertida, nota = gt.convertir("8", "SOREL", gt.CALZADO, "Unisex")
+        self.assertEqual(nota, gt.POR_DEFECTO_UNISEX)
+        problema = g.avisos_de_talla_a_issues(
+            [{"Talla": "8", "Marca": "SOREL", "Motivo": nota}])[0]["Problema"]
+        self.assertIn("unisex", problema)
+        self.assertIn("convirtieron a PE", problema)
+
+    def test_las_dos_salvedades_se_leen_las_dos(self):
+        """Marca sin guia propia Y producto unisex. Pisar una con la otra deja
+        la mitad del informe sin escribir."""
+        _c, nota = gt.convertir("8", "SOREL", gt.CALZADO, "Unisex")
+        problema = g.avisos_de_talla_a_issues(
+            [{"Talla": "8", "Marca": "SOREL", "Motivo": nota}])[0]["Problema"]
+        self.assertIn("unisex", problema)
+        self.assertIn("guia de Vans", problema)
+
+    def test_una_marca_CON_guia_propia_avisa_solo_del_unisex(self):
+        _c, nota = gt.convertir("8", "VANS", gt.CALZADO, "Unisex")
+        self.assertEqual(nota, gt.UNISEX)
+
+    def test_sin_genero_NINGUNO_se_sigue_sin_convertir(self):
+        """Unisex es un DATO; no saber el genero es otra cosa.
+
+        Un US 8 de hombre es PE 40.5 y uno de mujer 38.5: adivinar publica una
+        talla inventada como si fuera cierta. Se deja en origen y se reporta.
+        """
+        convertida, nota = gt.convertir("8", "COLUMBIA", gt.CALZADO, "")
+        self.assertEqual((convertida, nota), ("8", gt.SIN_GENERO))
+
+    def test_el_calzado_de_NINO_tambien_sale_en_PE(self):
+        """`1Y` y `1` son la misma talla, y el maestro escribe la segunda.
+
+        Medido en el catalogo real de Columbia.pe: TODAS las botas y
+        zapatillas de nino traen la curva `10, 20, 30, 40, 45` -- o sea `1, 2,
+        3, 4, 4.5` --, y esos numeros no estaban en ninguna columna de la guia,
+        asi que el producto entero se quedaba sin convertir y salia en `1, 2,
+        3, 4` al lado de las de adulto en `39, 40, 41`.
+        """
+        self.assertEqual(
+            self._publicadas("COLUMBIA", "Niños", ["10", "20", "30", "40", "45"]),
+            ["31.5", "32.5", "34", "35", "36"],
+        )
+
+    def test_pero_un_10_punto_5_de_ADULTO_no_es_una_talla_de_bebe(self):
+        """Las de bebe (`10.5C`...`13.5C`) NO se alian: esos numeros existen en
+        la columna de adulto. Un `10.5` de hombre es PE 44, no el PE 27 de un
+        `10.5C`."""
+        from engines import tallas_calzado as tc
+        self.assertIsNone(tc.POR_ESCALA[tc.NINO].get("10.5"))
+        self.assertEqual(gt.convertir("10.5", "VANS", gt.CALZADO, "Masculino")[0], "44")
+        self.assertEqual(gt.convertir("10.5C", "VANS", gt.CALZADO, "")[0], "27")
+
+    def test_el_aviso_de_AMBIGUA_no_dice_que_no_se_convirtio(self):
+        """Se convierten -- con la otra escala de la guia -- y el aviso decia
+        "se publican SIN convertir a PE". Medido: 7 tallas de una carga real de
+        Columbia. Es el mismo fallo que ya se corrigio con la nota de lectura.
+        """
+        convertida, nota = gt.convertir("8", "VANS", gt.CALZADO, "Ninos")
+        self.assertEqual(nota, "ambigua")
+        self.assertNotEqual(convertida, "8", "la talla SI se convirtio")
+        problema = g.avisos_de_talla_a_issues(
+            [{"Talla": "8", "Marca": "VANS", "Motivo": nota}])[0]["Problema"]
+        self.assertIn("convirtieron a PE", problema)
+        self.assertNotIn("SIN convertir", problema)
+
+    def test_un_sitio_que_publica_en_ORIGEN_no_convierte_el_unisex(self):
+        columbia = app.SITE_CONFIGS["columbia"]
+        self.assertEqual(
+            g.display_size_for_site("80", columbia, gender="Unisex",
+                                    product_type="Zapatillas", marca="COLUMBIA",
+                                    curva=["70", "80"], valor_crudo="80"),
+            "8",
+        )
+
+
+class TestUnaSolaPreguntaPorElGENERO(unittest.TestCase):
+    """La carga completa y la carga por codigos preguntaban distinto.
+
+    La completa usaba `product_gender` -- solo el dato declarado -- y la de
+    codigos `centry_gender`, que ademas lee el titulo. La misma bota se
+    convertia a PE por un camino y se quedaba en US por el otro: es la trampa
+    de las dos `normalize_size`.
+    """
+
+    def test_la_cascada_esta_escrita_UNA_vez(self):
+        """`centry_gender` DELEGA; no vuelve a escribir la cascada."""
+        import inspect
+        cuerpo = inspect.getsource(app.centry_gender)
+        self.assertIn("genero_de_producto(row)", cuerpo)
+        for palabra in ("unisex", "femenino", "masculino"):
+            self.assertNotIn(palabra, cuerpo.split('"""')[-1].lower(),
+                             "la cascada esta escrita otra vez en centry_gender")
+
+    def test_la_carga_completa_pregunta_por_la_cascada_COMPLETA(self):
+        import inspect
+        cuerpo = inspect.getsource(g.build_columbia_matrixify)
+        self.assertIn("gender=genero_de_producto(product)", cuerpo)
+        self.assertNotIn("gender=product_gender(product)", cuerpo)
+
+    def test_el_titulo_resuelve_el_genero_en_las_DOS(self):
+        ficha = {"Title": "Bota Para Mujer Waterproof", "Type": "Botas"}
+        self.assertEqual(g.genero_de_producto(ficha), "Femenino")
+        self.assertEqual(app.centry_gender(ficha), "Femenino")
+
+    def test_pero_la_hoja_Sial_conserva_el_valor_DECLARADO(self):
+        """`product_gender` no se toca: el almacen espera el valor del maestro,
+        no el normalizado. Un titulo no puede inventarle un genero a la hoja."""
+        self.assertEqual(g.product_gender({"Genero": "MUJER"}), "MUJER")
+        self.assertEqual(g.product_gender({"Title": "Bota Para Mujer"}), "")
+
+    def test_el_DATO_sigue_mandando_sobre_el_texto(self):
+        self.assertEqual(
+            g.genero_de_producto({"Genero": "Masculino", "Title": "Bota Para Mujer"}),
+            "Masculino",
+        )
+
+    def test_un_NoDisponible_del_maestro_no_es_un_genero(self):
+        self.assertEqual(g.genero_de_producto({"Genero": "#N/D", "Title": "Zapatilla"}), "")
 
 
 if __name__ == "__main__":

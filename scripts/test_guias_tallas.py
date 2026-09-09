@@ -15,9 +15,13 @@ Lo que fija
    se aplicaba la columna de hombre en silencio.
 5. Nada de esto detiene la carga.
 """
+import ast
 import os
+import shutil
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -64,8 +68,10 @@ class TestSinGuiaPropiaSeUsaLaPorDefecto(unittest.TestCase):
     Lo que NO cambia: la conversion se REPORTA. Nunca se inventa en silencio.
     """
 
-    def test_columbia_se_convierte_con_la_guia_por_defecto_y_se_reporta(self):
-        talla, nota = gt.convertir("8", "COLUMBIA", gt.CALZADO, "Masculino")
+    def test_sorel_se_convierte_con_la_guia_por_defecto_y_se_reporta(self):
+        # El ejemplo era Columbia hasta que Columbia tuvo la suya (busca
+        # `TABLA_COLUMBIA`). Sorel sigue sin guia publicada.
+        talla, nota = gt.convertir("8", "SOREL", gt.CALZADO, "Masculino")
         self.assertEqual(talla, "40.5")
         self.assertEqual(nota, gt.POR_DEFECTO)
 
@@ -90,14 +96,17 @@ class TestSinGuiaPropiaSeUsaLaPorDefecto(unittest.TestCase):
         gt._POR_DEFECTO.pop(gt._clave("", gt.CALZADO)[1], None)
         try:
             self.assertEqual(
-                gt.convertir("8", "COLUMBIA", gt.CALZADO, "Masculino"), ("8", gt.SIN_GUIA))
+                gt.convertir("8", "SOREL", gt.CALZADO, "Masculino"), ("8", gt.SIN_GUIA))
         finally:
             gt.registrar_guia_por_defecto(gt.CALZADO, respaldo)
 
-    def test_solo_vans_viene_con_guia_en_el_codigo(self):
+    def test_las_guias_del_codigo_son_las_DOS_confirmadas(self):
         """Si alguien agrega una guia, tiene que ser con su tabla. Esta prueba
-        obliga a pasar por aqui y a decidirlo, no a colarla."""
-        self.assertEqual(gt.marcas_con_guia(gt.CALZADO), ["VANS"])
+        obliga a pasar por aqui y a decidirlo, no a colarla.
+
+        Columbia entro en septiembre de 2026, buscada en la web a peticion del
+        usuario. Faltan Hush Puppies, Keds, Sorel y Rockford."""
+        self.assertEqual(gt.marcas_con_guia(gt.CALZADO), ["COLUMBIA", "VANS"])
 
     def test_una_guia_nueva_entra_como_TABLA_no_como_if(self):
         gt.registrar_tabla("Prueba", "MARCAPRUEBA", gt.CALZADO, [
@@ -195,9 +204,17 @@ class TestLaEscalaLaMandaElSitio(unittest.TestCase):
     def test_y_queda_constancia_de_con_que_guia_se_convirtio(self):
         avisos = []
         g.display_size_for_site("8", SUPERMALL, gender="Masculino",
-                                product_type="Zapatilla", marca="COLUMBIA",
+                                product_type="Zapatilla", marca="SOREL",
                                 avisos=avisos)
         self.assertEqual([a["Motivo"] for a in avisos], ["guia por defecto"])
+
+    def test_y_con_la_guia_PROPIA_no_hay_salvedad_que_reportar(self):
+        avisos = []
+        talla = g.display_size_for_site("8", SUPERMALL, gender="Masculino",
+                                       product_type="Zapatilla", marca="COLUMBIA",
+                                       avisos=avisos)
+        self.assertEqual(talla, "40.5")
+        self.assertEqual(avisos, [])
 
 
 class TestSoloCalzado(unittest.TestCase):
@@ -231,6 +248,175 @@ class TestLaTablaCoincideConElExcelOficial(unittest.TestCase):
         por_pe = {fila[3]: fila[:3] for fila in tallas_calzado.TABLA_VANS}
         for pe, columnas in esperado.items():
             self.assertEqual(por_pe[pe], columnas, f"PE {pe}")
+
+
+class TestLaGuiaDeColumbia(unittest.TestCase):
+    """Buscada en la web a peticion del usuario (septiembre 2026).
+
+    Columbia publica **US -> largo de pie en cm**, no US -> EU, y su traduccion
+    a EU tiene fama de poco fiable. El PE se deriva del CENTIMETRO con la misma
+    columna CM de la tabla que ya usa la tienda, que es el dato fisico.
+    """
+
+    def test_esta_registrada_como_TABLA(self):
+        self.assertIn("COLUMBIA", gt.marcas_con_guia(gt.CALZADO))
+        self.assertEqual(len(gt.TABLA_COLUMBIA[0]), 5, "(US Men, US Women, US Boy, PE, CM)")
+
+    def test_el_PE_sale_del_CENTIMETRO_de_la_tabla_que_ya_usa_la_tienda(self):
+        """Si alguna fila no cuadrara con la columna CM, el catalogo tendria
+        dos escalas PE distintas segun la marca."""
+        for _men, _women, _boy, pe, cm in gt.TABLA_COLUMBIA:
+            with self.subTest(cm=cm):
+                self.assertEqual(tallas_calzado.POR_CM.get(cm), pe)
+
+    def test_en_HOMBRE_y_NINO_coincide_con_la_guia_de_Vans(self):
+        """Las dos marcas dan el mismo cm para el mismo US, asi que el PE es el
+        mismo. Es lo que permite comprobar que la tabla nueva no se invento."""
+        for genero, tallas in (("Masculino", ("7", "8", "9", "10", "12", "13")),
+                               ("Ninos", ("1", "2", "3", "4"))):
+            for talla in tallas:
+                with self.subTest(genero=genero, talla=talla):
+                    self.assertEqual(
+                        gt.convertir(talla, "COLUMBIA", gt.CALZADO, genero)[0],
+                        gt.convertir(talla, "VANS", gt.CALZADO, genero)[0],
+                    )
+
+    def test_en_MUJER_hay_media_talla_de_diferencia(self):
+        """La mujer de Columbia calza 0,5 cm mas que la de Vans en el mismo
+        numero US: su US 8 son 25 cm -> PE 39, y en Vans son 24,5 -> PE 38.5.
+        Es justo la razon por la que hacia falta buscar su guia."""
+        self.assertEqual(gt.convertir("8", "COLUMBIA", gt.CALZADO, "Femenino")[0], "39")
+        self.assertEqual(gt.convertir("8", "VANS", gt.CALZADO, "Femenino")[0], "38.5")
+
+    def test_una_talla_fuera_de_SU_tabla_se_convierte_con_la_por_defecto(self):
+        """La guia de Columbia empieza en el US 7 de hombre y el maestro trae
+        numeros por debajo. Sin respaldo se quedarian en US justo al lado de
+        las que si se convirtieron -- que es lo que la guia por defecto existe
+        para evitar."""
+        convertida, nota = gt.convertir("5", "COLUMBIA", gt.CALZADO, "Masculino")
+        self.assertEqual(convertida, "36.5")
+        self.assertEqual(nota, gt.FUERA_DE_LA_GUIA)
+
+    def test_pero_lo_que_no_esta_en_NINGUNA_no_se_inventa(self):
+        self.assertEqual(gt.convertir("99", "COLUMBIA", gt.CALZADO, "Masculino"),
+                         ("99", "desconocida"))
+
+    def test_sin_genero_sigue_sin_convertirse(self):
+        self.assertEqual(gt.convertir("8", "COLUMBIA", gt.CALZADO, "")[1], gt.SIN_GENERO)
+
+    def test_una_talla_que_ya_viene_en_PE_no_se_toca(self):
+        self.assertEqual(gt.convertir("40.5", "COLUMBIA", gt.CALZADO, "Masculino"),
+                         ("40.5", ""))
+
+    def test_una_talla_de_NINO_con_numeracion_de_adulto_se_resuelve_y_se_dice(self):
+        """La tabla infantil de Columbia llega al US 7 y el maestro trae curvas
+        de nino que siguen con numeracion de adulto. El respaldo la convierte y
+        la nota explica por que -- antes el respaldo se negaba en cuanto la
+        guia por defecto traia cualquier nota, y la talla se publicaba en US."""
+        convertida, nota = gt.convertir("10", "COLUMBIA", gt.CALZADO, "Ninos")
+        self.assertEqual(convertida, "43")
+        self.assertEqual(nota, "ambigua")
+
+    def test_las_marcas_sin_tabla_verificada_NO_se_inventan(self):
+        """Se buscaron en la web (septiembre 2026) y no entraron: sus sitios
+        estan bloqueados por la politica de salida, y la unica copia alcanzable
+        de la de Sorel esta corrida una fila. Se convierten con la guia por
+        defecto y salen avisadas, que es para lo que existe la salvedad."""
+        for marca in ("HUSH PUPPIES", "KEDS", "SOREL", "ROCKFORD"):
+            with self.subTest(marca=marca):
+                self.assertIsNone(gt.guia_para(marca, gt.CALZADO))
+                talla, nota = gt.convertir("8", marca, gt.CALZADO, "Masculino")
+                self.assertEqual(talla, "40.5")
+                self.assertEqual(nota, gt.POR_DEFECTO)
+
+
+class TestUnaGuiaNuevaEntraPorEXCEL(unittest.TestCase):
+    """`data/guias_tallas.xlsx`: una guia nueva sin tocar codigo.
+
+    El docstring de `registrar_tabla` prometia este Excel desde que se escribio
+    y **no lo leia nadie**, asi que agregar la guia de Hush Puppies seguia
+    siendo un commit. Es lo que hace falta para las cuatro marcas que hoy no
+    tienen tabla verificada.
+    """
+
+    def setUp(self):
+        self.directorio = tempfile.mkdtemp()
+        self.ruta = Path(self.directorio) / "guias_tallas.xlsx"
+        g._guias_del_excel = None
+
+    def tearDown(self):
+        g._guias_del_excel = None
+        for marca in ("MARCAX", "MARCAROTA", "HUSH PUPPIES"):
+            gt._GUIAS.pop(gt._clave(marca, gt.CALZADO), None)
+        shutil.rmtree(self.directorio, ignore_errors=True)
+
+    def _escribir(self, hojas):
+        import pandas as pd
+        with pd.ExcelWriter(self.ruta) as libro:
+            for nombre, filas in hojas.items():
+                pd.DataFrame(filas).to_excel(libro, sheet_name=nombre, index=False)
+
+    def test_una_hoja_por_marca_queda_registrada(self):
+        self._escribir({"Hush Puppies": [
+            {"US Men": "8", "US Women": "9.5", "US Boy": "", "PE": "41", "CM": "25.4"},
+            {"US Men": "9", "US Women": "10.5", "US Boy": "", "PE": "42", "CM": "26.2"},
+        ]})
+        marcas, avisos = g.cargar_guias_de_tallas(self.ruta)
+        self.assertEqual(marcas, ["HUSH PUPPIES"])
+        self.assertEqual(avisos, [])
+        self.assertEqual(gt.convertir("8", "HUSH PUPPIES", gt.CALZADO, "Masculino"),
+                         ("41", ""))
+
+    def test_lo_del_EXCEL_manda_sobre_lo_del_codigo(self):
+        """Si alguien consigue la guia oficial de una marca que aqui esta
+        aproximada, la suya gana sin tener que borrar nada."""
+        self._escribir({"Vans": [
+            {"US Men": "8", "US Women": "", "US Boy": "", "PE": "99", "CM": "26"},
+        ]})
+        g.cargar_guias_de_tallas(self.ruta)
+        try:
+            self.assertEqual(gt.convertir("8", "VANS", gt.CALZADO, "Masculino")[0], "99")
+        finally:
+            gt.registrar_guia("VANS", gt.CALZADO, gt.Guia(
+                nombre="Guia de Tallas Vans 2026", marca="VANS", clase=gt.CALZADO,
+                convertidor=gt._convertir_con_vans,
+                ya_en_destino=tallas_calzado.ya_es_pe))
+            gt.registrar_guia_por_defecto(gt.CALZADO, gt.guia_para("VANS", gt.CALZADO))
+
+    def test_una_hoja_rota_no_se_lleva_a_las_demas(self):
+        """Perder la conversion de todas las marcas porque una hoja tiene una
+        columna mal escrita seria peor que el problema."""
+        self._escribir({
+            "MarcaX": [{"US Men": "8", "US Women": "", "US Boy": "", "PE": "44", "CM": "26"}],
+            "MarcaRota": [{"Talla": "8"}],
+        })
+        marcas, avisos = g.cargar_guias_de_tallas(self.ruta)
+        self.assertEqual(marcas, ["MARCAX"])
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("MarcaRota", avisos[0])
+
+    def test_sin_archivo_no_pasa_nada(self):
+        """Es el caso normal: hoy el Excel no existe."""
+        self.assertEqual(g.cargar_guias_de_tallas(self.ruta), ([], []))
+        self.assertEqual(gt.convertir("8", "VANS", gt.CALZADO, "Masculino"), ("40.5", ""))
+
+    def test_se_lee_UNA_vez(self):
+        """Perezoso y memoizado: leerlo en cada conversion seria un viaje a
+        disco por talla."""
+        self._escribir({"MarcaX": [
+            {"US Men": "8", "US Women": "", "US Boy": "", "PE": "44", "CM": "26"}]})
+        primera = g.cargar_guias_de_tallas(self.ruta)
+        self.ruta.unlink()
+        self.assertEqual(g.cargar_guias_de_tallas(self.ruta), primera)
+
+    def test_no_se_lee_en_tiempo_de_IMPORT(self):
+        """Leer el Excel al importar costaria en cada arranque de la app, se
+        convierta una talla o no. Es la leccion de `CENTRY_COLUMNS`."""
+        arbol = ast.parse(Path(g.__file__).read_text(encoding="utf-8"))
+        for nodo in arbol.body:
+            if isinstance(nodo, ast.Expr) and isinstance(nodo.value, ast.Call):
+                nombre = getattr(nodo.value.func, "id", "")
+                self.assertNotEqual(nombre, "cargar_guias_de_tallas")
 
 
 if __name__ == "__main__":

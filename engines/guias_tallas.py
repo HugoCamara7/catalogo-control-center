@@ -47,9 +47,26 @@ VESTUARIO = "VESTUARIO"
 # Lo que devuelve una conversion que no se pudo hacer, para poder REPORTARLA.
 SIN_GUIA = "sin guia"
 SIN_GENERO = "sin genero"
+# La talla no esta en la tabla. No es lo mismo que no tener guia: aqui la guia
+# contesto, y contesto que ese numero no existe en ella.
+DESCONOCIDA = "desconocida"
 # La conversion SI se hizo, pero con la guia por defecto porque la marca no
 # tiene la suya. No es un fallo: es una salvedad que hay que dejar por escrito.
 POR_DEFECTO = "guia por defecto"
+# La conversion se resolvio con la escala UNISEX de la guia. Tampoco es un
+# fallo -- la guia publica el calzado unisex en tallas de hombre --, pero se
+# reporta igual que la anterior.
+UNISEX = tallas_calzado.UNISEX
+POR_DEFECTO_UNISEX = "guia por defecto, escala unisex"
+
+# La marca SI tiene guia, pero esa talla no esta en su tabla: se resolvio con
+# la guia por defecto para no dejarla en la escala de origen.
+FUERA_DE_LA_GUIA = "fuera de la guia de la marca"
+
+# Notas que NO son un problema: la talla salio convertida y lo que llevan es
+# una salvedad. Un problema de verdad (sin genero, talla desconocida) manda
+# sobre ellas, porque lo que hay que arreglar es eso.
+SALVEDADES = (POR_DEFECTO, UNISEX, POR_DEFECTO_UNISEX, FUERA_DE_LA_GUIA)
 
 
 def _clave(marca, clase):
@@ -98,6 +115,14 @@ def _convertir_con_vans(talla, genero=""):
     clave = tallas_calzado.normalizar_talla(talla)
     if clave in tallas_calzado.INFANTILES:
         return tallas_calzado.POR_ESCALA[tallas_calzado.NINO][clave], ""
+    # Un unisex DECLARADO no es un producto sin genero. `escala_de_genero`
+    # devuelve "" para los dos, y por eso un producto unisex se quedaba en US
+    # al lado del resto del calzado ya convertido a PE -- en una tienda como
+    # Supermall.pe, que publica todo en PE, eso es justo lo que el comprador no
+    # puede resolver. La guia si tiene respuesta: publica el unisex en la
+    # escala de `ESCALA_UNISEX`, y la conversion se reporta.
+    if tallas_calzado.es_unisex(genero):
+        return tallas_calzado.talla_pe_unisex(talla)
     if not tallas_calzado.escala_de_genero(genero):
         return tallas_calzado.normalizar_talla(talla), SIN_GENERO
     convertida, nota = tallas_calzado.talla_pe(talla, genero, permitir_unisex=False)
@@ -178,6 +203,14 @@ def registrar_tabla(nombre, marca, clase, filas):
         if clave in validos:
             return clave, ""
         escala = tallas_calzado.escala_de_genero(genero)
+        if not escala and tallas_calzado.es_unisex(genero):
+            # La misma regla que la guia del codigo: el unisex se publica en la
+            # escala de `ESCALA_UNISEX`. Escrita solo alli, una guia que entrara
+            # por Excel dejaria su calzado unisex en US y el mismo producto
+            # saldria distinto segun de que marca fuera.
+            escala = tallas_calzado.ESCALA_UNISEX
+            destino = por_escala[escala].get(clave)
+            return (destino, UNISEX) if destino else (clave, DESCONOCIDA)
         if not escala:
             return clave, SIN_GENERO
         destino = por_escala[escala].get(clave)
@@ -206,14 +239,31 @@ def convertir(talla, marca, clase, genero=""):
     Nunca levanta y nunca inventa: es la unica puerta por la que la carga
     convierte una talla, y tiene que poder decir por que no lo hizo.
     """
+    respaldo = guia_por_defecto(clase)
     guia = guia_para(marca, clase)
     if guia is not None:
-        return guia.convertir(talla, genero)
-    respaldo = guia_por_defecto(clase)
+        convertida, nota = guia.convertir(talla, genero)
+        if nota != DESCONOCIDA or respaldo is None:
+            return convertida, nota
+        # La marca tiene guia pero esa talla no esta en su tabla. Las guias
+        # publicadas empiezan donde empieza su catalogo -- la de Columbia, en
+        # el US 7 de hombre --, y el maestro trae numeros por debajo. Dejarla
+        # sin convertir la publicaria en la escala de origen justo al lado de
+        # las que si se convirtieron, que es lo que la guia por defecto existe
+        # para evitar. Se convierte con ella y se dice.
+        de_respaldo, nota_respaldo = respaldo.convertir(talla, genero)
+        if nota_respaldo in (SIN_GENERO, SIN_GUIA, DESCONOCIDA):
+            # El respaldo tampoco sabe: manda el "desconocida" de la marca.
+            return convertida, nota
+        # Una nota que NO es un fallo significa que SI se convirtio, con su
+        # salvedad ("ambigua" es el caso de un producto de nino con numeracion
+        # de adulto). Se propaga tal cual para que la hoja de Revision explique
+        # que paso, en vez de decir que no se convirtio.
+        return de_respaldo, nota_respaldo or FUERA_DE_LA_GUIA
     if respaldo is None:
         return talla, SIN_GUIA
     convertida, nota = respaldo.convertir(talla, genero)
-    if nota:
+    if nota and nota not in SALVEDADES:
         # Un problema de verdad -- sin genero, talla desconocida -- manda sobre
         # la salvedad: lo que hay que arreglar es eso, no de que guia salio.
         return convertida, nota
@@ -222,6 +272,11 @@ def convertir(talla, marca, clase, genero=""):
         # que no hay nada que advertir. Es el caso de Hush Puppies y Rockford,
         # que entregan la mayor parte de su calzado ya en PE.
         return convertida, ""
+    # Las dos salvedades se pueden dar a la vez -- una marca sin guia propia y
+    # un producto unisex -- y las dos hay que poder leerlas en la hoja de
+    # Revision. Pisar una con la otra deja la mitad del informe sin escribir.
+    if nota == UNISEX:
+        return convertida, POR_DEFECTO_UNISEX
     return convertida, POR_DEFECTO
 
 
@@ -234,6 +289,58 @@ registrar_guia(
          convertidor=_convertir_con_vans,
          ya_en_destino=tallas_calzado.ya_es_pe),
 )
+
+# --- Columbia -------------------------------------------------------------
+#
+# Buscada en la web a peticion del usuario (septiembre 2026). `columbia.com` y
+# `help.columbia.com` estan BLOQUEADOS por la politica de salida de este
+# entorno, asi que la tabla sale de la copia de la guia oficial que publica un
+# distribuidor (Peter Glenn) y se cruzo con lo que publica RunRepeat: los dos
+# coinciden en el largo de pie por talla.
+#
+# **Columbia publica US -> LARGO DE PIE en cm, no US -> EU.** Y su traduccion a
+# EU es conocida por poco fiable (lo dice hasta RunRepeat), asi que el PE se
+# deriva del CENTIMETRO, que es el dato fisico, con la misma columna CM de la
+# tabla que ya usa la tienda. Asi el catalogo entero sigue en una sola escala.
+#
+# Lo que cambia respecto de usar la guia de Vans, y por que hacia falta:
+#
+#   HOMBRE  identico  (Columbia y Vans dan el mismo cm para el mismo US)
+#   NINO    identico
+#   MUJER   MEDIA TALLA de diferencia: la mujer de Columbia calza 0,5 cm mas
+#           que la de Vans en el mismo numero US. Un US 8 de mujer es 25 cm ->
+#           PE 39 en Columbia, y PE 38.5 con la tabla de Vans.
+#
+# (US Men, US Women, US Boy, PE, CM)
+TABLA_COLUMBIA = (
+    ("", "", "1", "31.5", "19"),
+    ("", "", "2", "32.5", "20"),
+    ("", "", "3", "34", "21"),
+    ("", "5", "4", "35", "22"),
+    ("", "5.5", "", "36", "22.5"),
+    ("", "6", "5", "36.5", "23"),
+    ("", "6.5", "5.5", "37", "23.5"),
+    ("", "7", "6", "38", "24"),
+    ("", "7.5", "", "38.5", "24.5"),
+    ("7", "8", "7", "39", "25"),
+    ("7.5", "8.5", "", "40", "25.5"),
+    ("8", "9", "", "40.5", "26"),
+    ("8.5", "9.5", "", "41", "26.5"),
+    ("9", "10", "", "42", "27"),
+    ("9.5", "10.5", "", "42.5", "27.5"),
+    ("10", "11", "", "43", "28"),
+    ("10.5", "", "", "44", "28.5"),
+    ("11", "12", "", "44.5", "29"),
+    ("11.5", "", "", "45", "29.5"),
+    ("12", "", "", "46", "30"),
+    ("13", "", "", "47", "31"),
+    ("14", "", "", "48", "32"),
+    ("15", "", "", "49", "33"),
+    ("16", "", "", "50", "34"),
+)
+
+registrar_tabla("Guia de Tallas Columbia (largo de pie)", "COLUMBIA", CALZADO,
+                TABLA_COLUMBIA)
 
 # Y es tambien la guia POR DEFECTO del calzado: es la unica confirmada, y sin
 # ella el calzado de Columbia, Keds y Sorel -- que entregan todo en US -- se

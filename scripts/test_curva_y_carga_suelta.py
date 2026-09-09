@@ -170,8 +170,11 @@ class TestHushKedsSorelUsanLaGuiaPorDefecto(unittest.TestCase):
 
     def test_siguen_sin_guia_PROPIA_registrada(self):
         from engines import guias_tallas as gt
-        for marca in ("HUSH PUPPIES", "KEDS", "SOREL", "COLUMBIA"):
+        # Columbia salio de esta lista en septiembre de 2026: su guia se busco
+        # en la web a peticion del usuario (`TABLA_COLUMBIA`).
+        for marca in ("HUSH PUPPIES", "KEDS", "SOREL"):
             self.assertIsNone(gt.guia_para(marca, gt.CALZADO), marca)
+        self.assertIsNotNone(gt.guia_para("COLUMBIA", gt.CALZADO))
 
     def test_su_talla_se_convierte_con_la_por_defecto_y_queda_avisada(self):
         from engines import guias_tallas as gt

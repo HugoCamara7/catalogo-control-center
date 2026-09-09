@@ -207,10 +207,24 @@ class TestPorMarcaYNoPorSitio(unittest.TestCase):
         prod = producto(["12"], marca="Vans", tipo="Polera")
         self.assertIsNone(self.app.tallas_convertidor_para(prod, self.supermall))
 
-    def test_la_lista_de_marcas_esta_en_el_motor_y_no_repartida(self):
-        self.assertIn("VANS", ot.MARCAS_TALLA_PE)
-        self.assertTrue(ot.marca_publica_en_pe("vans"))
-        self.assertFalse(ot.marca_publica_en_pe("Columbia"))
+    def test_quien_convierte_lo_decide_la_GUIA_y_no_una_lista_de_marcas(self):
+        """`MARCAS_TALLA_PE` ya no existe, y no es un detalle.
+
+        Era una lista escrita a mano que decia que solo Vans publica en PE.
+        Desde que la guia de Vans es la guia POR DEFECTO del calzado, eso es
+        falso: en un sitio que publica en PE se convierte el calzado de todas
+        las marcas. Una lista que dice lo contrario al lado del codigo que ya
+        no la usa es una trampa para el siguiente que la lea.
+        """
+        self.assertFalse(hasattr(ot, "MARCAS_TALLA_PE"))
+        self.assertFalse(hasattr(ot, "marca_publica_en_pe"))
+        for marca in ("Vans", "Columbia", "Hush Puppies", "Sorel", "Keds"):
+            with self.subTest(marca=marca):
+                prod = producto(["8"], marca=marca, tipo="Zapatilla")
+                self.assertIsNotNone(
+                    self.app.tallas_convertidor_para(prod, self.supermall),
+                    f"{marca} se queda sin convertir en un sitio que publica en PE",
+                )
 
 
 class TestReglasDelCodigo(unittest.TestCase):

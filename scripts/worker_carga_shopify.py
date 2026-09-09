@@ -165,21 +165,73 @@ def main():
     return codigo_salida
 
 
+# Las dos credenciales sin las que no hay carga, con el sufijo de la variable
+# de entorno que las trae. `catalog_engine._env_name` le antepone el sitio:
+# supermall -> SUPERMALL_SHOP_DOMAIN. El workflow mapea cada secreto del
+# repositorio a esa variable, en su bloque `env:`.
+CREDENCIALES_DE_SHOPIFY = (
+    ("shop_domain", "SHOP_DOMAIN"),
+    ("admin_access_token", "ADMIN_API_ACCESS_TOKEN"),
+)
+
+
+def _credenciales_que_faltan(site_key, configuracion):
+    """Los NOMBRES de las variables que llegaron vacias al runner.
+
+    Se derivan de `_env_name`, no de una lista escrita a mano: con la lista
+    fija, un sitio nuevo nombraria las variables de otro. Y son nombres, nunca
+    valores -- lo que se imprime va a un log publico.
+    """
+    from catalog_engine import _env_name
+
+    return [
+        _env_name(site_key, sufijo)
+        for clave, sufijo in CREDENCIALES_DE_SHOPIFY
+        if not str(configuracion.get(clave) or "").strip()
+    ]
+
+
+def _error_de_credenciales(site_key, faltantes):
+    """El mensaje que se lee en el log, en el registro del job y en la pantalla.
+
+    Nombra las variables. "Revisa los secretos del repositorio" a secas obliga
+    a adivinar cual de los dos secretos de cual de los seis sitios es, y es
+    justo el fallo que se ve al estrenar uno: Supermall.pe estaba dado de alta
+    en SITE_CONFIGS, en Streamlit y en el bloque `env:` del workflow, pero sus
+    secretos de Actions nunca se crearon.
+
+    Ojo con el orden: la lista termina en un nombre acabado en TOKEN, y
+    `texto_publico` enmascara un "TOKEN" seguido de un espacio. Por eso detras
+    va un punto y no una palabra. Hay una prueba que lo fija.
+    """
+    return (
+        f"Faltan credenciales de Shopify para el sitio «{site_key}». "
+        f"Vacias en el runner: {', '.join(faltantes)}. "
+        "Se cargan de los secretos de Actions del repositorio del codigo, "
+        "que el workflow mapea en su bloque env."
+    )
+
+
 def _ejecutar(job, sha, almacen, site_key, minutos_maximos):
     # La importacion va aqui adentro, no arriba: importar app_matrixify tarda
-    # unos segundos y arrastra Streamlit. Si falta un secreto o el job no
-    # existe, es mejor fallar rapido y sin pagar ese costo.
+    # unos segundos y arrastra Streamlit. Si el job no existe, es mejor fallar
+    # rapido y sin pagar ese costo.
+    #
+    # Lo que NO se puede hacer hoy es comprobar las credenciales antes de ese
+    # costo: `catalog_engine` importa `app_matrixify` en su linea 7, asi que
+    # pedirle `shopify_config_from_env` ya arrastra Streamlit entero. Es la
+    # deuda de la seccion 2 del CLAUDE.md (extraer `engines/shopify_sync.py`);
+    # se anota aqui para que quede claro que el orden de estas lineas no ahorra
+    # nada mientras esa inversion siga en pie.
     import pandas as pd
 
     from catalog_engine import read_matrixify_excel, shopify_config_from_env
     import app_matrixify as app
 
     configuracion = shopify_config_from_env(site_key)
-    if not configuracion.get("shop_domain") or not configuracion.get("admin_access_token"):
-        raise RuntimeError(
-            f"Faltan credenciales de Shopify para el sitio «{site_key}». "
-            "Revisa los secretos del repositorio."
-        )
+    faltantes = _credenciales_que_faltan(site_key, configuracion)
+    if faltantes:
+        raise RuntimeError(_error_de_credenciales(site_key, faltantes))
 
     ruta_matrixify = (job.get("matrixify_path") or "").strip()
     if not ruta_matrixify:

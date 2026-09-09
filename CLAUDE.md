@@ -4022,12 +4022,40 @@ Secciones: `[bigquery]`, `[gcp_service_account]`, `[app_auth]`,
 GitHub Actions usa sus propios secretos (Settings → Secrets → Actions):
 `COLUMBIA_SHOP_DOMAIN`, `*_ADMIN_API_ACCESS_TOKEN`, `BIGQUERY_*`.
 
-**Un sitio nuevo hay que darlo de alta en TRES sitios**: `SITE_CONFIGS`,
-`[shopify_sites.<clave>]` de Streamlit y el bloque `env:` de
-`.github/workflows/carga-shopify.yml`. Si falta el tercero, la carga remota
-falla con "faltan credenciales" y nada más. Hay un test que recorre
-`SITE_CONFIGS` y lo comprueba contra el workflow — antes la lista estaba
-escrita a mano y por eso no atrapó a Supermall.
+**Un sitio nuevo hay que darlo de alta en CUATRO sitios**: `SITE_CONFIGS`,
+`[shopify_sites.<clave>]` de Streamlit, el bloque `env:` de
+`.github/workflows/carga-shopify.yml` y **los propios secretos de Actions**
+(Settings → Secrets and variables → Actions del repositorio del código). Hay un
+test que recorre `SITE_CONFIGS` y comprueba el tercero contra el workflow — antes
+la lista estaba escrita a mano y por eso no atrapó a Supermall.
+
+**El cuarto no lo puede comprobar ninguna prueba**, y es el que faltaba en
+septiembre de 2026: Supermall.pe estaba en los tres primeros y su primera carga
+remota murió igual, porque `SUPERMALL_SHOP_DOMAIN` y
+`SUPERMALL_ADMIN_API_ACCESS_TOKEN` nunca se crearon. En el log de Actions se ve
+sin abrir nada: **un secreto definido sale enmascarado (`***`) y uno que no
+existe sale vacío**. Patagonia.pe está hoy en ese mismo caso.
+
+Los secretos de Actions **no** se leen de Streamlit: son otro almacén, con los
+mismos valores. El del sitio sale de `[shopify_sites.<clave>]` de Streamlit
+Cloud (`shop_domain` y `admin_api_access_token`).
+
+Por eso el worker **nombra la variable que llegó vacía** en vez de decir "revisa
+los secretos del repositorio": con seis sitios, ese mensaje obliga a adivinar
+cuál. Va el nombre de la VARIABLE (`HUSH_PUPPIES_*`), que es lo que se busca en
+el bloque `env:` del workflow para saber de qué secreto sale (`HUSHPUPPIES_*`).
+Nunca el valor: **el log de Actions es público**.
+
+Y ojo con el saneado: `texto_publico` enmascara un `TOKEN` seguido de un
+espacio, así que el nombre acabado en `_TOKEN` va con un punto detrás y no con
+una palabra. Comprobado — `SUPERMALL_ADMIN_API_ACCESS_TOKEN llegaron vacías`
+sale como `SUPERMALL_ADMIN_API_[oculto] vacías`. Hay una prueba que lo fija.
+
+**Fallar antes de importar Streamlit no se puede hoy.** Sería lo lógico —sin
+credenciales no hay nada que cargar—, pero `catalog_engine` importa
+`app_matrixify` en su línea 7, así que pedirle `shopify_config_from_env` ya
+arrastra el arranque entero. Es la deuda de la sección 2, anotada en el código
+para que nadie reordene esas líneas creyendo que ahorran algo.
 
 ---
 

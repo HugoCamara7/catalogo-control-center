@@ -1546,7 +1546,7 @@ def display_size_for_site(value, brand_config=None, gender="", product_type="", 
     convertida, nota = talla_calzado_pe(talla, gender, marca=marca or brand_config.get("label"))
     if nota and avisos is not None:
         avisos.append({"Talla": talla, "Marca": clean(marca), "Motivo": nota})
-    if nota in ("sin guia", "sin genero", "desconocida"):
+    if nota in ("sin guia", "sin genero", "desconocida", "fuera de la escala del genero"):
         return talla
     return convertida or talla
 
@@ -4456,6 +4456,15 @@ AVISO_TALLA_MOTIVOS = {
         "distintas (un 8 de hombre es PE 40.5 y uno de mujer PE 38.5)"
     ),
     "desconocida": "la talla no esta en la guia de esa marca",
+    # Reemplaza a la vieja nota "ambigua", que SI convertia: buscaba el numero
+    # en las OTRAS columnas de la guia y publicaba esa respuesta. Medido en el
+    # catalogo real, las "Sandalias Nino Techsun" salian en 40.5 a 47 -- tallas
+    # de HOMBRE en una sandalia de nino. Ahora se publica la de origen.
+    "fuera de la escala del genero": (
+        "el numero no esta en la columna que le toca a ese genero. Casi siempre "
+        "es calzado de NINO con numeracion infantil (US 8 a 13), que no es la "
+        "misma escala que la de adulto: hace falta la guia infantil de la marca"
+    ),
 }
 
 # Avisos de tallas que SI se convirtieron. No son un fallo -- la talla salio
@@ -4474,21 +4483,6 @@ AVISO_TALLA_CONVERTIDAS = {
     "guia por defecto, escala unisex": (
         "el producto es unisex y su marca no tiene guia propia: se convirtio "
         "con la escala unisex de la guia de Vans, que es la unica confirmada"
-    ),
-    # "ambigua" estaba en la tabla de arriba, o sea que la hoja de Revision
-    # decia "se publican SIN convertir a PE" sobre tallas que SI se
-    # convirtieron -- medido: 7 tallas de una carga real de Columbia. Es el
-    # mismo fallo que ya se corrigio con la nota de lectura: un aviso que manda
-    # a buscar un problema que no existe es peor que no avisar.
-    "fuera de la guia de la marca": (
-        "esa talla no esta en la tabla publicada de la marca -- las guias "
-        "empiezan donde empieza su catalogo y el maestro trae numeros por "
-        "debajo --, asi que se convirtio con la guia de Vans"
-    ),
-    "ambigua": (
-        "el numero no esta en la escala que le toca a ese genero pero si en "
-        "otra de la guia, asi que se resolvio con esa. Suele ser un producto "
-        "de nino con numeracion de adulto: conviene revisar la equivalencia"
     ),
 }
 

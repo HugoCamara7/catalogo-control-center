@@ -3726,6 +3726,112 @@ las 4 nuevas fallan con el codigo anterior.
 
 ---
 
+## 5 quatertrigies. Una sandalia de nino salia en talla 47 (septiembre 2026)
+
+Reportado con dos capturas del Excel filtrando `Option1 Value`: tallas `1.6`,
+`1.7`, `1.8` y una columna entera de `12.5`. *"Las tallas siguen mal, necesito
+mejores logicas, si no tendre problemas de tallas y eso seria grave"*.
+
+Tenia razon, y buscando el origen aparecio algo mucho peor que el `1.6`.
+
+### El `1.6` ya no existe, y venia de Hush Puppies
+
+Curva real `160, 170, 180` (mas el `0` de cabecera). No cabe directa -- 160 no
+es ni US ni PE --, pero **entre cien** da `1.6, 1.7, 1.8`, que si entra en el
+rango del US. La guarda de media talla de la seccion 5 duotrigies ya lo
+descarta, asi que hoy esa curva sale `16, 17, 18` -- la talla del maestro -- y
+se reporta. La captura del usuario era de un Excel anterior al arreglo.
+
+**Lo que hay que mirar ahi es el producto**, no la app: `16, 17, 18` tampoco es
+una curva de calzado. Son 14 modelo-color de Hush Puppies.
+
+### Lo grave: el conversor CRUZABA de escala
+
+`talla_pe` hacia esto cuando el numero no estaba en la columna del genero:
+
+```python
+for otra in (HOMBRE, MUJER, NINO):
+    destino = POR_ESCALA[otra].get(clave)
+    if destino:
+        return destino, "ambigua"
+```
+
+O sea: si un producto de NINO traia `8`, y el 8 no esta en la columna
+infantil, se buscaba en la de hombre y se publicaba **PE 40.5**.
+
+Medido contra el catalogo real de Columbia.pe, con su maestro:
+
+```
+1594632-3ZK  "Sandalias Nino Techsun"
+curva del maestro   80, 90, 100, 110, 120, 130     (US 8 a 13 de nino)
+se publicaba        40.5, 42, 43, 44.5, 46, 47     <-- tallas de HOMBRE
+```
+
+**Nueve productos de ese catalogo estaban asi, y los nueve son de nino.** Una
+zapatilla infantil publicada en talla 47 no se ve rara en la ficha: se ve como
+una talla normal, y llega al comprador.
+
+**Eso no es una ambiguedad: son ESCALAS DISTINTAS.** El US 8 de nino y el US 8
+de hombre no son el mismo pie, y ninguna tabla dice que lo sean. La nota se
+llamaba "ambigua" y encima estaba clasificada como conversion hecha.
+
+### La regla nueva: no se cruza de escala
+
+Si el numero no esta en la columna que le toca a ese genero, **se devuelve la
+talla de origen y se reporta** (`FUERA_DE_ESCALA`). Nunca se busca en otra
+columna.
+
+> Una talla en US se ve mal y alguien la corrige. Una talla de hombre en un
+> zapato de nino se ve bien y llega al comprador.
+
+La misma regla entra por las dos puertas -- la guia del codigo y la que llega
+por `registrar_tabla` --, porque escrita en una sola, una marca con guia propia
+seguiria cruzando.
+
+**Lo que NO cambia:** el adulto convierte exactamente igual (US 8 de hombre
+sigue siendo PE 40.5 y de mujer 39), el unisex sigue resolviendose con la
+escala de la guia y una talla que ya viene en PE se queda como esta.
+
+**Una prueba cambio de esperado y es la consecuencia buscada.** Un `040` de
+mujer se sigue leyendo como US 4 -- esa es la regla de la curva y no se toca --,
+pero la guia de Vans **no tiene un US 4 de mujer**: su columna empieza en el 5.
+Antes salia `35`, que es el US 4 de HOMBRE. Ahora sale `4` y se reporta.
+
+### El efecto sobre el catalogo real, medido
+
+Los 428 productos de calzado de Columbia.pe, con su maestro, cargados a
+Supermall.pe:
+
+| | |
+|---|---:|
+| convierten a PE limpio | **416** |
+| salen con la talla de ORIGEN y avisados | **12** |
+
+De esos 12: **nueve son los de nino** que antes salian en tallas de hombre;
+uno es el producto mal tipificado (`2138331-XP9`, unos guantes con
+`Type = Zapatillas` y tallas S y M); y dos son botines de hombre cuya curva
+trae un `170` suelto -- un US 17 que no existe en ninguna columna -- al lado de
+tallas normales.
+
+O sea: **la guarda no le quito la conversion a ningun producto que la tuviera
+bien.**
+
+### Lo que hace falta para cerrarlo del todo
+
+**La guia infantil de las marcas.** El calzado de nino usa su propia escala
+(US 1C a 13C y despues 1Y a 7Y) y la tabla que hay solo cubre `10.5C` a `13.5C`
+y `1Y` a `3Y`. Mientras no este, el calzado de nino con numeracion infantil se
+publica con la talla del maestro y sale avisado -- que es lo correcto, pero no
+es lo deseable.
+
+Los datos que ya se tienen y no alcanzan: Columbia publica su tabla infantil en
+**centimetros** (`Little Kids` US 8 = 13 cm ... US 13 = 18 cm) y la columna
+PE/cm de la guia **empieza en 16,5 cm**, asi que de esa tabla solo se podrian
+derivar dos filas. Con eso no se cierra la curva: hace falta la guia infantil
+oficial, marca por marca, y entra por `data/guias_tallas.xlsx` sin tocar codigo.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -3959,7 +4065,7 @@ python scripts/test_handle_tipo_y_duplicados.py         # 18
 python scripts/test_pantallas_reales.py                 # 10
 python scripts/test_bigquery_storage.py                 # 10
 python scripts/test_supermall_pico_de_memoria.py        # 27
-python scripts/test_tallas_de_calzado_en_supermall.py   # 39
+python scripts/test_tallas_de_calzado_en_supermall.py   # 41
 python scripts/test_export_matrixify_y_validacion.py    # 42
 ```
 

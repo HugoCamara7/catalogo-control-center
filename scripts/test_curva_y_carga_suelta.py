@@ -73,11 +73,23 @@ class TestLaCurvaDecide(unittest.TestCase):
         self.assertEqual(matrixify_de(["800", "850"], "vans", "Masculino"), ["40.5", "41"])
 
     def test_040_de_mujer_es_un_US_4(self):
-        """La regla del usuario: ninguna curva de mujer empieza en la 40."""
+        """La regla del usuario: ninguna curva de mujer empieza en la 40.
+
+        Lo que fija esta prueba es la LECTURA de la curva: `040` de mujer es un
+        US 4, no el PE 40. Lo que se publique despues depende de la guia, y la
+        de Vans **no tiene un US 4 de mujer** -- su columna de mujer empieza en
+        el 5 --, asi que la talla sale como viene y se reporta.
+
+        Antes salia `35`, que es el US 4 de HOMBRE: el conversor buscaba el
+        numero en las otras columnas cuando no estaba en la suya. Eso es lo que
+        publicaba una sandalia de nino en talla 47, y ya no se hace.
+        """
         divisor, escala, nota = interpretar_curva(["40"], "Femenino")
         self.assertEqual((divisor, escala), (10, "US"))
         self.assertIn("mujer", nota)
-        self.assertEqual(matrixify_de(["040"], "vans", "Femenino"), ["35"])
+        publicada = matrixify_de(["040"], "vans", "Femenino")
+        self.assertEqual(publicada, ["4"])
+        self.assertNotEqual(publicada, ["40"], "se leyo como PE 40")
 
     def test_040_de_hombre_sigue_siendo_PE_40(self):
         self.assertEqual(interpretar_curva(["40"], "Masculino")[:2], (1, "PE"))

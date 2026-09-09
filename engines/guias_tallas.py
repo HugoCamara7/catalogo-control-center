@@ -50,6 +50,9 @@ SIN_GENERO = "sin genero"
 # La talla no esta en la tabla. No es lo mismo que no tener guia: aqui la guia
 # contesto, y contesto que ese numero no existe en ella.
 DESCONOCIDA = "desconocida"
+# El numero no esta en la columna que le toca a ese genero. NO se busca en las
+# otras columnas: son escalas distintas, no sinonimos.
+FUERA_DE_ESCALA = tallas_calzado.FUERA_DE_ESCALA
 # La conversion SI se hizo, pero con la guia por defecto porque la marca no
 # tiene la suya. No es un fallo: es una salvedad que hay que dejar por escrito.
 POR_DEFECTO = "guia por defecto"
@@ -216,7 +219,10 @@ def registrar_tabla(nombre, marca, clase, filas):
         destino = por_escala[escala].get(clave)
         if destino:
             return destino, ""
-        return clave, "desconocida"
+        # La misma regla que la guia del codigo: no se cruza de escala. Un
+        # numero que no esta en la columna de ese genero NO es la misma talla
+        # en otra columna.
+        return clave, FUERA_DE_ESCALA
 
     return registrar_guia(marca, clase, Guia(
         nombre=nombre, marca=marca, clase=clase, convertidor=convertir,
@@ -243,7 +249,7 @@ def convertir(talla, marca, clase, genero=""):
     guia = guia_para(marca, clase)
     if guia is not None:
         convertida, nota = guia.convertir(talla, genero)
-        if nota != DESCONOCIDA or respaldo is None:
+        if nota not in (DESCONOCIDA, FUERA_DE_ESCALA) or respaldo is None:
             return convertida, nota
         # La marca tiene guia pero esa talla no esta en su tabla. Las guias
         # publicadas empiezan donde empieza su catalogo -- la de Columbia, en
@@ -252,7 +258,7 @@ def convertir(talla, marca, clase, genero=""):
         # las que si se convirtieron, que es lo que la guia por defecto existe
         # para evitar. Se convierte con ella y se dice.
         de_respaldo, nota_respaldo = respaldo.convertir(talla, genero)
-        if nota_respaldo in (SIN_GENERO, SIN_GUIA, DESCONOCIDA):
+        if nota_respaldo in (SIN_GENERO, SIN_GUIA, DESCONOCIDA, FUERA_DE_ESCALA):
             # El respaldo tampoco sabe: manda el "desconocida" de la marca.
             return convertida, nota
         # Una nota que NO es un fallo significa que SI se convirtio, con su

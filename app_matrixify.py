@@ -550,6 +550,26 @@ def _columna_puede_tener_mojibake(serie):
         return True
 
 
+def hoja_necesita_reparacion(df):
+    """Si esta hoja tiene algo que reparar, o `repair_mojibake_dataframe`
+    devolveria una copia identica.
+
+    Esa funcion copia el frame ENTERO antes de mirar nada, y la exportacion la
+    llama una vez por hoja: con el Matrixify de una carga son cientos de MB
+    duplicados justo mientras xlsxwriter arma el libro, para no cambiar ni una
+    celda. En una hoja sin un solo marcador el resultado es identico, asi que
+    saltarla no cambia el Excel.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return False
+    if any(_repair_column_name(columna) != columna for columna in df.columns):
+        return True
+    return any(
+        _columna_puede_tener_mojibake(df.iloc[:, posicion])
+        for posicion in range(df.shape[1])
+    )
+
+
 def repair_mojibake_dataframe(df):
     if df is None:
         return df
@@ -1415,6 +1435,20 @@ def clear_shopify_products_cache(site_key):
         _ruta_catalogo_en_disco(site_key).unlink()
     except OSError:
         pass
+
+
+def olvidar_arti_de_la_sesion(brand_config):
+    """Suelta el maestro ARTI cacheado en sesion para este sitio.
+
+    Medido con el maestro de verdad: **336,9 MB** -- el objeto mas grande de
+    toda la app, y el contenedor da 1.024 MB PARA TODA LA APP. Quien lo suelta
+    tiene que estar seguro de que ya no lo necesita: la proxima pantalla que
+    lo pida lo vuelve a leer (7 s del ZIP local, una consulta con BigQuery).
+    """
+    site_key = clean_value(brand_config.get("site_key"))
+    for clave in (f"arti_cache_{site_key}", f"arti_cache_{site_key}_source",
+                  f"arti_cache_{site_key}_meta"):
+        st.session_state.pop(clave, None)
 
 
 def read_arti_for_app(brand_config, mod_cols=None):
@@ -2380,16 +2414,19 @@ def dataframe_to_excel_bytes(sheets):
             # pd.DataFrame()`, pero no todos, y basta uno para caerse.
             if not isinstance(df, pd.DataFrame):
                 df = pd.DataFrame()
-            df = repair_mojibake_dataframe(df)
+            if hoja_necesita_reparacion(df):
+                df = repair_mojibake_dataframe(df)
             df.to_excel(writer, index=False, sheet_name=safe_name)
         # El ancho se fija por COLUMNA, no recorriendo las celdas: con
         # openpyxl, `sheet.columns` materializa una tupla con todas las celdas
         # de la hoja solo para leer la letra de la primera.
         _dar_formato_hojas(writer, ancho=22)
-    datos = buffer.getvalue()
-    if huella is not None and len(datos) <= _EXCEL_MEMO_MAX_BYTES:
+    # `getvalue()` COPIA el archivo entero. Solo se paga cuando de verdad se
+    # va a memoizar: para un Excel que no cabe en el memo era duplicar decenas
+    # de MB justo en el momento de mas presion, y despues tirarlos.
+    if huella is not None and buffer.getbuffer().nbytes <= _EXCEL_MEMO_MAX_BYTES:
         with _EXCEL_MEMO_LOCK:
-            _memo_excel_guardar(huella, datos)
+            _memo_excel_guardar(huella, buffer.getvalue())
     buffer.seek(0)
     return buffer
 
@@ -5374,10 +5411,20 @@ def centry_apply_apparel_fields(centry_row, product_type, gender, material, comp
     centry_row["Tipo de cierre - Ropa y accesorios (Falabella GSC Perú)"] = ""
 
 
-def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_label="Centry"):
+def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_label="Centry",
+                            copiar=True):
+    """Quita de la hoja las filas cuya talla no es una talla.
+
+    `copiar=False` trabaja SOBRE el frame recibido en vez de sobre una copia.
+    Solo vale cuando quien llama lo acaba de construir y lo reemplaza con el
+    resultado -- las dos hojas Carga Sial --, porque la funcion escribe "O/S"
+    en la columna de talla: con un frame que el llamador siga usando por su
+    cuenta se lo cambiaria por debajo. A cambio se ahorra una copia ENTERA de
+    la hoja, que en una carga de Supermall son 38.000 filas x 50 columnas.
+    """
     if df is None or df.empty or size_column not in df.columns:
         return df, issues
-    result = df.copy()
+    result = df.copy() if copiar else df
     key_values = result[key_column].map(clean_value) if key_column in result.columns else pd.Series("", index=result.index)
 
     # MISMO criterio que la carga completa (`talla_sirve_para_sial`): fuera las
@@ -6427,8 +6474,14 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
                 "Porduct Id - Supermall.pe": "",
             }
         )
-    sial_df = pd.DataFrame(rows, columns=CENTRY_SIAL_COLUMNS).fillna("")
-    sial_df, _ = filter_centry_size_rows(sial_df, [], "Tal", key_column="Mod-Col", output_label="Carga Sial Centry")
+    sial_df = pd.DataFrame(rows, columns=CENTRY_SIAL_COLUMNS)
+    # La lista de filas es otra copia entera de la hoja -- en una carga de
+    # Supermall son 38.000 diccionarios de 50 claves -- y en cuanto el frame
+    # esta armado no la lee nadie. Se suelta antes del `fillna`, que copia.
+    rows.clear()
+    sial_df = sial_df.fillna("")
+    sial_df, _ = filter_centry_size_rows(sial_df, [], "Tal", key_column="Mod-Col", output_label="Carga Sial Centry",
+                                            copiar=False)
     if not sial_df.empty and "Talla Web " in sial_df.columns:
         sial_df["Talla Web "] = sial_df["Tal"].map(centry_display_size)
     return repair_mojibake_dataframe(sial_df)
@@ -6467,8 +6520,14 @@ def build_sial_de_sitio_from_matrixify(matrixify_df, brand_config=None):
         }
         fila.update(sial_tail_row(brand_config, identidad["shopify_id"], identidad["sku"]))
         rows.append(fila)
-    sial_df = pd.DataFrame(rows, columns=columnas).fillna("")
-    sial_df, _ = filter_centry_size_rows(sial_df, [], "Talla", key_column="Mod-Col", output_label="Carga Sial")
+    sial_df = pd.DataFrame(rows, columns=columnas)
+    # La lista de filas es otra copia entera de la hoja -- en una carga de
+    # Supermall son 38.000 diccionarios de 50 claves -- y en cuanto el frame
+    # esta armado no la lee nadie. Se suelta antes del `fillna`, que copia.
+    rows.clear()
+    sial_df = sial_df.fillna("")
+    sial_df, _ = filter_centry_size_rows(sial_df, [], "Talla", key_column="Mod-Col", output_label="Carga Sial",
+                                            copiar=False)
     if not sial_df.empty and "Talla Web " in sial_df.columns:
         sial_df["Talla Web "] = sial_df["Talla"].map(centry_display_size)
     return repair_mojibake_dataframe(sial_df)
@@ -6786,7 +6845,7 @@ def _lookup_por_clave(df, columna="__CENTRY_KEY"):
 
 
 def preparar_contexto_de_codigos(shopify_matrixify_df, arti_df, brand_config,
-                                 destino_matrixify_df=None):
+                                 destino_matrixify_df=None, codigos=None):
     """Todo lo que NO depende de la lista de codigos, calculado una sola vez.
 
     Por que existe
@@ -6864,6 +6923,29 @@ def preparar_contexto_de_codigos(shopify_matrixify_df, arti_df, brand_config,
     arti["__KEY"] = arti["Mod-Col"].where(arti["Mod-Col"].map(clean_value) != "", arti["COD MOD COL"]).map(lambda value: clean_value(value).upper())
     arti["__MODEL"] = arti["__KEY"].map(lambda value: value.rsplit("-", 1)[0] if "-" in value else value)
 
+    # El maestro se acota AQUI a los codigos de toda la carga, no en cada
+    # bloque. Es exactamente la UNION de los filtros que cada bloque aplica
+    # despues (`__KEY in code_set` o `__MODEL in model_only_set`), asi que cada
+    # bloque encuentra las mismas filas: el resultado no cambia.
+    #
+    # Lo que cambia es lo que se lleva puesto mientras tanto. En produccion el
+    # maestro son 653.431 filas y una carga de Supermall toca unas 40.000: con
+    # el maestro entero, esa copia normalizada se queda viva durante los 45
+    # bloques ENCIMA del maestro crudo que ya vive en `session_state`, o sea
+    # dos maestros a la vez en un contenedor que da 1 GB para toda la app. Y
+    # cada bloque volvia a barrer las 653.431 filas para quedarse con 200
+    # codigos.
+    #
+    # Va DESPUES de los diagnosticos a proposito: esos se calculan sobre el
+    # maestro ENTERO -- son sobre el estado del maestro, no sobre esta carga --
+    # y acotar antes cambiaria la hoja de Revision.
+    if codigos is not None:
+        claves = {clean_value(codigo).upper() for codigo in codigos if clean_value(codigo)}
+        solo_modelo = {codigo for codigo in claves if "-" not in codigo}
+        arti = arti[
+            arti["__KEY"].isin(claves) | arti["__MODEL"].isin(solo_modelo)
+        ].copy()
+
     # Los dos catalogos NO viajan en el contexto, y eso es lo que ahorra la
     # memoria: una vez calculados los `lookup` y los siblings, nadie vuelve a
     # leerlos -- se comprobo con AST que `shopify_df` y `destino_df` se
@@ -6912,7 +6994,7 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
 
     contexto = contexto or preparar_contexto_de_codigos(
         shopify_matrixify_df, arti_df, brand_config,
-        destino_matrixify_df=destino_matrixify_df,
+        destino_matrixify_df=destino_matrixify_df, codigos=codes,
     )
     issues = list(contexto["diagnosticos"])
     code_set = set(codes)
@@ -25376,6 +25458,7 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
     # codigos: 22,4 s por bloque, o sea 20,5 MINUTOS. Eso era el "no carga".
     contexto = preparar_contexto_de_codigos(
         origen_df, arti_df, brand_config, destino_matrixify_df=destino_df,
+        codigos=codigos,
     )
     # Y se SUELTAN. Dentro del contexto quedan los `lookup`, que es lo unico
     # que el bucle lee; los dos Matrixify convertidos y la lista de productos
@@ -25384,6 +25467,17 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
     # da el contenedor PARA TODA LA APP -- y a 950 MB basta con que entre una
     # segunda persona para que el proceso muera sin dejar traza.
     del productos_origen, origen_df, destino_df
+    # Y el maestro ENTERO con ellos. Ya cumplio su papel: lo que el bucle lee
+    # es la copia ACOTADA que quedo dentro del contexto -- unas 40.000 filas de
+    # las 653.431 --, y el maestro completo se quedaba vivo en `session_state`
+    # durante toda la generacion Y todo el Excel sin que nadie lo mirara.
+    #
+    # Medido: **336,9 MB**, el objeto mas grande de la app. Es lo que separaba
+    # esta pantalla de caber en el contenedor. Se paga que la proxima pantalla
+    # que necesite el maestro lo vuelva a leer; el trato es ese o que el
+    # proceso muera a mitad de la carga, que es lo que estaba pasando.
+    olvidar_arti_de_la_sesion(brand_config)
+    arti_df = None
     gc.collect()
 
     partes, revisiones = [], []
@@ -25392,6 +25486,9 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
         # Por el MISMO tramo comun que el Centry y la Carga Sial. El catalogo
         # de origen y el maestro van ya calculados porque esto va por bloques:
         # rehacerlos en cada bloque seria convertir el catalogo entero N veces.
+        # `maestro=(None, ...)`: con un contexto preparado, el maestro que
+        # lee el bloque es `contexto["arti"]` y este parametro no se usa para
+        # nada. Pasar aqui el frame entero lo mantendria vivo por la referencia.
         parte, revision, _arti, _fuente = matrixify_desde_codigos_modelo_color(
             bloque, brand_config, shopify_config,
             maestro=(arti_df, arti_source),
@@ -25412,6 +25509,23 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
         pd.concat(revisiones, ignore_index=True).drop_duplicates()
         if revisiones else pd.DataFrame(columns=["Mod-Col", "Problema"])
     )
+    # Y AQUI se sueltan las tres cosas que ya no lee nadie, ANTES de la parte
+    # que mas memoria pide. El contexto lleva el maestro acotado y los dos
+    # `lookup`; las listas de partes son otra copia del Matrixify y de la
+    # Revision recien concatenados. Todo eso seguia vivo durante la hoja Sial
+    # y, despues, durante el Excel.
+    #
+    # Medido a la escala del usuario (8.928 codigos, 38.423 filas, el maestro
+    # ARTI de verdad): el pico llegaba a **1.007 MB** y el contenedor da
+    # **1.024 MB PARA TODA LA APP** -- y eso con catalogos de prueba. Con los
+    # seis catalogos de verdad en `session_state` se pasa, el contenedor mata
+    # el proceso y no queda traza: `run_app()` no llega a atrapar nada porque
+    # muere el proceso entero. Desde la pantalla se ve exactamente como lo
+    # reporto el usuario: "cargo todo, termino y se quedo asi".
+    partes.clear()
+    revisiones.clear()
+    del contexto
+    gc.collect()
     sial_df = build_sial_de_sitio_from_matrixify(matrixify_df, brand_config)
     return matrixify_df, sial_df, revision_df, arti_source
 
@@ -25839,26 +25953,40 @@ def render_carga_supermall():
             )
         barra.empty()
         resumen_marcas = resumen_matrixify_por_marca(matrixify_df)
-        st.session_state["supermall_resultado"] = {
-            "excel": dataframe_to_excel_bytes({
+        # Los conteos se sacan ANTES del Excel: son de una linea y asi los dos
+        # Matrixify no tienen que seguir vivos por ellos.
+        filas_generadas = len(matrixify_df)
+        modelos_generados = safe_int_value(
+            matrixify_df["Metafield: custom.codigo_modelo_color [id]"]
+            .map(lambda v: clean_value(v).upper()).replace("", pd.NA).nunique()
+        ) if "Metafield: custom.codigo_modelo_color [id]" in matrixify_df.columns else 0
+        filas_sial = len(sial_df)
+        with st.spinner("Armando el Excel de la carga..."):
+            excel = dataframe_to_excel_bytes({
                 "Products": matrixify_df,
                 "Carga Sial": sial_df,
                 "Resumen por marca": resumen_marcas,
                 "Consolidacion": tabla,
                 "Revision": revision_df,
-            }),
+            })
+        # En cuanto el Excel esta armado, los tres frames grandes ya no los lee
+        # nadie: lo que se guarda en sesion son los bytes y cuatro numeros. Sin
+        # esto se quedaban vivos durante todo el resto del dibujado de la
+        # pantalla -- cientos de MB de los 1.024 que da el contenedor para toda
+        # la app -- sin que nada los mirara.
+        del matrixify_df, sial_df, revision_df
+        gc.collect()
+        st.session_state["supermall_resultado"] = {
+            "excel": excel,
             "resumen_marcas": resumen_marcas,
-            "filas": len(matrixify_df),
-            "modelos": safe_int_value(
-                matrixify_df["Metafield: custom.codigo_modelo_color [id]"]
-                .map(lambda v: clean_value(v).upper()).replace("", pd.NA).nunique()
-            ) if "Metafield: custom.codigo_modelo_color [id]" in matrixify_df.columns else 0,
-            "sial": len(sial_df),
+            "filas": filas_generadas,
+            "modelos": modelos_generados,
+            "sial": filas_sial,
             "fuente": arti_source,
         }
         log_user_activity(
             SUPERMALL_LABEL,
-            f"Carga de Supermall.pe generada: {len(matrixify_df):,} filas de talla.",
+            f"Carga de Supermall.pe generada: {filas_generadas:,} filas de talla.",
             module=SUPERMALL_LABEL,
         )
 

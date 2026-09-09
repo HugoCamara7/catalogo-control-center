@@ -57,11 +57,42 @@ class TestLaGuiaDeVansEsLaOficial(unittest.TestCase):
         self.assertEqual(gt.convertir("1Y", "VANS", gt.CALZADO, "")[1], "")
 
 
-class TestSinGuiaNoSeConvierte(unittest.TestCase):
-    def test_columbia_no_tiene_guia_y_se_reporta(self):
+class TestSinGuiaPropiaSeUsaLaPorDefecto(unittest.TestCase):
+    """Septiembre de 2026: el usuario pidio que TODO el calzado saliera con la
+    guia. La de Vans es la unica confirmada, asi que es la guia por defecto.
+
+    Lo que NO cambia: la conversion se REPORTA. Nunca se inventa en silencio.
+    """
+
+    def test_columbia_se_convierte_con_la_guia_por_defecto_y_se_reporta(self):
         talla, nota = gt.convertir("8", "COLUMBIA", gt.CALZADO, "Masculino")
-        self.assertEqual(talla, "8")
-        self.assertEqual(nota, gt.SIN_GUIA)
+        self.assertEqual(talla, "40.5")
+        self.assertEqual(nota, gt.POR_DEFECTO)
+
+    def test_una_talla_que_YA_esta_en_pe_no_se_reporta(self):
+        """Hush Puppies y Rockford entregan casi todo su calzado ya en PE: ahi
+        no se convirtio nada, asi que no hay nada que advertir."""
+        talla, nota = gt.convertir("40", "HUSH PUPPIES", gt.CALZADO, "Masculino")
+        self.assertEqual(talla, "40")
+        self.assertEqual(nota, "")
+
+    def test_la_guia_PROPIA_de_la_marca_manda_sobre_la_por_defecto(self):
+        gt.registrar_tabla("Propia", "MARCAPROPIA", gt.CALZADO, [
+            ("8", "9.5", "", "44", "26"),
+        ])
+        self.assertEqual(
+            gt.convertir("8", "MARCAPROPIA", gt.CALZADO, "Masculino"), ("44", ""))
+        gt._GUIAS.pop(gt._clave("MARCAPROPIA", gt.CALZADO), None)
+
+    def test_sin_guia_por_defecto_no_se_convierte_nada(self):
+        """La puerta se puede cerrar: es una linea de registro, no un `if`."""
+        respaldo = gt.guia_por_defecto(gt.CALZADO)
+        gt._POR_DEFECTO.pop(gt._clave("", gt.CALZADO)[1], None)
+        try:
+            self.assertEqual(
+                gt.convertir("8", "COLUMBIA", gt.CALZADO, "Masculino"), ("8", gt.SIN_GUIA))
+        finally:
+            gt.registrar_guia_por_defecto(gt.CALZADO, respaldo)
 
     def test_solo_vans_viene_con_guia_en_el_codigo(self):
         """Si alguien agrega una guia, tiene que ser con su tabla. Esta prueba
@@ -148,14 +179,25 @@ class TestLaEscalaLaMandaElSitio(unittest.TestCase):
             "40.5",
         )
 
-    def test_columbia_en_supermall_se_queda_como_esta(self):
-        """Misma tienda, otra marca: sin guia no se convierte. Un booleano de
-        sitio habria convertido las dos o ninguna."""
+    def test_columbia_en_supermall_tambien_sale_en_pe(self):
+        """Misma tienda, otra marca, MISMA escala: Supermall publica en PE.
+
+        Antes se quedaba en US porque Columbia no tiene guia propia, y la
+        tienda acababa con US y PE mezclados -- que es justo lo que el filtro de
+        talla no puede resolver. Ahora cae en la guia por defecto y se reporta.
+        """
         self.assertEqual(
             g.display_size_for_site("8", SUPERMALL, gender="Masculino",
                                     product_type="Zapatilla", marca="COLUMBIA"),
-            "8",
+            "40.5",
         )
+
+    def test_y_queda_constancia_de_con_que_guia_se_convirtio(self):
+        avisos = []
+        g.display_size_for_site("8", SUPERMALL, gender="Masculino",
+                                product_type="Zapatilla", marca="COLUMBIA",
+                                avisos=avisos)
+        self.assertEqual([a["Motivo"] for a in avisos], ["guia por defecto"])
 
 
 class TestSoloCalzado(unittest.TestCase):

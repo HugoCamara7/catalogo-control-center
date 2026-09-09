@@ -3130,10 +3130,97 @@ personas cargando a la vez sigue sin caber. Bajar de ahi es el **Pendiente 7**
 ajuste mas.
 
 `scripts/test_supermall_pico_de_memoria.py` (27 pruebas) fija todo esto; 17
-fallan con el codigo anterior. Las que pasan en las dos versiones son las que
-exigen que **nada cambie**: el memo del Excel, que el frame de quien llama no
-se toque, que sin `codigos` el maestro vaya entero y que por bloques salga lo
-mismo que de una vez.
+fallan con el codigo anterior.
+
+---
+
+## 5 trigies. El calzado no salia en tallas PE (septiembre 2026)
+
+Reportado con una captura de la hoja Carga Sial: *"las tallas no se estan
+generando por las guias de tallas que te pase de Vans"*. Reproducido contra el
+maestro real con la bota `1424692-2KQ` de Columbia antes de tocar nada. Eran
+**cuatro** fallos distintos y ninguno era el que parecia.
+
+### 1. La curva la votaban el `0` y las internas `K`
+
+El maestro trae, junto a las tallas de verdad, un `0` de cabecera y codigos
+internos tipo `K901`. Los dos se borran mas adelante -- `final_variant_filter`
+los quita y `talla_sirve_para_sial` los deja fuera de la hoja --, pero se
+colaban en la CURVA, que es lo que decide en que escala esta el calzado:
+
+```
+0, 50, 55, ..., 100, K901  ->  "no cabe en ninguna escala conocida"
+50, 55, ..., 100           ->  entre diez: la curva esta en US
+```
+
+Con la curva sin interpretar, **el producto entero se quedaba sin convertir**.
+Un valor que no es una talla no puede votar sobre la escala de las que si lo
+son: `curva_de_tallas_reales` lo quita antes de leerla.
+
+### 2. El conversor se quedaba sin genero
+
+Un US 8 de hombre es PE 40.5 y uno de mujer 38.5, asi que **sin genero no se
+convierte**. La hoja Sial ya resolvia el genero con una cascada -- primero el
+dato (`custom.genero`, `Genero` del maestro) y, si falta, el texto de la ficha
+-- y el conversor solo miraba el dato: una **"Bota Para Mujer Waterproof"** sin
+el metacampo puesto se publicaba en US y la hoja de Revision decia "no se sabe
+el genero del producto", con la palabra "Mujer" en el titulo de la fila de al
+lado. Ahora los dos preguntan por `centry_gender`. **El dato sigue mandando
+sobre el texto**: un `custom.genero` que diga Masculino no lo pisa un titulo.
+
+### 3. Sin guia propia no se convertia -- y ahora la de Vans es la POR DEFECTO
+
+**Decision del usuario, septiembre de 2026**, que revierte la de la seccion 5
+novodecies: la guia de Vans -- la unica confirmada -- pasa a ser la guia por
+defecto del calzado (`registrar_guia_por_defecto`).
+
+Lo que se gana: el catalogo sale entero en una sola escala. En Supermall.pe,
+que publica en PE, tener Columbia en US y Hush Puppies en PE en la misma tienda
+es justo lo que el filtro de talla no puede resolver.
+
+**Lo que se arriesga, y hay que saberlo:** la equivalencia de Vans puede no ser
+la de la otra marca. Por eso **cada conversion hecha con la guia por defecto se
+REPORTA** en la hoja de Revision, marca por marca; si alguna no cuadra, se ve y
+se le registra la suya con `registrar_tabla`, que es una hoja de Excel y no un
+`if`. Y la puerta se puede cerrar: quitar el registro por defecto devuelve el
+comportamiento anterior, y hay una prueba que lo comprueba.
+
+`hay_conversion(marca)` responde la misma pregunta para la CARGA y para el
+Mantenedor de Tallas. Si el mantenedor mirara solo la guia propia, la carga
+convertiria el calzado de Columbia y el mantenedor lo dejaria como esta: el
+mismo producto saldria distinto segun por donde pasara.
+
+### 4. `Talla Web ` salia del codigo del maestro, no de la talla publicada
+
+`Talla Web ` es **la talla que ve el comprador**, y esa es la que se escribe en
+la ficha (`Option1 Value` del Matrixify). Se recalculaba desde `Talla` -- el
+codigo del maestro --, asi que con el calzado convertido la hoja del almacen
+decia `5` y la tienda `34.5` **para el mismo SKU**. Ahora sale de la talla
+publicada, y solo se rehace desde `Talla` donde el filtro la convirtio en
+unica. **La columna `Talla` no se toca**: sigue siendo el codigo del maestro,
+que es lo que el almacen espera.
+
+### Y los avisos decian lo contrario de lo que pasaba
+
+- La nota de la curva ("numeros leidos entre 10: la curva esta en US") dice
+  COMO se leyo, no que la talla se haya quedado sin convertir, y salia como
+  "se publican SIN convertir a PE porque...". Un aviso que manda a buscar un
+  problema que no existe es peor que no avisar.
+- El `0` y las internas `K` pasaban por el conversor y llenaban la Revision de
+  avisos sobre filas que nadie va a ver.
+
+### Que se ve ahora, con la bota real
+
+| | antes | ahora |
+|---|---|---|
+| Matrixify `Option1 Value` | 5, 5.5, 6, ... 10 (US) | **34.5, 35, 36, ... 41 (PE)** |
+| Carga Sial `Talla Web ` | 5, 5.5, 6, ... 10 | **34.5, 35, 36, ... 41** |
+| Carga Sial `Talla` | 50, 55, 60, ... 100 | 50, 55, 60, ... 100 (sin cambio) |
+
+`scripts/test_tallas_de_calzado_en_supermall.py` (17 pruebas) fija todo esto;
+11 fallan con el codigo anterior. Cuatro pruebas de tres archivos cambiaron de
+esperado y es la consecuencia buscada: eran las que fijaban "sin guia no se
+convierte".
 
 ---
 
@@ -3343,9 +3430,9 @@ python scripts/test_engines_video_media.py             # 106
 python scripts/test_carga_sial_parcial.py               # 30
 python scripts/test_lectura_catalogo.py                # 30
 python scripts/test_espejo_supermall.py                # 35
-python scripts/test_mantenedor_tallas.py               # 41
+python scripts/test_mantenedor_tallas.py               # 42
 python scripts/test_orden_tallas_reales.py             # 17
-python scripts/test_guias_tallas.py                    # 21
+python scripts/test_guias_tallas.py                    # 25
 python scripts/test_carga_supermall.py                 # 57
 python scripts/test_lectura_completa_del_catalogo.py    # 17
 python scripts/test_colecciones.py                     # 54
@@ -3370,6 +3457,7 @@ python scripts/test_handle_tipo_y_duplicados.py         # 18
 python scripts/test_pantallas_reales.py                 # 10
 python scripts/test_bigquery_storage.py                 # 10
 python scripts/test_supermall_pico_de_memoria.py        # 27
+python scripts/test_tallas_de_calzado_en_supermall.py   # 17
 ```
 
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes

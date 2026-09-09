@@ -5832,6 +5832,13 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         vendor = centry_value(row.get("Vendor"), brand_config.get("label", ""))
         product_type = centry_value(row.get("Type"))
         raw_size = first_non_empty(row.get("__CENTRY_RAW_SIZE"), row.get("Option1 Value"))
+        # `Talla Web ` es la talla que VE EL COMPRADOR, y esa es la que se
+        # publica en la ficha (`Option1 Value` del Matrixify), no el codigo del
+        # maestro. Con el calzado convertido a PE los dos dejan de coincidir:
+        # el maestro dice `50` (US 5) y la tienda publica `34.5`. Sacandola del
+        # maestro, la hoja del almacen y la ficha decian tallas distintas para
+        # el MISMO SKU.
+        talla_publicada = first_non_empty(row.get("Option1 Value"), row.get("__CENTRY_RAW_SIZE"))
         gender = centry_gender(row)
         is_footwear = centry_is_footwear(row)
         fallback_package = centry_package_values(row)
@@ -5861,7 +5868,7 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
             "" if centry_looks_like_color_code(arti_item.get("color_name"), color_code) else arti_item.get("color_name"),
         )
         size = centry_display_size(
-            raw_size,
+            talla_publicada,
             centry_output_is_accessory(category_probe) and (is_one_size(raw_size) or is_zero_size(raw_size)),
         )
         # Calzado de un sitio que publica en PE: la talla US se convierte aqui
@@ -6359,6 +6366,14 @@ def _filas_sial_desde_matrixify(matrixify_df, brand_config=None, avisos_de_limit
         product_type = centry_value(row.get("Type"))
         color = centry_color_name_from_row(row, color_code)
         raw_size = first_non_empty(row.get("__CENTRY_RAW_SIZE"), row.get("Option1 Value"))
+        # `Talla Web ` es la talla que VE EL COMPRADOR, y esa es la que se
+        # publica en la ficha (`Option1 Value` del Matrixify), no el codigo del
+        # maestro. Con el calzado convertido a PE los dos dejan de coincidir --
+        # el maestro dice `50` y la tienda publica `34.5` --, asi que sacandola
+        # del maestro la hoja del almacen y la ficha decian tallas distintas
+        # para el MISMO SKU. La columna `Talla` si sigue siendo el codigo del
+        # maestro, que es lo que el almacen espera.
+        talla_publicada = first_non_empty(row.get("Option1 Value"), row.get("__CENTRY_RAW_SIZE"))
         gender = centry_gender(row)
         images = centry_split_images(row.get("Image Src"))
         image = images[0] if images else ""
@@ -6382,7 +6397,7 @@ def _filas_sial_desde_matrixify(matrixify_df, brand_config=None, avisos_de_limit
             resolutor_sial,
         )
         size = centry_display_size(
-            raw_size,
+            talla_publicada,
             centry_output_is_accessory(category_probe) and (is_one_size(raw_size) or is_zero_size(raw_size)),
         )
         # Por el MISMO embudo que la carga completa (`sial_size_value`): el
@@ -6483,7 +6498,12 @@ def build_centry_sial_from_matrixify(matrixify_df, brand_config=None):
     sial_df, _ = filter_centry_size_rows(sial_df, [], "Tal", key_column="Mod-Col", output_label="Carga Sial Centry",
                                             copiar=False)
     if not sial_df.empty and "Talla Web " in sial_df.columns:
-        sial_df["Talla Web "] = sial_df["Tal"].map(centry_display_size)
+        # Solo donde el filtro convirtio la talla en unica. Recalcularla
+        # SIEMPRE desde el codigo del maestro pisaba la talla publicada -- con
+        # el calzado en PE, la hoja decia US y la tienda PE para el mismo SKU.
+        unica = sial_df["Tal"].map(is_one_size)
+        if unica.any():
+            sial_df.loc[unica, "Talla Web "] = sial_df.loc[unica, "Tal"].map(centry_display_size)
     return repair_mojibake_dataframe(sial_df)
 
 
@@ -6529,7 +6549,12 @@ def build_sial_de_sitio_from_matrixify(matrixify_df, brand_config=None):
     sial_df, _ = filter_centry_size_rows(sial_df, [], "Talla", key_column="Mod-Col", output_label="Carga Sial",
                                             copiar=False)
     if not sial_df.empty and "Talla Web " in sial_df.columns:
-        sial_df["Talla Web "] = sial_df["Talla"].map(centry_display_size)
+        # Solo donde el filtro convirtio la talla en unica. Recalcularla
+        # SIEMPRE desde el codigo del maestro pisaba la talla publicada -- con
+        # el calzado en PE, la hoja decia US y la tienda PE para el mismo SKU.
+        unica = sial_df["Talla"].map(is_one_size)
+        if unica.any():
+            sial_df.loc[unica, "Talla Web "] = sial_df.loc[unica, "Talla"].map(centry_display_size)
     return repair_mojibake_dataframe(sial_df)
 
 
@@ -7216,10 +7241,29 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
             clean_value(v.get("TALNUM_MA")) or clean_value(v.get("__SIZE"))
             for v in variants.to_dict("records")
         ]
+        # El genero, con la MISMA cascada que usa la hoja Carga Sial: primero
+        # el dato -- `custom.genero` de Shopify, `Genero` del maestro -- y solo
+        # despues el texto de la ficha.
+        #
+        # Sin genero no se puede convertir una talla de calzado (un US 8 de
+        # hombre es PE 40.5 y uno de mujer 38.5, dos tallas y media), y el
+        # conversor se quedaba con el dato pelado: una "Bota Para Mujer
+        # Waterproof" sin el metacampo puesto se publicaba en US y la hoja de
+        # Revision decia "no se sabe el genero del producto" -- con la palabra
+        # "Mujer" en el titulo, en la fila de al lado. La misma pregunta tiene
+        # que dar la misma respuesta en los dos sitios.
+        genero_del_producto = centry_gender({
+            "Metafield: custom.genero [single_line_text_field]": gender_master,
+            "Genero": maestro.get("Genero"),
+            "Title": title,
+            "Tags": tags,
+            "Body HTML": body_html,
+            "Type": product_type,
+        })
         for position, (_, variant) in enumerate(variants.iterrows(), start=1):
             size = display_size_for_site(
                 variant.get("__SIZE"), brand_config,
-                gender=first_non_empty(gender_master, maestro.get("Genero")),
+                gender=genero_del_producto,
                 product_type=product_type,
                 # La MARCA manda la tabla, no el sitio: Supermall.pe lleva
                 # marcas que entregan en US y marcas que ya entregan en PE.
@@ -25210,10 +25254,16 @@ def tallas_convertidor_para(producto, brand_config):
     tipo = clean_value(producto.get("Type"))
     if not tipo or not es_calzado(tipo):
         return None
-    # Sin guia registrada para esa marca no se convierte NADA. Antes se miraba
-    # `MARCAS_TALLA_PE`, una lista de nombres escrita a mano: una marca en la
-    # lista sin tabla habria pedido una conversion que no existe.
-    if guias_tallas.guia_para(marca, guias_tallas.CALZADO) is None:
+    # Sin ninguna guia -- ni la de la marca ni la por defecto -- no se
+    # convierte NADA. Antes se miraba `MARCAS_TALLA_PE`, una lista de nombres
+    # escrita a mano: una marca en la lista sin tabla habria pedido una
+    # conversion que no existe.
+    #
+    # Se pregunta por `hay_conversion`, la MISMA que usa la carga: si el
+    # mantenedor mirara solo la guia propia, la carga convertiria el calzado de
+    # Columbia y el mantenedor lo dejaria como esta, y el mismo producto saldria
+    # distinto segun por donde pasara.
+    if not guias_tallas.hay_conversion(marca, guias_tallas.CALZADO):
         return None
     genero = centry_gender(producto)
     return lambda talla: talla_calzado_pe(talla, genero, marca=marca)

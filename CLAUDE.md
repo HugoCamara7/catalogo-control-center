@@ -2990,6 +2990,48 @@ cProfile sobre las funciones pesadas.
 
 ---
 
+## 5 octovicies. BigQuery bajaba TODO por REST (septiembre 2026)
+
+El log de Streamlit Cloud repetia el mismo aviso una vez por consulta:
+
+```
+UserWarning: BigQuery Storage module not found, fetch data with the REST
+endpoint instead.
+```
+
+No es un error -- la app arranca bien, `Uvicorn server started` esta ahi
+mismo --, pero dice que **cada** resultado baja por el endpoint REST.
+`google-cloud-bigquery-storage` no estaba en `requirements.txt`, aunque
+`pyarrow` y `db-dtypes` si. Con el maestro ARTI, que son 653.000 filas, eso no
+es cosmetico: la Storage API entrega el mismo resultado en Arrow y en
+streaming.
+
+**Pero instalarlo a secas podia ROMPER lo que hoy funciona.** La Storage API
+pide un permiso IAM que el REST no pide (`bigquery.readsessions.create`). La
+libreria cae sola a REST cuando el paquete NO esta -- eso es justamente lo que
+avisaba --, pero cuando esta y a la cuenta de servicio le falta el permiso,
+`to_dataframe()` **levanta** y la pantalla se queda sin KPIs.
+
+Por eso las tres lecturas pasan ahora por `bigquery_a_dataframe`, que reintenta
+con `create_bqstorage_client=False` -- que es exactamente lo que la app hacia
+antes -- ante cualquier fallo. En el peor caso se paga una consulta de mas la
+primera vez; a cambio, **tener el paquete nunca puede dejar la app peor que sin
+el**. Un fallo que tampoco pasa por REST (credenciales, red) sigue subiendo:
+taparlo dejaria la pantalla vacia sin decir por que.
+
+Hay un test AST que recorre cada `.to_dataframe(...)` de los dos archivos y
+falla si alguno se queda fuera del respaldo. Sin eso, una lectura nueva
+escrita a mano se saltaria el reintento y volveria el fallo de permisos.
+
+Comprobado antes de declararlo: el paquete es wheel puro (`py3-none-any`) y su
+`grpcio` tiene wheel `manylinux` x86_64 para **cp314**, que es el Python de
+Streamlit Cloud. No hay que compilar nada en el arranque.
+
+`scripts/test_bigquery_storage.py` (10 pruebas); 9 fallan con el codigo
+anterior.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -3221,6 +3263,7 @@ python scripts/test_optimizacion_memoria_excel.py       # 38
 python scripts/test_carga_supermall_rendimiento.py     # 16
 python scripts/test_handle_tipo_y_duplicados.py         # 18
 python scripts/test_pantallas_reales.py                 # 10
+python scripts/test_bigquery_storage.py                 # 10
 ```
 
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes

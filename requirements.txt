@@ -12,6 +12,18 @@ xlrd>=2.0.1
 google-cloud-bigquery>=3.20
 google-auth>=2.29
 db-dtypes>=1.2
+# Sin este paquete, `to_dataframe()` baja el resultado de BigQuery por el
+# endpoint REST y la libreria lo avisa en CADA consulta -- eso es lo que
+# llenaba el log de Streamlit Cloud. Con el, el maestro ARTI (653.000 filas)
+# y el stock vienen por la Storage API, en Arrow y en streaming.
+#
+# Es wheel puro (py3-none-any) y su `grpcio` tiene wheel manylinux x86_64 para
+# cp314, que es el Python de Streamlit Cloud: comprobado, no hay que compilar.
+#
+# La Storage API pide `bigquery.readsessions.create`, que el REST no pide. Si
+# la cuenta de servicio no lo tiene, `bigquery_a_dataframe` reintenta por REST:
+# tener el paquete nunca deja la app peor que sin el.
+google-cloud-bigquery-storage>=2.25
 pyarrow>=14.0
 # Se usa para reducir los logos antes de embutirlos como data URI en el HTML.
 # Llega por Streamlit, pero aqui se importa directo, asi que va declarada.

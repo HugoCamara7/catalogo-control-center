@@ -3032,6 +3032,108 @@ anterior.
 
 ---
 
+## 5 novovicies. "Generar la carga de Supermall" se quedaba sin memoria (septiembre 2026)
+
+Reportado literal: *"le di click a generar excel y cargo todo, termino y se
+quedo asi; ya paso 20 min y no sale nada"*.
+
+**No estaba colgado y no habia excepcion.** Es la forma exacta que tiene un
+OOM en Streamlit Cloud: el contenedor mata el proceso, no hay traza ni
+`st.error` -- `run_app()` no llega a atrapar nada porque muere el proceso
+entero -- y la pantalla se queda como estaba.
+
+### Lo medido, a la escala del usuario
+
+8.928 codigos, 38.423 filas de Matrixify y el **maestro ARTI de verdad**
+(653.431 filas). Con catalogos de PRUEBA, o sea **sin** los seis catalogos
+reales que en produccion viven en `session_state` (+179 MB medidos en su dia):
+
+| | antes | ahora |
+|---|---:|---:|
+| `supermall_generar` | 183,6 s | 183 s |
+| ...de los cuales, los 45 bloques | 107,2 s | 110 s |
+| ...la hoja Carga Sial | 69,7 s | 68 s |
+| armar el Excel | 36,1 s | 36 s |
+| **PICO** | **1.007 MB** | **710 MB** |
+| residente al terminar | 932 MB | 663 MB |
+
+**El contenedor da 1.024 MB PARA TODA LA APP.** Con 1.007 MB y los seis
+catalogos de verdad encima, no cabe.
+
+**Los bloques NO eran el problema y no son superlineales**: 2,2 s cada uno,
+medido del primero al ultimo. Lo que mataba el proceso era lo que se quedaba
+vivo mientras tanto.
+
+### Que se estaba llevando la memoria
+
+Medido con `memory_usage(deep=True)` sobre los objetos vivos al terminar:
+
+| | |
+|---|---:|
+| **maestro ARTI** | **336,9 MB** |
+| Matrixify | 70,5 MB |
+| Carga Sial | 34,3 MB |
+| Revision · tabla · Excel | 12,7 MB |
+
+O sea: **el maestro pesa cinco veces mas que el resultado**. Cinco cosas, de
+mayor a menor:
+
+1. **El maestro ARTI entero se quedaba en `session_state` durante toda la
+   generacion y todo el Excel.** En cuanto el contexto esta preparado, lo que
+   el bucle lee es la copia ACOTADA -- unas 40.000 filas de las 653.431 --, no
+   el maestro. `olvidar_arti_de_la_sesion` lo suelta ahi mismo, y tambien la
+   referencia local (si no, borrarlo de la sesion no libera nada). Se paga que
+   la proxima pantalla que lo necesite lo relea: **el trato es ese o que el
+   proceso muera a mitad de la carga**.
+2. **El contexto llevaba el maestro normalizado ENTERO.** Ahora se acota a los
+   codigos de toda la carga (`preparar_contexto_de_codigos(codigos=...)`). Es
+   exactamente la UNION de los filtros que cada bloque aplica despues, asi que
+   cada bloque encuentra las mismas filas. Va **despues** de los diagnosticos:
+   esos son sobre el estado del maestro, no sobre esta carga, y acotar antes
+   cambiaria la hoja de Revision. Los dos llamadores le pasan los codigos, asi
+   que Centry y la Carga Sial parcial ahorran lo mismo.
+3. **El contexto seguia vivo durante la hoja Sial y el Excel**, que es donde
+   mas memoria se pide. Se suelta en cuanto termina el ultimo bloque, junto con
+   las listas de partes ya concatenadas.
+4. **Copias que no hacian falta.** La lista de 38.000 diccionarios de la hoja
+   Sial se suelta antes del `fillna`, que copia; `filter_centry_size_rows`
+   recibe `copiar=False` de las dos hojas Sial -- que acaban de construir su
+   frame y lo reemplazan con el resultado --; y la exportacion pregunta
+   (`hoja_necesita_reparacion`) antes de llamar a `repair_mojibake_dataframe`,
+   que copiaba la hoja entera aunque no hubiera ni un marcador que arreglar.
+5. **`dataframe_to_excel_bytes` copiaba el archivo entero con `getvalue()`**
+   aunque no fuera a memoizarlo. El tamano se mide ahora con
+   `getbuffer().nbytes`, que no copia.
+
+Y en la pantalla: los conteos se sacan **antes** del Excel y los tres frames
+grandes se sueltan **en cuanto el Excel esta armado**, en vez de quedarse vivos
+durante todo el resto del dibujado.
+
+### La salida es IDENTICA
+
+Comparadas con datos del maestro real, antes y despues: **cero celdas
+distintas** en el Matrixify, en las dos hojas Carga Sial (la del sitio y la de
+Centry), en la hoja de Revision y en las cuatro hojas del Excel releido --
+incluida una hoja con mojibake a proposito, que se sigue reparando. El
+Matrixify de entrada queda intacto (es lo que protege el `copiar=True` por
+defecto).
+
+### Lo que sigue sin resolverse
+
+710 MB de 1.024 **sigue siendo la pantalla mas pesada de la app**, y con los
+seis catalogos reales en sesion quedan unos 890 MB. Cabe, pero con dos
+personas cargando a la vez sigue sin caber. Bajar de ahi es el **Pendiente 7**
+-- mover el trabajo pesado al worker que ya esta desplegado en Render --, no un
+ajuste mas.
+
+`scripts/test_supermall_pico_de_memoria.py` (27 pruebas) fija todo esto; 17
+fallan con el codigo anterior. Las que pasan en las dos versiones son las que
+exigen que **nada cambie**: el memo del Excel, que el frame de quien llama no
+se toque, que sin `codigos` el maestro vaya entero y que por bloques salga lo
+mismo que de una vez.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -3264,6 +3366,7 @@ python scripts/test_carga_supermall_rendimiento.py     # 16
 python scripts/test_handle_tipo_y_duplicados.py         # 18
 python scripts/test_pantallas_reales.py                 # 10
 python scripts/test_bigquery_storage.py                 # 10
+python scripts/test_supermall_pico_de_memoria.py        # 27
 ```
 
 > `test_brand_commercial_input.py` y `test_auth_accesos.py` fallan desde antes

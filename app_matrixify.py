@@ -1112,6 +1112,34 @@ def read_uploaded_excel_cached(uploaded_file, state_prefix, sheet_name=0):
     return df
 
 
+def bigquery_a_dataframe(query_job):
+    """El resultado de BigQuery como DataFrame, por la via mas rapida que haya.
+
+    Con `google-cloud-bigquery-storage` instalado, `to_dataframe()` baja el
+    resultado por la **Storage API** -- Arrow en streaming -- en vez de por el
+    endpoint REST. Para el maestro ARTI, que son 653.000 filas, la diferencia
+    no es cosmetica. Sin el paquete, la libreria avisa en cada consulta
+    ("BigQuery Storage module not found, fetch data with the REST endpoint
+    instead") y baja por REST; ese aviso es lo que llenaba el log de la app.
+
+    **Pero la Storage API pide un permiso IAM que el REST no pide**
+    (`bigquery.readsessions.create`). Si la cuenta de servicio no lo tiene,
+    `to_dataframe()` levanta y la pantalla se queda sin KPIs -- o sea que
+    instalar el paquete podria ROMPER algo que hoy funciona. La libreria solo
+    cae sola a REST cuando el paquete no esta; ante un fallo de permisos, no.
+
+    Por eso el reintento: si la via rapida falla por lo que sea, se repite
+    pidiendo explicitamente el camino REST, que es exactamente lo que la app
+    hacia antes. En el peor caso se paga una consulta de mas la primera vez;
+    a cambio, tener el paquete nunca puede dejar la app peor que sin el.
+    """
+    try:
+        return query_job.to_dataframe()
+    except Exception:
+        # `create_bqstorage_client=False` es el camino de siempre, el REST.
+        return query_job.to_dataframe(create_bqstorage_client=False)
+
+
 def get_bigquery_config():
     config = {}
     try:
@@ -1678,10 +1706,10 @@ def enrich_arti_barcodes_from_bigquery_table(arti_df, bigquery_config):
                 use_legacy_sql=False,
                 query_parameters=[bigquery.ArrayQueryParameter("skus", "STRING", tanda)],
             )
-            lookup_df = client.query(
+            lookup_df = bigquery_a_dataframe(client.query(
                 query, job_config=job_config,
                 location=clean_value(config.get("location")) or None,
-            ).to_dataframe()
+            ))
             ean_alias_columns = [c for c in lookup_df.columns if str(c).startswith("__EAN_CAND_")]
             lookup_df = _coalesce_barcode_candidates(lookup_df, ean_alias_columns)
             filas_maestro += len(lookup_df)
@@ -9295,7 +9323,8 @@ def read_current_stock_from_bigquery(bigquery_config):
     query = configured_query or STOCK_QUERY_DEFAULT
 
     def run_query(query_text):
-        return client.query(query_text, job_config=job_config, location=location).to_dataframe()
+        return bigquery_a_dataframe(
+            client.query(query_text, job_config=job_config, location=location))
 
     try:
         df = run_query(query)

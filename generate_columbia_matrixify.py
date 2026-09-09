@@ -3058,7 +3058,13 @@ def _read_arti_from_bigquery(config, brand_config=None, mod_cols=None):
 
     job_config = bigquery.QueryJobConfig(use_legacy_sql=False, query_parameters=query_parameters)
     query_job = client.query(query, job_config=job_config, location=clean(config.get("location")) or None)
-    df = query_job.to_dataframe()
+    # Storage API si esta disponible, y si falla -- por ejemplo porque la cuenta
+    # de servicio no tiene `bigquery.readsessions.create` -- se repite por REST,
+    # que es lo que se hacia antes. Instalar el paquete no puede empeorar nada.
+    try:
+        df = query_job.to_dataframe()
+    except Exception:
+        df = query_job.to_dataframe(create_bqstorage_client=False)
     df = normalize_arti_required_columns(df)
     source = clean(config.get("table")) or "query configurada"
     output_columns = [column for column in ARTI_OUTPUT_COLUMNS if column in df.columns]

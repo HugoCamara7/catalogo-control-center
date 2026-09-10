@@ -74,6 +74,40 @@ JOB_COMPLETADO_CON_ERRORES = "completed_with_errors"
 JOB_FALLIDO = "failed"
 JOB_SIN_DISPARAR = "not_dispatched"
 
+# --- que se esta cargando -------------------------------------------------
+# El runner ya sabia hacer las dos cosas: `_sync_job_run_one_product` deriva a
+# `apply_shopify_preview` cuando el modo empieza por "partial", y a
+# `apply_full_product_updates` cuando no. Lo que faltaba era que un job pudiera
+# DECIR que es una carga parcial -- hasta ahora el unico modo que llegaba al
+# repositorio de datos era "complete".
+#
+# El prefijo NO es decorativo: es lo que consultan `_sync_job_product_key_series`
+# (que en parcial identifica por Handle/Mod-Col/Product ID, no por bloque de
+# Matrixify) y el despacho del bloque. Un modo parcial que no empiece asi se
+# cargaria como si fuera un catalogo completo.
+PREFIJO_MODO_PARCIAL = "partial_"
+
+# La hoja del Excel que el runner tiene que leer, por modo.
+#
+# La vista previa de una carga parcial NO puede ir en una hoja llamada
+# `Products`: `dataframe_to_excel_bytes` le aplica `solo_columnas_matrixify` a
+# esa hoja la escriba quien la escriba, y eso se llevaria por delante
+# `Operacion`, `Valor nuevo`, `Media IDs`, `Modo fotos` y `Tipo tecnologia` --
+# o sea, justo lo que dice QUE hay que escribir. El archivo llegaria al runner
+# con las columnas de identidad y sin una sola instruccion.
+HOJA_MATRIXIFY = "Products"
+HOJA_VISTA_PREVIA = "Vista previa"
+
+
+def es_modo_parcial(modo):
+    return _texto(modo).startswith(PREFIJO_MODO_PARCIAL)
+
+
+def hoja_de_entrada(modo):
+    """En que hoja del Excel viene lo que hay que cargar."""
+    return HOJA_VISTA_PREVIA if es_modo_parcial(modo) else HOJA_MATRIXIFY
+
+
 ESTADOS_JOB_VIVO = {JOB_ENCOLADO, JOB_CORRIENDO}
 ESTADOS_JOB_TERMINADO = {JOB_COMPLETADO, JOB_COMPLETADO_CON_ERRORES, JOB_FALLIDO}
 
@@ -180,25 +214,47 @@ def nuevo_registro_job(
     batch_size=PRODUCTOS_POR_BLOQUE,
     creado_por="",
     marca="",
+    operacion="",
+    activar_sucursales=None,
 ):
     """Arma el registro que viaja al repositorio de datos.
 
     `claves_producto` son los Modelo-Color a cargar. Van completos en el
     registro a proposito: son la lista de pendientes, y sin ellos un runner que
     muere no puede reanudar sin volver a leer y re-analizar el Excel.
+
+    `mode` es lo que decide QUE hace el runner con el archivo: `"complete"`
+    escribe el producto entero desde el Matrixify, y `"partial_<operacion>"`
+    aplica una vista previa de carga parcial (Body HTML, tags, titulo, fotos,
+    tecnologias, siblings). `input_sheet` sale del modo por
+    `hoja_de_entrada`, no se pasa a mano: dos sitios eligiendo la hoja se
+    separan sin que nadie lo note.
+
+    `activar_sucursales` NO puede ser siempre True. La carga parcial toca UN
+    campo del producto; activar de paso el inventario en todas las sucursales
+    seria un efecto que nadie pidio, y la pantalla local ya pasa False para
+    parcial. Sin dato explicito se deduce del modo, que es la respuesta
+    correcta en los dos casos.
     """
     claves = [clave for clave in (list(claves_producto or [])) if _texto(clave)]
     claves = list(dict.fromkeys(claves))
     batch_size = max(1, int(batch_size or PRODUCTOS_POR_BLOQUE))
+    modo = _texto(mode) or "complete"
     ahora = ahora_utc()
     return {
         "id": nuevo_id_job(codigo_solicitud),
         "ticket": _texto(codigo_solicitud),
         "site_key": _texto(site_key),
         "marca": _texto(marca),
-        "mode": _texto(mode) or "complete",
+        "mode": modo,
+        "operacion": _texto(operacion) or (modo[len(PREFIJO_MODO_PARCIAL):] if es_modo_parcial(modo) else ""),
         "status": JOB_ENCOLADO,
         "matrixify_path": _texto(matrixify_path),
+        "input_sheet": hoja_de_entrada(modo),
+        "activate_inventory_locations": (
+            bool(activar_sucursales) if activar_sucursales is not None
+            else not es_modo_parcial(modo)
+        ),
         "batch_size": batch_size,
         "total_products": len(claves),
         "processed_products": 0,
@@ -368,6 +424,11 @@ def resumen_job(job):
         "ticket": _texto(job.get("ticket")),
         "estado": estado,
         "etiqueta": ETIQUETAS_JOB.get(estado, estado),
+        # QUE se esta cargando. Sin esto el panel dice "Cargando en Shopify"
+        # igual para un catalogo entero que para una Mantencion de Body HTML, y
+        # quien vuelve al dia siguiente no sabe cual de las dos esta mirando.
+        "operacion": _texto(job.get("operacion")),
+        "parcial": es_modo_parcial(job.get("mode")),
         "vivo": estado in ESTADOS_JOB_VIVO,
         "terminado": estado in ESTADOS_JOB_TERMINADO,
         "total": total,
@@ -816,7 +877,8 @@ class AdaptadorCargaActions:
         return self._resumen_para_ticket(job)
 
     def start_suelto(self, *, site_key, matrixify_bytes, filename="",
-                     claves_producto=(), creado_por="", marca="", modo="complete"):
+                     claves_producto=(), creado_por="", marca="", modo="complete",
+                     operacion="", activar_sucursales=None):
         """Lanza una carga remota que NO sale de una solicitud.
 
         Por que existe
@@ -840,23 +902,32 @@ class AdaptadorCargaActions:
         claves = [clave for clave in (claves_producto or []) if _texto(clave)]
         if not matrixify_bytes:
             return self._job_sin_disparar(
-                "", "No hay un Matrixify que cargar. Pulsa «Analizar input» primero.")
+                "",
+                "No hay una vista previa que cargar. Pulsa «Analizar carga parcial» primero."
+                if es_modo_parcial(modo)
+                else "No hay un Matrixify que cargar. Pulsa «Analizar input» primero.")
         if not site_key:
             return self._job_sin_disparar("", "La carga no dice a que sitio va.")
 
         # El codigo es sintetico y se ve como lo que es: no hay solicitud, y
         # inventar un CAT-#### haria creer que existe una.
         codigo = f"{CODIGO_CARGA_SUELTA}-{site_key.upper()}-{sello_de_tiempo('%Y%m%d-%H%M%S')}"
+        # El modo va DENTRO de `nuevo_registro_job`, no asignado despues:
+        # de el salen la hoja del Excel que el runner tiene que leer y si toca
+        # activar el inventario en sucursales. Escribiendolo encima, las dos
+        # cosas quedaban calculadas para "complete" en una carga parcial.
         job = nuevo_registro_job(
             codigo_solicitud=codigo,
             site_key=site_key,
             matrixify_path="",
             claves_producto=claves,
+            mode=_texto(modo) or "complete",
             batch_size=self.batch_size,
             creado_por=_texto(creado_por),
             marca=_texto(marca),
+            operacion=operacion,
+            activar_sucursales=activar_sucursales,
         )
-        job["mode"] = _texto(modo) or "complete"
         job["sin_solicitud"] = True
 
         # El archivo va PRIMERO. Con el registro guardado y el archivo no, el
@@ -864,13 +935,14 @@ class AdaptadorCargaActions:
         try:
             ruta = self.almacen.ruta_de_matrixify(job["id"], filename)
             self.almacen.guardar_archivo(
-                ruta, matrixify_bytes, mensaje=f"catalog: matrixify de {job['id']}")
+                ruta, matrixify_bytes, mensaje=f"catalog: entrada de {job['id']}")
             job["matrixify_path"] = ruta
         except Exception as exc:
             return self._job_sin_disparar(
-                codigo, f"No pude subir el Matrixify al repositorio de datos: {texto_publico(exc)}")
+                codigo, f"No pude subir el archivo al repositorio de datos: {texto_publico(exc)}")
 
-        agregar_evento(job, "Creado", f"{len(claves):,} productos por cargar (carga suelta)")
+        que_es = f"carga parcial · {job.get('operacion')}" if es_modo_parcial(modo) else "carga suelta"
+        agregar_evento(job, "Creado", f"{len(claves):,} productos por cargar ({que_es})")
         try:
             self.almacen.guardar(job, mensaje=f"catalog: job {job['id']} creado")
         except Exception as exc:

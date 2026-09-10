@@ -415,7 +415,17 @@ class TestWorkerReanuda(unittest.TestCase):
         import types
 
         modulo = types.ModuleType("catalog_engine")
-        modulo.read_matrixify_excel = lambda ruta: _TablaFalsa(["A", "B", "C", "D", "E"])
+
+        # El doble acepta `sheet_name` porque el real lo acepta, y ademas lo
+        # COMPRUEBA: una carga completa tiene que pedir la hoja `Products`. Si
+        # el worker le pidiera la hoja de la vista previa, el Matrixify de una
+        # solicitud llegaria vacio y el job se cerraria sin cargar nada.
+        def _leer(ruta, sheet_name="Products"):
+            self.hojas_pedidas.append(sheet_name)
+            return _TablaFalsa(["A", "B", "C", "D", "E"])
+
+        self.hojas_pedidas = []
+        modulo.read_matrixify_excel = _leer
         modulo.shopify_config_from_env = lambda site_key: {
             "shop_domain": "x.myshopify.com", "admin_access_token": "t",
         }
@@ -484,6 +494,16 @@ class TestWorkerReanuda(unittest.TestCase):
         almacen.archivos[job["matrixify_path"]] = b"excel"
         almacen.guardar(job)
         return job, almacen
+
+    def test_una_carga_completa_pide_la_hoja_Products(self):
+        """La hoja la decide el modo. Desde que el worker sabe hacer cargas
+        parciales -- que viajan en la hoja `Vista previa` --, pedir la hoja
+        equivocada dejaria el Matrixify de una solicitud sin una sola fila y el
+        job se cerraria "completado" sin haber cargado nada."""
+        worker = _worker()
+        job, almacen = self._job_y_almacen(batch_size=5)
+        worker._ejecutar(job, "sha", almacen, "columbia", 60)
+        self.assertEqual(self.hojas_pedidas, [cr.HOJA_MATRIXIFY])
 
     def test_carga_todo_y_publica_el_avance_en_cada_bloque(self):
         worker = _worker()

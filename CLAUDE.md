@@ -3824,7 +3824,7 @@ La lista se mantenia a mano, y una lista que hay que acordarse de actualizar no
 sirve para validar.
 
 La seccion 12 ya no lleva rutas: dice que se corran **todos** los
-`scripts/test_*.py`. Son 68 archivos y ~2.084 pruebas.
+`scripts/test_*.py`. Son 69 archivos y ~2.099 pruebas.
 
 ### Lo que hace falta para cerrarlo del todo
 
@@ -4106,6 +4106,113 @@ ejecutarlo**.
 
 ---
 
+## 5 septtrigies. Por que la carga tardaba: 32 viajes a Shopify por producto (septiembre 2026)
+
+Preguntado con la carga a la vista: *"¿por que la carga es tan lenta?... vamos
+4.500 productos y faltan 3.600, es bastante"*.
+
+**No era la app.** Medido con un Shopify falso que responde al instante:
+
+| | |
+|---|---:|
+| Nuestro CPU por producto | **16 ms** |
+| Viajes a Shopify por producto | **21 a 32** |
+| Parte del tiempo que es esperar a la red | **99,5 %** |
+
+Con 300 ms de latencia por viaje -- lo normal desde Streamlit Cloud o un
+runner -- eso son 6 a 9 s por producto, o sea **14 a 21 horas para 8.000
+productos**. Y Shopify no nos estaba frenando: a ese ritmo vamos por debajo de
+su limite, el proceso esta **parado esperando**, no rechazado.
+
+### Un viaje por CADA metacampo, por CADA producto
+
+Esto estaba en el bucle de escritura:
+
+```python
+for metafield in metafields:
+    metafields_set(shopify_config, [metafield])
+```
+
+y `metafields_set` recibe **una lista** desde siempre. Medido:
+
+| metacampos del producto | viajes totales | ...que son `metafields_set` |
+|---:|---:|---:|
+| 3 | 18 | 3 |
+| 6 | 23 | 6 |
+| **12** | **32** | **12** |
+
+Escala 1 a 1, y la app sabe escribir **26 metacampos**.
+
+### Lote con respaldo, no lote a secas
+
+`metafieldsSet` es **todo o nada**: un solo tipo que no coincida con la
+definicion de la tienda deja los 25 sin escribir. Eso ya paso con
+`theme.siblings` (seccion 9), **y por eso se habian separado uno por uno**. El
+motivo era real y no se puede tirar.
+
+`_escribir_metafields_en_lote` conserva la propiedad entera: manda el lote y,
+**si falla, reintenta uno por uno** -- que es exactamente lo que hacia antes.
+
+- Camino feliz (casi siempre): **1 viaje en vez de 12**.
+- Camino de fallo: 1 lote fallido + N sueltas. Se escriben todos los buenos y
+  el informe **nombra** el metacampo malo, igual que antes.
+- Como la mutacion es todo o nada, un lote que falla no escribio ninguno:
+  reintentarlos todos no puede duplicar nada.
+- El tope de 25 es de Shopify, no una eleccion nuestra
+  (`METAFIELDS_POR_LLAMADA`).
+
+### Lo medido, de punta a punta
+
+| metacampos | viajes antes | viajes ahora |
+|---:|---:|---:|
+| 3 | 18 | 16 |
+| 6 | 23 | 18 |
+| 12 | **32** | **21** |
+
+Con 12 metacampos, **34 % menos viajes**: de ~21 h a ~14 h para 8.000
+productos.
+
+**Y la salida es IDENTICA.** Comparado contra la version anterior con 5
+productos de 12 metacampos: **cero diferencias** en los 60 metacampos escritos
+(namespace, key, tipo y valor), en las otras 108 llamadas y en el resultado por
+producto. Lo unico que cambia es que las 60 llamadas a `metafields_set` son 5.
+
+### Lo que NO se hizo, y por que
+
+**Paralelizar los productos.** Es donde estaria el 3-4x, pero **11 funciones
+del camino de escritura tocan `st.session_state`** -- caches de tipos de
+metacampo, de metaobjetos, de sucursales, y el mapa handle->GID que los
+siblings van MUTANDO durante la carga --. Desde un hilo eso no se puede tocar;
+es la regla que ya obligo a leer los seis catalogos con la cache consultada
+FUERA del hilo (seccion 5 quater). Hacerlo bien es un proyecto, no un ajuste, y
+a ciegas rompe los siblings.
+
+**Las fotos no eran el problema.** `_sync_product_photos_direct` le pasa las
+URLs a Shopify y sigue: **no espera** a que las descargue (`wait_media_statuses`
+no se llama en la carga). Una foto que no este en el bucket deja al producto sin
+esa foto, pero no cuesta ni un segundo de carga.
+
+### Lo que queda sobre la mesa
+
+**Nueve de los 21 viajes que quedan son releer el mismo producto**
+(`fetch_product_options_and_variants`). Varios estan justo despues de una
+mutacion **que ya devolvio el dato** -- por ejemplo
+`product_variants_bulk_update` en `app_matrixify.py:14133`, cuyo retorno se
+captura y acto seguido se vuelve a pedir. Otros SI son verificacion deliberada,
+que es lo que evita que un video quede en la posicion 3 o unas tallas
+desordenadas sin que nadie se entere: no se pueden quitar todos. Dejarlos en 3
+llevaria la carga de ~14 h a ~10 h.
+
+Y una leccion de medicion: la primera cifra que se publico fue "574 ms de CPU
+por producto", y **estaba mal** -- eran dos llamadas reales a Shopify que no se
+habian simulado (`fetch_metafield_definition`, que si esta cacheada: 80
+consultas dieron 2 llamadas). El CPU real son 16 ms. **Si el numero sale raro,
+lo primero que hay que mirar es el propio instrumento.**
+
+`scripts/test_metafields_en_lote.py` (15 pruebas) fija todo esto.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -4341,7 +4448,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **68 archivos y ~2.084 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **69 archivos y ~2.099 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

@@ -58,6 +58,10 @@ from engines.carga_remota import JOB_SIN_DISPARAR
 from engines.carga_remota import PRODUCTOS_POR_BLOQUE as JOB_PRODUCTOS_POR_BLOQUE
 from engines.carga_remota import resumen_job as job_resumen
 from engines.carga_remota import diagnostico_carga_remota
+# La hoja donde viaja la vista previa de una carga parcial. Se importa,
+# no se copia: si la pantalla escribiera un nombre y el worker leyera otro,
+# el runner bajaria el archivo y no encontraria ni una fila.
+from engines.carga_remota import HOJA_VISTA_PREVIA as HOJA_VISTA_PREVIA_CARGA
 from engines.ticket_flow import acciones_disponibles as flujo_acciones
 from engines.ticket_flow import accion_principal as flujo_accion_principal
 from engines.ticket_flow import atajos_disponibles as flujo_atajos
@@ -8884,6 +8888,16 @@ def render_partial_diagnostic_panel(diagnostic_df, operation=""):
     return filtered
 
 
+# Los dos metafields de texto que la PLP y la PDP muestran y que hasta ahora
+# SOLO se podian escribir con una carga completa. Las claves son las de
+# `engines/catalog_map`: de ahi salen los alias del Excel, el namespace y el
+# tipo, para que el mismo archivo se lea igual por la carga completa y por
+# esta. Escribirlos aqui a mano seria un segundo diccionario que se separa del
+# primero sin que nadie lo note.
+CAMPOS_TEXTOS_CORTOS = ("nombre_corto", "descripcion_corta")
+TEXTOS_CORTOS_LABEL = "Nombre corto y Descripcion corta"
+
+
 def build_shopify_update_preview(
     shopify_products,
     update_input_df,
@@ -9080,6 +9094,59 @@ def build_shopify_update_preview(
                     "Observacion": "",
                 }
             )
+        elif operation == "short_texts":
+            # Nombre corto y Descripcion corta viven en la PLP y la PDP y
+            # hasta ahora solo se podian escribir con una carga COMPLETA, que
+            # exige el input comercial entero. Para corregirlos en el catalogo
+            # ya cargado no habia camino.
+            #
+            # Los alias y el tipo se IMPORTAN de `engines/catalog_map`, no se
+            # copian: es el mismo diccionario con el que la carga completa
+            # escribe estos dos metafields, asi que el mismo Excel se lee igual
+            # por los dos caminos.
+            from engines.catalog_map import CAMPOS_POR_CLAVE, valor_de_entrada
+
+            fila_dict = row if isinstance(row, dict) else dict(row)
+            algo_que_escribir = False
+            for clave in CAMPOS_TEXTOS_CORTOS:
+                campo = CAMPOS_POR_CLAVE[clave]
+                nuevo_valor = clean_value(valor_de_entrada(fila_dict, campo))
+                if not nuevo_valor:
+                    # Vacio NO borra. Es la misma regla que ya declara la guia
+                    # del input comercial ("Vacio no borra el valor de
+                    # Shopify"): un Excel que solo trae la columna Nombre corto
+                    # no puede dejar sin descripcion a todo el catalogo.
+                    continue
+                valor_actual = clean_value(product.get(campo.columna))
+                if valor_actual == nuevo_valor:
+                    continue
+                algo_que_escribir = True
+                rows.append(
+                    {
+                        "Accion": "Actualizar",
+                        "Sitio": brand_config["site_label"],
+                        "Operacion": "short_texts",
+                        "Mod-Col": product_key,
+                        "Product ID": product_id,
+                        "Handle": product.get("Handle"),
+                        "Campo": campo.columna,
+                        "Metafield": f"{campo.namespace}.{campo.key}",
+                        "Tipo metafield": campo.tipo,
+                        "Valor actual": valor_actual,
+                        "Valor nuevo": nuevo_valor,
+                        "Estado": "OK",
+                        "Observacion": "" if valor_actual else "El producto no tenia valor",
+                    }
+                )
+            if not algo_que_escribir:
+                # Una fila del Excel que no cambia nada no es un problema, pero
+                # si TODAS son asi el usuario merece saber por que la vista
+                # previa salio vacia en vez de suponer que fallo.
+                issues.append({
+                    "Mod-Col": product_key,
+                    "Handle": product.get("Handle"),
+                    "Problema": "Sin cambios: las columnas vienen vacias o ya dicen lo mismo",
+                })
         elif operation == "body":
             if body_mode == "from_input":
                 from generate_columbia_matrixify import build_body_html
@@ -9458,6 +9525,107 @@ def apply_shopify_preview(shopify_config, preview_df, progress_callback=None):
                 product_update(shopify_config, product_id, title=clean_value(row.get("Valor nuevo")))
             elif operation == "body":
                 product_update(shopify_config, product_id, body_html=clean_value(row.get("Valor nuevo")))
+            elif operation == "videos":
+                # Se llama a `video_publicar`, la MISMA de la pantalla, que
+                # nunca lanza y devuelve el registro con sus 10 pasos. Un
+                # segundo publicador de videos se separaria del primero sin que
+                # nadie lo note -- y aqui eso significaria dejar el video en la
+                # posicion equivocada, que es el peor error silencioso.
+                site_key_fila = clean_value(row.get("Site key"))
+                if site_key_fila not in SITE_CONFIGS:
+                    status = "ERROR"
+                    message = f"La fila no dice de que sitio es (Site key: «{site_key_fila}»)."
+                else:
+                    resultado_video = video_publicar(
+                        shopify_config, site_key_fila, clean_value(row.get("Mod-Col")),
+                        marca_excel=clean_value(row.get("Marca excel")),
+                        marca_pantalla=clean_value(row.get("Marca pantalla")),
+                        reemplazar=clean_value(row.get("Reemplazar")).upper() == "SI",
+                    )
+                    pasos_video = (resultado_video or {}).get("pasos") or {}
+                    message = " | ".join(
+                        f"{clave}: {paso.get('detalle') or paso.get('estado')}"
+                        for clave, paso in pasos_video.items()
+                        if paso.get("estado") not in ("pendiente", "")
+                    )
+                    if not (resultado_video or {}).get("ok"):
+                        status = "ERROR"
+                    elif int((resultado_video or {}).get("Posición") or 0) != video_motor.POSICION_VIDEO:
+                        # Publicado en la posicion equivocada se reporta como
+                        # FALLO. Es la regla de la seccion 5 sexies: un video
+                        # en la 3 se ve bien y nadie lo revisa.
+                        status = "ERROR"
+                        message = (message + " | ") if message else ""
+                        message += (
+                            f"Quedo en la posicion {resultado_video.get('Posición')} "
+                            f"y no en la {video_motor.POSICION_VIDEO}."
+                        )
+            elif operation == "tallas":
+                # El Mantenedor de Tallas entra por aqui para poder correr en
+                # el runner. **No se reimplementa**: se llama a la MISMA
+                # `tallas_aplicar_producto` que usa la pantalla, que ademas
+                # RELEE el producto y replanifica antes de escribir -- el plan
+                # salio de un catalogo cacheado y entre el analisis y el
+                # arreglo alguien pudo tocarlo.
+                #
+                # El sitio viaja EN LA FILA. Esta funcion no recibe
+                # `brand_config`, y las tres lineas que lo usaban levantaban
+                # NameError dejando la fila en ERROR sin intentar escribir
+                # (seccion 9); la vista previa lo trae resuelto.
+                site_key_fila = clean_value(row.get("Site key"))
+                # `get_brand_config`, no `SITE_CONFIGS[...]` a secas: es la
+                # MISMA configuracion que arma la pantalla, con su `site_key`
+                # dentro. Con la entrada cruda del diccionario el conversor
+                # recibiria un config al que le falta un campo.
+                config_sitio = get_brand_config(site_key_fila) if site_key_fila in SITE_CONFIGS else None
+                if not config_sitio:
+                    # No se adivina el sitio: escribir en la tienda equivocada
+                    # es peor que no escribir.
+                    status = "ERROR"
+                    message = f"La fila no dice de que sitio es (Site key: «{site_key_fila}»)."
+                else:
+                    ok_tallas, pasos = tallas_aplicar_producto(
+                        shopify_config, dict(row), config_sitio)
+                    message = " | ".join(f"{p['Paso']}: {p['Detalle']}" for p in pasos)
+                    if not ok_tallas:
+                        status = "ERROR"
+                    elif any(p.get("Estado") == "aviso" for p in pasos):
+                        # "Ya estaba bien al releerlo" no es un fallo, pero
+                        # tampoco es una escritura: decirlo OK a secas haria
+                        # creer que se arreglo algo.
+                        status = "OMITIDO"
+            elif operation == "short_texts":
+                # El metafield y su tipo viajan EN LA FILA, no se deciden aqui:
+                # esta funcion no recibe `brand_config` -- las tres lineas que
+                # lo usaban levantaban NameError y dejaban la fila en ERROR sin
+                # haber intentado escribir (seccion 9). La vista previa ya los
+                # trae resueltos desde `engines/catalog_map`.
+                metafield = clean_value(row.get("Metafield"))
+                namespace, _, key = metafield.partition(".")
+                nuevo_valor = clean_value(row.get("Valor nuevo"))
+                if not namespace or not key:
+                    status = "ERROR"
+                    message = "La fila no dice a que metafield va."
+                elif not nuevo_valor:
+                    # Vacio no borra, tampoco al aplicar: la vista previa no
+                    # deberia haber emitido la fila, y escribir "" aqui borraria
+                    # el valor de la tienda.
+                    status = "OMITIDO"
+                    message = "Sin valor nuevo: vacio no borra."
+                else:
+                    metafields_set(
+                        shopify_config,
+                        [
+                            {
+                                "ownerId": product_id,
+                                "namespace": namespace,
+                                "key": key,
+                                "type": clean_value(row.get("Tipo metafield")) or "single_line_text_field",
+                                "value": nuevo_valor,
+                            }
+                        ],
+                    )
+                    message = f"{metafield} actualizado"
             elif operation == "size_guides":
                 status = "OMITIDO"
                 message = (
@@ -23555,7 +23723,8 @@ def recordar_matrixify_de_carga(codigo, matrixify_df, site_key, excel_path="", f
 
 def lanzar_carga_remota_suelta(brand_config, *, matrixify_bytes=None,
                                claves_producto=None, filename="", site_key="",
-                               modulo="Carga completa"):
+                               modulo="Carga completa", modo="complete",
+                               operacion="", activar_sucursales=None):
     """Manda a GitHub Actions un Matrixify, con o sin solicitud.
 
     Devuelve `(ok, mensaje)`. Es el mismo recorrido que la carga desde una
@@ -23569,6 +23738,13 @@ def lanzar_carga_remota_suelta(brand_config, *, matrixify_bytes=None,
     --, y sin esta puerta esa carga no tenia forma de ejecutarse fuera de la
     sesion. Escribir un segundo lanzador seria tener dos motores de carga que
     se separan sin que nadie lo note.
+
+    `modo` es lo unico que distingue una carga COMPLETA de una PARCIAL. Con
+    `partial_<operacion>` lo que se sube es la vista previa de Carga parcial y
+    el runner la aplica con `apply_shopify_preview` -- que es exactamente lo
+    que ya hace el panel local, porque el despacho por modo vive en
+    `_sync_job_run_one_product` y no en la pantalla. Por eso aqui no hay una
+    segunda rama: el mismo lanzador sirve para las dos.
     """
     if matrixify_bytes is not None:
         payload = matrixify_bytes
@@ -23600,6 +23776,9 @@ def lanzar_carga_remota_suelta(brand_config, *, matrixify_bytes=None,
         claves_producto=guardado.get("product_keys") or [],
         creado_por=clean_value(st.session_state.get("auth_user")),
         marca=clean_value(brand_config.get("label")),
+        modo=modo,
+        operacion=operacion,
+        activar_sucursales=activar_sucursales,
     )
     resumen = resumen or {}
     if clean_value(resumen.get("status")) == "not_dispatched":
@@ -23660,6 +23839,101 @@ def render_boton_carga_remota(brand_config):
         st.caption(f"Último job lanzado: `{clean_value(ultimo.get('id'))}`")
 
 
+# Las operaciones de Carga parcial que el runner SI puede aplicar. Salen de
+# `apply_shopify_preview`: son las ramas que de verdad escriben en Shopify.
+#
+# `size_guides` no esta a proposito -- devuelve OMITIDO porque
+# `custom.guia_de_tallas` es page_reference y la API pide un gid de pagina --,
+# y mandarla al runner gastaria una ejecucion entera para no escribir nada.
+# `centry` y `sial` tampoco: producen un Excel, no tocan la tienda.
+OPERACIONES_PARCIALES_REMOTAS = (
+    "tags", "title", "body", "siblings", "photos", "technologies", "short_texts",
+    # El Mantenedor de Tallas no pasa por el analizar/aplicar de Carga parcial
+    # -- lo que revisa es el catalogo, no un Excel --, pero SI comparte el
+    # camino al runner: su plan se convierte en vista previa con
+    # `tallas_vista_previa` y se aplica con la misma `apply_shopify_preview`.
+    "tallas",
+    # Y el de Videos, que es donde mas se nota: cada codigo son decenas de MB
+    # bajados del bucket y vueltos a subir, mas hasta 2 minutos esperando a que
+    # Shopify termine de procesar el mp4.
+    "videos")
+
+
+def render_boton_carga_remota_parcial(brand_config, preview_df, operacion, etiqueta=""):
+    """Manda una carga PARCIAL al runner de GitHub Actions.
+
+    Por que hace falta
+    ------------------
+    La carga parcial se aplicaba solo dentro de la sesion, con el panel de
+    bloques: cerrar la pestaña la detenia, y una Mantencion de Body HTML sobre
+    el catalogo entero son miles de productos y horas de reloj. Es exactamente
+    el problema que el runner existe para resolver, solo que la carga completa
+    lo tenia y la parcial no.
+
+    **No hay un segundo motor.** El despacho por modo ya vivia en
+    `_sync_job_run_one_product`: con un modo que empieza por `partial`, el
+    bloque se aplica con `apply_shopify_preview`. Lo unico que faltaba era que
+    un job del repositorio de datos pudiera decir que es parcial y que la
+    pantalla le subiera la vista previa. El worker, el workflow, el avance por
+    bloques y la reanudacion son los MISMOS.
+
+    La vista previa viaja en una hoja **`Vista previa`**, nunca en una llamada
+    `Products`: `dataframe_to_excel_bytes` le aplica `solo_columnas_matrixify`
+    a esa hoja la escriba quien la escriba, y eso se llevaria `Operacion`,
+    `Valor nuevo`, `Media IDs` y `Modo fotos` -- todo lo que dice QUE escribir.
+    """
+    if preview_df is None or getattr(preview_df, "empty", True):
+        return
+    operacion = clean_value(operacion)
+    if operacion not in OPERACIONES_PARCIALES_REMOTAS:
+        return
+    modo = f"partial_{operacion}"
+    st.markdown("#### Ejecutar en el servidor (GitHub Actions)")
+    estado = estado_carga_remota()
+    if not estado["sobrevive"]:
+        # Un boton que no se dibuja y no explica por que se lee como "no
+        # funciona". Se dice exactamente que falta, igual que en Carga completa.
+        st.warning(
+            "**La carga remota no está configurada**, así que esta carga parcial solo puede "
+            "hacerse dentro de la sesión y se detendría al cerrar la pestaña. Abajo está "
+            "exactamente qué falta."
+        )
+        render_aviso_carga_remota()
+        return
+    claves = _sync_job_product_keys(preview_df, mode=modo)
+    st.caption(
+        f"Se envía a un runner de GitHub Actions: **{len(claves):,} productos** "
+        f"({etiqueta or operacion}). Puedes cerrar la pestaña y volver cuando quieras; el "
+        "avance se guarda por bloques en el repositorio de datos y se reanuda donde quedó."
+    )
+    if st.button(
+        "Ejecutar carga parcial en GitHub Actions",
+        type="primary",
+        key=f"carga_remota_parcial_{brand_config.get('site_key')}_{operacion}",
+    ):
+        with st.spinner("Subiendo la vista previa y disparando el runner..."):
+            payload = dataframe_to_excel_bytes({HOJA_VISTA_PREVIA_CARGA: preview_df})
+            if hasattr(payload, "getvalue"):
+                payload = payload.getvalue()
+            ok, mensaje = lanzar_carga_remota_suelta(
+                brand_config,
+                matrixify_bytes=payload,
+                claves_producto=claves,
+                filename=f"vista_previa_{operacion}_{brand_config.get('site_key')}.xlsx",
+                site_key=brand_config.get("site_key"),
+                modulo="Carga parcial",
+                modo=modo,
+                operacion=operacion,
+                # Una carga parcial toca UN campo. Activar de paso el inventario
+                # en todas las sucursales es un efecto que nadie pidio, y es lo
+                # que ya hace el panel local (`activate_inventory_locations=False`).
+                activar_sucursales=False,
+            )
+        (st.success if ok else st.error)(mensaje)
+    render_estado_carga_remota(
+        prefijo=f"parcial_{operacion}_", titulo="Estado de la carga parcial en el servidor")
+
+
 def render_estado_carga_remota(prefijo="", titulo="Estado de la carga en el servidor"):
     """Pendiente → Procesando → Completado / Error, leido del registro REAL.
 
@@ -23694,7 +23968,10 @@ def render_estado_carga_remota(prefijo="", titulo="Estado de la carga en el serv
     dibujar = st.error if etapa == "Error" else st.success if etapa == "Completado" else st.info
     dibujar(
         f"**{etapa}** — {resumen['etiqueta']} · "
-        f"{resumen['procesados']:,} de {resumen['total']:,} productos"
+        # QUE se esta cargando. Sin esto una Mantencion de Body HTML y una
+        # carga de catalogo entero se ven identicas al volver al dia siguiente.
+        + (f"carga parcial: {resumen.get('operacion') or 'sin nombre'} · " if resumen.get("parcial") else "")
+        + f"{resumen['procesados']:,} de {resumen['total']:,} productos"
         + (f" · bloque {resumen['bloque']:,} de {resumen['bloques']:,}" if resumen["bloques"] else "")
     )
     if resumen["total"]:
@@ -25382,6 +25659,49 @@ def video_reemplazar_existente(shopify_config, product_gid, media_id):
     return bool(borrados), f"{len(borrados or [])} video anterior eliminado."
 
 
+def video_vista_previa(filas, brand_config, marca_pantalla="", reemplazar=False):
+    """El analisis de videos con la forma de una vista previa de carga parcial.
+
+    Es el mismo truco que `tallas_vista_previa`: asi el Mantenedor de Videos
+    hereda el runner sin un tercer formato de archivo en el worker.
+
+    Y es donde mas se nota. Publicar un video son decenas de MB bajados del
+    bucket y vueltos a subir, y ademas `wait_video_media_ready` espera hasta
+    **20 x 6 s por video** a que Shopify termine de procesarlo: una lista de 50
+    codigos puede pasar de una hora con el navegador abierto. Por eso
+    `VIDEO_MODELOS_POR_BLOQUE` es 5 y no 20.
+    """
+    filas_previa = []
+    for fila in filas or []:
+        codigo = clean_value(fila.get("Código Modelo Color"))
+        filas_previa.append({
+            "Accion": "Actualizar",
+            "Sitio": clean_value(brand_config.get("site_label")),
+            "Site key": clean_value(brand_config.get("site_key")),
+            "Operacion": "videos",
+            "Mod-Col": codigo,
+            # La clave del job sale de Handle -> Mod-Col -> Product ID. Aqui el
+            # producto puede no estar resuelto todavia, asi que el Mod-Col es
+            # la identidad; sin el, dos codigos compartirian bloque.
+            "Handle": clean_value(fila.get("Handle")),
+            "Product ID": clean_value(fila.get("Product ID")),
+            "Campo": "Video (posicion 2)",
+            "Valor actual": clean_value(fila.get("Estado")),
+            "Valor nuevo": clean_value(fila.get("URL")),
+            # La marca del EXCEL solo vale si de ahi salio: `video_publicar`
+            # distingue "columna Marca del Excel" de "marca de la pantalla", y
+            # ese orden es el que decide la carpeta del bucket.
+            "Marca excel": (clean_value(fila.get("Marca"))
+                            if clean_value(fila.get("Origen de la marca")).startswith("columna")
+                            else ""),
+            "Marca pantalla": clean_value(fila.get("Marca")) or clean_value(marca_pantalla),
+            "Reemplazar": "SI" if reemplazar else "NO",
+            "Estado": "OK",
+            "Observacion": clean_value(fila.get("Detalle")),
+        })
+    return pd.DataFrame(filas_previa)
+
+
 def video_publicar(shopify_config, site_key, mod_col, marca_excel="", marca_pantalla="",
                    reemplazar=False, progreso=None):
     """Publica el video de UN codigo, de punta a punta. Devuelve el registro.
@@ -25788,6 +26108,42 @@ def tallas_producto_como_registro(product_data):
             fila[f"Option{numero} Value"] = clean_value(opcion.get("value"))
         variantes.append(fila)
     return {"Variants": variantes}
+
+
+# Lo unico que `tallas_aplicar_producto` necesita del plan. El resto -- el
+# orden propuesto, lo que hay que renombrar -- lo REHACE releyendo el producto,
+# asi que mandarlo al runner seria mandar datos que se van a tirar.
+CAMPOS_PLAN_DE_TALLAS = ("Mod-Col", "Handle", "Title", "Marca", "Product ID", "Type", "Genero")
+
+
+def tallas_vista_previa(planes, brand_config):
+    """El plan de tallas con la forma de una vista previa de carga parcial.
+
+    Asi el Mantenedor de Tallas hereda **el mismo** camino al runner que las
+    demas cargas parciales: mismo job, mismo worker, mismos bloques, misma
+    reanudacion y el mismo panel de estado. La alternativa era un tercer
+    formato de archivo en el worker, o sea un segundo motor de carga.
+
+    `Site key` viaja en la fila porque `apply_shopify_preview` **no recibe**
+    `brand_config` -- es el fallo de la seccion 9, que dejaba la fila en ERROR
+    sin intentar escribir -- y de el sale la escala de calzado del sitio.
+    """
+    filas = []
+    for plan in planes or []:
+        fila = {
+            "Accion": "Actualizar",
+            "Sitio": clean_value(brand_config.get("site_label")),
+            "Site key": clean_value(brand_config.get("site_key")),
+            "Operacion": "tallas",
+            "Campo": "Opcion de talla",
+            "Valor actual": ", ".join(clean_value(v) for v in (plan.get("Actual") or [])),
+            "Valor nuevo": ", ".join(clean_value(v) for v in (plan.get("Propuesto") or [])),
+            "Estado": "OK",
+            "Observacion": clean_value(plan.get("Nota")),
+        }
+        fila.update({campo: clean_value(plan.get(campo)) for campo in CAMPOS_PLAN_DE_TALLAS})
+        filas.append(fila)
+    return pd.DataFrame(filas)
 
 
 def tallas_aplicar_producto(shopify_config, plan, brand_config):
@@ -26784,6 +27140,23 @@ def render_mantenedor_tallas(brand_config, shopify_config):
         "Confirmo que revisé la tabla de arriba y quiero aplicar estos cambios",
         key=f"tallas_confirmar_{site_key}",
     )
+    if confirmar:
+        # El servidor PRIMERO, igual que en Carga parcial. Revisar el catalogo
+        # entero de un sitio y arreglarlo son miles de productos y cada uno son
+        # tres viajes a Shopify: hacerlo dentro de la sesion se detiene al
+        # cerrar la pestaña, justo lo que el runner existe para evitar.
+        #
+        # El plan se convierte en vista previa y se aplica con la MISMA
+        # `apply_shopify_preview` -- que releera cada producto antes de
+        # escribir, igual que la pantalla. No hay un segundo camino.
+        render_boton_carga_remota_parcial(
+            brand_config, tallas_vista_previa(por_arreglar, brand_config),
+            "tallas", TALLAS_LABEL)
+        st.markdown("##### O arreglarlo aquí mismo, dentro de la sesión")
+        st.caption(
+            "Avanza por bloques y guarda lo hecho, pero **solo mientras esta pestaña siga "
+            "abierta**. Úsalo para listas cortas o cuando la carga remota no esté configurada."
+        )
     if not st.button("Aplicar", type="primary", disabled=not confirmar, key=f"tallas_aplicar_{site_key}"):
         st.markdown("</div>", unsafe_allow_html=True)
         return
@@ -26990,6 +27363,19 @@ def render_video_maintainer(brand_config, shopify_config):
         f"Se procesan en {len(png_bloques(listos, VIDEO_MODELOS_POR_BLOQUE))} bloque(s) de hasta "
         f"{VIDEO_MODELOS_POR_BLOQUE} códigos, igual que el mantenedor de fotos: cada bloque "
         "termina, se guarda y la barra avanza, así una lista larga no se cae entera."
+    )
+    # El servidor PRIMERO, y aqui mas que en ningun otro sitio: cada video son
+    # decenas de MB bajados del bucket y vueltos a subir, mas hasta 2 minutos
+    # esperando a que Shopify lo procese. Una lista de 50 codigos puede pasar de
+    # una hora con el navegador abierto, y cerrarlo la corta a la mitad.
+    render_boton_carga_remota_parcial(
+        brand_config,
+        video_vista_previa(listos, brand_config, marca_pantalla, reemplazar),
+        "videos", VIDEOS_LABEL)
+    st.markdown("##### O publicarlos aquí mismo, dentro de la sesión")
+    st.caption(
+        "Avanza por bloques y guarda lo hecho, pero **solo mientras esta pestaña siga "
+        "abierta**. Úsalo para listas cortas o cuando la carga remota no esté configurada."
     )
     publicar = st.button(
         f"🚀 Publicar {len(listos)} videos en Shopify",
@@ -27277,6 +27663,7 @@ api_version = "{DEFAULT_API_VERSION}"
             "Guías de talla": "size_guides",
             "Mantención tecnologías": "technologies",
             "Mantención Body HTML": "body",
+            TEXTOS_CORTOS_LABEL: "short_texts",
             "Activar inventario en sucursales": "inventory_locations",
         }
         st.markdown('<div class="section-card"><h2>Carga parcial</h2>', unsafe_allow_html=True)
@@ -28132,7 +28519,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     writable_preview_df = preview_df
                     if update_operation in ("body", "photos", "size_guides"):
                         writable_preview_df = filter_preview_by_diagnostic_ready(preview_df, diagnostic_df)
-                    can_apply = update_operation in ("tags", "title", "body", "siblings", "photos", "technologies") and writable_preview_df is not None and not writable_preview_df.empty
+                    can_apply = update_operation in OPERACIONES_PARCIALES_REMOTAS and writable_preview_df is not None and not writable_preview_df.empty
                     if update_operation == "photos":
                         st.info("REPLACE elimina las fotos actuales del producto y sube las 10 URLs nuevas. MERGE agrega las URLs nuevas sin borrar las actuales.")
                     if update_operation == "technologies":
@@ -28150,15 +28537,29 @@ api_version = "{DEFAULT_API_VERSION}"
                     if can_apply:
                         confirm_apply = st.checkbox("Confirmo que revise la vista previa y quiero aplicar en Shopify")
                         if confirm_apply:
-                            render_persistent_sync_job_panel(
-                                shopify_config,
-                                brand_config,
-                                writable_preview_df,
-                                mode=f"partial_{update_operation}",
-                                label="Carga parcial Shopify",
-                                activate_inventory_locations=False,
-                                session_key=f"shopify_partial_job_{brand_config['site_key']}_{update_operation}",
-                            )
+                            # El servidor PRIMERO. Una Mantencion de Body HTML
+                            # sobre el catalogo entero son miles de productos y
+                            # horas de reloj: hacerla dentro de la sesion se
+                            # detiene al cerrar la pestaña, que es justo lo que
+                            # el runner existe para evitar. El panel local se
+                            # queda debajo como camino sin configurar nada.
+                            render_boton_carga_remota_parcial(
+                                brand_config, writable_preview_df, update_operation, update_label)
+                            with st.expander("O aplicarla aquí mismo, dentro de la sesión"):
+                                st.caption(
+                                    "Avanza por bloques y se reanuda, pero **solo mientras esta "
+                                    "pestaña siga abierta**. Úsalo para tandas cortas o cuando la "
+                                    "carga remota no esté configurada."
+                                )
+                                render_persistent_sync_job_panel(
+                                    shopify_config,
+                                    brand_config,
+                                    writable_preview_df,
+                                    mode=f"partial_{update_operation}",
+                                    label="Carga parcial Shopify",
+                                    activate_inventory_locations=False,
+                                    session_key=f"shopify_partial_job_{brand_config['site_key']}_{update_operation}",
+                                )
             except Exception as exc:
                 st.error("No pude generar o aplicar la carga parcial con Shopify API.")
                 st.exception(exc)

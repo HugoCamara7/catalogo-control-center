@@ -49,6 +49,8 @@ from engines.carga_remota import (  # noqa: E402
     ahora_utc,
     cerrar_job,
     disparar_workflow,
+    es_modo_parcial,
+    hoja_de_entrada,
     registrar_avance_bloque,
     texto_publico,
 )
@@ -189,7 +191,10 @@ def main():
         raise SystemExit(f"No encontre el registro del job {job_id} en el repositorio de datos.")
 
     site_key = (job.get("site_key") or "").strip()
-    _decir(f"Job {job_id} · sitio {site_key} · solicitud {job.get('ticket')}")
+    _decir(
+        f"Job {job_id} · sitio {site_key} · modo {job.get('mode') or 'complete'} · "
+        f"solicitud {job.get('ticket')}"
+    )
 
     # Marcar "corriendo" ANTES de nada pesado. Si el runner muere leyendo el
     # Excel, la pantalla tiene que poder decir que arranco y no quedarse en
@@ -294,17 +299,36 @@ def _ejecutar(job, sha, almacen, site_key, minutos_maximos):
 
     ruta_matrixify = (job.get("matrixify_path") or "").strip()
     if not ruta_matrixify:
-        raise RuntimeError("El job no apunta a ningun Matrixify.")
-    _decir("Bajando el Matrixify de la solicitud")
-    contenido = almacen.leer_archivo(ruta_matrixify)
-    destino = Path("job_inputs") / f"{job['id']}_matrixify.xlsx"
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    destino.write_bytes(contenido)
-    matrixify_df = read_matrixify_excel(destino)
-    if matrixify_df is None or matrixify_df.empty:
-        raise RuntimeError("El Matrixify de la solicitud no tiene filas para cargar.")
+        raise RuntimeError("El job no apunta a ningun archivo de entrada.")
 
     modo = (job.get("mode") or "complete").strip() or "complete"
+    parcial = es_modo_parcial(modo)
+    # La HOJA la decide el modo, y viene resuelta en el registro. Una vista
+    # previa de carga parcial no puede viajar en una hoja `Products`: la
+    # exportacion le aplica `solo_columnas_matrixify` y se lleva por delante
+    # `Operacion`, `Valor nuevo`, `Media IDs` y `Modo fotos` -- o sea, todo lo
+    # que dice QUE escribir. Se conserva el respaldo por si un job viejo del
+    # repositorio no trae el campo.
+    hoja = (job.get("input_sheet") or "").strip() or hoja_de_entrada(modo)
+    _decir("Bajando la vista previa de la carga parcial" if parcial
+           else "Bajando el Matrixify de la solicitud")
+    contenido = almacen.leer_archivo(ruta_matrixify)
+    destino = Path("job_inputs") / f"{job['id']}_entrada.xlsx"
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino.write_bytes(contenido)
+    matrixify_df = read_matrixify_excel(destino, sheet_name=hoja)
+    if matrixify_df is None or matrixify_df.empty:
+        raise RuntimeError(
+            f"El archivo del job no tiene filas para cargar en la hoja «{hoja}»."
+        )
+    if parcial and "Operacion" not in matrixify_df.columns:
+        # Sin esa columna `apply_shopify_preview` no sabe que hacer con la fila
+        # y la deja en OMITIDO sin escribir nada: el job terminaria "completado"
+        # sin haber tocado un solo producto, que es el peor final posible.
+        raise RuntimeError(
+            f"La hoja «{hoja}» no es una vista previa de carga parcial: le falta "
+            "la columna «Operacion». Vuelve a generarla desde Carga parcial."
+        )
 
     # Las claves salen del Excel, que es la fuente de verdad, no de la lista
     # guardada: si el adjunto se reemplazo por una version corregida, la lista
@@ -325,12 +349,16 @@ def _ejecutar(job, sha, almacen, site_key, minutos_maximos):
     _decir(f"{len(pendientes):,} productos pendientes de {len(claves_archivo):,}")
 
     tamano_bloque = max(1, int(job.get("batch_size") or 20))
+    # `activate_inventory_locations` NO puede ir en True siempre. Una carga
+    # parcial toca UN campo del producto; activar de paso el inventario en
+    # todas las sucursales es un efecto que nadie pidio, y la pantalla local ya
+    # pasa False para parcial. Sale del registro, que lo deriva del modo.
     job_local = app._create_sync_job(
         site_key,
         modo,
         matrixify_df,
         batch_size=tamano_bloque,
-        activate_inventory_locations=True,
+        activate_inventory_locations=bool(job.get("activate_inventory_locations", not parcial)),
     )
     # Se reanuda marcando como hechos los que ya se cargaron en intentos
     # anteriores. Sin esto, un runner que murio a la mitad volveria a escribir

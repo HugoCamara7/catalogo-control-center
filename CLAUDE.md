@@ -3824,7 +3824,7 @@ La lista se mantenia a mano, y una lista que hay que acordarse de actualizar no
 sirve para validar.
 
 La seccion 12 ya no lleva rutas: dice que se corran **todos** los
-`scripts/test_*.py`. Son 67 archivos y ~1.995 pruebas.
+`scripts/test_*.py`. Son 68 archivos y ~2.072 pruebas.
 
 ### Lo que hace falta para cerrarlo del todo
 
@@ -3872,6 +3872,191 @@ busca otra cosa. Las cinco pruebas nuevas de
 `scripts/test_lectura_completa_del_catalogo.py` (21 -> 26) llaman de verdad a
 `cargar_catalogos_de_todos_los_sitios` con un Shopify falso -- por los dos
 caminos, el de la cache y el de la lectura -- y una recorre hasta el resumen.
+
+---
+
+## 5 sextrigies. Las cargas PARCIALES tambien corren en el runner (septiembre 2026)
+
+Pedido literal: *"voy a necesitar que me ayudes haciendo este worker o sea los
+job de carga en actions en todas mis cargas parciales para poder cargar los
+body html de todos los productos tambien para poder cargar bien sus tallas si
+es necesario, tambien las caracteristicas o descripciones de nombres de
+cortos"*, y a continuacion *"todo eso debemos ver la manera que siempre este al
+aire funcionando, todos mis comandos deberian de ser asi"*.
+
+La carga COMPLETA sobrevivia al cierre de la sesion desde la seccion 5 nonies.
+La PARCIAL no: se aplicaba solo con el panel de bloques de la pantalla, que
+avanza mientras la pestaña siga abierta. Una **Mantencion de Body HTML** sobre
+el catalogo entero son miles de productos y horas de reloj -- exactamente el
+problema para el que se monto el runner, solo que un camino lo tenia y el otro
+no.
+
+### Casi todo estaba hecho, y en el sitio correcto
+
+**No se escribio un segundo motor de carga**, y no hizo falta: el despacho por
+modo ya vivia en `_sync_job_run_one_product`, no en la pantalla.
+
+```
+mode empieza por "partial"  ->  apply_shopify_preview
+cualquier otro              ->  apply_full_product_updates
+```
+
+O sea que el worker YA sabia aplicar una carga parcial. Lo unico que faltaba
+era que un registro de job del repositorio de datos pudiera **decir** que es
+parcial: el unico modo que llegaba alli era `"complete"`.
+
+Tres piezas, y ninguna es un motor nuevo:
+
+- `nuevo_registro_job` acepta el modo y de el DERIVA dos cosas que antes
+  estaban clavadas.
+- `start_suelto` -- el mismo lanzador de siempre -- lo propaga.
+- La pantalla sube la vista previa y dibuja el mismo `render_estado_carga_remota`.
+
+### La vista previa NO puede viajar en una hoja `Products`
+
+`dataframe_to_excel_bytes` le aplica `solo_columnas_matrixify` a esa hoja **la
+escriba quien la escriba** (seccion 5 untrigies), y `Operacion`, `Valor nuevo`,
+`Media IDs`, `Modo fotos` y `Tipo metafield` no son columnas de Matrixify.
+
+Medido: de las **11 columnas** de una vista previa de Body HTML, en una hoja
+`Products` sobrevive **una** -- `Handle`. El runner bajaria el archivo, tendria
+la identidad de cada producto y **ni una sola instruccion de que escribir**.
+
+Por eso la hoja es `Vista previa` (`HOJA_VISTA_PREVIA`) y **la decide el modo**
+(`hoja_de_entrada`), no la pantalla: dos sitios eligiendo el nombre se separan
+sin que nadie lo note. El nombre se **importa** en `app_matrixify`, no se copia.
+
+### `activate_inventory_locations` estaba clavado en True
+
+Un fallo real que este trabajo destapo: el worker creaba SIEMPRE el job local
+con `activate_inventory_locations=True`. En una carga parcial eso activa el
+inventario en todas las sucursales de productos a los que solo se les cambia el
+Body HTML -- un efecto que nadie pidio. La pantalla local ya pasaba `False`
+para parcial; el runner no. Ahora sale del registro, que lo deriva del modo.
+
+### Lo que SI se manda al runner
+
+`OPERACIONES_PARCIALES_REMOTAS` son las ramas de `apply_shopify_preview` que de
+verdad escriben. Hay una prueba que exige que cada una tenga su rama y este en
+el menu, y otra que exige que `can_apply` lea **esa misma constante** en vez de
+una segunda tupla escrita a mano.
+
+`size_guides` queda fuera a proposito: devuelve OMITIDO porque
+`custom.guia_de_tallas` es `page_reference` y la API pide un gid de pagina, asi
+que mandarla gastaria una ejecucion entera para no escribir nada. `centry` y
+`sial` producen un Excel y no tocan la tienda.
+
+### La operacion nueva: Nombre corto y Descripcion corta
+
+`custom.nombre_corto` y `custom.descripcion_corta` se ven en la PLP y en la PDP
+y **solo se podian escribir con una carga COMPLETA**, que exige el input
+comercial entero. Para corregirlos en el catalogo ya cargado no habia camino.
+
+- Los alias del Excel, el namespace y el tipo se **importan** de
+  `engines/catalog_map` (`CAMPOS_POR_CLAVE` + `valor_de_entrada`): es el mismo
+  diccionario con el que escribe la carga completa, asi que el mismo archivo se
+  lee igual por los dos caminos. Un segundo juego de alias es la trampa de las
+  dos `normalize_size`.
+- **Vacio NO borra**, y se comprueba en los DOS sitios: la vista previa no
+  emite la fila, y el aplicador la deja en OMITIDO si igual le llega. Un Excel
+  que solo trae la columna Nombre corto no puede dejar sin descripcion a todo
+  el catalogo.
+- Lo que ya dice lo mismo no se reescribe, y se reporta: una vista previa vacia
+  sin explicacion se lee como un fallo.
+- Una fila por CAMPO, no por producto. Las dos filas de un producto comparten
+  clave (el Handle), asi que caen en el mismo bloque y se aplican juntas; y la
+  vista previa se lee como lo que es, una linea por cambio.
+
+### El Mantenedor de Tallas entra por la MISMA puerta
+
+Su plan no es una vista previa, pero puede tener su forma:
+`tallas_vista_previa` lo convierte y la rama `tallas` de `apply_shopify_preview`
+llama a **`tallas_aplicar_producto`, la misma de la pantalla** -- que ademas
+RELEE el producto y replanifica antes de escribir. Asi hereda el job, el
+worker, los bloques, la reanudacion y el panel de estado sin un tercer formato
+de archivo en el worker, que es como se acaba teniendo dos motores.
+
+- **El `Type` y el `Genero` viajan en la fila.** Sin ellos el conversor sale
+  `None` al replanificar y el cambio de escala **no se aplica nunca**: es el
+  fallo de la seccion 5 sexdecies, que ninguna de las 34 pruebas del motor vio
+  porque estaba en el pegamento.
+- **El sitio tambien** (`Site key`), y se resuelve con `get_brand_config`.
+  `apply_shopify_preview` **no recibe** `brand_config` -- las tres lineas que lo
+  usaban levantaban `NameError` y dejaban la fila en ERROR sin intentar
+  escribir (seccion 9) --, asi que va en la fila como ya van el tipo y los
+  logos de tecnologias. Sin sitio **no se adivina**: escribir en la tienda
+  equivocada es peor que no escribir.
+- **"Ya estaba bien al releerlo" sale OMITIDO, no OK.** `tallas_aplicar_producto`
+  devuelve `ok=True` en ese caso; decirlo OK a secas haria creer que se
+  escribio algo.
+
+### El Mantenedor de Videos, que es donde MAS se nota
+
+Mismo mecanismo (`video_vista_previa` + la rama `videos`, que llama a
+**`video_publicar`, la misma de la pantalla**), y aqui la diferencia no es
+comodidad: cada codigo son decenas de MB bajados del bucket y vueltos a subir,
+y ademas `wait_video_media_ready` espera hasta **20 x 6 s por video** a que
+Shopify termine de procesar el mp4 -- por eso `VIDEO_MODELOS_POR_BLOQUE` es 5 y
+no 20. Una lista de 50 codigos puede pasar de una hora con el navegador
+abierto, y cerrarlo la corta a la mitad.
+
+- **La marca del EXCEL solo viaja si de ahi salio.** `video_publicar` distingue
+  la columna Marca del Excel de la marca de la pantalla, y **ese orden decide
+  la carpeta del bucket**: mandar la del metacampo como si fuera del Excel
+  buscaria el mp4 donde no esta.
+- **La posicion equivocada se reporta como FALLO**, igual que en la pantalla.
+  Un video en la 3 se ve normal en la ficha y no lo revisa nadie: es el peor
+  error silencioso (seccion 5 sexies), y la guarda esta en las dos rutas.
+
+### Lo que NO entro, y por que
+
+**El Mantenedor Fotos PNG.** Su apply vive DENTRO de
+`render_png_maintainer_lote`, que es una funcion de pantalla que analiza y
+publica en la misma pasada: no hay un `png_publicar(codigo)` al que llamar,
+como si lo hay para videos (`video_publicar`) y para tallas
+(`tallas_aplicar_producto`). Sacarlo es un refactor de la pantalla, y meterlo
+aqui habria mezclado dos cambios. Sigue funcionando dentro de la sesion, por
+bloques de 20, y es el mas barato de los tres -- cada codigo son peticiones
+HEAD, no MB.
+
+Centry y la Carga Sial parcial no entran porque **producen un Excel** y no
+tocan la tienda. `size_guides` tampoco: devuelve OMITIDO a proposito.
+
+### El servidor primero, la sesion despues
+
+En las tres pantallas -- Carga parcial, Mantenedor de Tallas y Mantenedor de
+Videos -- el boton remoto va **antes** y el panel local queda dentro
+de un desplegable que dice lo que es: avanza por bloques y guarda lo hecho,
+pero solo mientras la pestaña siga abierta. No se quito -- sirve para tandas
+cortas y para cuando no hay `[carga_remota]` --, pero deja de ser el camino por
+defecto.
+
+Y sin `[carga_remota]` en Secrets el boton **dice exactamente que falta** en
+vez de no dibujarse: un boton que no aparece y no se explica se lee como "no
+funciona".
+
+### El workflow NO se toco, y eso es la prueba de que no hay motor nuevo
+
+`carga-shopify.yml` sigue recibiendo los mismos tres inputs (`job_id`,
+`site_key`, `ticket`): el modo vive en el registro del job, no en el disparo.
+Consecuencia practica: **no hay que volver a mergear el workflow** para que las
+cargas parciales funcionen, y el encadenado de tandas (`_encadenar_siguiente_tanda`)
+las reanuda igual que a una carga completa.
+
+Dos cosas que se heredan y conviene saber:
+
+- **`concurrency` es por SITIO.** Una carga parcial larga y una completa del
+  mismo sitio se esperan. Es lo correcto -- dos runners escribiendo la misma
+  tienda se pisan --, pero se ve como "no arranca".
+- **`carga_remota_ultimo_job` es UNA sola ranura de sesion.** Lanzar una
+  parcial y despues una completa deja el panel mostrando la ultima. El avance
+  de la otra no se pierde -- vive en el repositorio de datos --, pero desde la
+  pantalla hay que ir a Actions para verla. Queda anotado en Pendientes.
+
+`scripts/test_carga_parcial_remota.py` (51 pruebas) fija todo esto, y ejecuta
+de verdad -- vista previa, bloques y escrituras contra un Shopify falso -- en
+vez de leer el codigo. Es la leccion de `start_suelto`: **leer el codigo no es
+ejecutarlo**.
 
 ---
 
@@ -3942,8 +4127,10 @@ archivos.
    configurado, "Ejecutar carga" desde una solicitud manda la carga a un runner
    de GitHub Actions; pero la pantalla sigue mostrando también el panel de
    sincronización local. Quien no lo sabe carga a mano lo que ya se está
-   cargando solo. Habría que esconder el panel local cuando el job remoto está
-   vivo.
+   cargando solo. En Carga parcial y en el Mantenedor de Tallas el panel local
+   ya quedó dentro de un desplegable y con su aviso (sección 5 sextrigies);
+   falta hacer lo mismo en Carga completa y, mejor todavía, esconderlo cuando
+   el job remoto está vivo.
 
 10. **La memoria volvió a subir.** El catálogo del sitio y el maestro ARTI
    volvieron a `st.session_state` (sección 5 nonies) para ahorrar 9 s de disco
@@ -3955,7 +4142,13 @@ archivos.
    es el mismo catálogo que ya está en la caché de sesión, solo que como
    DataFrame — medido, 95 MB de más que cuesta 2,8 s reconstruir.
 
-11. **Rotar las credenciales del código.** `get_auth_users()` tiene un
+11. **`carga_remota_ultimo_job` es una sola ranura.** El panel de estado de la
+   carga en el servidor lee un único valor de sesión, así que lanzar una carga
+   parcial y después una completa deja visible solo la última. El avance de la
+   otra no se pierde (vive en el repositorio de datos), pero desde la pantalla
+   hay que ir a Actions. Habría que guardar los jobs vivos por operación.
+
+12. **Rotar las credenciales del código.** `get_auth_users()` tiene un
    diccionario de usuarios y contraseñas como fallback, y está en un repo
    público.
 
@@ -4102,7 +4295,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **67 archivos y ~1.995 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **68 archivos y ~2.072 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

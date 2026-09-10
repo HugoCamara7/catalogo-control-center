@@ -48,6 +48,7 @@ from engines.carga_remota import (  # noqa: E402
     agregar_evento,
     ahora_utc,
     cerrar_job,
+    disparar_workflow,
     registrar_avance_bloque,
     texto_publico,
 )
@@ -96,6 +97,64 @@ def _url_de_la_ejecucion():
     if not repositorio or not run_id:
         return ""
     return f"{servidor}/{repositorio}/actions/runs/{run_id}"
+
+
+def _encadenar_siguiente_tanda(job):
+    """Vuelve a disparar el workflow para seguir donde este runner lo dejo.
+
+    El tope de GitHub son 6 h por job y el worker corta a los 330 min. Con
+    8.000 productos eso son seis tandas, y hasta ahora cada una habia que
+    pedirla a mano: la carga avanzaba solo mientras alguien estuviera pendiente
+    de darle al boton, que es justo lo que este runner existe para evitar.
+
+    Tres guardas, y ninguna es opcional:
+
+    - **Solo si hubo avance.** Un job que no consigue cargar ni un producto se
+      relanzaria para siempre, gastando runners y escribiendo en Shopify sin
+      llegar a nada. Si esta tanda no movio el contador, se para y lo dice.
+    - **Solo con token propio.** `GITHUB_TOKEN` NO sirve: GitHub ignora a
+      proposito los workflow_dispatch hechos con el, para que un workflow no
+      pueda relanzarse en bucle. Hace falta el token de cargas, con
+      **Actions: write**.
+    - **Nunca levanta.** El relanzado es un extra; que falle no puede convertir
+      en fallida una tanda que si cargo sus productos. Se avisa y ya.
+
+    Sin el token el comportamiento es exactamente el de antes: se deja el job
+    en cola y el mensaje dice que hay que volver a lanzar.
+    """
+    token = (os.getenv("CARGA_REMOTA_TOKEN") or "").strip()
+    if not token:
+        # El punto detras del nombre NO es cosmetico: `texto_publico` enmascara
+        # un "TOKEN" seguido de espacio o de dos puntos, asi que "CARGA_REMOTA_TOKEN:
+        # la siguiente" saldria como "CARGA_REMOTA_[oculto] siguiente".
+        _decir("Falta el secreto CARGA_REMOTA_TOKEN. La siguiente tanda hay que lanzarla a mano.")
+        return False
+
+    repositorio = (os.getenv("GITHUB_REPOSITORY") or "").strip()
+    owner, _, repo = repositorio.partition("/")
+    workflow = (os.getenv("CARGA_REMOTA_WORKFLOW") or "carga-shopify.yml").strip()
+    ref = (os.getenv("CARGA_REMOTA_REF") or os.getenv("GITHUB_REF_NAME") or "main").strip()
+    if not owner or not repo:
+        _decir("No se de que repositorio soy; no encadeno la siguiente tanda.")
+        return False
+
+    try:
+        disparar_workflow(
+            owner=owner, repo=repo, workflow=workflow, ref=ref, token=token,
+            inputs={
+                "job_id": job.get("id"),
+                "site_key": job.get("site_key"),
+                "ticket": job.get("ticket") or "",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - un extra no puede tumbar la tanda
+        _decir("No pude encadenar la siguiente tanda:", texto_publico(exc, 200))
+        agregar_evento(job, "Aviso", f"No pude encadenar: {texto_publico(exc, 200)}")
+        return False
+
+    _decir("Siguiente tanda lanzada; la carga continua sola.")
+    agregar_evento(job, "Encadenada", "Se disparo la siguiente tanda")
+    return True
 
 
 def _resultados_del_bloque(job_local, ya_vistas):
@@ -284,6 +343,9 @@ def _ejecutar(job, sha, almacen, site_key, minutos_maximos):
     limite = time.monotonic() + max(1, int(minutos_maximos)) * 60
     filas_vistas = 0
     bloque = 0
+    # Lo que ya estaba hecho ANTES de esta tanda. Es la referencia para saber
+    # si este runner avanzo, que es lo que decide si se encadena el siguiente.
+    hechos_al_arrancar = len(ya_cargados)
 
     while True:
         actual = app._load_sync_job(job_local["id"]) or {}
@@ -292,6 +354,13 @@ def _ejecutar(job, sha, almacen, site_key, minutos_maximos):
         if time.monotonic() >= limite:
             _decir("Se acabo el tiempo del runner; dejo el resto pendiente para el proximo disparo.")
             agregar_evento(job, "Tiempo agotado", "El runner corto antes del limite de GitHub")
+            # Solo se encadena si ESTA tanda cargo algo. Sin avance, relanzar
+            # seria un bucle infinito escribiendo en Shopify.
+            if int(job.get("processed_products") or 0) > hechos_al_arrancar:
+                _encadenar_siguiente_tanda(job)
+            else:
+                _decir("Esta tanda no cargo ningun producto; no encadeno para no entrar en bucle.")
+                agregar_evento(job, "Sin avance", "No se encadena la siguiente tanda")
             break
 
         bloque += 1

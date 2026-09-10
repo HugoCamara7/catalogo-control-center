@@ -246,6 +246,55 @@ def agregar_evento(job, etapa, detalle="", producto=""):
     return job
 
 
+# Tope de filas de resultado que caben en el registro del job.
+#
+# El registro se reescribe ENTERO en cada bloque, asi que lo que crece sin
+# techo se paga en cada commit. Con 8.112 productos y sus tallas, `result_rows`
+# llevaba el archivo por encima del megabyte -- y ahi la Contents API deja de
+# devolver el contenido, o sea que el job se vuelve imposible de reanudar
+# (septiembre de 2026, la carga de Supermall se quedo clavada en 1.280).
+#
+# `leer` ya sabe leer archivos grandes, pero eso arregla la lectura, no el
+# peso: un registro de 8 MB reescrito 400 veces son gigabytes de subida y
+# minutos de runner tirados.
+FILAS_RESULTADO_MAXIMAS = 5000
+
+
+def acotar_filas_de_resultado(job, maximo=FILAS_RESULTADO_MAXIMAS):
+    """Deja el registro por debajo del tope SIN perder lo que se va a mirar.
+
+    No se recorta por antiguedad a secas: de una carga de 8.000 productos, lo
+    que alguien abre el Excel a buscar son los que **fallaron**, no los 7.900
+    que salieron bien. Asi que las filas que no son OK se conservan TODAS y el
+    tope se gasta en las OK mas recientes.
+
+    Lo descartado se **cuenta** en el propio registro (`result_rows_omitidas`).
+    Un informe al que le faltan filas y no lo dice es peor que uno incompleto.
+    """
+    filas = list(job.get("result_rows") or [])
+    maximo = max(1, int(maximo or FILAS_RESULTADO_MAXIMAS))
+    if len(filas) <= maximo:
+        return job
+
+    def es_ok(fila):
+        if not isinstance(fila, dict):
+            return False
+        return _texto(fila.get("Resultado")).upper() == "OK"
+
+    problemas = [fila for fila in filas if not es_ok(fila)]
+    correctas = [fila for fila in filas if es_ok(fila)]
+    # Si los problemas por si solos pasan del tope, se conservan los ultimos:
+    # son los del bloque en curso, que es por donde se sigue mirando.
+    conservadas = problemas[-maximo:] if len(problemas) >= maximo else (
+        problemas + correctas[-(maximo - len(problemas)):]
+    )
+    job["result_rows"] = conservadas
+    job["result_rows_omitidas"] = int(job.get("result_rows_omitidas") or 0) + (
+        len(filas) - len(conservadas)
+    )
+    return job
+
+
 def registrar_avance_bloque(job, *, ok=0, parciales=0, errores=0,
                             completados=None, con_error=None, filas=None):
     """Aplica al registro lo que salio de un bloque y recalcula los contadores.
@@ -274,6 +323,7 @@ def registrar_avance_bloque(job, *, ok=0, parciales=0, errores=0,
     job["current_block"] = int(job.get("current_block") or 0) + 1
     if filas:
         job.setdefault("result_rows", []).extend(list(filas))
+        acotar_filas_de_resultado(job)
     job["updated_at"] = ahora_utc()
     return job
 
@@ -479,12 +529,56 @@ class AlmacenJobsGitHub:
                 f"GitHub respondio {exc.code}: {texto_publico(detalle, 300)}"
             ) from exc
 
+    def _pedir_crudo(self, ruta):
+        """El contenido del archivo, en bytes, sin pasar por base64.
+
+        Existe porque la Contents API **deja de mandar `content` en los
+        archivos de mas de 1 MB**: responde con la cadena vacia y el campo
+        `encoding` en "none". Con `Accept: application/vnd.github.raw` el mismo
+        endpoint devuelve el archivo entero hasta 100 MB.
+        """
+        url = f"{self.base}/{quote(ruta, safe='/')}?ref={quote(self.branch)}"
+        peticion = Request(
+            url,
+            method="GET",
+            headers={
+                "Accept": "application/vnd.github.raw",
+                "Authorization": f"Bearer {self.token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "catalog-control-center",
+            },
+        )
+        try:
+            with urlopen(peticion, timeout=self.timeout) as respuesta:
+                return respuesta.read()
+        except HTTPError as exc:
+            if exc.code == 404:
+                return b""
+            detalle = exc.read().decode("utf-8", errors="replace")
+            raise ErrorCargaRemota(
+                f"GitHub respondio {exc.code} al leer el registro: {texto_publico(detalle, 300)}"
+            ) from exc
+
     def leer(self, job_id):
-        """Devuelve (job, sha). (None, None) si no existe."""
+        """Devuelve (job, sha). (None, None) si no existe.
+
+        El sha sale de los METADATOS y el contenido puede venir por dos vias:
+        el `content` en base64, o crudo cuando ese campo llega vacio. Es lo que
+        pasa a partir de 1 MB, y un registro de una carga larga los pasa: en
+        septiembre de 2026 una carga de 8.112 productos quedo **imposible de
+        reanudar** al llegar a los 1.280 --el `json.loads` de una cadena vacia
+        levantaba "Expecting value: line 1 column 1 (char 0)"-- justo cuando la
+        reanudacion es lo unico que importa. Los datos estaban intactos; lo que
+        no servia era la puerta por la que se pedian.
+        """
         datos = self._pedir("GET", self._ruta(job_id))
         if not isinstance(datos, dict) or "content" not in datos:
             return None, None
         crudo = base64.b64decode(datos.get("content", "") or "")
+        if not crudo:
+            crudo = self._pedir_crudo(self._ruta(job_id))
+        if not crudo:
+            return None, None
         try:
             return json.loads(crudo.decode("utf-8")), datos.get("sha")
         except (ValueError, UnicodeDecodeError) as exc:

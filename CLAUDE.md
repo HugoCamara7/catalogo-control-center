@@ -3824,7 +3824,7 @@ La lista se mantenia a mano, y una lista que hay que acordarse de actualizar no
 sirve para validar.
 
 La seccion 12 ya no lleva rutas: dice que se corran **todos** los
-`scripts/test_*.py`. Son 68 archivos y ~2.072 pruebas.
+`scripts/test_*.py`. Son 68 archivos y ~2.084 pruebas.
 
 ### Lo que hace falta para cerrarlo del todo
 
@@ -4022,6 +4022,52 @@ HEAD, no MB.
 Centry y la Carga Sial parcial no entran porque **producen un Excel** y no
 tocan la tienda. `size_guides` tampoco: devuelve OMITIDO a proposito.
 
+### La identidad es el CODIGO MODELO-COLOR, no el handle
+
+Preguntado por el usuario: *"todo eso deberia de ser leido por codigo modelo
+color, estamos en lo correcto?"*. **A medias**, y por eso se cambio.
+
+El Excel que se sube SIEMPRE se leyo por codigo -- eso no cambia --, pero la
+clave con la que el job agrupa las filas en bloques y decide que esta hecho era
+el **handle primero**. La identidad canonica de la app es al reves
+(`clave_de_producto`, seccion 5 quater): Modelo-Color, y `handle:<handle>` con
+prefijo solo de respaldo.
+
+Medido con el codigo anterior: **dos Modelo-Color distintos que caen al mismo
+handle compartian clave y el job los contaba como UN producto**. Pasa cuando
+una fila del input no trae codigo reconocible y `build_shopify_update_preview`
+la casa por handle. No se perdia ninguna escritura -- el subconjunto de esa
+clave lleva las dos filas --, pero el contador mentia y la reanudacion era mas
+gruesa de lo que debia.
+
+Ahora `_sync_job_product_key_series` da, para los modos parciales:
+
+```
+Mod-Col (en mayuscula)  ->  handle:<handle>  ->  id:<product id>  ->  fila-N
+```
+
+Los dos primeros escalones son **exactamente** `clave_de_producto`, y hay una
+prueba que los compara fila a fila: un segundo criterio de identidad se separa
+del primero sin que nadie lo note. El tercero no esta en la canonica y hace
+falta aqui: alli el universo es el catalogo leido y siempre hay handle, pero
+una fila de carga parcial puede venir de un Excel a medias, y sin el dos filas
+sin codigo y sin handle colapsarian en la cadena vacia -- que es justo el fallo
+que `clave_de_producto` existe para impedir.
+
+**La carga COMPLETA no se toco.** El Matrixify se agrupa por handle con
+`ffill` -- los campos de producto van solo en la primera fila y las variantes
+debajo --, asi que ahi el handle ES la identidad del bloque; cambiarlo partiria
+cada producto en tantos bloques como variantes tenga.
+
+**Y un job que ya estuviera en marcha habria fallado ENTERO.** Sus pendientes
+son handles; con la clave nueva, su propio snapshot no encuentra ni una fila y
+cada producto reporta "No se encontro el producto dentro del snapshot".
+Comprobado antes de escribir el respaldo. `_sync_job_clave_heredada_de_parcial`
+es una compatibilidad, **no un segundo criterio**: solo se consulta cuando la
+canonica no encuentra la fila, asi que en un job nuevo no se paga nunca, y una
+clave que no existe sigue sin encontrar nada. Se puede borrar cuando no quede
+ningun job parcial anterior a septiembre de 2026 sin terminar.
+
 ### El servidor primero, la sesion despues
 
 En las tres pantallas -- Carga parcial, Mantenedor de Tallas y Mantenedor de
@@ -4053,7 +4099,7 @@ Dos cosas que se heredan y conviene saber:
   de la otra no se pierde -- vive en el repositorio de datos --, pero desde la
   pantalla hay que ir a Actions para verla. Queda anotado en Pendientes.
 
-`scripts/test_carga_parcial_remota.py` (51 pruebas) fija todo esto, y ejecuta
+`scripts/test_carga_parcial_remota.py` (63 pruebas) fija todo esto, y ejecuta
 de verdad -- vista previa, bloques y escrituras contra un Shopify falso -- en
 vez de leer el codigo. Es la leccion de `start_suelto`: **leer el codigo no es
 ejecutarlo**.
@@ -4295,7 +4341,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **68 archivos y ~2.072 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **68 archivos y ~2.084 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

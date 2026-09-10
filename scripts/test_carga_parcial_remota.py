@@ -840,5 +840,139 @@ class TestElMantenedorDeVideosTambienCorreEnElServidor(unittest.TestCase):
             self.assertNotIn(prohibida, rama, prohibida)
 
 
+class TestLaIdentidadEsElCodigoModeloColor(unittest.TestCase):
+    """Pregunta del usuario: *"todo eso deberia de ser leido por codigo modelo
+    color, estamos en lo correcto?"*.
+
+    A medias, y por eso se cambio. El Excel que se sube SI se leia por codigo
+    -- eso no cambia --, pero la clave con la que el job agrupa y reanuda era
+    el **handle primero**. La identidad canonica de la app es al reves
+    (`clave_de_producto`, seccion 5 quater): Modelo-Color, y `handle:` con
+    prefijo solo de respaldo.
+    """
+
+    def _claves(self, filas):
+        import app_matrixify as app
+        return app._sync_job_product_key_series(
+            pd.DataFrame(filas), mode="partial_body").tolist()
+
+    def test_manda_el_codigo_modelo_color(self):
+        self.assertEqual(
+            self._claves([{"Mod-Col": "AB-1", "Handle": "zapa-ab-1", "Product ID": "gid://1"}]),
+            ["AB-1"])
+
+    def test_dos_Mod_Col_con_el_MISMO_handle_ya_no_colapsan(self):
+        """Medido con el codigo anterior: compartian clave y el job los contaba
+        como UN producto. Pasa cuando una fila del input no trae codigo
+        reconocible y `build_shopify_update_preview` la casa por handle."""
+        claves = self._claves([
+            {"Mod-Col": "AB-1", "Handle": "mismo", "Product ID": "gid://1"},
+            {"Mod-Col": "AB-2", "Handle": "mismo", "Product ID": "gid://2"},
+        ])
+        self.assertEqual(claves, ["AB-1", "AB-2"])
+
+    def test_sin_codigo_cae_al_handle_CON_prefijo(self):
+        """El prefijo no es cosmetico: sin el, un handle que se parezca a un
+        codigo podria chocar con uno real."""
+        self.assertEqual(
+            self._claves([{"Mod-Col": "", "Handle": "zapa-ab-1", "Product ID": "gid://1"}]),
+            ["handle:zapa-ab-1"])
+
+    def test_sin_codigo_ni_handle_no_colapsan_en_la_cadena_vacia(self):
+        """Es exactamente el fallo que `clave_de_producto` existe para
+        impedir: todos los productos sin metacampo compartiendo una sola
+        llave."""
+        claves = self._claves([
+            {"Mod-Col": "", "Handle": "", "Product ID": "gid://1"},
+            {"Mod-Col": "", "Handle": "", "Product ID": "gid://2"},
+        ])
+        self.assertEqual(len(set(claves)), 2, claves)
+
+    def test_el_codigo_no_distingue_mayusculas(self):
+        self.assertEqual(self._claves([{"Mod-Col": "ab-1", "Handle": "h"}]), ["AB-1"])
+
+    def test_coincide_FILA_A_FILA_con_la_identidad_canonica(self):
+        """La prueba que impide que se separen. Un segundo criterio de
+        identidad se aparta del primero sin que nadie lo note -- es la trampa
+        de las dos `normalize_size`."""
+        from engines.load_status import clave_de_producto
+        filas = [
+            {"Mod-Col": "AB-1", "Handle": "zapa-ab-1"},
+            {"Mod-Col": "ab-2", "Handle": "zapa-ab-2"},
+            {"Mod-Col": "", "Handle": "solo-handle"},
+            {"Mod-Col": "AB-3", "Handle": ""},
+        ]
+        # `Product ID` vacio para que el ultimo respaldo no entre en juego: es
+        # el unico escalon que la canonica no tiene, porque alli siempre hay
+        # handle y aqui la fila puede venir de un Excel a medias.
+        con_id = [dict(f, **{"Product ID": ""}) for f in filas]
+        self.assertEqual(self._claves(con_id), [clave_de_producto(f) for f in filas])
+
+    def test_las_dos_filas_de_short_texts_siguen_siendo_UN_producto(self):
+        """Comparten Modelo-Color, asi que caen en el mismo bloque y se
+        aplican juntas. Si se separaran, un producto contaria como dos."""
+        claves = self._claves([
+            {"Mod-Col": "AB-1", "Handle": "h", "Metafield": "custom.nombre_corto"},
+            {"Mod-Col": "AB-1", "Handle": "h", "Metafield": "custom.descripcion_corta"},
+        ])
+        self.assertEqual(len(set(claves)), 1)
+
+    def test_no_se_pierde_NINGUNA_fila(self):
+        """Lo que de verdad no puede pasar: que una fila de la vista previa no
+        caiga en ningun bloque y no se escriba nunca."""
+        import app_matrixify as app
+        filas = [
+            {"Mod-Col": "AB-1", "Handle": "h1", "Product ID": "gid://1"},
+            {"Mod-Col": "AB-2", "Handle": "h1", "Product ID": "gid://2"},
+            {"Mod-Col": "", "Handle": "h3", "Product ID": "gid://3"},
+            {"Mod-Col": "", "Handle": "", "Product ID": "gid://4"},
+        ]
+        df = pd.DataFrame(filas)
+        serie = app._sync_job_product_key_series(df, mode="partial_body")
+        total = sum(
+            len(app._sync_job_subset_df(df, clave, mode="partial_body", keys=serie))
+            for clave in app._sync_job_product_keys(df, mode="partial_body"))
+        self.assertEqual(total, len(filas))
+
+    def test_la_carga_COMPLETA_no_se_toco(self):
+        """El Matrixify se agrupa por handle con `ffill` -- los campos de
+        producto van solo en la primera fila y las variantes debajo --, asi
+        que ahi el handle ES la identidad del bloque. Cambiarlo partiria cada
+        producto en tantos bloques como variantes."""
+        import app_matrixify as app
+        df = pd.DataFrame([
+            {"Handle": "zapa-ab-1", "Title": "Zapa", "Option1 Value": "40"},
+            {"Handle": "", "Title": "", "Option1 Value": "41"},
+        ])
+        self.assertEqual(
+            app._sync_job_product_key_series(df, mode="full").tolist(),
+            ["zapa-ab-1", "zapa-ab-1"])
+
+    def test_un_job_VIEJO_sigue_encontrando_sus_productos(self):
+        """Sin el respaldo heredado, un job creado antes del cambio tiene
+        handles guardados como pendientes y fallaria con "No se encontro el
+        producto dentro del snapshot" en TODOS sus productos. Comprobado."""
+        import app_matrixify as app
+        df = pd.DataFrame([{"Operacion": "body", "Mod-Col": "AB-1",
+                            "Handle": "zapa-ab-1", "Product ID": "gid://1"}])
+        serie = app._sync_job_product_key_series(df, mode="partial_body")
+        heredada = app._sync_job_subset_df(df, "zapa-ab-1", mode="partial_body", keys=serie)
+        self.assertEqual(len(heredada), 1)
+
+    def test_una_clave_que_no_existe_sigue_sin_encontrar_nada(self):
+        """El respaldo no puede convertirse en un comodin."""
+        import app_matrixify as app
+        df = pd.DataFrame([{"Operacion": "body", "Mod-Col": "AB-1",
+                            "Handle": "zapa-ab-1", "Product ID": "gid://1"}])
+        serie = app._sync_job_product_key_series(df, mode="partial_body")
+        self.assertTrue(
+            app._sync_job_subset_df(df, "no-existe", mode="partial_body", keys=serie).empty)
+
+    def test_el_respaldo_heredado_NO_se_consulta_en_una_carga_completa(self):
+        import app_matrixify as app
+        fuente = inspect.getsource(app._sync_job_subset_df)
+        self.assertIn('startswith("partial")', fuente)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

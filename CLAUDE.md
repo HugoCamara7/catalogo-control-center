@@ -3824,7 +3824,7 @@ La lista se mantenia a mano, y una lista que hay que acordarse de actualizar no
 sirve para validar.
 
 La seccion 12 ya no lleva rutas: dice que se corran **todos** los
-`scripts/test_*.py`. Son 68 archivos y ~2.072 pruebas.
+`scripts/test_*.py`. Son 68 archivos y ~2.084 pruebas.
 
 ### Lo que hace falta para cerrarlo del todo
 
@@ -4341,7 +4341,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **68 archivos y ~2.072 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **68 archivos y ~2.084 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

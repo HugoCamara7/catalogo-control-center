@@ -14442,11 +14442,36 @@ def _sync_job_product_key_series(df, mode="full"):
     if df is None or df.empty:
         return pd.Series(dtype=object)
     if clean_value(mode).startswith("partial"):
+        # La identidad de una carga parcial es el CODIGO MODELO-COLOR, con el
+        # handle de respaldo y con prefijo -- exactamente `clave_de_producto`,
+        # que es la identidad canonica de la app (seccion 5 quater). Hay un
+        # test que compara esta version vectorizada contra ella fila a fila,
+        # porque un segundo criterio de identidad se separa del primero sin que
+        # nadie lo note.
+        #
+        # Antes el handle iba PRIMERO. Medido: dos Modelo-Color distintos que
+        # caen al mismo handle -- pasa cuando una fila del input no trae codigo
+        # reconocible y `build_shopify_update_preview` la casa por handle --
+        # compartian clave y el job los contaba como UN producto. No se perdia
+        # ninguna escritura (el subconjunto de esa clave lleva las dos filas),
+        # pero el contador mentia y la reanudacion era mas gruesa de lo que
+        # debia. Y sobre todo: el codigo Modelo-Color es lo que el usuario sube
+        # en su Excel y lo que puede cruzar de vuelta; el handle no.
+        #
+        # El prefijo `handle:` NO es cosmetico: sin el, un handle que se parezca
+        # a un codigo podria chocar con uno real.
+        mod_col = df.get("Mod-Col", pd.Series("", index=df.index)).map(clean_value).str.upper()
         handle = df.get("Handle", pd.Series("", index=df.index)).map(clean_value)
-        mod_col = df.get("Mod-Col", pd.Series("", index=df.index)).map(clean_value)
         product_id = df.get("Product ID", pd.Series("", index=df.index)).map(clean_value)
-        key = handle.where(handle != "", mod_col)
-        key = key.where(key != "", product_id)
+        por_handle = ("handle:" + handle).where(handle != "", "")
+        # El Product ID es el ultimo respaldo y no esta en `clave_de_producto`:
+        # alli el universo es el catalogo leido y siempre hay handle. Aqui la
+        # fila puede venir de un Excel a medias, y sin esto dos filas sin codigo
+        # y sin handle colapsarian en la cadena vacia -- que es exactamente el
+        # fallo que `clave_de_producto` existe para impedir.
+        por_id = ("id:" + product_id).where(product_id != "", "")
+        key = mod_col.where(mod_col != "", por_handle)
+        key = key.where(key != "", por_id)
         key = key.where(key != "", pd.Series([f"fila-{idx}" for idx in df.index], index=df.index))
         return key.map(clean_value)
     if "Handle" not in df.columns:
@@ -14456,6 +14481,30 @@ def _sync_job_product_key_series(df, mode="full"):
     mod_col = df.get(mod_col_column, pd.Series("", index=df.index)).map(clean_value)
     key = handle.where(handle != "", mod_col)
     key = key.replace("", pd.NA).ffill().fillna("")
+    key = key.where(key != "", pd.Series([f"fila-{idx}" for idx in df.index], index=df.index))
+    return key.map(clean_value)
+
+
+def _sync_job_clave_heredada_de_parcial(df):
+    """La clave que usaban las cargas parciales ANTES de pasar al Modelo-Color.
+
+    Handle primero, despues Mod-Col, despues Product ID. **No es un segundo
+    criterio de identidad**: es una compatibilidad, y solo se consulta cuando
+    la clave canonica no encuentra la fila.
+
+    Sin esto, un job creado antes del cambio -- que tiene guardados los handles
+    como pendientes -- no encontraria NINGUNA fila en su propio snapshot y
+    reportaria "No se encontro el producto dentro del snapshot" en todos y cada
+    uno de sus productos. Comprobado antes de escribirla.
+
+    Se puede borrar cuando no quede ningun job de carga parcial anterior a
+    septiembre de 2026 sin terminar. Hay una prueba que la fija hasta entonces.
+    """
+    handle = df.get("Handle", pd.Series("", index=df.index)).map(clean_value)
+    mod_col = df.get("Mod-Col", pd.Series("", index=df.index)).map(clean_value)
+    product_id = df.get("Product ID", pd.Series("", index=df.index)).map(clean_value)
+    key = handle.where(handle != "", mod_col)
+    key = key.where(key != "", product_id)
     key = key.where(key != "", pd.Series([f"fila-{idx}" for idx in df.index], index=df.index))
     return key.map(clean_value)
 
@@ -14480,8 +14529,15 @@ def _sync_job_subset_df(df, product_key, mode="full", keys=None):
         return pd.DataFrame()
     if keys is None:
         keys = _sync_job_product_key_series(df, mode=mode)
-    subset = df.loc[keys == product_key].copy()
-    return subset
+    subset = df.loc[keys == product_key]
+    if subset.empty and clean_value(mode).startswith("partial"):
+        # Un job creado antes de que la clave pasara a ser el Modelo-Color
+        # tiene handles guardados como pendientes. Sin este respaldo, cada uno
+        # de sus productos fallaria con "No se encontro el producto dentro del
+        # snapshot" -- comprobado. Solo se paga la pasada extra cuando la clave
+        # canonica no encuentra nada, o sea nunca en un job nuevo.
+        subset = df.loc[_sync_job_clave_heredada_de_parcial(df) == product_key]
+    return subset.copy()
 
 
 def _save_sync_job(job):

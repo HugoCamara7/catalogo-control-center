@@ -3842,6 +3842,39 @@ oficial, marca por marca, y entra por `data/guias_tallas.xlsx` sin tocar codigo.
 
 ---
 
+## 5 quintrigies. Una tienda VACIA se lee, y por eso la primera carga entra (septiembre 2026)
+
+Reportado como *"en supermall no habia ningun producto"*. La pregunta que
+importa no es esa: es si la app confunde **"leido y vacio"** con **"no se pudo
+leer"**. Si los confundiera, `render_carga_supermall` cortaria y **la primera
+carga en una tienda vacia seria imposible** -- que es justo el caso con el que
+Supermall empieza.
+
+No los confunde, y la cadena entera esta ahora comprobada EJECUTANDOLA:
+
+```
+fetch_products devuelve []
+  -> catalogos["supermall"] = []        (entra en el dict)
+  -> Estado "Leido", Productos 0
+  -> destino_leido = destino in catalogos_por_sitio  -> True
+  -> la pantalla NO corta; todo sale como "Falta cargar"
+```
+
+La clave es que `destino_leido` mira la **pertenencia al diccionario**, no que
+la lista tenga algo. Un sitio caido, en cambio, **no entra** en `catalogos` y su
+estado es `"Error"` con el motivo: ahi cortar es lo correcto, porque generar esa
+carga crearia por duplicado lo que ya existe.
+
+Las pruebas que ya habia leian el CODIGO (`inspect.getsource`, AST). Es la
+leccion de la seccion 5 duotrigies: **leer el codigo no es ejecutarlo**. Un
+`if productos:` en lugar de `if productos is not None:` no lo ve un AST que
+busca otra cosa. Las cinco pruebas nuevas de
+`scripts/test_lectura_completa_del_catalogo.py` (21 -> 26) llaman de verdad a
+`cargar_catalogos_de_todos_los_sitios` con un Shopify falso -- por los dos
+caminos, el de la cache y el de la lectura -- y una recorre hasta el resumen.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es

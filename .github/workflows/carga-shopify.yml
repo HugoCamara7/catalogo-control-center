@@ -66,6 +66,14 @@ jobs:
       CATALOG_TICKETS_BRANCH: ${{ secrets.CATALOG_TICKETS_BRANCH }}
       CATALOG_TICKETS_PREFIX: ${{ secrets.CATALOG_TICKETS_PREFIX }}
 
+      # Con que se encadena la siguiente tanda cuando esta se queda sin tiempo.
+      # NO se puede usar el GITHUB_TOKEN del propio workflow: GitHub ignora a
+      # proposito los workflow_dispatch hechos con el, para que un workflow no
+      # se pueda relanzar en bucle. Tiene que ser un token con Actions: write
+      # sobre este repositorio -- el mismo que la app usa para disparar cargas.
+      # Sin el secreto, el worker deja el job en cola y avisa, como hasta ahora.
+      CARGA_REMOTA_TOKEN: ${{ secrets.CARGA_REMOTA_TOKEN }}
+
       # Los nombres de la IZQUIERDA los arma catalog_engine._env_name a partir
       # del site_key, y tienen que coincidir exactamente. Ojo con Hush Puppies:
       # su site_key es `hush_puppies`, asi que la variable es

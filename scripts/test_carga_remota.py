@@ -11,6 +11,8 @@ repositorio privado de datos.
 Ejecutar:  python scripts/test_carga_remota.py
 """
 import ast
+import base64
+import inspect
 import json
 import os
 import sys
@@ -622,6 +624,171 @@ class TestSinStreamlit(unittest.TestCase):
     def test_el_motor_no_importa_streamlit(self):
         fuente = (ROOT / "engines" / "carga_remota.py").read_text(encoding="utf-8")
         self.assertNotIn("import streamlit", fuente)
+
+
+class TestRegistroGrande(unittest.TestCase):
+    """Un registro de mas de 1 MB dejaba el job IMPOSIBLE de reanudar.
+
+    Caso real (septiembre de 2026): la carga de Supermall llego a 1.280 de
+    8.112 productos, corto por tiempo, y el `Re-run` murio a los 21 segundos
+    con `Expecting value: line 1 column 1 (char 0)`. La Contents API de GitHub
+    **deja de mandar `content` en los archivos de mas de 1 MB** -- responde con
+    la cadena vacia -- y el registro habia crecido por encima de eso.
+
+    Lo cruel es cuando falla: la reanudacion deja de funcionar justo en las
+    cargas largas, que son las unicas que la necesitan.
+    """
+
+    def _almacen(self, respuestas, crudo=b""):
+        almacen = cr.AlmacenJobsGitHub(
+            owner="o", repo="r", token="t", branch="catalog-tickets")
+        almacen._pedir = lambda *a, **k: respuestas
+        almacen._pedir_crudo = lambda ruta: crudo
+        return almacen
+
+    def test_lee_por_la_via_cruda_cuando_content_llega_vacio(self):
+        registro = {"id": "job-1", "site_key": "supermall", "completed_keys": ["A", "B"]}
+        almacen = self._almacen(
+            # Asi responde GitHub por encima de 1 MB: content vacio y
+            # encoding "none". El sha SI viene, y es el que hace falta.
+            {"content": "", "encoding": "none", "sha": "sha-grande"},
+            crudo=json.dumps(registro).encode("utf-8"),
+        )
+        job, sha = almacen.leer("job-1")
+        self.assertEqual(job["completed_keys"], ["A", "B"])
+        self.assertEqual(sha, "sha-grande")
+
+    def test_el_camino_normal_no_cambia(self):
+        registro = {"id": "job-1", "completed_keys": ["A"]}
+        contenido = base64.b64encode(json.dumps(registro).encode("utf-8")).decode()
+        almacen = self._almacen({"content": contenido, "sha": "sha-chico"})
+        # Si tocara la via cruda, esta prueba fallaria: devuelve b"".
+        job, sha = almacen.leer("job-1")
+        self.assertEqual(job["completed_keys"], ["A"])
+        self.assertEqual(sha, "sha-chico")
+
+    def test_un_archivo_que_no_existe_sigue_dando_None(self):
+        almacen = self._almacen({"content": "", "encoding": "none", "sha": "x"}, crudo=b"")
+        self.assertEqual(almacen.leer("job-1"), (None, None))
+
+
+class TestFilasDeResultadoAcotadas(unittest.TestCase):
+    """El registro se reescribe entero en cada bloque: no puede crecer sin techo."""
+
+    def _filas(self, cuantas, resultado="OK"):
+        return [{"Handle": f"h{i}", "Resultado": resultado} for i in range(cuantas)]
+
+    def test_por_debajo_del_tope_no_toca_nada(self):
+        job = {"result_rows": []}
+        cr.registrar_avance_bloque(job, ok=3, filas=self._filas(3))
+        self.assertEqual(len(job["result_rows"]), 3)
+        self.assertNotIn("result_rows_omitidas", job)
+
+    def test_conserva_TODOS_los_fallos_y_recorta_los_OK(self):
+        """De 8.000 productos, lo que alguien va a mirar son los que fallaron.
+
+        Recortar por antiguedad a secas se llevaria justo esos.
+        """
+        job = {"result_rows": []}
+        problemas = self._filas(5, resultado="ERROR") + self._filas(5, resultado="PARCIAL")
+        cr.registrar_avance_bloque(job, filas=problemas)
+        cr.registrar_avance_bloque(job, filas=self._filas(50), ok=50)
+        cr.acotar_filas_de_resultado(job, maximo=20)
+
+        conservadas = job["result_rows"]
+        self.assertEqual(len(conservadas), 20)
+        no_ok = [f for f in conservadas if f["Resultado"] != "OK"]
+        self.assertEqual(len(no_ok), 10, "no se conservaron todos los fallos")
+        self.assertEqual(job["result_rows_omitidas"], 40)
+
+    def test_lo_descartado_se_CUENTA(self):
+        """Un informe al que le faltan filas y no lo dice es peor que uno corto."""
+        job = {"result_rows": self._filas(30)}
+        cr.acotar_filas_de_resultado(job, maximo=10)
+        self.assertEqual(job["result_rows_omitidas"], 20)
+        cr.acotar_filas_de_resultado(job, maximo=10)
+        self.assertEqual(job["result_rows_omitidas"], 20, "no debe contar dos veces")
+
+    def test_con_mas_fallos_que_el_tope_se_queda_con_los_ultimos(self):
+        job = {"result_rows": self._filas(30, resultado="ERROR")}
+        cr.acotar_filas_de_resultado(job, maximo=10)
+        self.assertEqual(len(job["result_rows"]), 10)
+        self.assertEqual(job["result_rows"][-1]["Handle"], "h29")
+
+
+class TestEncadenarLaSiguienteTanda(unittest.TestCase):
+    """Con 8.000 productos son seis tandas de 5,5 h. A mano no se termina nunca."""
+
+    def setUp(self):
+        self.worker = _worker()
+        self.previos = {
+            nombre: os.environ.get(nombre)
+            for nombre in ("CARGA_REMOTA_TOKEN", "GITHUB_REPOSITORY", "GITHUB_REF_NAME")
+        }
+        os.environ["GITHUB_REPOSITORY"] = "HugoCamara7/catalogo-control-center"
+        os.environ["GITHUB_REF_NAME"] = "main"
+        self.llamadas = []
+        self.original = cr.disparar_workflow
+        self.worker.disparar_workflow = lambda **kw: self.llamadas.append(kw) or True
+
+    def tearDown(self):
+        self.worker.disparar_workflow = self.original
+        for nombre, valor in self.previos.items():
+            if valor is None:
+                os.environ.pop(nombre, None)
+            else:
+                os.environ[nombre] = valor
+
+    def test_dispara_el_MISMO_job_para_que_retome(self):
+        os.environ["CARGA_REMOTA_TOKEN"] = "tok"
+        job = {"id": "job-1", "site_key": "supermall", "ticket": "CAT-1"}
+        self.assertTrue(self.worker._encadenar_siguiente_tanda(job))
+        self.assertEqual(len(self.llamadas), 1)
+        # El mismo job_id es lo que hace que la tanda nueva salte lo ya hecho.
+        self.assertEqual(self.llamadas[0]["inputs"]["job_id"], "job-1")
+        self.assertEqual(self.llamadas[0]["inputs"]["site_key"], "supermall")
+
+    def test_el_aviso_de_token_no_se_lo_come_el_saneador(self):
+        """`texto_publico` enmascara un "TOKEN" seguido de espacio o dos puntos.
+
+        Lo destapo esta misma prueba: el aviso salia como
+        "No hay CARGA_REMOTA_[oculto] siguiente tanda..." -- o sea que el
+        mensaje que dice QUE secreto falta se comia justamente el nombre del
+        secreto. Por eso detras va un punto.
+        """
+        import io, contextlib
+        os.environ.pop("CARGA_REMOTA_TOKEN", None)
+        salida = io.StringIO()
+        with contextlib.redirect_stdout(salida):
+            self.worker._encadenar_siguiente_tanda({"id": "job-1"})
+        self.assertIn("CARGA_REMOTA_TOKEN", salida.getvalue())
+        self.assertNotIn("[oculto]", salida.getvalue())
+
+    def test_sin_token_no_dispara_y_no_levanta(self):
+        os.environ.pop("CARGA_REMOTA_TOKEN", None)
+        self.assertFalse(self.worker._encadenar_siguiente_tanda({"id": "job-1"}))
+        self.assertEqual(self.llamadas, [])
+
+    def test_un_fallo_al_disparar_no_tumba_la_tanda(self):
+        os.environ["CARGA_REMOTA_TOKEN"] = "tok"
+        def explota(**kw):
+            raise cr.ErrorCargaRemota("permisos")
+        self.worker.disparar_workflow = explota
+        job = {"id": "job-1"}
+        self.assertFalse(self.worker._encadenar_siguiente_tanda(job))
+        self.assertTrue(any("encadenar" in str(e).lower() for e in job.get("events") or []))
+
+    def test_sin_avance_NO_se_encadena(self):
+        """Un job que no carga nada se relanzaria para siempre.
+
+        Se lee del codigo del bucle: solo encadena si el contador de
+        procesados subio respecto de lo que ya habia al arrancar la tanda.
+        """
+        fuente = inspect.getsource(self.worker._ejecutar)
+        self.assertIn("hechos_al_arrancar", fuente)
+        pos_guarda = fuente.index("> hechos_al_arrancar")
+        pos_llamada = fuente.index("_encadenar_siguiente_tanda")
+        self.assertLess(pos_guarda, pos_llamada, "la guarda va ANTES de encadenar")
 
 
 class TestCredencialesQueFaltan(unittest.TestCase):

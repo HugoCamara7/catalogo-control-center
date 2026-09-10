@@ -251,5 +251,119 @@ class TestNadieSeSaltaLaCacheDelCatalogo(unittest.TestCase):
         self.assertEqual(sangria, 4, "el hueco quedo dentro de una rama")
 
 
+class TestUnaTiendaVaciaSeLEE(unittest.TestCase):
+    """Reportado como *"en supermall no habia ningun producto"*.
+
+    Un catalogo VACIO leido sin error no es un catalogo AUSENTE. Si la app
+    confundiera los dos, `render_carga_supermall` cortaria y **la primera
+    carga en una tienda vacia seria imposible** -- justo el caso de uso con
+    el que empieza Supermall.
+
+    Estas pruebas EJECUTAN la cadena entera. Las de arriba leen el codigo, y
+    leer el codigo no es ejecutarlo: un `if productos:` en vez de
+    `if productos is not None:` no se ve en un AST que busca otra cosa.
+    """
+
+    def _cargar(self, productos_por_sitio):
+        import app_matrixify as app
+        sitios = {k: {"site_label": k.title()} for k in productos_por_sitio}
+        previos = {
+            n: getattr(app, n) for n in (
+                "SITE_CONFIGS", "get_shopify_config", "is_shopify_configured",
+                "shopify_products_en_cache", "guardar_shopify_products",
+                "fetch_products",
+            )
+        }
+        app.SITE_CONFIGS = sitios
+        app.get_shopify_config = lambda site_key: {"site_key": site_key}
+        app.is_shopify_configured = lambda config: True
+        app.shopify_products_en_cache = lambda site_key, config: None
+        app.guardar_shopify_products = lambda site_key, config, productos: None
+        app.fetch_products = lambda config, **kw: productos_por_sitio[config["site_key"]]
+        try:
+            return app.cargar_catalogos_de_todos_los_sitios()
+        finally:
+            for nombre, valor in previos.items():
+                setattr(app, nombre, valor)
+
+    def test_el_sitio_vacio_ENTRA_en_los_catalogos(self):
+        catalogos, estados = self._cargar({"vans": [{"Handle": "a"}], "supermall": []})
+        self.assertIn("supermall", catalogos, "una tienda vacia se perdio por el camino")
+        self.assertEqual(catalogos["supermall"], [])
+
+    def test_el_sitio_vacio_queda_en_Leido_con_0_productos(self):
+        _, estados = self._cargar({"vans": [{"Handle": "a"}], "supermall": []})
+        fila = next(e for e in estados if e["Sitio"] == "Supermall")
+        self.assertEqual(fila["Estado"], "Leido")
+        self.assertEqual(fila["Productos"], 0)
+
+    def test_el_sitio_CAIDO_no_entra_y_queda_en_Error(self):
+        """El contraste: eso SI tiene que cortar la pantalla."""
+        import app_matrixify as app
+        class _Roto(list):
+            def __iter__(self):
+                raise RuntimeError("401")
+        def _cargar_con_error():
+            productos = {"vans": [{"Handle": "a"}]}
+            previos = {n: getattr(app, n) for n in (
+                "SITE_CONFIGS", "get_shopify_config", "is_shopify_configured",
+                "shopify_products_en_cache", "guardar_shopify_products", "fetch_products")}
+            app.SITE_CONFIGS = {"vans": {"site_label": "Vans"}, "supermall": {"site_label": "Supermall"}}
+            app.get_shopify_config = lambda site_key: {"site_key": site_key}
+            app.is_shopify_configured = lambda config: True
+            app.shopify_products_en_cache = lambda site_key, config: None
+            app.guardar_shopify_products = lambda site_key, config, prods: None
+            def _fetch(config, **kw):
+                if config["site_key"] == "supermall":
+                    raise RuntimeError("HTTP 401")
+                return productos["vans"]
+            app.fetch_products = _fetch
+            try:
+                return app.cargar_catalogos_de_todos_los_sitios()
+            finally:
+                for nombre, valor in previos.items():
+                    setattr(app, nombre, valor)
+        catalogos, estados = _cargar_con_error()
+        self.assertNotIn("supermall", catalogos)
+        fila = next(e for e in estados if e["Sitio"] == "Supermall")
+        self.assertEqual(fila["Estado"], "Error")
+        self.assertIn("401", fila["Detalle"])
+
+    def test_la_cadena_entera_deja_generar_la_primera_carga(self):
+        """De la lectura al resumen: con Supermall vacio, `destino_leido` es
+        True y todo sale como "falta cargar", que es lo correcto."""
+        from engines import carga_supermall
+        catalogos, _ = self._cargar({
+            "vans": [{"Mod-Col": "AB-1", "Handle": "ab-1", "Title": "Old Skool",
+                      "Type": "Zapatilla", "Status": "ACTIVE", "Variants": []}],
+            "supermall": [],
+        })
+        consolidado = carga_supermall.consolidar(catalogos, orden_de_sitios=["vans"])
+        self.assertTrue(consolidado["resumen"]["destino_leido"])
+        self.assertEqual(len(consolidado["fichas"]), 1)
+        self.assertEqual(consolidado["fichas"][0]["Situacion"], "Falta cargar")
+        self.assertEqual(consolidado["resumen"]["Falta cargar"], 1)
+        self.assertEqual(consolidado["resumen"]["Se crean"], 1)
+
+    def test_la_cache_tampoco_pierde_una_tienda_vacia(self):
+        """La rama de cache es OTRO camino: `guardados or []` con una lista
+        vacia da `[]`, pero solo entra si `guardados is not None`."""
+        import app_matrixify as app
+        previos = {n: getattr(app, n) for n in (
+            "SITE_CONFIGS", "get_shopify_config", "is_shopify_configured",
+            "shopify_products_en_cache")}
+        app.SITE_CONFIGS = {"supermall": {"site_label": "Supermall"}}
+        app.get_shopify_config = lambda site_key: {"site_key": site_key}
+        app.is_shopify_configured = lambda config: True
+        app.shopify_products_en_cache = lambda site_key, config: []
+        try:
+            catalogos, estados = app.cargar_catalogos_de_todos_los_sitios()
+        finally:
+            for nombre, valor in previos.items():
+                setattr(app, nombre, valor)
+        self.assertIn("supermall", catalogos)
+        self.assertEqual(estados[0]["Estado"], "Leido")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

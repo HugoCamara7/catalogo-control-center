@@ -267,6 +267,13 @@ for _fila in CAMPOS:
     _campo = Campo(*_fila)
     CAMPOS_POR_CLAVE[_campo.clave] = _campo
 
+# Los dos textos que la PLP y la PDP muestran y que la Carga parcial puede
+# corregir sin rehacer la carga completa. Viven AQUI, al lado de su definicion,
+# porque los leen tres sitios -- la pantalla, la ruta de Shopify API y la del
+# respaldo Excel -- y una lista escrita tres veces se separa sin que nadie lo
+# note: es la trampa de las dos `normalize_size`.
+CLAVES_TEXTOS_CORTOS = ("nombre_corto", "descripcion_corta")
+
 
 def campos_para_sitio(sitio):
     """Los metafields que le corresponden a este sitio. Ni mas ni menos."""

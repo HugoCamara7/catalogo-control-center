@@ -4374,6 +4374,39 @@ def build_matrixify_updates(
                 if not body_html:
                     continue
             rows.append(_minimal_product_update(catalog_row, {"Body HTML": body_html}))
+        elif operation == "short_texts":
+            # Los alias, el namespace y el tipo se IMPORTAN de
+            # `engines/catalog_map`: es el mismo diccionario con el que escribe
+            # la carga completa y con el que la ruta de Shopify API arma su
+            # vista previa, asi que el mismo Excel se lee igual por los tres
+            # caminos. Un segundo juego de alias es la trampa de las dos
+            # `normalize_size`.
+            from engines.catalog_map import (
+                CAMPOS_POR_CLAVE, CLAVES_TEXTOS_CORTOS, valor_de_entrada)
+
+            fila_dict = source_row if isinstance(source_row, dict) else dict(source_row)
+            cambios = {}
+            for clave in CLAVES_TEXTOS_CORTOS:
+                campo = CAMPOS_POR_CLAVE[clave]
+                nuevo_valor = clean(valor_de_entrada(fila_dict, campo))
+                if not nuevo_valor:
+                    # Vacio NO borra: un Excel que solo trae la columna Nombre
+                    # corto no puede dejar sin descripcion a todo el catalogo.
+                    continue
+                if clean(catalog_row.get(campo.columna)) == nuevo_valor:
+                    continue
+                cambios[campo.columna] = nuevo_valor
+            if not cambios:
+                issues.append(
+                    {
+                        "Mod-Col": key,
+                        "Handle": catalog_handle,
+                        "Problema": "Sin cambios: las columnas vienen vacias o ya dicen lo mismo",
+                        "Fila": input_index + 2,
+                    }
+                )
+                continue
+            rows.append(_minimal_product_update(catalog_row, cambios))
         elif operation == "size_guides":
             guide_col = first_existing(source_df, SIZE_GUIDE_UPDATE_COLUMNS)
             current_guide = clean(catalog_row.get(SIZE_GUIDE_COLUMN))

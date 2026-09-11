@@ -8894,7 +8894,10 @@ def render_partial_diagnostic_panel(diagnostic_df, operation=""):
 # tipo, para que el mismo archivo se lea igual por la carga completa y por
 # esta. Escribirlos aqui a mano seria un segundo diccionario que se separa del
 # primero sin que nadie lo note.
-CAMPOS_TEXTOS_CORTOS = ("nombre_corto", "descripcion_corta")
+# La lista vive en `engines/catalog_map`, al lado de la definicion de los dos
+# metafields: la leen esta pantalla, la ruta de Shopify API y la del respaldo
+# Excel, y escrita tres veces se separa sin que nadie lo note.
+from engines.catalog_map import CLAVES_TEXTOS_CORTOS as CAMPOS_TEXTOS_CORTOS
 TEXTOS_CORTOS_LABEL = "Nombre corto y Descripcion corta"
 
 
@@ -27933,6 +27936,29 @@ api_version = "{DEFAULT_API_VERSION}"
             st.caption("Recalcula siblings para todo el catálogo: todos los productos con el mismo código modelo quedan separados por comas.")
         elif update_operation == "title":
             update_file = st.file_uploader("2. Subir archivo con Mod-Col y Title", type=["xlsx", "xls"], key="update_title")
+        elif update_operation == "short_texts":
+            # SIN esta rama la opcion estaba en el menu y no dibujaba ningun
+            # `file_uploader`, asi que `update_ready` no podia ser cierto nunca
+            # y la pantalla se quedaba en "Sube los archivos requeridos" con
+            # nada que subir. Un boton que no se dibuja y no explica por que se
+            # lee como "no funciona"; aqui no habia ni boton.
+            update_file = st.file_uploader(
+                "2. Subir Excel con el código modelo color, el Nombre corto y la Descripción corta",
+                type=["xlsx", "xls"],
+                key="update_short_texts",
+                help=(
+                    "Una columna con el código (Cod Mod Col, Mod-Col, Código Modelo Color) y las "
+                    "columnas Nombre Corto y Descripción Corta. Son los mismos nombres que ya lee "
+                    "el input comercial, así que sirve el mismo archivo."
+                ),
+            )
+            st.caption(
+                "Escribe `custom.nombre_corto` y `custom.descripcion_corta`. **Una celda vacía no "
+                "borra**: si el Excel solo trae una de las dos columnas, la otra se queda como está. "
+                "No toca Title, Body HTML, precios, stock ni fotos."
+            )
+            if update_file is None:
+                st.info("Sube el Excel con los códigos y los textos para poder analizar.")
         elif update_operation == "body":
             st.info(
                 "Mantención Body HTML: puedes subir un Excel con Mod-Col, Body HTML, Material y Cuidado "
@@ -28096,23 +28122,33 @@ api_version = "{DEFAULT_API_VERSION}"
             if is_shopify_configured(shopify_config):
                 effective_update_source = "Shopify API"
 
+        # Lo que bloquea NO siempre es que falte un archivo. Cuando el corte es
+        # de configuracion ya se dijo con su `st.error`, y repetir abajo "Sube
+        # los archivos requeridos" manda a buscar un archivo que no falta -- el
+        # mismo error que ya se corrigio con "Carga el input comercial para
+        # comenzar" cuando lo que faltaba era el respaldo del sitio.
+        bloqueo_de_configuracion = False
         if effective_update_source == "Shopify API" and not is_shopify_configured(shopify_config):
             st.error("Este sitio no tiene Shopify API configurada en Secrets.")
             update_ready = False
+            bloqueo_de_configuracion = True
         if update_operation == "inventory_locations" and effective_update_source != "Shopify API":
             st.error("La activación de inventario en sucursales solo se puede ejecutar con Shopify API.")
             update_ready = False
+            bloqueo_de_configuracion = True
         if update_operation == "sial" and effective_update_source != "Shopify API":
             # El respaldo Excel no sabe si el producto ya existe en la tienda, y
             # de eso dependen las dos columnas que mandan en la hoja: "Nuevo o
             # Actualizar" y el Product Id del sitio.
             st.error(f"La {CARGA_SIAL_LABEL} por codigos solo se puede generar con Shopify API.")
             update_ready = False
+            bloqueo_de_configuracion = True
         if update_operation == "photos_png" and effective_update_source != "Shopify API":
             # Necesita leer las fotos actuales del producto y subir las nuevas:
             # el respaldo Excel no sirve para ninguna de las dos cosas.
             st.error("El Mantenedor Fotos PNG solo funciona con Shopify API.")
             update_ready = False
+            bloqueo_de_configuracion = True
 
         if effective_update_source == "Shopify API" and update_ready:
             try:
@@ -28763,7 +28799,7 @@ api_version = "{DEFAULT_API_VERSION}"
             except Exception as exc:
                 st.error("No pude generar la carga parcial.")
                 st.exception(exc)
-        else:
+        elif not bloqueo_de_configuracion:
             st.info("Sube los archivos requeridos para generar la carga parcial.")
         return
 

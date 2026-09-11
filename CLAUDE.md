@@ -4213,6 +4213,73 @@ lo primero que hay que mirar es el propio instrumento.**
 
 ---
 
+## 5 octotrigies. La opcion estaba en el menu y no dibujaba donde subir nada (septiembre 2026)
+
+Reportado con una captura de Carga parcial en Supermall.pe: *"No puedo subir mi
+archivo con el codigo modelo color, el nombre corto y la descripcion corta para
+que actualice los campos"*.
+
+**Nombre corto y Descripcion corta** tenia el motor COMPLETO -- su rama en
+`build_shopify_update_preview`, su rama en `apply_shopify_preview`, su sitio en
+`OPERACIONES_PARCIALES_REMOTAS` y 63 pruebas verdes en
+`test_carga_parcial_remota` -- y **nadie habia escrito su `st.file_uploader`**.
+
+La cadena del fallo, medida ejecutando la pantalla:
+
+```
+no hay rama en el if de subidores  ->  update_file = None
+update_file = None                 ->  update_ready = False (siempre)
+update_ready = False               ->  el else final: "Sube los archivos requeridos"
+```
+
+O sea: la pantalla pedia un archivo y **no dibujaba por donde darselo**. Con
+`Respaldo Excel` habia un subidor en pantalla -- el del respaldo del sitio --,
+asi que el fallo se veia todavia mas raro: un subidor que no era ese.
+
+**Por que no lo vio ninguna de las 63 pruebas de la operacion:** todas prueban
+el MOTOR y el pegamento con el job. Es el mismo hueco de la seccion 5
+septvicies (`render_status_de_carga` con la clave con tilde) y de la 5
+sexdecies (tres fallos dejaron el Mantenedor de Tallas sin efecto y sus 34
+pruebas no vieron ninguno). **Un motor perfecto al que no se le puede entregar
+el archivo no sirve para nada.**
+
+### La regla que lo impide ahora
+
+`scripts/test_carga_parcial_pantalla.py` ENTRA A LA APP y recorre **cada opcion
+del menu de Carga parcial**, con `Shopify API` elegido -- que es donde estaba el
+usuario, y donde el subidor del respaldo no tapa nada --, exigiendo que cada una
+ofrezca por donde darle sus datos: un `file_uploader` o un campo de texto. Las
+que de verdad trabajan sobre el catalogo entero se declaran en `SIN_ARCHIVO`
+(hoy: Siblings, y las dos que son pantalla propia). Una opcion nueva sin subidor
+rompe la prueba **en vez de llegar a produccion como un menu que no hace nada**.
+
+7 de sus 13 pruebas fallan con el codigo anterior.
+
+### "Sube los archivos requeridos" mentia cuando lo que faltaba era Shopify
+
+El `else` final decia siempre lo mismo, y a `update_ready` lo apagan tambien
+cuatro cortes de CONFIGURACION (sin Shopify API en Secrets, Carga Sial o
+Mantenedor PNG con respaldo Excel, inventario sin API). Cada uno ya dice lo suyo
+con su `st.error`, y encima de eso la pantalla mandaba a buscar un archivo que
+no faltaba. Ahora ese aviso solo sale cuando lo que falta es de verdad un
+archivo. Es la misma correccion que "Carga el input comercial para comenzar"
+cuando lo que faltaba era el respaldo del sitio.
+
+### La ruta de Respaldo Excel tampoco la conocia
+
+Son dos motores: `build_shopify_update_preview` (Shopify API) y
+`build_matrixify_updates` (respaldo). El segundo no tenia la operacion, asi que
+despues de subir los DOS archivos contestaba *"Operacion no soportada:
+short_texts"*. Ahora la tiene, con el mismo contrato: **vacio no borra**, lo que
+ya dice lo mismo no se reescribe, y los alias, el namespace y el tipo se
+IMPORTAN de `engines/catalog_map` -- no se copian.
+
+La lista de las dos claves vive ahora en `engines/catalog_map.CLAVES_TEXTOS_CORTOS`,
+al lado de su definicion, porque la leen tres sitios. Escrita tres veces se
+separa sin que nadie lo note: es la trampa de las dos `normalize_size`.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es

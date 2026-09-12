@@ -4280,6 +4280,139 @@ separa sin que nadie lo note: es la trampa de las dos `normalize_size`.
 
 ---
 
+## 5 novotrigies. Los tres mantenedores directos: el codigo y el dato ya hecho (septiembre 2026)
+
+Tres pedidos en una sola frase, y los tres son la misma forma: **subo el codigo
+modelo color y el dato que quiero, y se aplica**. Cada mantenedor sabia decidir
+el dato por su cuenta y ninguno aceptaba que se lo dieran.
+
+### 1. Videos: el link del video en el Excel
+
+El mantenedor arma la direccion del mp4 a partir del codigo
+(`MARCA/MODELO_COLOR_2.mp4`) y eso resuelve el caso normal. Lo que no resuelve
+es el video que esta con otro nombre, en otra carpeta o en otro sitio: la unica
+salida era **renombrar el archivo en el bucket**.
+
+Ahora el Excel admite una columna **URL** (o Link) opcional. Es lo mismo que el
+mantenedor de fotos ya ofrece con "Links nuevos desde Excel", y entra por el
+mismo sitio: `destino_del_video(..., url_explicita=...)`. Cuatro cosas que no
+son obvias:
+
+- **Con link la marca deja de hacer falta.** Lo unico que salia de ella era la
+  carpeta del bucket. Exigirla dejaria fuera un codigo cuyo video la persona ya
+  nos dio. Sin link sigue siendo obligatoria, que es de donde sale la carpeta.
+- **El NOMBRE del media sigue siendo el canonico** (`MODELO_COLOR_2.mp4`), no
+  el del link. No es cosmetico: es con lo que `video_existente` reconoce el
+  video de este producto, y con el nombre del link el mismo video se podria
+  publicar dos veces.
+- **Un valor que no es una URL no se ignora en silencio**: se descarta el
+  codigo diciendo por que. Seguir adelante publicaria el video del BUCKET
+  cuando la persona pidio otro archivo, que es peor que no hacer nada.
+- **El link viaja EN LA FILA de la vista previa** (`URL excel`). Sin el, el
+  runner rearmaria la direccion del bucket y publicaria un video distinto del
+  que se reviso en pantalla -- o ninguno.
+
+Y los mensajes dicen de DONDE se busco: "no hay video con ese nombre en el
+bucket" mandaria a revisar un bucket que no se consulto.
+
+### 2. Tallas: la talla que yo indico, por SKU
+
+`Mantenedor de Tallas` decidia la talla por REGLA -- la guia de la marca, el
+genero, la escala del sitio -- y eso resuelve el catalogo entero de una vez. No
+resuelve el caso suelto: una curva que la guia no cubre, un producto mal
+tipificado, una talla que el maestro trajo rota. Ahi la persona ya sabe lo que
+tiene que decir cada variante y no habia como decirselo.
+
+Un radio nuevo al principio de la pantalla, con el automatico **por defecto**:
+quien entra a revisar el catalogo no tiene que elegir nada nuevo. El modo de
+Excel pide **Codigo Modelo Color + SKU + Talla**, una fila por variante.
+
+**No es un segundo motor, y eso es lo que lo hace seguro.** El conversor manual
+tiene la MISMA forma que el de escala (`callable(talla) -> (nueva, nota)`), asi
+que entra por el mismo `plan_de_producto` y hereda entero lo que ya estaba
+probado: no deja dos tallas repetidas, ordena sobre los valores FINALES y no
+reordena un producto con mas de una opcion.
+
+- **La identidad es el SKU, no la talla actual.** Es el unico dato de la
+  variante que no cambia; anclado en la etiqueta, un plan de hace cinco minutos
+  se aplicaria sobre una talla que ya no existe. Por eso `Variant SKU` se
+  agrego a `tallas_producto_como_registro`, que es la relectura previa a
+  escribir.
+- **Lo pedido VIAJA en el plan** (`Tallas pedidas`, texto `SKU=TALLA | ...`, que
+  es lo que cabe en una celda de Excel). Antes de escribir se RELEE el producto
+  y se replanifica: sin ese campo, el segundo pase preguntaria a la guia de la
+  marca y escribiria otra talla. Es exactamente el fallo que en su dia dejo el
+  cambio de escala sin aplicar cuando el `Type` y el `Genero` no viajaban.
+- **Dos SKU que HOY comparten talla no pueden pedir tallas distintas.** Lo que
+  se escribe es el VALOR de la opcion y ese lo comparten las dos variantes: eso
+  no es un renombre, es partir una variante en dos. Se reporta y no se escribe
+  ninguna de las dos.
+- **Los SKU que el producto no tiene y los codigos que el sitio no tiene se
+  listan.** Pedir 50 y ver 38 en la tabla se lee igual de bien que ver las 50.
+- El paso "Tallas pedidas" queda en estado **ok** aunque tenga algo que contar:
+  `apply_shopify_preview` traduce cualquier "aviso" a OMITIDO, y una carga que
+  SI escribio no se puede reportar como omitida.
+
+Se aplica con la MISMA `tallas_aplicar_producto`, asi que hereda el runner, los
+bloques, la reanudacion y el panel de estado.
+
+### 3. Body HTML: el que ya viene escrito, tal cual
+
+`build_body_html` **ARMA** la ficha a partir de sus partes (Descripcion,
+Caracteristicas, Materiales, Cuidados) y por eso mete lo que reciba dentro de un
+`nweb__Descripcion` con su titulo. Un HTML ya terminado salia de ahi envuelto en
+una seccion que nadie pidio. No es un fallo suyo: son dos trabajos distintos.
+
+`body_html_tal_cual` + `body_mode = "as_is"`, con un radio que aparece **solo
+cuando hay archivo** y con el tal cual por defecto -- la columna se llama
+literalmente `Body HTML`, asi que lo sorprendente es que la app reescriba lo que
+alguien puso ahi. Y no hay riesgo de aplicar el modo equivocado sin verlo: nada
+se escribe hasta mirar la columna "Valor nuevo" de la vista previa y confirmar.
+
+- Pasa por `asegurar_body_html`: lo que **ya trae etiquetas se respeta entero**
+  y solo el texto plano se convierte a parrafos con los especiales escapados.
+- **Vacio NO borra** y lo que ya dice lo mismo no se reescribe, y las dos cosas
+  se reportan: una vista previa vacia sin explicacion se lee como un fallo.
+- **La ruta de Respaldo Excel entiende el mismo modo.** Si solo lo entendiera
+  la de Shopify API, el mismo archivo se aplicaria distinto segun la fuente
+  elegida arriba -- que es lo que ya paso con "Operacion no soportada:
+  short_texts".
+
+### La trampa que dejaba el Body HTML propio sin efecto
+
+`filter_preview_by_diagnostic_ready` solo deja pasar lo que esta **"Listo"**, y
+`validate_partial_body_html` exigia las secciones **Caracteristicas /
+Materiales / Cuidados**. Esas son las que arma `build_body_html`, no un
+requisito de una ficha valida: un HTML escrito por fuera quedaba en
+"Observación", asi que **el archivo se subia, la vista previa lo mostraba y no
+se escribia nada**. Ahora la exigencia se apaga cuando el HTML es de la persona
+(`exigir_secciones`); el resto de las reglas -- vacio, demasiado corto, scripts,
+solo el titulo -- se siguen aplicando, que esas si hablan de la ficha.
+
+**Y lo que el diagnostico deja fuera ahora SE DICE.** Era un fallo
+preexistente que afecta tambien a fotos y guias de talla: la vista previa
+mostraba 300 filas, se escribian 180 y las otras 120 desaparecian sin una
+palabra. Una fila que no se va a escribir tiene que decir que no se va a
+escribir.
+
+### Lo que NO se hizo
+
+**El Mantenedor Fotos PNG sigue sin modo de link propio.** Su apply vive dentro
+de `render_png_maintainer_lote`, que analiza y publica en la misma pasada, asi
+que no hay un `png_publicar(codigo)` al que llamar -- es la misma deuda que ya
+lo dejo fuera de la carga parcial remota. La opcion "Fotos 10 vistas" SI tiene
+links desde Excel y cubre ese caso.
+
+`scripts/test_mantenedores_directos.py` (64 pruebas) fija todo esto; **56 fallan
+con el codigo anterior** y las 8 que pasan en las dos versiones son las que
+exigen que nada cambie. Las pruebas **EJECUTAN** el codigo -- publican contra un
+Shopify falso, cruzan los SKU, arman la vista previa y la pasan por el
+diagnostico -- y entran a la app para comprobar que cada modo dibuja por donde
+darle el archivo. Es la leccion de `start_suelto`: **leer el codigo no es
+ejecutarlo**.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -4515,7 +4648,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **69 archivos y ~2.099 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **71 archivos y ~2.176 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

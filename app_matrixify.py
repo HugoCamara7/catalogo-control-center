@@ -8560,7 +8560,18 @@ def _partial_row_base(row, operation="", status="Listo", problem="", action="Act
     }
 
 
-def validate_partial_body_html(value, title="", mod_col=""):
+def validate_partial_body_html(value, title="", mod_col="", exigir_secciones=True):
+    """(estado, problema) del Body HTML propuesto.
+
+    `exigir_secciones` viene en FALSO cuando la persona sube su propio HTML ya
+    hecho. Caracteristicas / Materiales / Cuidados son las secciones que arma
+    `build_body_html`, no un requisito de una ficha valida: exigirselas a un
+    HTML escrito por fuera lo dejaba en "Observación", y `filter_preview_by_
+    diagnostic_ready` solo deja pasar lo que esta "Listo". O sea que el archivo
+    se subia, la vista previa lo mostraba **y no se escribia nada**, sin decir
+    por que. El resto de las reglas -- vacio, demasiado corto, scripts, solo el
+    titulo -- se siguen aplicando igual, que esas si hablan de la ficha.
+    """
     html = clean_value(value)
     text = strip_html(html)
     normalized_text = normalize_header(text)
@@ -8582,7 +8593,7 @@ def validate_partial_body_html(value, title="", mod_col=""):
         label
         for label in PARTIAL_REQUIRED_HTML_SECTIONS
         if normalize_header(label) not in normalize_header(text)
-    ]
+    ] if exigir_secciones else []
     if missing_sections:
         return "Observación", f"Faltan secciones esperadas: {', '.join(missing_sections)}."
     balance_warning = _html_tag_balance_warning(html)
@@ -8695,7 +8706,7 @@ def filter_preview_by_diagnostic_ready(preview_df, diagnostic_df):
     return filtered[mask].copy()
 
 
-def build_partial_diagnostic_table(preview_df, issues_df=None, operation=""):
+def build_partial_diagnostic_table(preview_df, issues_df=None, operation="", body_mode=""):
     preview = preview_df if isinstance(preview_df, pd.DataFrame) else pd.DataFrame()
     issues = issues_df if isinstance(issues_df, pd.DataFrame) else pd.DataFrame()
     rows = []
@@ -8709,8 +8720,13 @@ def build_partial_diagnostic_table(preview_df, issues_df=None, operation=""):
         base["Valor actual"] = clean_value(current_value)[:1200]
         base["Valor propuesto"] = clean_value(proposed_value)[:1200]
         if operation == "body":
-            status, problem = validate_partial_body_html(proposed_value, row.get("Producto") or row.get("Title"), row.get("Mod-Col"))
-            current_status, current_problem = validate_partial_body_html(current_value, row.get("Producto") or row.get("Title"), row.get("Mod-Col"))
+            exigir_secciones = clean_value(body_mode) != "as_is"
+            status, problem = validate_partial_body_html(
+                proposed_value, row.get("Producto") or row.get("Title"), row.get("Mod-Col"),
+                exigir_secciones=exigir_secciones)
+            current_status, current_problem = validate_partial_body_html(
+                current_value, row.get("Producto") or row.get("Title"), row.get("Mod-Col"),
+                exigir_secciones=exigir_secciones)
             base.update(
                 {
                     "Estado validacion": status,
@@ -9151,7 +9167,34 @@ def build_shopify_update_preview(
                     "Problema": "Sin cambios: las columnas vienen vacias o ya dicen lo mismo",
                 })
         elif operation == "body":
-            if body_mode == "from_input":
+            if body_mode == "as_is":
+                # El HTML que la persona ya trae escrito, publicado tal cual.
+                # No pasa por `build_body_html`: esa ARMA la ficha con sus
+                # partes y mete lo que reciba dentro de un `nweb__Descripcion`
+                # con su titulo, o sea que un HTML ya terminado saldria
+                # envuelto en una seccion que nadie pidio.
+                from generate_columbia_matrixify import body_html_tal_cual
+
+                new_body = body_html_tal_cual(row)
+                if not new_body:
+                    # Vacio NO borra: un Excel con la columna en blanco no
+                    # puede dejar sin ficha a todo el catalogo. Es la misma
+                    # regla que ya siguen los textos cortos.
+                    issues.append({
+                        "Mod-Col": product_key, "Handle": product.get("Handle"),
+                        "Problema": "La columna Body HTML viene vacia; una celda en blanco no borra la ficha.",
+                    })
+                    continue
+                if clean_value(product.get("Body HTML")) == clean_value(new_body):
+                    # Lo que ya dice lo mismo no se reescribe, y se dice por
+                    # que: una vista previa vacia sin explicacion se lee como
+                    # un fallo.
+                    issues.append({
+                        "Mod-Col": product_key, "Handle": product.get("Handle"),
+                        "Problema": "Sin cambios: el producto ya tiene ese Body HTML.",
+                    })
+                    continue
+            elif body_mode == "from_input":
                 from generate_columbia_matrixify import build_body_html
 
                 new_body = build_body_html(row)
@@ -9205,7 +9248,10 @@ def build_shopify_update_preview(
                     "Valor actual": product.get("Body HTML"),
                     "Valor nuevo": new_body,
                     "Estado": "OK",
-                    "Observacion": "HTML normalizado con Caracteristicas, Material y Cuidado separados",
+                    "Observacion": (
+                        "El Body HTML del Excel, tal cual" if body_mode == "as_is"
+                        else "HTML normalizado con Caracteristicas, Material y Cuidado separados"
+                    ),
                 }
             )
         elif operation == "size_guides":
@@ -9544,6 +9590,7 @@ def apply_shopify_preview(shopify_config, preview_df, progress_callback=None):
                         marca_excel=clean_value(row.get("Marca excel")),
                         marca_pantalla=clean_value(row.get("Marca pantalla")),
                         reemplazar=clean_value(row.get("Reemplazar")).upper() == "SI",
+                        url_excel=clean_value(row.get("URL excel")),
                     )
                     pasos_video = (resultado_video or {}).get("pasos") or {}
                     message = " | ".join(
@@ -23962,6 +24009,13 @@ def render_boton_carga_remota(brand_config):
 # `custom.guia_de_tallas` es page_reference y la API pide un gid de pagina --,
 # y mandarla al runner gastaria una ejecucion entera para no escribir nada.
 # `centry` y `sial` tampoco: producen un Excel, no tocan la tienda.
+# Las dos formas de usar el archivo en Mantención Body HTML. Son dos trabajos
+# distintos -- publicar el HTML que alguien ya escribio, o armarlo con sus
+# partes --, no dos caminos para lo mismo.
+BODY_MODO_TAL_CUAL = "Subir el Body HTML ya hecho, tal cual"
+BODY_MODO_ARMARLO = "Armarlo con Descripción / Características / Material / Cuidado"
+
+
 OPERACIONES_PARCIALES_REMOTAS = (
     "tags", "title", "body", "siblings", "photos", "technologies", "short_texts",
     # El Mantenedor de Tallas no pasa por el analizar/aplicar de Carga parcial
@@ -25479,6 +25533,35 @@ def video_comprobar_en_bucket(url, timeout=8):
     return png_comprobar_url(url, timeout=timeout, tipos=video_motor.TIPOS_DE_VIDEO)
 
 
+def video_urls_del_excel(df):
+    """{codigo: link} si el Excel trae columna de link. Si no, {}.
+
+    La columna es OPCIONAL y lo normal es no traerla: el video vive en el
+    bucket con su nombre canonico y la app arma la direccion sola. Se agrego
+    porque el mp4 no siempre esta ahi con ese nombre -- a veces lo dejaron con
+    otro, o en otra carpeta -- y la unica salida era renombrar el archivo en el
+    bucket. Es el mismo camino que el mantenedor de fotos ya ofrece con "Links
+    nuevos desde Excel".
+
+    Se lee IGUAL que la columna Marca (`video_marcas_del_excel`): misma lectura
+    de cabeceras y mismo cruce por codigo, para que un Excel con las dos
+    columnas se entienda igual celda a celda.
+    """
+    if df is None or getattr(df, "empty", True):
+        return {}
+    columnas = list(df.columns)
+    columna_url = video_motor.columna_para(columnas, video_motor.COLUMNAS_URL)
+    columna_codigo = first_existing_column(df, PNG_COLUMNAS_CODIGO)
+    if columna_url is None or columna_codigo is None:
+        return {}
+    urls = {}
+    for codigo, url in zip(df[columna_codigo].tolist(), df[columna_url].tolist()):
+        codigo = clean_value(codigo).upper()
+        if codigo and clean_value(url):
+            urls[codigo] = clean_value(url)
+    return urls
+
+
 def video_analizar_codigos(shopify_config, site_key, trabajos, marca_pantalla="",
                            progreso=None):
     """FASE 1: mirar que hay, sin escribir NADA en Shopify.
@@ -25509,11 +25592,16 @@ def video_analizar_codigos(shopify_config, site_key, trabajos, marca_pantalla=""
         for trabajo in bloque:
             codigo = clean_value(trabajo.get("Código Modelo Color"))
             producto, detalle = video_buscar_producto(shopify_config, site_key, codigo)
+            url_excel = clean_value(trabajo.get("URL Excel"))
             marca, origen = video_marca_del_producto(
                 producto, trabajo.get("Marca Excel"), marca_pantalla
             )
+            # Con link del Excel la marca ya no decide nada: la carpeta del
+            # bucket era lo unico que salia de ella. Se sigue resolviendo
+            # porque se MUESTRA, pero no puede dejar fuera a un codigo.
             destino = video_motor.destino_del_video(
-                marca, trabajo.get("Modelo"), trabajo.get("Color")
+                marca, trabajo.get("Modelo"), trabajo.get("Color"),
+                url_explicita=url_excel,
             )
             del_bloque.append(
                 {
@@ -25525,6 +25613,8 @@ def video_analizar_codigos(shopify_config, site_key, trabajos, marca_pantalla=""
                     "Carpeta": destino["Carpeta"],
                     "Video": destino["Nombre"],
                     "URL": destino["URL"],
+                    "URL Excel": url_excel,
+                    "Origen del video": destino["Origen"],
                     "Estado": (
                         video_motor.ESTADO_SIN_PRODUCTO if producto is None
                         else video_motor.ESTADO_LISTO_PARA_CARGAR
@@ -25553,15 +25643,26 @@ def video_analizar_codigos(shopify_config, site_key, trabajos, marca_pantalla=""
                 }
             for fila in pendientes:
                 existe, detalle = respuestas.get(fila["Código Modelo Color"], (None, ""))
+                # El mensaje dice de DONDE se buscó. Con link del Excel,
+                # "no hay video con ese nombre en el bucket" mandaria a
+                # revisar un bucket que no se consultó.
+                del_link = fila.get("Origen del video") == video_motor.ORIGEN_EXCEL
                 if existe is True:
                     fila["Estado"] = video_motor.ESTADO_LISTO_PARA_CARGAR
-                    fila["Detalle"] = "El video está en el bucket."
+                    fila["Detalle"] = ("El link del Excel responde con un video."
+                                       if del_link else "El video está en el bucket.")
                 elif existe is False:
                     fila["Estado"] = video_motor.ESTADO_SIN_VIDEO
-                    fila["Detalle"] = detalle or "No hay video con ese nombre en el bucket."
+                    fila["Detalle"] = detalle or (
+                        "El link del Excel no devuelve ningún video."
+                        if del_link else "No hay video con ese nombre en el bucket."
+                    )
                 else:
                     fila["Estado"] = video_motor.ESTADO_SIN_CONFIRMAR
-                    fila["Detalle"] = detalle or "El bucket no deja comprobarlo; se intentará igual."
+                    fila["Detalle"] = detalle or (
+                        "El link no deja comprobarlo; se intentará igual."
+                        if del_link else "El bucket no deja comprobarlo; se intentará igual."
+                    )
 
         filas.extend(del_bloque)
         if callable(progreso):
@@ -25804,6 +25905,11 @@ def video_vista_previa(filas, brand_config, marca_pantalla="", reemplazar=False)
             "Campo": "Video (posicion 2)",
             "Valor actual": clean_value(fila.get("Estado")),
             "Valor nuevo": clean_value(fila.get("URL")),
+            # El link del Excel viaja EN LA FILA. Sin el, el runner rearmaria
+            # la direccion del bucket y publicaria un video distinto del que
+            # se reviso en pantalla -- o ninguno.
+            "URL excel": clean_value(fila.get("URL Excel")),
+            "Origen del video": clean_value(fila.get("Origen del video")),
             # La marca del EXCEL solo vale si de ahi salio: `video_publicar`
             # distingue "columna Marca del Excel" de "marca de la pantalla", y
             # ese orden es el que decide la carpeta del bucket.
@@ -25819,7 +25925,7 @@ def video_vista_previa(filas, brand_config, marca_pantalla="", reemplazar=False)
 
 
 def video_publicar(shopify_config, site_key, mod_col, marca_excel="", marca_pantalla="",
-                   reemplazar=False, progreso=None):
+                   reemplazar=False, progreso=None, url_excel=""):
     """Publica el video de UN codigo, de punta a punta. Devuelve el registro.
 
     Un solo lugar arma el resultado y lo recorre la lista entera: no hay dos
@@ -25869,21 +25975,38 @@ def video_publicar(shopify_config, site_key, mod_col, marca_excel="", marca_pant
     marcar("producto", "ok", f"{producto.get('Title')} ({detalle})")
 
     # PASO 2 · la marca manda la carpeta ----------------------------------
+    #
+    # ...salvo que el Excel traiga el link. Entonces no hay carpeta que armar y
+    # la marca deja de ser un requisito: exigirla ahi dejaria fuera un codigo
+    # cuyo video la persona ya nos dio. Se sigue resolviendo porque se muestra
+    # y va a la auditoria, pero no puede bloquear.
+    url_excel = clean_value(url_excel)
     marca, origen = video_marca_del_producto(producto, marca_excel, marca_pantalla)
-    problemas = video_motor.validar_datos_del_producto(marca, modelo, color)
-    if problemas:
-        return fallar("marca", " ".join(problemas) + f" (origen: {origen})")
-    destino = video_motor.destino_del_video(marca, modelo, color)
-    resultado["Marca"] = marca
-    resultado["Carpeta"] = destino["Carpeta"]
-    resultado["Nombre"] = destino["Nombre"]
-    marcar("marca", "ok", f"{marca} → carpeta {destino['Carpeta']} ({origen})")
+    if url_excel:
+        if not video_motor.es_url(url_excel):
+            return fallar("url", f"El link «{url_excel[:120]}» no es una dirección http(s).")
+        destino = video_motor.destino_del_video(marca, modelo, color, url_explicita=url_excel)
+        resultado["Marca"] = marca
+        resultado["Carpeta"] = ""
+        resultado["Nombre"] = destino["Nombre"]
+        marcar("marca", "ok",
+               f"No hace falta la carpeta: el video sale del link del Excel"
+               + (f" (marca {marca})" if marca else ""))
+    else:
+        problemas = video_motor.validar_datos_del_producto(marca, modelo, color)
+        if problemas:
+            return fallar("marca", " ".join(problemas) + f" (origen: {origen})")
+        destino = video_motor.destino_del_video(marca, modelo, color)
+        resultado["Marca"] = marca
+        resultado["Carpeta"] = destino["Carpeta"]
+        resultado["Nombre"] = destino["Nombre"]
+        marcar("marca", "ok", f"{marca} → carpeta {destino['Carpeta']} ({origen})")
 
-    # PASO 3 · la direccion en el bucket ----------------------------------
+    # PASO 3 · la direccion del video -------------------------------------
     if not destino["URL"]:
         return fallar("url", "No se pudo construir la URL del video.")
     resultado["URL"] = destino["URL"]
-    marcar("url", "ok", destino["URL"])
+    marcar("url", "ok", f"{destino['URL']} ({destino['Origen']})")
 
     # Video ya existente. Se mira ANTES de bajar nada.
     datos, error = video_leer_galeria(shopify_config, product_gid)
@@ -26110,9 +26233,14 @@ def render_video_analisis(filas):
             f"{sin_confirmar} códigos quedaron **sin confirmar**: el bucket contesta 403 a las "
             "comprobaciones anónimas, que no es lo mismo que \"no existe\". Se intentan igual."
         )
+    # La URL se MUESTRA: es lo que hay que mirar para saber que archivo se va a
+    # publicar, y desde que el link puede venir del Excel es el dato que se
+    # esta revisando. "URL Excel" se oculta porque en esas filas dice lo mismo
+    # que "URL", y una tabla con la misma direccion dos veces no se lee.
+    ocultas = ("Product ID", "URL Excel")
     st.dataframe(
         pd.DataFrame([
-            {k: v for k, v in fila.items() if k not in ("Product ID", "URL")}
+            {k: v for k, v in fila.items() if k not in ocultas}
             for fila in filas
         ]),
         width="stretch",
@@ -26146,6 +26274,15 @@ TALLAS_LABEL = "Mantenedor de Tallas"
 # el bloque es chico: igual que en los videos, un bloque que termina es avance
 # que ya no se repite.
 TALLAS_PRODUCTOS_POR_BLOQUE = 10
+
+# Los dos modos del mantenedor. El automatico decide por REGLA -- la guia de la
+# marca, el genero, la escala del sitio -- y resuelve el catalogo entero de una
+# vez; el de Excel es para lo que la regla no puede resolver: una curva que la
+# guia no cubre, un producto mal tipificado, una talla que el maestro trajo
+# rota. No son dos formas de hacer lo mismo, que es lo que habria que evitar:
+# son dos preguntas distintas, y las dos acaban en el MISMO aplicador.
+TALLAS_MODO_AUTOMATICO = "Revisar orden y escala (automático)"
+TALLAS_MODO_PEDIDAS = "Poner las tallas que yo indico (Excel)"
 
 
 def tallas_orden_clave(valor):
@@ -26208,6 +26345,138 @@ def tallas_planificar_catalogo(productos, brand_config, marcas=(), codigos=()):
     )
 
 
+# Como puede llamarse cada columna del Excel de tallas a mano. El codigo se lee
+# con `PNG_COLUMNAS_CODIGO`, que es la MISMA lista de las demas pantallas: un
+# segundo juego de alias para el mismo dato se separa del primero sin que nadie
+# lo note.
+TALLAS_COLUMNAS_SKU = [
+    "SKU", "Sku", "sku", "Variant SKU", "SKU Variante", "Sku Variante",
+    "Codigo SKU", "Código SKU", "Cod SKU",
+]
+TALLAS_COLUMNAS_TALLA = [
+    "Option1 Value", "Option2 Value", "Variant Option", "Variant option",
+    "Talla", "TALLA", "Talla nueva", "Nueva talla", "Talla Web", "Talla web",
+    "Talla que debe salir", "Talla correcta", "Size", "Opcion", "Opción",
+]
+
+
+def tallas_pedidas_desde_excel(df):
+    """(pedidas, descartados) del Excel de tallas a mano.
+
+    `pedidas` es {CODIGO: {SKU: talla}}. Una fila por variante, que es como
+    sale de cualquier export: el codigo se repite y el SKU es lo que cambia.
+    Por eso **no** se usa `png_codigos_desde_excel`, que dedupica los codigos:
+    ahi la segunda talla del mismo producto se perderia.
+
+    Cada descarte se explica. Un Excel de 200 filas que aplica 160 sin decir
+    que paso con las otras 40 se lee igual de bien que uno que las aplico
+    todas.
+    """
+    if df is None or getattr(df, "empty", True):
+        return {}, [{"Fila": "", "Motivo": "El Excel no tiene filas."}]
+    columna_codigo = first_existing_column(df, PNG_COLUMNAS_CODIGO)
+    columna_sku = first_existing_column(df, TALLAS_COLUMNAS_SKU)
+    columna_talla = first_existing_column(df, TALLAS_COLUMNAS_TALLA)
+    faltan = [
+        nombre for nombre, columna in (
+            ("Código Modelo Color", columna_codigo),
+            ("SKU", columna_sku),
+            ("Talla", columna_talla),
+        ) if columna is None
+    ]
+    if faltan:
+        # Se nombra la columna que falta. "Faltan columnas" obliga a adivinar
+        # cual de las tres, que es el mismo fallo de "Sube los archivos
+        # requeridos" cuando lo que faltaba era otra cosa.
+        return {}, [{
+            "Fila": "",
+            "Motivo": f"El Excel no trae la columna {' ni '.join(faltan)}.",
+        }]
+
+    pedidas = {}
+    descartados = []
+    vistos = set()
+    filas = zip(
+        df[columna_codigo].tolist(), df[columna_sku].tolist(), df[columna_talla].tolist()
+    )
+    for posicion, (codigo, sku, talla) in enumerate(filas, start=2):
+        codigo = clean_value(codigo).upper()
+        sku = clean_value(sku).upper()
+        talla = clean_value(talla)
+        if not codigo and not sku and not talla:
+            continue
+        if not codigo or not sku:
+            descartados.append({
+                "Fila": posicion, "Código Modelo Color": codigo, "SKU": sku,
+                "Motivo": "Falta el código modelo color o el SKU.",
+            })
+            continue
+        if not talla:
+            # Vacio NO borra, aqui tampoco: una celda de talla en blanco no
+            # puede dejar una variante sin etiqueta.
+            descartados.append({
+                "Fila": posicion, "Código Modelo Color": codigo, "SKU": sku,
+                "Motivo": "La talla viene vacía; una celda en blanco no borra nada.",
+            })
+            continue
+        if (codigo, sku) in vistos:
+            descartados.append({
+                "Fila": posicion, "Código Modelo Color": codigo, "SKU": sku,
+                "Motivo": "El mismo SKU aparece dos veces; manda la primera fila.",
+            })
+            continue
+        vistos.add((codigo, sku))
+        pedidas.setdefault(codigo, {})[sku] = talla
+    if not pedidas and not descartados:
+        descartados.append({"Fila": "", "Motivo": "El Excel no trae ninguna talla que aplicar."})
+    return pedidas, descartados
+
+
+def tallas_planificar_pedidas(productos, pedidas):
+    """El plan de las tallas que pidio la persona. No toca Shopify.
+
+    Pasa por el MISMO `plan_de_producto` que el automatico, con el conversor
+    manual en lugar del de escala. Asi hereda tal cual lo que ya esta probado:
+    no deja dos tallas repetidas, ordena sobre los valores finales y no
+    reordena un producto con mas de una opcion.
+
+    Devuelve (planes, sin_producto): los codigos del Excel que el catalogo del
+    sitio no tiene se listan aparte en vez de desaparecer.
+    """
+    por_codigo = {
+        clean_value(producto.get("Mod-Col")).upper(): producto
+        for producto in productos or []
+        if clean_value(producto.get("Mod-Col"))
+    }
+    planes = []
+    sin_producto = []
+    for codigo, tallas in (pedidas or {}).items():
+        producto = por_codigo.get(clean_value(codigo).upper())
+        if producto is None:
+            sin_producto.append({
+                "Código Modelo Color": codigo,
+                "Motivo": "No está en el catálogo de este sitio.",
+                "SKU": ", ".join(sorted(tallas)),
+            })
+            continue
+        variantes = producto.get("Variants") or []
+        nombre_opcion = orden_tallas.nombre_de_opcion_de_talla(variantes)
+        convertir, avisos, sin_encontrar = orden_tallas.conversor_de_tallas_pedidas(
+            variantes, nombre_opcion, tallas
+        )
+        plan = orden_tallas.plan_de_producto(producto, tallas_orden_clave, convertir=convertir)
+        # El texto viaja al runner: una celda de Excel no guarda un diccionario.
+        plan["Tallas pedidas"] = orden_tallas.tallas_pedidas_a_texto(tallas)
+        notas = [nota for nota in (clean_value(plan.get("Nota")), *avisos) if nota]
+        if sin_encontrar:
+            notas.append(
+                "el producto no tiene estos SKU: " + ", ".join(sin_encontrar)
+            )
+        plan["Nota"] = " | ".join(notas)
+        planes.append(plan)
+    return planes, sin_producto
+
+
 def tallas_producto_como_registro(product_data):
     """Lo que devuelve `fetch_product_options_and_variants`, con la forma que
     espera el motor.
@@ -26218,7 +26487,14 @@ def tallas_producto_como_registro(product_data):
     """
     variantes = []
     for variante in ((product_data or {}).get("variants") or {}).get("nodes") or []:
-        fila = {"Variant GID": clean_value(variante.get("id"))}
+        fila = {
+            "Variant GID": clean_value(variante.get("id")),
+            # El SKU es con lo que se reconoce la variante cuando la talla se
+            # pide a mano: es el unico dato que no cambia, y el plan se
+            # REPLANIFICA sobre esta lectura. Sin el, una talla pedida se
+            # buscaria por su etiqueta vieja.
+            orden_tallas.CAMPO_SKU: clean_value(variante.get("sku")),
+        }
         for numero, opcion in enumerate(variante.get("selectedOptions") or [], start=1):
             fila[f"Option{numero} Name"] = clean_value(opcion.get("name"))
             fila[f"Option{numero} Value"] = clean_value(opcion.get("value"))
@@ -26229,7 +26505,13 @@ def tallas_producto_como_registro(product_data):
 # Lo unico que `tallas_aplicar_producto` necesita del plan. El resto -- el
 # orden propuesto, lo que hay que renombrar -- lo REHACE releyendo el producto,
 # asi que mandarlo al runner seria mandar datos que se van a tirar.
-CAMPOS_PLAN_DE_TALLAS = ("Mod-Col", "Handle", "Title", "Marca", "Product ID", "Type", "Genero")
+# "Tallas pedidas" va aqui porque SIN ella el segundo pase no sabria que se
+# pidio: al releer el producto se replanifica, y el conversor automatico --
+# guia, genero, escala del sitio -- diria otra cosa que la persona no pidio.
+# Es el mismo fallo que dejaba el cambio de escala sin aplicar cuando el Type y
+# el Genero no viajaban (seccion 5 sexdecies).
+CAMPOS_PLAN_DE_TALLAS = ("Mod-Col", "Handle", "Title", "Marca", "Product ID", "Type",
+                         "Genero", "Tallas pedidas")
 
 
 def tallas_vista_previa(planes, brand_config):
@@ -26285,13 +26567,36 @@ def tallas_aplicar_producto(shopify_config, plan, brand_config):
     # convertir la escala. Sin ellos el conversor salia None en el segundo pase
     # y el cambio de escala no se aplicaba NUNCA -- la pantalla contestaba "Ya
     # estaba bien al releerlo" y no escribia nada.
-    registro.update({
-        k: plan.get(k, "")
-        for k in ("Mod-Col", "Handle", "Title", "Marca", "Product ID", "Type", "Genero")
-    })
+    # La MISMA lista que arma la vista previa, no una copia: escrita dos veces,
+    # un campo nuevo entra en una y se olvida en la otra.
+    registro.update({k: plan.get(k, "") for k in CAMPOS_PLAN_DE_TALLAS})
+
+    # De donde sale la talla nueva al replanificar. Si la persona la pidio a
+    # mano, manda ella; si no, el conversor de escala de siempre. Preguntar
+    # aqui y no en la pantalla es lo que hace que el runner y la sesion
+    # apliquen exactamente lo mismo.
+    pedidas = orden_tallas.tallas_pedidas_desde_texto(plan.get("Tallas pedidas"))
+    if pedidas:
+        convertir, avisos_pedidas, sin_encontrar = orden_tallas.conversor_de_tallas_pedidas(
+            registro["Variants"],
+            orden_tallas.nombre_de_opcion_de_talla(registro["Variants"]),
+            pedidas,
+        )
+        detalle_pedidas = " | ".join(
+            avisos_pedidas
+            + ([f"SKU que el producto no tiene: {', '.join(sin_encontrar)}"] if sin_encontrar else [])
+        )
+        # Estado "ok" aunque haya algo que contar: `apply_shopify_preview`
+        # traduce cualquier "aviso" a OMITIDO, y una carga que SI escribio no
+        # se puede reportar como omitida. Lo que hay que saber va en el detalle.
+        pasos.append({
+            "Paso": "Tallas pedidas", "Estado": "ok",
+            "Detalle": detalle_pedidas or f"{len(pedidas)} SKU con talla indicada a mano.",
+        })
+    else:
+        convertir = tallas_convertidor_para(registro, brand_config)
     fresco = orden_tallas.plan_de_producto(
-        registro, tallas_orden_clave,
-        convertir=tallas_convertidor_para(registro, brand_config),
+        registro, tallas_orden_clave, convertir=convertir,
     )
     if not (fresco.get("Cambia_escala") or fresco.get("Cambia_orden")):
         pasos.append({"Paso": "Comparar", "Estado": "aviso",
@@ -27151,51 +27456,132 @@ def render_mantenedor_tallas(brand_config, shopify_config):
 
     # --- 1. Que se revisa -------------------------------------------------
     st.markdown('<div class="section-card"><h2>1. Qué se revisa</h2>', unsafe_allow_html=True)
-    st.caption(
-        "Por defecto se revisa el catálogo entero del sitio. El análisis no escribe nada "
-        "y sale del catálogo que la app ya tiene leído, así que no cuesta esperar."
+    modo = st.radio(
+        "Cómo se deciden las tallas",
+        [TALLAS_MODO_AUTOMATICO, TALLAS_MODO_PEDIDAS],
+        horizontal=True,
+        key=f"tallas_modo_{site_key}",
+        help=(
+            "Automático: la app decide con la guía de la marca, el género y la escala "
+            "del sitio. Desde Excel: tú dices qué talla tiene que decir cada SKU."
+        ),
     )
-    catalogo = shopify_products_en_cache(site_key, shopify_config)
-    marcas_disponibles = sorted({
-        clean_value(producto.get("Marca"))
-        for producto in catalogo or []
-        if clean_value(producto.get("Marca"))
-    })
-    columna_marcas, columna_codigos = st.columns([1, 1], gap="large")
-    with columna_marcas:
-        marcas = st.multiselect(
-            "Marcas (vacío = todas)",
-            marcas_disponibles,
-            key=f"tallas_marcas_{site_key}",
-            help="Supermall.pe lleva varias marcas: aquí se puede revisar una sola.",
-        )
-    with columna_codigos:
-        excel_codigos = st.file_uploader(
-            "Excel de códigos (opcional)",
-            type=["xlsx", "xls"],
-            key=f"tallas_codigos_{site_key}",
-            help="Para revisar solo una lista. Sin archivo se revisa todo el sitio.",
-        )
+    # Al cambiar de modo se TIRA el plan anterior. Si no, se elige "Excel",
+    # sigue en pantalla el plan del automatico -- con su tabla y su boton
+    # Aplicar -- y lo que se escribiria no es lo que se pidio.
+    if st.session_state.get(f"{estado_key}_modo") != modo:
+        st.session_state.pop(estado_key, None)
+        st.session_state.pop(f"{estado_key}_sin_producto", None)
+        st.session_state[f"{estado_key}_modo"] = modo
+
+    marcas = []
     codigos = []
-    if excel_codigos is not None:
-        df_codigos = read_uploaded_excel_cached(excel_codigos, f"tallas_codigos_df_{site_key}")
-        codigos, descartados = png_codigos_desde_excel(df_codigos)
-        st.caption(f"{len(codigos):,} códigos leídos del Excel.")
+    pedidas = {}
+    if modo == TALLAS_MODO_PEDIDAS:
+        # El camino directo: la persona ya sabe que tiene que decir cada
+        # variante. El automatico resuelve el catalogo por REGLA y eso deja
+        # fuera el caso suelto -- una curva que la guia no cubre, un producto
+        # mal tipificado --, que hasta ahora no tenia forma de arreglarse.
+        st.caption(
+            "Sube un Excel con **Código Modelo Color**, **SKU** y **Talla**: una fila por "
+            "variante, con la talla que quieres que salga en la ficha. Se renombra el valor "
+            "de la opción de talla; **no se tocan SKU, precios ni inventario**."
+        )
+        excel_tallas = st.file_uploader(
+            "Excel con Código Modelo Color, SKU y Talla",
+            type=["xlsx", "xls"],
+            key=f"tallas_pedidas_{site_key}",
+            help=(
+                "La columna de la talla puede llamarse Talla, Talla nueva, Option1 Value o "
+                "Variant Option. El código, como en el resto de la app (Mod-Col, Cod Mod Col, "
+                "Código Modelo Color)."
+            ),
+        )
+        if excel_tallas is None:
+            st.info("Sube el Excel con los SKU y sus tallas para empezar.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+        try:
+            df_pedidas = read_uploaded_excel_cached(excel_tallas, f"tallas_pedidas_df_{site_key}")
+        except Exception as exc:
+            st.error(f"No se pudo leer el Excel: {clean_value(exc)[:200]}")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+        pedidas, descartados = tallas_pedidas_desde_excel(df_pedidas)
+        variantes_pedidas = sum(len(v) for v in pedidas.values())
+        st.caption(
+            f"{variantes_pedidas:,} tallas leídas del Excel en {len(pedidas):,} productos."
+        )
         if descartados:
-            with st.expander(f"{len(descartados):,} filas descartadas del Excel"):
+            with st.expander(f"⚠️ {len(descartados):,} filas descartadas y por qué",
+                             expanded=not pedidas):
                 st.dataframe(pd.DataFrame(descartados), width="stretch", hide_index=True)
+        if not pedidas:
+            st.error("No quedó ninguna talla que aplicar. Revisa las columnas del Excel.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+    else:
+        st.caption(
+            "Por defecto se revisa el catálogo entero del sitio. El análisis no escribe nada "
+            "y sale del catálogo que la app ya tiene leído, así que no cuesta esperar."
+        )
+        # La cache se consulta DENTRO de esta rama: es lo unico que la usa, y
+        # su respaldo va a disco. Fuera del `if` se pagaba esa lectura en cada
+        # rerun del modo de Excel sin mirar el resultado -- que es justo lo que
+        # la seccion 5 nonies dejo anotado que no se hace.
+        catalogo = shopify_products_en_cache(site_key, shopify_config)
+        marcas_disponibles = sorted({
+            clean_value(producto.get("Marca"))
+            for producto in catalogo or []
+            if clean_value(producto.get("Marca"))
+        })
+        columna_marcas, columna_codigos = st.columns([1, 1], gap="large")
+        with columna_marcas:
+            marcas = st.multiselect(
+                "Marcas (vacío = todas)",
+                marcas_disponibles,
+                key=f"tallas_marcas_{site_key}",
+                help="Supermall.pe lleva varias marcas: aquí se puede revisar una sola.",
+            )
+        with columna_codigos:
+            excel_codigos = st.file_uploader(
+                "Excel de códigos (opcional)",
+                type=["xlsx", "xls"],
+                key=f"tallas_codigos_{site_key}",
+                help="Para revisar solo una lista. Sin archivo se revisa todo el sitio.",
+            )
+        if excel_codigos is not None:
+            df_codigos = read_uploaded_excel_cached(excel_codigos, f"tallas_codigos_df_{site_key}")
+            codigos, descartados = png_codigos_desde_excel(df_codigos)
+            st.caption(f"{len(codigos):,} códigos leídos del Excel.")
+            if descartados:
+                with st.expander(f"{len(descartados):,} filas descartadas del Excel"):
+                    st.dataframe(pd.DataFrame(descartados), width="stretch", hide_index=True)
 
     if st.button("Revisar tallas", type="primary", key=f"tallas_analizar_{site_key}"):
         with st.spinner("Leyendo el catálogo del sitio..."):
             productos = leer_catalogo_del_sitio(site_key, shopify_config)
-        with st.spinner("Revisando el orden y la escala de cada producto..."):
-            planes = tallas_planificar_catalogo(productos, brand_config, marcas, codigos)
+        if modo == TALLAS_MODO_PEDIDAS:
+            with st.spinner("Cruzando los SKU del Excel con el catálogo..."):
+                planes, sin_producto = tallas_planificar_pedidas(productos, pedidas)
+            st.session_state[f"{estado_key}_sin_producto"] = sin_producto
+        else:
+            with st.spinner("Revisando el orden y la escala de cada producto..."):
+                planes = tallas_planificar_catalogo(productos, brand_config, marcas, codigos)
+            st.session_state.pop(f"{estado_key}_sin_producto", None)
         st.session_state[estado_key] = planes
         log_user_activity(
             "Revision de tallas",
-            f"{len(planes):,} productos revisados en {clean_value(brand_config.get('site_label'))}.",
+            f"{len(planes):,} productos revisados en {clean_value(brand_config.get('site_label'))} "
+            f"({modo}).",
             module=TALLAS_LABEL,
         )
+    # Los codigos que el catalogo no tiene se listan APARTE. Sin esto, pedir 50
+    # tallas y ver 38 en la tabla se lee igual de bien que verlas las 50.
+    sin_producto = st.session_state.get(f"{estado_key}_sin_producto") or []
+    if sin_producto:
+        with st.expander(f"⚠️ {len(sin_producto):,} códigos del Excel que no están en este sitio"):
+            st.dataframe(pd.DataFrame(sin_producto), width="stretch", hide_index=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     planes = st.session_state.get(estado_key)
@@ -27246,9 +27632,16 @@ def render_mantenedor_tallas(brand_config, shopify_config):
     st.markdown('<div class="section-card"><h2>3. Aplicar los cambios</h2>', unsafe_allow_html=True)
     escala = sum(1 for plan in por_arreglar if plan["Cambia_escala"])
     orden = sum(1 for plan in por_arreglar if plan["Cambia_orden"])
+    # En el modo de Excel esos productos no "cambian de escala": llevan la
+    # talla que pidio la persona. Decirlo al reves confundiria justo en el
+    # aviso que hay que leer antes de escribir.
+    que_cambia = (
+        f"{escala:,} llevan la talla que indicaste"
+        if modo == TALLAS_MODO_PEDIDAS else f"{escala:,} cambian de escala"
+    )
     st.warning(
         f"Se van a tocar **{len(por_arreglar):,} productos** en "
-        f"**{clean_value(brand_config.get('site_label'))}**: {escala:,} cambian de escala "
+        f"**{clean_value(brand_config.get('site_label'))}**: {que_cambia} "
         f"y {orden:,} cambian de orden. Se cambia la etiqueta de la talla y la posición "
         "de las variantes; **no se tocan SKU, precios ni inventario**."
     )
@@ -27357,8 +27750,10 @@ def render_video_maintainer(brand_config, shopify_config):
     # --- 1. El Excel ------------------------------------------------------
     st.markdown('<div class="section-card"><h2>1. Los códigos</h2>', unsafe_allow_html=True)
     st.caption(
-        "El video ya tiene que estar en el bucket con su nombre: "
-        "`MARCA/MODELO_COLOR_2.mp4`. Aquí solo dices qué códigos cargar."
+        "Por defecto el video ya tiene que estar en el bucket con su nombre: "
+        "`MARCA/MODELO_COLOR_2.mp4`, y aquí solo dices qué códigos cargar. "
+        "Si alguno está con otro nombre o en otro sitio, agrégale una columna "
+        "**URL** con el link del mp4 y se usa ese, tal cual."
     )
     excel = st.file_uploader(
         "Excel con la columna Código Modelo Color",
@@ -27366,8 +27761,9 @@ def render_video_maintainer(brand_config, shopify_config):
         key=f"video_excel_{site_key}",
         help=(
             "Una columna con los códigos (Código Modelo Color, Mod-Col, Cod Mod Col o SKU). "
-            "La app quita vacíos y repetidos. Puedes agregar una columna Marca, pero no hace "
-            "falta: la marca sale del propio producto."
+            "La app quita vacíos y repetidos. Dos columnas OPCIONALES: **Marca**, que solo "
+            "cambia la carpeta del bucket, y **URL** (o Link), con la dirección del video "
+            "cuando el mp4 no está en el bucket con su nombre de siempre."
         ),
     )
     marcas = video_motor.marcas_disponibles()
@@ -27405,11 +27801,18 @@ def render_video_maintainer(brand_config, shopify_config):
     # explica cada descarte. No se escribe una segunda forma de leer códigos.
     codigos, descartes_excel = png_codigos_desde_excel(df)
     marcas_excel = video_marcas_del_excel(df)
+    urls_excel = video_urls_del_excel(df)
     trabajos, descartes_codigo = video_motor.trabajos_desde_codigos(
-        codigos, marcas=marcas_excel, marca_por_defecto=""
+        codigos, marcas=marcas_excel, marca_por_defecto="", urls=urls_excel
     )
     for trabajo in trabajos:
         trabajo["Marca Excel"] = marcas_excel.get(trabajo["Código Modelo Color"], "")
+    con_link = sum(1 for trabajo in trabajos if clean_value(trabajo.get("URL Excel")))
+    if con_link:
+        st.caption(
+            f"**{con_link:,} de {len(trabajos):,} códigos traen su link en el Excel**: "
+            "de esos se usa esa dirección tal cual y no se toca el bucket."
+        )
     descartados = list(descartes_excel) + list(descartes_codigo)
 
     if descartados:
@@ -27535,6 +27938,7 @@ def render_video_maintainer(brand_config, shopify_config):
                 marca_pantalla=fila.get("Marca") or marca_pantalla,
                 reemplazar=reemplazar,
                 progreso=_avance,
+                url_excel=clean_value(fila.get("URL Excel")),
             )
             video_registrar_auditoria(resultado, site_key)
             resultados.append(resultado)
@@ -27961,27 +28365,73 @@ api_version = "{DEFAULT_API_VERSION}"
                 st.info("Sube el Excel con los códigos y los textos para poder analizar.")
         elif update_operation == "body":
             st.info(
-                "Mantención Body HTML: puedes subir un Excel con Mod-Col, Body HTML, Material y Cuidado "
-                "para reemplazar el HTML de esos productos. Si no subes archivo, la app corrige solamente "
-                "los Body HTML actuales donde Materiales y Cuidados estén mezclados o mal estructurados."
+                "Mantención Body HTML: sube un Excel con el **Código Modelo Color** y el "
+                "**Body HTML ya hecho** y se publica tal cual. Si prefieres que la app lo "
+                "arme, puede hacerlo con Descripción, Características, Material y Cuidado. "
+                "Y sin archivo corrige solamente los Body HTML actuales donde Materiales y "
+                "Cuidados estén mezclados o mal estructurados."
             )
             if update_source == "Shopify API":
                 update_file = st.file_uploader(
-                    "2. Opcional: subir Excel con Mod-Col, Body HTML, Material y Cuidado",
+                    "2. Opcional: subir Excel con el código modelo color y el Body HTML",
                     type=["xlsx", "xls"],
                     key="update_body_html",
-                    help="Si subes archivo, la app busca cada Mod-Col en Shopify y arma el Body HTML con las columnas recibidas.",
+                    help=(
+                        "Una columna con el código (Cod Mod Col, Mod-Col, Código Modelo Color) y la "
+                        "columna Body HTML. Para que la app lo arme en vez de copiarlo, manda también "
+                        "Descripción, Características, Material y Cuidado y elige la segunda opción."
+                    ),
                 )
-                body_mode = "from_input" if update_file else "fix_catalog"
+            body_archivo = update_file if update_source == "Shopify API" else template_file
+            if update_source != "Shopify API":
+                # En esta ruta el respaldo del sitio hace de catalogo Y de
+                # input: es como venia funcionando y decirlo evita subir dos
+                # archivos buscando donde va el segundo.
                 st.caption(
-                    "Con archivo: reemplaza Body HTML de los Mod-Col indicados. "
-                    "Sin archivo: revisa el catálogo actual y corrige solo HTML mal estructurado."
+                    "El Excel cargado arriba se usa como catálogo **y** como input de "
+                    "mantenimiento Body HTML. Debe traer el código modelo color y la "
+                    "columna Body HTML."
                 )
+            if body_archivo is not None:
+                # Con archivo hay DOS trabajos distintos y hay que elegir:
+                # publicar el HTML que ya viene escrito, o armarlo a partir de
+                # sus partes. Hasta ahora solo existia el segundo, asi que un
+                # HTML terminado salia envuelto en una seccion "Descripción"
+                # que nadie habia pedido.
+                #
+                # Va por defecto el tal cual porque la columna se llama
+                # literalmente Body HTML: que la app reescriba lo que alguien
+                # puso ahi es lo sorprendente. Y no hay riesgo de aplicar el
+                # modo equivocado sin verlo: nada se escribe hasta mirar la
+                # columna "Valor nuevo" de la vista previa y confirmar.
+                body_modo_label = st.radio(
+                    "Qué hacer con el archivo",
+                    [BODY_MODO_TAL_CUAL, BODY_MODO_ARMARLO],
+                    key=f"body_modo_{brand_config['site_key']}",
+                    help=(
+                        "Tal cual: se publica el HTML de la columna Body HTML sin tocarlo. "
+                        "Armarlo: se construye con Descripción, Características, Materiales "
+                        "y Cuidados, cada uno en su sección."
+                    ),
+                )
+                body_mode = "as_is" if body_modo_label == BODY_MODO_TAL_CUAL else "from_input"
+                if body_mode == "as_is":
+                    st.caption(
+                        "Se publica **el HTML de la columna Body HTML, tal cual**. Lo que ya trae "
+                        "etiquetas no se toca; un texto plano se convierte a párrafos. **Una celda "
+                        "vacía no borra** la ficha, y lo que ya dice lo mismo no se reescribe. "
+                        "No toca Title, precios, stock ni fotos."
+                    )
+                else:
+                    st.caption(
+                        "La app arma el Body HTML con Descripción, Características, Materiales y "
+                        "Cuidados, cada uno en su sección."
+                    )
             else:
-                body_mode = "from_input" if template_file else "fix_catalog"
+                body_mode = "fix_catalog"
                 st.caption(
-                    "El Excel cargado arriba se interpretará como input de mantenimiento Body HTML. "
-                    "Debe incluir Mod-Col y columnas como Body HTML, Material, Composición, Cuidado o Cuidados."
+                    "Sin archivo: revisa el catálogo actual y corrige solo el HTML mal "
+                    "estructurado, donde Materiales y Cuidados están mezclados."
                 )
         elif update_operation == "size_guides":
             if update_source == "Shopify API":
@@ -28616,6 +29066,7 @@ api_version = "{DEFAULT_API_VERSION}"
                             preview_df,
                             issues_df,
                             update_operation,
+                            body_mode=body_mode,
                         )
                     else:
                         st.session_state["shopify_preview_diagnostic_df"] = pd.DataFrame()
@@ -28668,6 +29119,19 @@ api_version = "{DEFAULT_API_VERSION}"
                     writable_preview_df = preview_df
                     if update_operation in ("body", "photos", "size_guides"):
                         writable_preview_df = filter_preview_by_diagnostic_ready(preview_df, diagnostic_df)
+                        # Lo que el diagnostico no deja pasar se QUEDA FUERA de
+                        # la escritura, y hasta ahora sin decirlo: la vista
+                        # previa mostraba 300 filas, se aplicaban 180 y las
+                        # otras 120 desaparecian. Una fila que no se va a
+                        # escribir tiene que decir que no se va a escribir.
+                        fuera = len(preview_df) - len(writable_preview_df)
+                        if fuera > 0:
+                            st.warning(
+                                f"**{fuera:,} de {len(preview_df):,} filas no se van a escribir**: el "
+                                "diagnóstico las dejó en Observación o Bloqueado. El motivo de cada una "
+                                "está en la columna **Problema** de la tabla de diagnóstico y en la hoja "
+                                "**Diagnostico** del Excel."
+                            )
                     can_apply = update_operation in OPERACIONES_PARCIALES_REMOTAS and writable_preview_df is not None and not writable_preview_df.empty
                     if update_operation == "photos":
                         st.info("REPLACE elimina las fotos actuales del producto y sube las 10 URLs nuevas. MERGE agrega las URLs nuevas sin borrar las actuales.")
@@ -28771,7 +29235,8 @@ api_version = "{DEFAULT_API_VERSION}"
                     else:
                         st.success(f"Carga parcial generada con {len(matrixify_df):,} productos.")
                         if update_operation in ("body", "photos", "size_guides"):
-                            diagnostic_df = build_partial_diagnostic_table(matrixify_df, issues_df, update_operation)
+                            diagnostic_df = build_partial_diagnostic_table(
+                                matrixify_df, issues_df, update_operation, body_mode=body_mode)
                             render_partial_diagnostic_panel(diagnostic_df, update_operation)
                         else:
                             st.dataframe(matrixify_df.head(100), width="stretch")

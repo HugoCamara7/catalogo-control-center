@@ -2274,6 +2274,39 @@ def row_alias_value(row, columns):
     return ""
 
 
+# El Body HTML que la persona ya trae escrito, para publicarlo TAL CUAL.
+#
+# `build_body_html` no sirve para esto y no es un fallo suyo: su trabajo es
+# ARMAR la ficha a partir de sus partes (Descripcion, Caracteristicas,
+# Materiales, Cuidados) y por eso mete lo que reciba dentro de un
+# `nweb__Descripcion` con su titulo. Un HTML que alguien ya dejo como queria
+# sale de ahi envuelto en una seccion que no pidio.
+#
+# Son dos trabajos distintos, no dos formas de hacer el mismo, y por eso hay
+# dos funciones y un modo que elige entre ellas.
+BODY_HTML_DIRECTO_COLUMNS = [
+    "Body HTML", "Body HTML.1", "Body (HTML)", "BodyHTML",
+    "Descripcion HTML", "Descripción HTML", "Description HTML", "HTML",
+    "Body", "Cuerpo HTML", "Ficha HTML",
+]
+
+
+def body_html_tal_cual(row):
+    """El Body HTML del Excel, sin rearmarlo. "" si la fila no trae ninguno.
+
+    Pasa por `asegurar_body_html`, que **respeta entero lo que ya trae
+    etiquetas** -- se devuelve sin tocar una coma -- y solo convierte lo que
+    llega en texto plano: un `<p>` por parrafo y los especiales escapados. Un
+    texto plano copiado tal cual saldria en la ficha en una sola tira, y un `&`
+    suelto rompe el marcado.
+
+    Vacio devuelve vacio a proposito: quien llama tiene que decidir que hacer
+    con eso, y la respuesta en las dos rutas es la misma -- no escribir. Una
+    celda en blanco no puede borrar la ficha de un producto.
+    """
+    return asegurar_body_html(row_alias_value(row, BODY_HTML_DIRECTO_COLUMNS))
+
+
 def build_body_html(row):
     """Body HTML del producto: Descripcion + Caracteristicas + Materiales + Cuidados.
 
@@ -4351,7 +4384,29 @@ def build_matrixify_updates(
                 continue
             rows.append(_minimal_product_update(catalog_row, {"Title": clean(source_row.get(title_col))}))
         elif operation == "body":
-            if body_mode == "from_input":
+            if body_mode == "as_is":
+                # La ruta de Respaldo Excel tiene que entender el mismo modo
+                # que la de Shopify API y con el MISMO contrato: vacio no
+                # borra, y lo que ya dice lo mismo no se reescribe. Si solo lo
+                # entendiera una, el mismo archivo se aplicaria distinto segun
+                # la fuente elegida arriba -- que es lo que ya paso con
+                # "Operacion no soportada: short_texts".
+                body_html = body_html_tal_cual(source_row)
+                if not body_html:
+                    issues.append({
+                        "Mod-Col": key, "Handle": catalog_handle,
+                        "Problema": "La columna Body HTML viene vacia; una celda en blanco no borra la ficha.",
+                        "Fila": input_index + 2,
+                    })
+                    continue
+                if clean(catalog_row.get("Body HTML")) == clean(body_html):
+                    issues.append({
+                        "Mod-Col": key, "Handle": catalog_handle,
+                        "Problema": "Sin cambios: el producto ya tiene ese Body HTML.",
+                        "Fila": input_index + 2,
+                    })
+                    continue
+            elif body_mode == "from_input":
                 body_html = build_body_html(source_row)
                 if not body_html:
                     issues.append(

@@ -96,6 +96,117 @@ def tallas_en_orden_actual(variantes, nombre_opcion):
     return valores
 
 
+# ---------------------------------------------------------------------------
+# Tallas pedidas a mano: "este SKU tiene que decir esta talla"
+# ---------------------------------------------------------------------------
+# El mantenedor automatico decide la talla por REGLA -- la guia de la marca, el
+# genero, la escala del sitio -- y eso resuelve el catalogo entero de una vez.
+# Lo que no resuelve es el caso suelto: una curva que la guia no cubre, un
+# producto mal tipificado, una talla que el maestro trajo rota. Ahi la persona
+# ya sabe que tiene que decir cada variante y no hay forma de decirselo a la
+# app.
+#
+# La identidad es el SKU y no la talla actual, a proposito. Es el unico dato de
+# la variante que no cambia: anclado en la talla actual, un plan armado hace
+# cinco minutos se aplicaria sobre una etiqueta que ya no existe.
+#
+# Lo que se escribe sigue siendo el VALOR de la opcion, igual que en el
+# automatico: Shopify renombra el valor y con el todas las variantes que lo
+# usan. Por eso dos SKU que HOY comparten talla no pueden pedir tallas
+# distintas -- eso no es un renombre, es partir una variante en dos -- y se
+# reporta en vez de escribir a medias.
+
+CAMPO_SKU = "Variant SKU"
+
+
+def sku_de_variante(variante):
+    return _texto((variante or {}).get(CAMPO_SKU)).upper()
+
+
+def tallas_por_sku(variantes, nombre_opcion):
+    """{SKU: talla que tiene hoy} para las variantes de este producto."""
+    indice = indice_de_opcion(variantes, nombre_opcion)
+    if not indice:
+        return {}
+    por_sku = {}
+    for variante in variantes or []:
+        sku = sku_de_variante(variante)
+        if sku:
+            por_sku[sku] = _texto(variante.get(f"Option{indice} Value"))
+    return por_sku
+
+
+def conversor_de_tallas_pedidas(variantes, nombre_opcion, pedidas):
+    """(convertir, avisos, sin_encontrar) para las tallas que pidio la persona.
+
+    `convertir` tiene la MISMA forma que el conversor de escala del automatico
+    -- `callable(talla) -> (nueva, nota)` --, asi que entra por el mismo
+    `plan_de_producto` y hereda entero lo que ya esta probado: el rechazo de
+    tallas que quedarian repetidas, el reordenamiento sobre los valores
+    finales y la guarda del producto con mas de una opcion.
+
+    `sin_encontrar` son los SKU del Excel que este producto no tiene. No es un
+    error de la app: casi siempre es un SKU de otro producto o mal escrito, y
+    callarlo dejaria a la persona creyendo que se aplico.
+    """
+    pedidas = {_texto(k).upper(): _texto(v) for k, v in (pedidas or {}).items() if _texto(k)}
+    por_sku = tallas_por_sku(variantes, nombre_opcion)
+    avisos = []
+    sin_encontrar = sorted(sku for sku in pedidas if sku not in por_sku)
+
+    # Que pide cada valor ACTUAL de la opcion. Un valor con dos peticiones
+    # distintas no se puede resolver renombrando.
+    pedido_por_valor = {}
+    for sku, nueva in pedidas.items():
+        actual = por_sku.get(sku)
+        if actual is None or not nueva or nueva == actual:
+            continue
+        pedido_por_valor.setdefault(actual, {}).setdefault(nueva, []).append(sku)
+
+    resueltas = {}
+    for actual, opciones in pedido_por_valor.items():
+        if len(opciones) > 1:
+            detalle = "; ".join(
+                f"{nueva} ({', '.join(sorted(skus))})" for nueva, skus in sorted(opciones.items())
+            )
+            avisos.append(
+                f"la talla '{actual}' recibe dos valores distintos y se renombra "
+                f"para todas sus variantes a la vez: {detalle}"
+            )
+            continue
+        resueltas[actual] = next(iter(opciones))
+
+    def convertir(talla):
+        nueva = resueltas.get(_texto(talla))
+        return (nueva, "") if nueva else ("", "")
+
+    return convertir, avisos, sin_encontrar
+
+
+def tallas_pedidas_a_texto(pedidas):
+    """{SKU: talla} -> "SKU=TALLA | SKU=TALLA".
+
+    Hace falta porque el plan viaja al runner DENTRO de una hoja de Excel, y
+    ahi una celda es texto. Es el mismo motivo por el que el sitio y el genero
+    viajan como columnas y no como objetos.
+    """
+    return " | ".join(
+        f"{_texto(sku).upper()}={_texto(talla)}"
+        for sku, talla in (pedidas or {}).items()
+        if _texto(sku) and _texto(talla)
+    )
+
+
+def tallas_pedidas_desde_texto(valor):
+    """La vuelta de `tallas_pedidas_a_texto`. Lo que no tenga `=` se ignora."""
+    pedidas = {}
+    for trozo in _texto(valor).split("|"):
+        sku, sep, talla = trozo.partition("=")
+        if sep and _texto(sku) and _texto(talla):
+            pedidas[_texto(sku).upper()] = _texto(talla)
+    return pedidas
+
+
 def plan_de_producto(producto, orden_clave, convertir=None):
     """Que habria que cambiarle a este producto. No toca Shopify.
 

@@ -763,8 +763,11 @@ class TestElMantenedorDeVideosTambienCorreEnElServidor(unittest.TestCase):
         llamadas = []
         previo = app.video_publicar
 
+        # `url_excel` es el link opcional del Excel (seccion 5 novotrigies). El
+        # doble tiene que aceptarlo: con la firma vieja, `apply_shopify_preview`
+        # atrapaba el TypeError y dejaba la fila en ERROR sin llamar a nadie.
         def falso(cfg, site_key, mod_col, marca_excel="", marca_pantalla="",
-                  reemplazar=False, progreso=None):
+                  reemplazar=False, progreso=None, url_excel=""):
             llamadas.append((site_key, mod_col, marca_excel, reemplazar))
             return {"ok": True, "Posición": 2, "pasos": {"subir": {"estado": "ok", "detalle": "d"}}}
 

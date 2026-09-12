@@ -482,12 +482,44 @@ def estado_de_media(nodo):
 
 COLUMNAS_MARCA = ("marca", "brand", "marca comercial")
 
+# Como puede llamarse la columna OPCIONAL con el link del video. Existe porque
+# el mp4 no siempre esta en el bucket con el nombre canonico
+# `MARCA/MODELO_COLOR_2.mp4`: a veces lo dejaron con otro nombre, o en otra
+# carpeta, o directamente en otro sitio. Sin ella la unica forma de publicar
+# ese video era renombrar el archivo en el bucket.
+#
+# Es exactamente lo que el mantenedor de fotos ya ofrece con "Links nuevos
+# desde Excel", y por la misma razon.
+COLUMNAS_URL = (
+    "url", "link", "enlace",
+    "url del video", "link del video", "enlace del video",
+    "video url", "url video", "link video", "url del mp4",
+)
+
+# De donde salio la direccion de cada video. Viaja en el analisis y en el
+# registro para que, cuando un video salga raro, la pregunta "de donde lo
+# sacaste" se pueda responder sin abrir el Excel.
+ORIGEN_BUCKET = "bucket por código"
+ORIGEN_EXCEL = "link del Excel"
+
 
 def _clave_cabecera(nombre):
     limpio = texto(nombre).lower()
     for viejo, nuevo in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
         limpio = limpio.replace(viejo, nuevo)
     return re.sub(r"[^a-z0-9]+", " ", limpio).strip()
+
+
+def es_url(valor):
+    """True si el texto es una direccion http(s) y no otra cosa.
+
+    Solo se acepta una URL completa a proposito. Un nombre de archivo suelto o
+    una clave del bucket habria que convertirlos en direccion, y eso es una
+    SEGUNDA forma de armar la misma URL: las dos se separan sin que nadie lo
+    note, que es lo que ya se paga en este repositorio con las dos
+    `normalize_size`. Lo que no es una URL se descarta diciendo por que.
+    """
+    return texto(valor).lower().startswith(("http://", "https://"))
 
 
 def columna_para(cabeceras, candidatas):
@@ -500,7 +532,7 @@ def columna_para(cabeceras, candidatas):
     return None
 
 
-def trabajos_desde_codigos(codigos, marcas=None, marca_por_defecto=""):
+def trabajos_desde_codigos(codigos, marcas=None, marca_por_defecto="", urls=None):
     """(trabajos, descartados) a partir de los codigos del Excel.
 
     Los codigos ya vienen limpios de `png_codigos_desde_excel`, que es la MISMA
@@ -511,8 +543,14 @@ def trabajos_desde_codigos(codigos, marcas=None, marca_por_defecto=""):
     La marca puede quedar VACIA a proposito: si el Excel no la trae, se resuelve
     despues con el metacampo `custom.marca` del producto, que es la fuente
     autoritativa. No se adivina aqui.
+
+    `urls` es {codigo: link} cuando el Excel trae la columna opcional de link.
+    Un valor que no sea una direccion http(s) **no se ignora en silencio**: se
+    descarta el codigo diciendo por que, porque seguir adelante publicaria el
+    video del bucket cuando la persona pidio otro archivo.
     """
     marcas = marcas or {}
+    urls = urls or {}
     trabajos = []
     descartados = []
     for codigo in codigos or []:
@@ -527,15 +565,28 @@ def trabajos_desde_codigos(codigos, marcas=None, marca_por_defecto=""):
                 "Motivo": "No se puede separar en modelo y color; se espera MODELO-COLOR.",
             })
             continue
+        url_excel = texto(urls.get(codigo))
+        if url_excel and not es_url(url_excel):
+            descartados.append({
+                "Código Modelo Color": codigo,
+                "Motivo": (
+                    f"La columna de link trae «{url_excel[:80]}», que no es una "
+                    "dirección http(s). Pega el link completo del video o deja "
+                    "la celda vacía para que se busque en el bucket."
+                ),
+            })
+            continue
         marca = texto(marcas.get(codigo)) or texto(marca_por_defecto)
+        destino = destino_del_video(marca, modelo, color, url_explicita=url_excel)
         trabajos.append(
             {
                 "Código Modelo Color": codigo_modelo_color(modelo, color),
                 "Modelo": modelo,
                 "Color": color,
                 "Marca": marca,
-                "Nombre": nombre_de_video(modelo, color),
-                "URL": url_de_video(marca, modelo, color) if marca else "",
+                "Nombre": destino["Nombre"],
+                "URL Excel": url_excel,
+                "URL": destino["URL"] if (url_excel or marca) else "",
             }
         )
     if not trabajos and not descartados:
@@ -543,20 +594,45 @@ def trabajos_desde_codigos(codigos, marcas=None, marca_por_defecto=""):
     return trabajos, descartados
 
 
-def destino_del_video(marca, modelo, color):
+def destino_del_video(marca, modelo, color, url_explicita=""):
     """Todo lo que hace falta para ir a buscar el video, en un diccionario.
 
     Un solo lugar arma nombre, clave y las dos direcciones. El host principal
     contesta 403 a las consultas anonimas, asi que siempre viaja tambien la
     alterna: tratar ese 403 como "no existe" fue lo que dejo 310 fotos en "Sin
     PNG" en su momento.
+
+    Con `url_explicita` -- la columna opcional de link del Excel -- se usa esa
+    direccion TAL CUAL y no se arma ninguna. Dos consecuencias que no son
+    obvias:
+
+    - **La marca deja de hacer falta.** Lo unico que necesitaba era la carpeta
+      del bucket, y con el link no hay carpeta que adivinar. Por eso el codigo
+      de una marca que no tiene carpeta se puede publicar igual dando el link.
+    - **El NOMBRE sigue siendo el canonico** (`MODELO_COLOR_2.mp4`). No es
+      cosmetico: es con lo que `video_existente` reconoce el video de este
+      producto, asi que dejarle el nombre del link romperia la deteccion de
+      duplicados y el mismo video se podria publicar dos veces.
     """
+    explicita = texto(url_explicita)
+    if explicita:
+        return {
+            "Nombre": nombre_de_video(modelo, color),
+            "Clave S3": "",
+            "Carpeta": "",
+            "URL": explicita,
+            # No hay host alterno de un link cualquiera: el respaldo del 403
+            # solo existe para las dos direcciones del bucket.
+            "URL validación": "",
+            "Origen": ORIGEN_EXCEL,
+        }
     return {
         "Nombre": nombre_de_video(modelo, color),
         "Clave S3": clave_s3(marca, modelo, color),
         "Carpeta": carpeta_de_marca(marca),
         "URL": url_de_video(marca, modelo, color),
         "URL validación": url_de_validacion(marca, modelo, color),
+        "Origen": ORIGEN_BUCKET,
     }
 
 

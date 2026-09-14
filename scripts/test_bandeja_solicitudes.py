@@ -396,9 +396,24 @@ class TestNavegacionAutomatica(unittest.TestCase):
         self.assertEqual(app.st.session_state["operation_mode_choice"], "Carga completa")
 
     def test_los_valores_son_los_mismos_que_usa_el_menu(self):
-        """Si no coinciden, la barra lateral queda marcada en otra opcion."""
-        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8-sig")
-        self.assertIn('"operation_area_choice": "Carga de catálogo"', fuente)
+        """Si no coinciden, la barra lateral queda marcada en otra opcion.
+
+        Se le pregunta al MODELO del menu, no al texto del archivo. Antes esto
+        buscaba el literal `"operation_area_choice": "Carga de catálogo"` en el
+        codigo -- que era el `extra_state` escrito a mano del boton "Carga
+        completa" --, asi que reorganizar el menu la ponia roja **sin que el
+        contrato se hubiera roto**. Lo que importa no es como se escribe el
+        menu: es que el atajo escriba un area y un modo que el menu sepa
+        resaltar.
+        """
+        app.ir_a_carga_completa()
+        area = app.st.session_state["operation_area_choice"]
+        modo = app.st.session_state["operation_mode_choice"]
+        self.assertIn(area, app.nav_areas(puede_auditar=True),
+                      "el atajo lleva a un area que el menu no tiene")
+        grupo, item = app.nav_item_activo(area, modo)
+        self.assertIsNotNone(grupo, "el menu no sabe resaltar donde deja el atajo")
+        self.assertEqual(item["modo"], modo)
 
     def test_preselecciona_la_solicitud_aceptada(self):
         app.ir_a_carga_completa("CAT-2026-000012")

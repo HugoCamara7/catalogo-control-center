@@ -225,7 +225,21 @@ class TestBotonesDelMenuLateral(unittest.TestCase):
     )
 
     def setUp(self):
-        self.claves = sorted(set(re.findall(r'sidebar_nav_button\([^)]*"(operation_nav_\w+)"', FUENTE)))
+        # Se lee el MODELO, no el texto del archivo. Antes esto era un regex
+        # sobre las llamadas a `sidebar_nav_button` con la clave escrita como
+        # literal; desde que el menu se dibuja recorriendo `nav_grupos()`, la
+        # clave es una variable y el regex encontraba CERO botones -- o sea que
+        # la prueba se habria quedado verde sin comprobar nada. Preguntarle al
+        # modelo ademas es mas fuerte: cubre cualquier boton que el menu dibuje,
+        # se escriba como se escriba.
+        import app_matrixify as app
+
+        claves = {item["boton"] for grupo in app.nav_grupos(puede_auditar=True)
+                  for item in grupo["items"]}
+        # Los dos del portal Brand no salen de `nav_grupos` y tienen las mismas
+        # cinco listas: se agregan a mano porque son otra navegacion.
+        claves.update(re.findall(r'sidebar_nav_button\([^)]*"(brand_portal_\w+)"', FUENTE))
+        self.claves = sorted(claves)
 
     def test_hay_botones_que_revisar(self):
         self.assertGreaterEqual(len(self.claves), 4, "No se encontraron los botones del menu")

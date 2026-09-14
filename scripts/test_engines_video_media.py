@@ -443,7 +443,11 @@ class TestIntegracionConLaApp(unittest.TestCase):
         self.funciones = {n.name for n in ast.walk(self.arbol) if isinstance(n, ast.FunctionDef)}
 
     def test_esta_en_el_selector_de_la_carga_parcial(self):
-        self.assertIn('"Mantenedor de Videos": "videos"', FUENTE_APP)
+        # Le pregunta al MODELO del menu (`carga_parcial_operaciones`) y no al
+        # texto del archivo: reorganizar el menu no puede poner roja una prueba
+        # cuyo contrato -- "esta operacion se puede elegir" -- sigue intacto.
+        import app_matrixify as _app
+        self.assertEqual(_app.carga_parcial_operaciones().get("Mantenedor de Videos"), "videos")
 
     def test_la_carga_parcial_lo_enruta(self):
         self.assertIn('if update_operation == "videos":', FUENTE_APP)

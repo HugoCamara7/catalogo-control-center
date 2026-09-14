@@ -91,8 +91,20 @@ def etiquetas_de_subidores(at):
     return [u.proto.label for u in subidores(at)]
 
 
+SEPARADOR_DE_GRUPO = "  ·  "
+
+
 def opciones_del_menu(at):
-    return list([s for s in at.selectbox if s.label == "Que quieres actualizar"][0].options)
+    """Las opciones del menu, SIN el grupo que las precede en pantalla.
+
+    El desplegable muestra "Fotos y video · Mantenedor de Videos" para que se
+    pueda encontrar una opcion entre catorce sin leerlas todas, pero el VALOR
+    sigue siendo la etiqueta sola -- que es lo que esta prueba usa para
+    seleccionar y lo que el resto del codigo traduce a su operacion. Comparar
+    contra el texto de pantalla ataria la prueba a como se dibuja el menu.
+    """
+    opciones = [s for s in at.selectbox if s.label == "Que quieres actualizar"][0].options
+    return [str(opcion).split(SEPARADOR_DE_GRUPO)[-1] for opcion in opciones]
 
 
 class TestLaOpcionDeTextosCortosPideSuArchivo(unittest.TestCase):

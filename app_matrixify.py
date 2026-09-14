@@ -16391,6 +16391,63 @@ def inject_custom_css(config):
             font-size:16px !important;
             margin-right:8px !important;
         }}
+        div.st-key-operation_nav_inicio button,
+        /* --- Cabeceras de grupo del menu -----------------------------------
+           Se ven DISTINTAS de los items a proposito: un grupo no es un
+           destino, y pintarlo igual que una pantalla hace que se pulse
+           esperando llegar a algo. Sin icono, mas pequenas y en mayusculas. */
+        div[class*="st-key-navgrp_boton_"] button {{
+            display:flex !important;
+            align-items:center !important;
+            justify-content:space-between !important;
+            width:100% !important;
+            min-height:38px !important;
+            margin:6px 0 2px !important;
+            padding:5px 12px !important;
+            border:0 !important;
+            border-radius:10px !important;
+            background:transparent !important;
+            box-shadow:none !important;
+            text-align:left !important;
+        }}
+        div[class*="st-key-navgrp_boton_"] button p {{
+            display:block !important;
+            width:100% !important;
+            margin:0 !important;
+            color:#64748B !important;
+            font-size:11px !important;
+            font-weight:900 !important;
+            letter-spacing:.09em !important;
+            text-transform:uppercase !important;
+            text-align:left !important;
+            white-space:pre !important;
+        }}
+        div[class*="st-key-navgrp_boton_"] button div[data-testid="stMarkdownContainer"] {{
+            width:100% !important;
+            text-align:left !important;
+        }}
+        div[class*="st-key-navgrp_boton_"] button:hover {{
+            background:#F1F5F9 !important;
+        }}
+        div[class*="st-key-navgrp_boton_"] button:hover p {{
+            color:#0B1B46 !important;
+        }}
+        /* --- Migas de pan ---------------------------------------------------
+           Con el menu plano no hacian falta: cada boton era una pantalla. Con
+           grupos, y con pantallas que abren pantallas dentro, hace falta poder
+           saber en que rama se esta sin deducirlo del titulo. */
+        .breadcrumb {{
+            display:flex;
+            flex-wrap:wrap;
+            align-items:center;
+            gap:7px;
+            margin:0 0 10px;
+            font-size:12px;
+            font-weight:750;
+            color:#64748B;
+        }}
+        .breadcrumb-sep {{ color:#CBD5E1; }}
+        .breadcrumb-item.current {{ color:#0B1B46; font-weight:900; }}
         div.st-key-operation_nav_kpis button,
         div.st-key-operation_nav_status button,
         div.st-key-operation_nav_supermall button,
@@ -16429,6 +16486,7 @@ def inject_custom_css(config):
             margin:0 0 9px !important;
             transition:background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease !important;
         }}
+        div.st-key-operation_nav_inicio button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_status button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_supermall button [data-testid="stMarkdownContainer"],
@@ -16448,6 +16506,7 @@ def inject_custom_css(config):
             min-width:0 !important;
             text-align:left !important;
         }}
+        div.st-key-operation_nav_inicio button p,
         div.st-key-operation_nav_kpis button p,
         div.st-key-operation_nav_status button p,
         div.st-key-operation_nav_supermall button p,
@@ -16472,6 +16531,7 @@ def inject_custom_css(config):
             font-weight:900 !important;
             white-space:normal !important;
         }}
+        div.st-key-operation_nav_inicio button::before,
         div.st-key-operation_nav_kpis button::before,
         div.st-key-operation_nav_status button::before,
         div.st-key-operation_nav_supermall button::before,
@@ -16499,6 +16559,9 @@ def inject_custom_css(config):
             background-repeat:no-repeat !important;
             background-position:center !important;
             background-size:18px 18px !important;
+        }}
+        div.st-key-operation_nav_inicio button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 10.5 12 3l9 7.5'/%3E%3Cpath d='M5.5 9.5V20h13V9.5'/%3E%3Cpath d='M10 20v-6h4v6'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-operation_nav_kpis button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19V5'/%3E%3Cpath d='M4 19h16'/%3E%3Cpath d='M8 16v-5'/%3E%3Cpath d='M12 16V8'/%3E%3Cpath d='M16 16v-9'/%3E%3C/svg%3E") !important;
@@ -16544,6 +16607,7 @@ def inject_custom_css(config):
         div.st-key-test_shopify_connection button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22v-5'/%3E%3Cpath d='M9 7V2'/%3E%3Cpath d='M15 7V2'/%3E%3Cpath d='M6 7h12v5a6 6 0 0 1-12 0V7Z'/%3E%3C/svg%3E") !important;
         }}
+        div.st-key-operation_nav_inicio button:hover,
         div.st-key-operation_nav_kpis button:hover,
         div.st-key-operation_nav_status button:hover,
         div.st-key-operation_nav_supermall button:hover,
@@ -23452,8 +23516,18 @@ def require_login():
     return False
 
 
-def sidebar_nav_button(label, state_key, value, button_key, extra_state=None):
-    selected = st.session_state.get(state_key) == value
+def sidebar_nav_button(label, state_key, value, button_key, extra_state=None, activo=None):
+    """Un boton del menu lateral, resaltado cuando es la pantalla actual.
+
+    `activo` existe porque el resaltado por `state_key == value` NO alcanza
+    cuando dos botones llevan a la MISMA area y se distinguen por otra clave.
+    Es el caso de Carga completa y Carga parcial: las dos van a "Carga de
+    catalogo" y se diferencian por `operation_mode_choice`, asi que con la
+    regla simple **una de las dos salia resaltada siempre**, incluso estando en
+    KPIs o en Auditoria. Un menu que dice que estas donde no estas es peor que
+    uno sin resaltado.
+    """
+    selected = activo if activo is not None else (st.session_state.get(state_key) == value)
     if selected:
         st.markdown(
             f"""
@@ -28991,6 +29065,461 @@ def render_video_maintainer(brand_config, shopify_config):
         render_video_galeria(shopify_config, publicados[0]["Product ID"], "Galería después de publicar")
 
 
+
+# ===========================================================================
+# LA NAVEGACION, COMO DATO
+# ===========================================================================
+# El menu tenia TRECE botones al mismo nivel -- nueve de "Operaciones", dos de
+# "Modo de carga" y dos de "Acciones" -- mezclando cosas que no se parecen en
+# nada: mirar KPIs, ejecutar una carga, consultar un diccionario y revisar la
+# auditoria. Con todo al mismo nivel, encontrar una tarea es leer la lista
+# entera cada vez.
+#
+# Ahora son SEIS grupos y solo se despliegan los items del grupo abierto: como
+# mucho hay 6 + 3 botones en pantalla. El grupo abierto se DERIVA de la
+# pantalla actual, asi que llegar por un atajo (`ir_a_carga_completa`) deja el
+# menu marcado donde corresponde.
+#
+# **Las claves de routing NO cambian.** `operation_area_choice` y
+# `operation_mode_choice` conservan exactamente los mismos valores, porque hay
+# codigo que los escribe desde fuera del menu -- `ir_a_carga_completa`, el
+# atajo de "Aceptar carga", el boton de Supermall -- y renombrarlos los dejaria
+# apuntando a una pantalla que ya no existe, en silencio. Lo que se agrega es
+# una capa de AGRUPACION encima; el despacho de `main` no se toca.
+NAV_INICIO_LABEL = "Inicio"
+CARGA_CATALOGO_LABEL = "Carga de catálogo"
+
+
+def nav_grupos(puede_auditar=False):
+    """El menu entero como datos: `[{clave, etiqueta, items}]`.
+
+    Cada item es `{etiqueta, boton, area, modo}`. `modo` solo lo llevan Carga
+    completa y Carga parcial, que van a la MISMA area y se distinguen por
+    `operation_mode_choice` -- por eso existe, y por eso el resaltado de esos
+    dos no puede salir de comparar el area.
+
+    Que esto sea una funcion y no HTML escrito a mano es lo que permite que una
+    prueba recorra el menu y exija que cada destino tenga despacho en `main`.
+    """
+    grupos = [
+        {
+            "clave": "inicio",
+            "etiqueta": NAV_INICIO_LABEL,
+            "ayuda": "Qué hay pendiente y por dónde empezar",
+            "items": [
+                {"etiqueta": NAV_INICIO_LABEL, "boton": "operation_nav_inicio",
+                 "area": NAV_INICIO_LABEL, "modo": ""},
+            ],
+        },
+        {
+            "clave": "catalogo",
+            "etiqueta": "Catálogo",
+            "ayuda": "Mirar qué hay cargado y qué falta",
+            "items": [
+                {"etiqueta": "KPIs de catálogo", "boton": "operation_nav_kpis",
+                 "area": "KPIs de catálogo", "modo": ""},
+                {"etiqueta": STATUS_CARGA_LABEL, "boton": "operation_nav_status",
+                 "area": STATUS_CARGA_LABEL, "modo": ""},
+            ],
+        },
+        {
+            "clave": "cargas",
+            "etiqueta": "Cargas",
+            "ayuda": "Escribir productos en Shopify",
+            "items": [
+                # Las dos primeras van a la misma area y cambian el MODO. Es la
+                # antigua seccion "Modo de carga", que era un segundo eje en el
+                # menu: la pantalla a la que llevaban no tenia boton propio, asi
+                # que "Carga de catalogo" era un destino al que solo se podia
+                # llegar de lado.
+                {"etiqueta": "Carga completa", "boton": "load_mode_complete",
+                 "area": CARGA_CATALOGO_LABEL, "modo": "Carga completa"},
+                {"etiqueta": "Carga parcial", "boton": "load_mode_partial",
+                 "area": CARGA_CATALOGO_LABEL, "modo": "Carga parcial"},
+                {"etiqueta": SUPERMALL_LABEL, "boton": "operation_nav_supermall",
+                 "area": SUPERMALL_LABEL, "modo": ""},
+            ],
+        },
+        {
+            "clave": "merchandising",
+            "etiqueta": "Merchandising",
+            "ayuda": "Cómo se agrupan y se ordenan los productos en la web",
+            "items": [
+                {"etiqueta": COLECCIONES_LABEL, "boton": "operation_nav_mantenedor",
+                 "area": COLECCIONES_LABEL, "modo": ""},
+                {"etiqueta": BOOST_LABEL, "boton": "operation_nav_boost",
+                 "area": BOOST_LABEL, "modo": ""},
+            ],
+        },
+        {
+            "clave": "comercial",
+            "etiqueta": "Comercial",
+            "ayuda": "Lo que piden las marcas y en qué va",
+            "items": [
+                {"etiqueta": "Input comercial", "boton": "operation_nav_input",
+                 "area": "Input comercial", "modo": ""},
+                {"etiqueta": "Solicitudes", "boton": "operation_nav_tickets",
+                 "area": "Solicitudes", "modo": ""},
+            ],
+        },
+    ]
+    administracion = [
+        {"etiqueta": DICCIONARIOS_LABEL, "boton": "operation_nav_colecciones",
+         "area": DICCIONARIOS_LABEL, "modo": ""},
+    ]
+    if puede_auditar:
+        administracion.append(
+            {"etiqueta": "Auditoria", "boton": "operation_nav_audit",
+             "area": "Auditoria", "modo": ""})
+    grupos.append({
+        "clave": "administracion",
+        "etiqueta": "Administración",
+        "ayuda": "Diccionarios y registro de actividad",
+        "items": administracion,
+    })
+    return grupos
+
+
+def nav_areas(puede_auditar=False):
+    """Todas las areas alcanzables desde el menu, sin repetidas."""
+    vistas, salida = set(), []
+    for grupo in nav_grupos(puede_auditar):
+        for item in grupo["items"]:
+            if item["area"] not in vistas:
+                vistas.add(item["area"])
+                salida.append(item["area"])
+    return salida
+
+
+def nav_item_activo(area, modo):
+    """`(grupo, item)` de la pantalla actual, o `(None, None)`.
+
+    El grupo abierto se DERIVA de aqui, no se guarda aparte: si se guardara,
+    llegar a Carga completa por el atajo de "Aceptar carga" dejaria el menu
+    abierto en otro grupo y el usuario no veria donde esta.
+    """
+    area = clean_value(area)
+    modo = clean_value(modo)
+    for grupo in nav_grupos(puede_auditar=True):
+        for item in grupo["items"]:
+            if item["area"] != area:
+                continue
+            if item["modo"] and item["modo"] != modo:
+                continue
+            return grupo, item
+    return None, None
+
+
+def nav_ruta(area, modo):
+    """Las migas de pan: `[grupo, pantalla]`. Vacia si el area no esta en el menu."""
+    grupo, item = nav_item_activo(area, modo)
+    if not grupo:
+        return []
+    if grupo["clave"] == "inicio":
+        return [item["etiqueta"]]
+    return [grupo["etiqueta"], item["etiqueta"]]
+
+
+def render_breadcrumb(area, modo="", detalle=""):
+    """Dónde estoy, en una línea.
+
+    Con el menu plano no hacian falta -- cada boton era una pantalla --, pero
+    con grupos y con pantallas que tienen pantallas dentro (Carga parcial abre
+    el Mantenedor de Tallas, que es una pantalla entera) hay que poder saber en
+    que rama del arbol se esta sin adivinarlo por el titulo.
+
+    `detalle` es el tercer nivel: la opcion concreta dentro de Carga parcial.
+    """
+    partes = nav_ruta(area, modo)
+    if detalle:
+        partes = partes + [clean_value(detalle)]
+    if len(partes) < 2:
+        return
+    trozos = []
+    for numero, parte in enumerate(partes, start=1):
+        ultimo = numero == len(partes)
+        clase = "breadcrumb-item current" if ultimo else "breadcrumb-item"
+        actual = ' aria-current="page"' if ultimo else ""
+        trozos.append('<span class="%s"%s>%s</span>' % (clase, actual, escape(parte)))
+    separador = '<span class="breadcrumb-sep" aria-hidden="true">/</span>'
+    render_html('<nav class="breadcrumb" aria-label="Ruta">%s</nav>'
+                % separador.join(trozos))
+
+
+def render_sidebar_nav(puede_auditar, area_actual, modo_actual):
+    """El menu lateral: seis grupos, y solo se abren los items de uno.
+
+    El grupo abierto sale de la pantalla actual; pulsar la cabecera de otro lo
+    abre sin cambiar de pantalla, que es lo que permite explorar el menu sin
+    perder lo que se estaba haciendo. Devuelve `(area, modo)`.
+    """
+    grupos = nav_grupos(puede_auditar)
+    activo_grupo, _ = nav_item_activo(area_actual, modo_actual)
+    abierto = clean_value(st.session_state.get("nav_grupo_abierto"))
+    if abierto not in {g["clave"] for g in grupos}:
+        abierto = ""
+    # La pantalla actual manda sobre lo que se dejo abierto: si se llego aqui
+    # por un atajo, el menu tiene que seguir al usuario y no al reves.
+    if activo_grupo and st.session_state.get("nav_grupo_ultimo_area") != area_actual:
+        abierto = activo_grupo["clave"]
+        st.session_state["nav_grupo_abierto"] = abierto
+    st.session_state["nav_grupo_ultimo_area"] = area_actual
+    if not abierto:
+        abierto = activo_grupo["clave"] if activo_grupo else grupos[0]["clave"]
+        st.session_state["nav_grupo_abierto"] = abierto
+
+    st.sidebar.markdown('<p class="sidebar-label">Menú</p>', unsafe_allow_html=True)
+    for grupo in grupos:
+        if not grupo["items"]:
+            continue
+        with st.sidebar.container(key=f"navgrp_{grupo['clave']}"):
+            tiene_activo = bool(activo_grupo and activo_grupo["clave"] == grupo["clave"])
+            if grupo["clave"] == "inicio":
+                # Inicio es el unico que no se pliega: es UNA pantalla, no una
+                # familia de tareas, y darle cabecera seria un clic para
+                # descubrir lo que ya se sabe.
+                #
+                # Los demas conservan su cabecera aunque hoy tengan un solo
+                # item -- Administracion, cuando el usuario no ve Auditoria --,
+                # porque si no ese item sale al mismo nivel que Inicio y se lee
+                # como una pantalla principal que no es.
+                item = grupo["items"][0]
+                sidebar_nav_button(
+                    item["etiqueta"], "operation_area_choice", item["area"], item["boton"],
+                    activo=tiene_activo,
+                )
+                continue
+            desplegado = grupo["clave"] == abierto
+            marca = "▾" if desplegado else "▸"
+            if st.button(
+                f"{grupo['etiqueta']}   {marca}",
+                key=f"navgrp_boton_{grupo['clave']}",
+                width="stretch",
+                help=grupo["ayuda"],
+            ):
+                # Pulsar el grupo abierto lo cierra: es la unica forma de dejar
+                # el menu al minimo cuando se trabaja en una sola pantalla.
+                st.session_state["nav_grupo_abierto"] = "" if desplegado else grupo["clave"]
+                st.rerun()
+            if not desplegado:
+                continue
+            for item in grupo["items"]:
+                extra = {"operation_mode_choice": item["modo"]} if item["modo"] else None
+                sidebar_nav_button(
+                    item["etiqueta"], "operation_area_choice", item["area"], item["boton"],
+                    extra_state=extra,
+                    activo=(area_actual == item["area"]
+                            and (not item["modo"] or modo_actual == item["modo"])),
+                )
+    return (st.session_state.get("operation_area_choice", NAV_INICIO_LABEL),
+            st.session_state.get("operation_mode_choice", "Carga completa"))
+
+
+# ===========================================================================
+# INICIO
+# ===========================================================================
+# La app abria en "KPIs de catalogo", que **lee el catalogo entero de Shopify**.
+# O sea: entrar a la aplicacion para mirar una solicitud costaba minutos de
+# espera con la pantalla en gris, y el trabajo pesado se pagaba lo quisieras o
+# no. Esta pantalla es el destino por defecto y **no sale a la red**: dice como
+# esta el sitio, que hay pendiente con lo que ya esta cacheado, y lleva de un
+# clic a la tarea que toque.
+#
+# Cada atajo escribe EXACTAMENTE las mismas claves que su boton del menu, o la
+# barra lateral quedaria marcada en otra cosa -- es el mismo cuidado que ya
+# pide `ir_a_carga_completa`.
+def _tarjeta_inicio(titulo, texto, area, modo="", clave=""):
+    """Un atajo. Devuelve True si se pulso."""
+    with st.container(border=True):
+        st.markdown(f"**{titulo}**")
+        st.caption(texto)
+        return st.button("Abrir", key=clave or f"inicio_ir_{area}_{modo}",
+                         width="stretch")
+
+
+def _ir_a(area, modo=""):
+    st.session_state["operation_area_choice"] = area
+    if modo:
+        st.session_state["operation_mode_choice"] = modo
+    st.rerun()
+
+
+def render_inicio(brand_config, shopify_config, ticket_actor, bigquery_ready):
+    """El punto de partida. Sin lecturas pesadas, a proposito."""
+    site_key = clean_value(brand_config.get("site_key"))
+    sitio = clean_value(brand_config.get("site_label")) or site_key
+    render_html(
+        f"""
+        <div class="kpi-hero">
+            <div class="kpi-title">
+                <h2>Hola, {escape(auth_display_name(st.session_state.get("auth_user", "")) or "equipo")}</h2>
+                <p>Estás trabajando sobre <b>{escape(sitio)}</b>. Abajo está el estado del sitio y
+                los accesos directos a lo que se hace todos los días.</p>
+            </div>
+        </div>
+        """
+    )
+
+    # --- estado, con lo que YA se tiene. Ninguna de estas tres preguntas sale
+    # a la red: Shopify se responde con Secrets, el catalogo con la cache y la
+    # carga remota con la configuracion.
+    catalogo = None
+    try:
+        catalogo = shopify_products_en_cache(site_key, shopify_config)
+    except Exception:  # noqa: BLE001 - preguntar por la cache no puede tumbar la portada
+        catalogo = None
+    leido = clean_value(st.session_state.get(f"shopify_products_cache_{site_key}_loaded_at"))
+    remota = estado_carga_remota()
+
+    # Los valores van CORTOS a proposito: `.kpi-card` lleva `height:96px` fijo,
+    # asi que un texto de tres palabras se parte en tres lineas y se sale de la
+    # tarjeta. El matiz largo va en el `caption` de abajo, no aqui.
+    filas = [
+        ("Shopify", "Conectado" if is_shopify_configured(shopify_config) else "Sin conexión",
+         "green" if is_shopify_configured(shopify_config) else "red"),
+        ("Catálogo leído",
+         f"{len(catalogo):,}" if catalogo is not None else "—",
+         "green" if catalogo is not None else "orange"),
+        ("BigQuery", "Conectado" if bigquery_ready else "Sin conexión",
+         "green" if bigquery_ready else "orange"),
+        ("Carga remota", "Activa" if remota.get("sobrevive") else "En sesión",
+         "green" if remota.get("sobrevive") else "orange"),
+    ]
+    render_html(
+        '<div class="kpi-card-grid">'
+        + "".join(
+            f'<div class="kpi-card {tono}"><div class="kpi-icon">&#9679;</div>'
+            f"<div><span>{escape(titulo)}</span><strong>{escape(valor)}</strong></div></div>"
+            for titulo, valor, tono in filas
+        )
+        + "</div>"
+    )
+    if leido:
+        st.caption(f"El catálogo de {sitio} se leyó el {leido}. "
+                   "Las pantallas que lo necesitan lo reutilizan sin volver a Shopify.")
+
+    # --- lo que espera a alguien -----------------------------------------
+    _render_pendientes_inicio(ticket_actor)
+
+    # --- por donde empezar ------------------------------------------------
+    st.markdown("### Qué quieres hacer")
+    atajos = [
+        ("Cargar un catálogo completo",
+         "Desde una solicitud aprobada o desde un Excel comercial.",
+         CARGA_CATALOGO_LABEL, "Carga completa"),
+        ("Corregir algo ya cargado",
+         "Fotos, videos, tallas, Body HTML, tags, textos cortos…",
+         CARGA_CATALOGO_LABEL, "Carga parcial"),
+        ("Ver qué falta por cargar",
+         "Los seis sitios a la vez, y la resta contra lo que pidieron las marcas.",
+         STATUS_CARGA_LABEL, ""),
+        ("Ordenar una colección",
+         "Boost de la PLP por ventas, stock, novedad o tu propio Excel.",
+         BOOST_LABEL, ""),
+        ("Revisar solicitudes",
+         "La bandeja de lo que pidieron las marcas.",
+         "Solicitudes", ""),
+        ("Llenar el catálogo de Supermall",
+         "Consolida lo que ya está en las demás webs.",
+         SUPERMALL_LABEL, ""),
+    ]
+    columnas = st.columns(3, gap="medium")
+    for numero, (titulo, texto, area, modo) in enumerate(atajos):
+        with columnas[numero % 3]:
+            if _tarjeta_inicio(titulo, texto, area, modo, clave=f"inicio_atajo_{numero}"):
+                _ir_a(area, modo)
+
+
+def _render_pendientes_inicio(ticket_actor):
+    """Las solicitudes que esperan a alguien.
+
+    Sale de la bandeja, que **ya esta cacheada** (25 s) y que toda escritura
+    invalida: es el mismo dato que dibuja la pantalla de Solicitudes, sin un
+    viaje de mas. Y va dentro de un `try`: que el almacen de solicitudes no
+    responda no puede dejar sin portada a quien entra a hacer otra cosa.
+    """
+    try:
+        servicio, _ = get_ticket_service()
+        solicitudes = servicio.list_tickets(ticket_actor) or []
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"No se pudieron leer las solicitudes ahora mismo ({type(exc).__name__}). "
+                   "El resto de la app funciona igual.")
+        return
+    if not solicitudes:
+        return
+    por_estado = {}
+    for solicitud in solicitudes:
+        visible = flujo_estado_visible(solicitud.get("status"))
+        por_estado[visible] = por_estado.get(visible, 0) + 1
+    esperan = por_estado.get(FLUJO_PENDIENTE, 0) + por_estado.get(FLUJO_LISTA, 0)
+    if not esperan:
+        return
+    with st.container(border=True):
+        izquierda, derecha = st.columns([3, 1], gap="medium", vertical_alignment="center")
+        with izquierda:
+            st.markdown(f"**{esperan} solicitudes esperan a alguien**")
+            st.caption(
+                " · ".join(f"{cantidad} {estado.lower()}"
+                           for estado, cantidad in sorted(por_estado.items())
+                           if cantidad and estado in (FLUJO_PENDIENTE, FLUJO_LISTA,
+                                                      FLUJO_EJECUCION, FLUJO_OBSERVADA))
+            )
+        with derecha:
+            if st.button("Ver la bandeja", key="inicio_ver_bandeja",
+                         type="primary", width="stretch"):
+                _ir_a("Solicitudes")
+
+
+
+def carga_parcial_grupos():
+    """Las opciones de Carga parcial, agrupadas por EL TRABAJO que hacen.
+
+    Catorce opciones sueltas en un desplegable: para encontrar una habia que
+    leerlas todas, y no se parecen en nada entre si -- unas escriben la ficha,
+    otras suben megas de video y dos ni siquiera tocan Shopify.
+
+    Es una funcion y no un diccionario dentro de `main` porque **seis pruebas
+    preguntan por el menu**, y hacerlo leyendo el texto del archivo las ataba a
+    como se escribe: reorganizarlo las ponia rojas sin que el contrato -- "esta
+    operacion se puede elegir" -- se hubiera roto.
+    """
+    return [
+        ("Contenido de la ficha", [
+            ("Titulo", "title"),
+            ("Mantención Body HTML", "body"),
+            (TEXTOS_CORTOS_LABEL, "short_texts"),
+            ("Tags", "tags"),
+            ("Mantención tecnologías", "technologies"),
+        ]),
+        ("Fotos y video", [
+            ("Fotos 10 vistas", "photos"),
+            ("Mantenedor Fotos PNG", "photos_png"),
+            ("Mantenedor de Videos", "videos"),
+        ]),
+        ("Tallas e inventario", [
+            (TALLAS_LABEL, "tallas"),
+            ("Guías de talla", "size_guides"),
+            ("Activar inventario en sucursales", "inventory_locations"),
+        ]),
+        ("Relaciones entre productos", [
+            ("Siblings", "siblings"),
+        ]),
+        # Las dos ultimas NO escriben en Shopify: producen un Excel. Iban
+        # mezcladas con las que si escriben, que es la diferencia mas
+        # importante de esta pantalla y la unica que no se veia.
+        ("Generar un Excel (no escribe en Shopify)", [
+            ("Centry", "centry"),
+            (CARGA_SIAL_LABEL, "sial"),
+        ]),
+    ]
+
+
+def carga_parcial_operaciones():
+    """`{etiqueta: clave}` de todas las opciones, en el orden del menu."""
+    return {etiqueta: clave
+            for _grupo, items in carga_parcial_grupos() for etiqueta, clave in items}
+
+
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="XL", layout="wide")
     if not require_login():
@@ -29082,56 +29611,25 @@ def main():
         else:
             render_commercial_input_center(forced_brands=allowed_brands, actor=ticket_actor)
         return
-    render_allowed_brands_card(brand_config)
-    nav_options = [
-        "KPIs de catálogo",
-        STATUS_CARGA_LABEL,
-        SUPERMALL_LABEL,
-        DICCIONARIOS_LABEL,
-        COLECCIONES_LABEL,
-        BOOST_LABEL,
-        "Input comercial",
-        "Solicitudes",
-        "Carga de catálogo",
-    ]
-    if can_view_user_activity_log(auth_user):
-        nav_options.append("Auditoria")
+    puede_auditar = can_view_user_activity_log(auth_user)
+    nav_options = nav_areas(puede_auditar)
     if st.session_state.get("operation_area_choice") not in nav_options:
         st.session_state["operation_area_choice"] = nav_options[0]
-    st.sidebar.markdown('<p class="sidebar-label">Operaciones</p>', unsafe_allow_html=True)
-    with st.sidebar.container(key="operation_nav"):
-        sidebar_nav_button("KPIs de catálogo", "operation_area_choice", "KPIs de catálogo", "operation_nav_kpis")
-        sidebar_nav_button(STATUS_CARGA_LABEL, "operation_area_choice", STATUS_CARGA_LABEL, "operation_nav_status")
-        sidebar_nav_button(SUPERMALL_LABEL, "operation_area_choice", SUPERMALL_LABEL, "operation_nav_supermall")
-        sidebar_nav_button(DICCIONARIOS_LABEL, "operation_area_choice", DICCIONARIOS_LABEL, "operation_nav_colecciones")
-        sidebar_nav_button(COLECCIONES_LABEL, "operation_area_choice", COLECCIONES_LABEL, "operation_nav_mantenedor")
-        sidebar_nav_button(BOOST_LABEL, "operation_area_choice", BOOST_LABEL, "operation_nav_boost")
-        sidebar_nav_button("Input comercial", "operation_area_choice", "Input comercial", "operation_nav_input")
-        sidebar_nav_button("Solicitudes", "operation_area_choice", "Solicitudes", "operation_nav_tickets")
-        if can_view_user_activity_log(auth_user):
-            sidebar_nav_button("Auditoria", "operation_area_choice", "Auditoria", "operation_nav_audit")
-        operation_area = st.session_state.get("operation_area_choice", nav_options[0])
-    operation_mode = "Carga completa"
     load_options = ["Carga completa", "Carga parcial"]
     if st.session_state.get("operation_mode_choice") not in load_options:
         st.session_state["operation_mode_choice"] = load_options[0]
-    st.sidebar.markdown('<p class="sidebar-label">Modo de carga</p>', unsafe_allow_html=True)
-    with st.sidebar.container(key="load_mode_nav"):
-        sidebar_nav_button(
-            "Carga completa",
-            "operation_mode_choice",
-            "Carga completa",
-            "load_mode_complete",
-            extra_state={"operation_area_choice": "Carga de catálogo"},
-        )
-        sidebar_nav_button(
-            "Carga parcial",
-            "operation_mode_choice",
-            "Carga parcial",
-            "load_mode_partial",
-            extra_state={"operation_area_choice": "Carga de catálogo"},
-        )
-        operation_mode = st.session_state.get("operation_mode_choice", load_options[0])
+    # El menu se dibuja desde `nav_grupos`, que es un DATO. Las claves de
+    # routing y sus valores no cambian: `operation_area_choice` y
+    # `operation_mode_choice` siguen siendo lo que escriben los atajos de
+    # otras pantallas.
+    operation_area, operation_mode = render_sidebar_nav(
+        puede_auditar,
+        st.session_state.get("operation_area_choice", nav_options[0]),
+        st.session_state.get("operation_mode_choice", load_options[0]),
+    )
+    # Las marcas permitidas van DESPUES del menu: es un dato que se consulta
+    # una vez, y arriba empujaba la navegacion fuera de la primera pantalla.
+    render_allowed_brands_card(brand_config)
     st.sidebar.markdown('<p class="sidebar-label">Acciones</p>', unsafe_allow_html=True)
     with st.sidebar.container(key="sidebar_actions"):
         st.button(
@@ -29173,6 +29671,12 @@ api_version = "{DEFAULT_API_VERSION}"
     flujo_aviso = clean_value(st.session_state.pop("flujo_aviso", ""))
     if flujo_aviso:
         st.success(flujo_aviso)
+    # Las migas van ANTES de cada pantalla y salen del mismo modelo que dibuja
+    # el menu, asi que no pueden decir una ruta que el menu no tenga.
+    render_breadcrumb(operation_area, operation_mode)
+    if operation_area == NAV_INICIO_LABEL:
+        render_inicio(brand_config, shopify_config, ticket_actor, bigquery_ready)
+        return
     if operation_area == "KPIs de catálogo":
         render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigquery_ready)
         return
@@ -29210,24 +29714,22 @@ api_version = "{DEFAULT_API_VERSION}"
         render_ticket_inbox(service, ticket_actor, brand_view=not ticket_operator)
         return
 
-    render_stepper(ui_config, current_step=current_flow_step())
+    # El stepper describe el recorrido de la carga COMPLETA -- Input, BigQuery,
+    # Validacion, Shopify --, asi que en Carga parcial afirmaba cuatro pasos que
+    # esa pantalla no tiene. Ahi sobra y ademas empuja el trabajo real hacia
+    # abajo.
+    if operation_mode == "Carga completa":
+        render_stepper(ui_config, current_step=current_flow_step())
 
     if operation_mode == "Carga parcial":
+        operation_groups = carga_parcial_grupos()
         operation_labels = {
-            "Centry": "centry",
-            CARGA_SIAL_LABEL: "sial",
-            "Tags": "tags",
-            "Fotos 10 vistas": "photos",
-            "Mantenedor Fotos PNG": "photos_png",
-            "Mantenedor de Videos": "videos",
-            TALLAS_LABEL: "tallas",
-            "Siblings": "siblings",
-            "Titulo": "title",
-            "Guías de talla": "size_guides",
-            "Mantención tecnologías": "technologies",
-            "Mantención Body HTML": "body",
-            TEXTOS_CORTOS_LABEL: "short_texts",
-            "Activar inventario en sucursales": "inventory_locations",
+            etiqueta: clave
+            for _grupo, items in operation_groups for etiqueta, clave in items
+        }
+        operation_group_of = {
+            etiqueta: grupo
+            for grupo, items in operation_groups for etiqueta, _clave in items
         }
         st.markdown('<div class="section-card"><h2>Carga parcial</h2>', unsafe_allow_html=True)
         update_label = st.selectbox(
@@ -29235,8 +29737,11 @@ api_version = "{DEFAULT_API_VERSION}"
             list(operation_labels),
             index=0,
             key=f"partial_operation_select_{brand_config['site_key']}_v3",
+            format_func=lambda etiqueta: f"{operation_group_of[etiqueta]}  ·  {etiqueta}",
+            help="Cada opción trabaja sobre un Excel de códigos Modelo-Color, salvo las que dicen lo contrario.",
         )
         update_operation = operation_labels[update_label]
+        render_breadcrumb(operation_area, operation_mode, detalle=update_label)
         if update_operation == "tallas":
             # Igual que el Mantenedor de Videos: no pasa por el analizar/
             # ejecutar de la carga parcial, porque no hay vista previa que

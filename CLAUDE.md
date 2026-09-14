@@ -4653,6 +4653,218 @@ ejecutarlo**.
 
 ---
 
+## 5 unquadragies. El menu tenia TRECE botones al mismo nivel (septiembre 2026)
+
+Pedido literal: *"el sidebar tiene demasiadas opciones al mismo nivel... lo que
+hace que la app se sienta compleja y poco intuitiva"*. Auditoria de la
+arquitectura de navegacion y rediseno, **sin quitar ni una funcionalidad**.
+
+### Lo que estaba mal, medido
+
+El menu de un administrador eran **trece botones** repartidos en tres bloques
+que no se distinguian entre si:
+
+| Bloque | Botones |
+|---|---:|
+| Operaciones | 9 |
+| Modo de carga | 2 |
+| Acciones | 2 |
+
+Y mezclaban cosas que no se parecen en nada: mirar KPIs, ejecutar una carga que
+escribe miles de productos, consultar un diccionario y revisar la auditoria.
+Con todo al mismo nivel, encontrar una tarea es leer la lista entera cada vez.
+
+Tres cosas concretas que salieron de mirar el codigo, no de opinar:
+
+1. **`Carga de catálogo` era un destino SIN BOTON.** Estaba en `nav_options` y
+   tenia su rama en `main`, pero la unica forma de llegar era pulsando "Carga
+   completa" o "Carga parcial" en la seccion de abajo, que ademas escriben otra
+   clave. O sea: la pantalla donde vive el trabajo principal de la app solo se
+   alcanzaba de lado.
+
+2. **El resaltado del menu mentia.** `sidebar_nav_button` marcaba el boton
+   activo comparando `state_key == value`, y los dos de "Modo de carga"
+   comparan `operation_mode_choice`. Como esa clave SIEMPRE tiene valor, **uno
+   de los dos salia resaltado siempre** -- estando en KPIs, en Solicitudes o en
+   Auditoria. Un menu que dice que estas donde no estas es peor que uno sin
+   resaltado.
+
+3. **La app abria en "KPIs de catálogo", que LEE el catalogo entero de
+   Shopify.** Entrar a mirar una solicitud costaba los minutos de esa lectura,
+   con la pantalla anterior en gris (seccion 5 tertrigies). El trabajo pesado
+   se pagaba lo quisieras o no.
+
+Y dos de jerarquia:
+
+4. **El menu empezaba en y=714px** de una pantalla de 1000: por delante iban el
+   logo de Forus, la tarjeta de usuario, Cerrar sesion, el Sitio activo y las
+   Marcas permitidas. En una herramienta de uso diario el menu no puede estar
+   debajo de todo lo que solo se lee una vez.
+
+5. **Carga parcial escondia CATORCE opciones en un desplegable plano**, y dos
+   de ellas -- Centry y Carga Sial -- **no escriben en Shopify**: producen un
+   Excel. Esa es la diferencia mas importante de la pantalla y era la unica que
+   no se veia.
+
+### La estructura nueva: seis grupos, uno abierto
+
+```
+Inicio                         (pantalla, no se pliega)
+Catálogo        → KPIs de catálogo · Status de carga
+Cargas          → Carga completa · Carga parcial · Carga Supermall
+Merchandising   → Colecciones · Boost PLP
+Comercial       → Input comercial · Solicitudes
+Administración  → Diccionarios · Auditoria
+```
+
+Como mucho hay **6 cabeceras + 3 items** en pantalla, contra 13 antes. Y el
+criterio del agrupamiento es **qué trabajo haces**, no de donde salen los
+datos: Catálogo se mira, Cargas escribe, Merchandising ordena lo ya cargado,
+Comercial es el circuito de las marcas, Administración es referencia y
+registro.
+
+**El grupo abierto se DERIVA de la pantalla actual, no se guarda aparte.** Si
+se guardara, llegar a Carga completa por el atajo de "Aceptar carga" dejaria el
+menu abierto en otro grupo y no se veria donde estas. Hay una prueba que lo
+fija. Y pulsar la cabecera del grupo abierto lo cierra: es la unica forma de
+dejar el menu al minimo cuando se trabaja en una sola pantalla.
+
+**Inicio es el unico que no se pliega**, porque es UNA pantalla y no una
+familia de tareas. Los demas conservan su cabecera **aunque hoy tengan un solo
+item** -- Administración, cuando el usuario no ve Auditoria --: sin ella ese
+item sale al mismo nivel que Inicio y se lee como una pantalla principal.
+
+### Lo que NO se toco, y es lo que importa
+
+**Las claves de routing conservan exactamente los mismos valores.**
+`operation_area_choice` y `operation_mode_choice` los escribe codigo que vive
+FUERA del menu -- `ir_a_carga_completa`, el atajo de "Aceptar carga", el boton
+"Preparar esta carga para Supermall.pe" --, asi que renombrar un area los
+dejaria apuntando a una pantalla que ya no existe, **en silencio**. Lo que se
+agrego es una capa de AGRUPACION encima; **el despacho de `main` no cambio**.
+
+Hay una prueba que recorre `nav_areas()` y exige que cada destino tenga rama en
+`main`, y otra que fija los valores que los atajos escriben a mano.
+
+### El menu es un DATO, no HTML escrito a mano
+
+`nav_grupos()` devuelve `[{clave, etiqueta, ayuda, items}]` y el menu se dibuja
+recorriendolo. Eso es lo que permite que una prueba recorra el menu entero y
+exija que cada boton tenga sus cinco listas de selectores CSS y su icono.
+
+**Y obligo a arreglar una prueba que se habria quedado verde sin comprobar
+nada.** `test_css_movil` sacaba las claves con un regex sobre las llamadas a
+`sidebar_nav_button` con la clave escrita como literal; desde que el menu se
+recorre, la clave es una variable y el regex encontraba **cero** botones. Ahora
+le pregunta al modelo, que ademas cubre cualquier boton que el menu dibuje.
+
+### `sidebar_nav_button` acepta un `activo` explicito
+
+Es el arreglo del fallo 2. Cuando dos botones llevan a la MISMA area y se
+distinguen por otra clave -- Carga completa y Carga parcial --, el resaltado no
+puede salir de comparar el area. Se le pasa la respuesta ya calculada.
+
+### Inicio: la portada que no sale a la red
+
+Destino por defecto, y **no hace ni una lectura pesada**. Las tres preguntas
+del estado se responden con lo que ya se tiene: Shopify con Secrets, el
+catalogo con `shopify_products_en_cache` y la carga remota con la
+configuracion. Los pendientes salen de la bandeja, que **ya esta cacheada**
+(25 s) y que toda escritura invalida -- el mismo dato que dibuja Solicitudes,
+sin un viaje de mas -- y van dentro de un `try`: que el almacen de solicitudes
+no responda no puede dejar sin portada a quien entra a hacer otra cosa.
+
+Hay una prueba que espia `leer_catalogo_del_sitio` y falla si Inicio lo llama.
+
+**Los valores de las tarjetas van CORTOS a proposito.** `.kpi-card` lleva
+`height:96px` FIJO (seccion 5 quinquies): "Solo en la sesión" se partia en tres
+lineas y se salia de la tarjeta. El matiz largo va en el `caption` de abajo.
+
+Los seis atajos escriben **exactamente las mismas claves que su boton del
+menu**, o la barra lateral quedaria marcada en otra cosa -- es el mismo cuidado
+que ya pide `ir_a_carga_completa`.
+
+### Migas de pan
+
+`render_breadcrumb` sale del **mismo modelo** que dibuja el menu, asi que no
+puede decir una ruta que el menu no tenga. Con el menu plano no hacian falta
+-- cada boton era una pantalla --; con grupos, y con pantallas que abren
+pantallas dentro (Carga parcial abre el Mantenedor de Tallas, que es una
+pantalla entera), hace falta poder saber en que rama estas sin deducirlo del
+titulo. El tercer nivel es la opcion concreta de Carga parcial.
+
+### Carga parcial: catorce opciones en cinco grupos
+
+```
+Contenido de la ficha              Titulo · Body HTML · Textos cortos · Tags · Tecnologias
+Fotos y video                      Fotos 10 vistas · Fotos PNG · Videos
+Tallas e inventario                Mantenedor de Tallas · Guias de talla · Inventario
+Relaciones entre productos         Siblings
+Generar un Excel (no escribe...)   Centry · Carga Sial
+```
+
+**Sigue siendo UN solo control.** El grupo viaja en la etiqueta
+(`format_func`), asi que los VALORES del desplegable no cambian -- que es lo
+que el resto del codigo traduce a su operacion, y lo que las pruebas usan para
+seleccionar. Partirlo en dos controles obligaria a acertar el grupo antes de
+poder buscar.
+
+El quinto grupo dice en su nombre que **no escribe en Shopify**. Es la
+diferencia mas importante de la pantalla.
+
+### El stepper ya no miente en Carga parcial
+
+`render_stepper` describe el recorrido de la carga COMPLETA -- Input, BigQuery,
+Validacion, Shopify --, y se dibujaba tambien en Carga parcial, que no tiene
+esos cuatro pasos. Ahi afirmaba un flujo que no existe y ademas empujaba el
+trabajo real hacia abajo. Ahora solo sale en Carga completa.
+
+### Verificado en Chromium, no solo en pruebas
+
+Capturas reales a 1440px y 390px: el menu abre en el grupo de la pantalla
+actual, el resaltado sigue al item correcto, y en movil `scrollWidth` son
+**390 de 390** -- sin desborde horizontal. El menu paso de empezar en y=714px a
+**y=568px**, porque "Marca(s) permitidas" -- que es informacion, no un control
+-- se movio debajo del menu.
+
+Dos cosas que las capturas destaparon y que las pruebas no ven:
+
+- **La tarjeta "Qué quieres hacer" salia VACIA** y los atajos debajo:
+  `st.columns` no se dibuja dentro de un `<div>` abierto con `st.markdown`.
+  Streamlit lo pone en su propio contenedor y el `section-card` se cierra solo.
+- **Las cabeceras de grupo salian centradas** con el simbolo pegado al texto:
+  `justify-content:space-between` no separa nada cuando el texto y el simbolo
+  van en el mismo `<p>`.
+
+`scripts/test_navegacion.py` (18 pruebas) fija todo esto, y
+`scripts/test_pantallas_reales.py` lleva Inicio en su lista.
+
+### Y SIETE pruebas leian el TEXTO del menu en vez del dato
+
+Reorganizar el menu puso rojas siete pruebas de seis archivos **sin que su
+contrato se hubiera roto**: todas comprobaban "mi opcion esta en el menu"
+buscando un literal en el codigo -- `'TALLAS_LABEL: "tallas"'`,
+`'"operation_area_choice": "Carga de catálogo"'`, un regex sobre las llamadas a
+`sidebar_nav_button`, la lista `nav_options` leida por AST.
+
+Dos de ellas se habrian quedado **verdes sin comprobar nada**: el regex de
+`test_css_movil` y el de `test_mantenedor_colecciones` encontraban CERO claves
+desde que el boton se dibuja recorriendo el modelo, asi que su bucle no
+iteraba. Eso es peor que una prueba roja.
+
+La comprobacion de Supermall iba por su **tercera** version: primero miraba si
+era vecino de "Input comercial" (se rompio al meter "Diccionarios" en medio),
+despues si estaba en `nav_options` (se rompio al agrupar), y las dos veces
+Supermall no se habia movido de ningun sitio.
+
+Por eso el menu de Carga parcial tambien salio de `main` a
+`carga_parcial_grupos()` / `carga_parcial_operaciones()`. **Una prueba que
+pregunta por una estructura sobrevive a como se escriba; una que busca un
+literal ata el codigo a su forma actual.** Es la misma leccion que "leer el
+codigo no es ejecutarlo", un escalon mas arriba.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -4888,7 +5100,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **72 archivos y ~2.239 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **73 archivos y ~2.257 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

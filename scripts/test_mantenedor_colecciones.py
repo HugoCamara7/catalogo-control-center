@@ -698,12 +698,23 @@ class TestLaPantalla(unittest.TestCase):
                 self.assertEqual(problemas(at), [], f"la pantalla {etiqueta!r} no se dibuja")
 
     def test_las_dos_secciones_estan_en_el_menu(self):
-        """Una pantalla a la que no se puede llegar no existe."""
-        import re
-        fuente = (ROOT / "app_matrixify.py").read_text(encoding="utf-8")
-        claves = set(re.findall(r'sidebar_nav_button\([^)]*"(operation_nav_\w+)"', fuente))
+        """Una pantalla a la que no se puede llegar no existe.
+
+        Se le pregunta al MODELO del menu, no al texto del archivo: desde que
+        el menu se dibuja recorriendo `nav_grupos()`, la clave del boton es una
+        variable y el regex encontraba CERO -- o sea que esta prueba se habria
+        quedado verde sin comprobar nada el dia que las dos pantallas salieran
+        del menu.
+        """
+        import app_matrixify as app
+
+        claves = {item["boton"] for grupo in app.nav_grupos(puede_auditar=True)
+                  for item in grupo["items"]}
         self.assertIn("operation_nav_mantenedor", claves)
         self.assertIn("operation_nav_boost", claves)
+        areas = app.nav_areas(puede_auditar=True)
+        self.assertIn(app.COLECCIONES_LABEL, areas)
+        self.assertIn(app.BOOST_LABEL, areas)
 
     def test_cada_boton_del_menu_esta_en_LAS_CINCO_listas_de_CSS(self):
         """Un boton nuevo hay que registrarlo en cinco listas de selectores y

@@ -290,7 +290,11 @@ class TestReglasDelCodigo(unittest.TestCase):
 
     def test_la_pantalla_tiene_llamador(self):
         self.assertIn("render_mantenedor_tallas(brand_config, shopify_config)", FUENTE_APP)
-        self.assertIn('TALLAS_LABEL: "tallas"', FUENTE_APP)
+        # Le pregunta al MODELO del menu (`carga_parcial_operaciones`) y no al
+        # texto del archivo: reorganizar el menu no puede poner roja una prueba
+        # cuyo contrato -- "esta operacion se puede elegir" -- sigue intacto.
+        import app_matrixify as _app
+        self.assertIn("tallas", _app.carga_parcial_operaciones().values())
 
     def test_las_claves_del_resumen_existen(self):
         """La leccion de load_status: una clave mal escrita con `.get()` no

@@ -415,10 +415,14 @@ class TestLaPantallaOfreceElServidor(unittest.TestCase):
     def test_cada_operacion_remota_esta_en_el_menu(self):
         """Una operacion que el motor sabe hacer y el menu no ofrece no existe
         para quien usa la app."""
+        # Se le pregunta al MODELO del menu, no al texto de `main`: buscar el
+        # literal ataba la prueba a como estaba escrito el diccionario, asi que
+        # agrupar las opciones la ponia roja sin que ninguna hubiera salido del
+        # menu.
         import app_matrixify as app
-        fuente = inspect.getsource(app.main)
+        disponibles = set(app.carga_parcial_operaciones().values())
         for operacion in app.OPERACIONES_PARCIALES_REMOTAS:
-            self.assertIn(f'"{operacion}",', fuente, operacion)
+            self.assertIn(operacion, disponibles, operacion)
 
 
 

@@ -16393,44 +16393,42 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_inicio button,
         /* --- Cabeceras de grupo del menu -----------------------------------
-           Se ven DISTINTAS de los items a proposito: un grupo no es un
-           destino, y pintarlo igual que una pantalla hace que se pulse
-           esperando llegar a algo. Sin icono, mas pequenas y en mayusculas. */
-        div[class*="st-key-navgrp_boton_"] button {{
-            display:flex !important;
-            align-items:center !important;
-            justify-content:space-between !important;
-            width:100% !important;
-            min-height:38px !important;
-            margin:6px 0 2px !important;
-            padding:5px 12px !important;
+           Son `st.expander`, no botones, y por eso plegarlas no cuesta un
+           rerun (medido: 0 ejecuciones del script contra 2 de un boton con
+           `st.rerun()`). Se ven DISTINTAS de los items a proposito: un grupo
+           no es un destino, y pintarlo igual que una pantalla hace que se
+           pulse esperando llegar a algo. */
+        section[data-testid="stSidebar"] div[class*="st-key-navgrp_"] details {{
             border:0 !important;
-            border-radius:10px !important;
             background:transparent !important;
             box-shadow:none !important;
-            text-align:left !important;
+            margin:2px 0 0 !important;
         }}
-        div[class*="st-key-navgrp_boton_"] button p {{
-            display:block !important;
-            width:100% !important;
+        section[data-testid="stSidebar"] div[class*="st-key-navgrp_"] summary {{
+            min-height:34px !important;
+            padding:4px 10px !important;
+            border-radius:10px !important;
+            background:transparent !important;
+        }}
+        section[data-testid="stSidebar"] div[class*="st-key-navgrp_"] summary:hover {{
+            background:#F1F5F9 !important;
+        }}
+        section[data-testid="stSidebar"] div[class*="st-key-navgrp_"] summary p {{
             margin:0 !important;
             color:#64748B !important;
             font-size:11px !important;
             font-weight:900 !important;
             letter-spacing:.09em !important;
             text-transform:uppercase !important;
-            text-align:left !important;
-            white-space:pre !important;
         }}
-        div[class*="st-key-navgrp_boton_"] button div[data-testid="stMarkdownContainer"] {{
-            width:100% !important;
-            text-align:left !important;
-        }}
-        div[class*="st-key-navgrp_boton_"] button:hover {{
-            background:#F1F5F9 !important;
-        }}
-        div[class*="st-key-navgrp_boton_"] button:hover p {{
+        section[data-testid="stSidebar"] div[class*="st-key-navgrp_"] summary:hover p {{
             color:#0B1B46 !important;
+        }}
+        /* El cuerpo del expander trae padding propio: sin quitarlo, los items
+           quedan sangrados respecto de Inicio y se leen como otro nivel mas. */
+        section[data-testid="stSidebar"] div[class*="st-key-navgrp_"] details > div {{
+            padding:0 !important;
+            border:0 !important;
         }}
         /* --- Migas de pan ---------------------------------------------------
            Con el menu plano no hacian falta: cada boton era una pantalla. Con
@@ -23546,11 +23544,12 @@ def sidebar_nav_button(label, state_key, value, button_key, extra_state=None, ac
             """,
             unsafe_allow_html=True,
         )
-    if st.button(label, key=button_key, width="stretch"):
+    def _navegar():
         st.session_state[state_key] = value
         for extra_key, extra_value in (extra_state or {}).items():
             st.session_state[extra_key] = extra_value
-        st.rerun()
+
+    st.button(label, key=button_key, width="stretch", on_click=_navegar)
 
 
 def render_ticket_styles():
@@ -29247,70 +29246,63 @@ def render_breadcrumb(area, modo="", detalle=""):
 
 
 def render_sidebar_nav(puede_auditar, area_actual, modo_actual):
-    """El menu lateral: seis grupos, y solo se abren los items de uno.
+    """El menu lateral: seis grupos, y solo se abre el que hace falta.
 
-    El grupo abierto sale de la pantalla actual; pulsar la cabecera de otro lo
-    abre sin cambiar de pantalla, que es lo que permite explorar el menu sin
-    perder lo que se estaba haciendo. Devuelve `(area, modo)`.
+    **Los grupos son `st.expander`, y eso NO es cosmetico: es lo que hace que
+    mirar el menu sea GRATIS.** Medido en Chromium contra un repro con un
+    contador de ejecuciones:
+
+        abrir o cerrar un expander      0 ejecuciones del script
+        un boton con `st.rerun()`       2 ejecuciones
+        un boton con `on_click`         1 ejecucion
+
+    La primera version usaba botones con `st.rerun()` para plegar, asi que
+    **abrir un grupo costaba dos ejecuciones del script entero** -- de una app
+    que en cada rerun redibuja la pantalla actual. Y como navegar a otro grupo
+    pedia dos clics, un viaje cruzado salian CUATRO ejecuciones donde el menu
+    plano gastaba dos. O sea: el rediseno hizo la app mas lenta, que es lo que
+    el usuario reporto.
+
+    El expander se pliega en el navegador y **conserva su estado entre
+    reruns** (comprobado), asi que no hace falta guardarlo en `session_state`:
+    hacerlo era justamente lo que obligaba al rerun.
+
+    `expanded` solo manda la PRIMERA vez que se dibuja cada grupo, que es la
+    primera ejecucion de la sesion: ahi se abre el de la pantalla en la que se
+    entra. A partir de ahi manda quien usa la app, que es lo correcto -- un
+    menu que se reordena solo debajo del raton no se puede usar.
+
+    Devuelve `(area, modo)`.
     """
     grupos = nav_grupos(puede_auditar)
     activo_grupo, _ = nav_item_activo(area_actual, modo_actual)
-    abierto = clean_value(st.session_state.get("nav_grupo_abierto"))
-    if abierto not in {g["clave"] for g in grupos}:
-        abierto = ""
-    # La pantalla actual manda sobre lo que se dejo abierto: si se llego aqui
-    # por un atajo, el menu tiene que seguir al usuario y no al reves.
-    if activo_grupo and st.session_state.get("nav_grupo_ultimo_area") != area_actual:
-        abierto = activo_grupo["clave"]
-        st.session_state["nav_grupo_abierto"] = abierto
-    st.session_state["nav_grupo_ultimo_area"] = area_actual
-    if not abierto:
-        abierto = activo_grupo["clave"] if activo_grupo else grupos[0]["clave"]
-        st.session_state["nav_grupo_abierto"] = abierto
 
     st.sidebar.markdown('<p class="sidebar-label">Menú</p>', unsafe_allow_html=True)
     for grupo in grupos:
         if not grupo["items"]:
             continue
-        with st.sidebar.container(key=f"navgrp_{grupo['clave']}"):
-            tiene_activo = bool(activo_grupo and activo_grupo["clave"] == grupo["clave"])
-            if grupo["clave"] == "inicio":
-                # Inicio es el unico que no se pliega: es UNA pantalla, no una
-                # familia de tareas, y darle cabecera seria un clic para
-                # descubrir lo que ya se sabe.
-                #
-                # Los demas conservan su cabecera aunque hoy tengan un solo
-                # item -- Administracion, cuando el usuario no ve Auditoria --,
-                # porque si no ese item sale al mismo nivel que Inicio y se lee
-                # como una pantalla principal que no es.
+        tiene_activo = bool(activo_grupo and activo_grupo["clave"] == grupo["clave"])
+        if grupo["clave"] == "inicio":
+            # Inicio es el unico que no se pliega: es UNA pantalla, no una
+            # familia de tareas, y darle cabecera seria un clic para descubrir
+            # lo que ya se sabe.
+            with st.sidebar.container(key=f"navgrp_{grupo['clave']}"):
                 item = grupo["items"][0]
                 sidebar_nav_button(
                     item["etiqueta"], "operation_area_choice", item["area"], item["boton"],
                     activo=tiene_activo,
                 )
-                continue
-            desplegado = grupo["clave"] == abierto
-            marca = "▾" if desplegado else "▸"
-            if st.button(
-                f"{grupo['etiqueta']}   {marca}",
-                key=f"navgrp_boton_{grupo['clave']}",
-                width="stretch",
-                help=grupo["ayuda"],
-            ):
-                # Pulsar el grupo abierto lo cierra: es la unica forma de dejar
-                # el menu al minimo cuando se trabaja en una sola pantalla.
-                st.session_state["nav_grupo_abierto"] = "" if desplegado else grupo["clave"]
-                st.rerun()
-            if not desplegado:
-                continue
-            for item in grupo["items"]:
-                extra = {"operation_mode_choice": item["modo"]} if item["modo"] else None
-                sidebar_nav_button(
-                    item["etiqueta"], "operation_area_choice", item["area"], item["boton"],
-                    extra_state=extra,
-                    activo=(area_actual == item["area"]
-                            and (not item["modo"] or modo_actual == item["modo"])),
-                )
+            continue
+        with st.sidebar.container(key=f"navgrp_{grupo['clave']}"):
+            with st.expander(grupo["etiqueta"], expanded=tiene_activo):
+                for item in grupo["items"]:
+                    extra = {"operation_mode_choice": item["modo"]} if item["modo"] else None
+                    sidebar_nav_button(
+                        item["etiqueta"], "operation_area_choice", item["area"], item["boton"],
+                        extra_state=extra,
+                        activo=(area_actual == item["area"]
+                                and (not item["modo"] or modo_actual == item["modo"])),
+                    )
     return (st.session_state.get("operation_area_choice", NAV_INICIO_LABEL),
             st.session_state.get("operation_mode_choice", "Carga completa"))
 

@@ -4836,7 +4836,66 @@ Dos cosas que las capturas destaparon y que las pruebas no ven:
   `justify-content:space-between` no separa nada cuando el texto y el simbolo
   van en el mismo `<p>`.
 
-`scripts/test_navegacion.py` (18 pruebas) fija todo esto, y
+### El acordeon hizo la app MAS LENTA, y el usuario lo reporto
+
+*"tenerlo asi me vuelve mas lenta la aplicacion"*. Tenia razon y era un fallo
+mio del rediseno.
+
+**Medido en Chromium**, con un contador de ejecuciones del script dentro de
+`main()`:
+
+| | ejecuciones del script |
+|---|---:|
+| abrir o cerrar un `st.expander` | **0** |
+| un boton con `on_click` | **1** |
+| un boton con `if st.button(): ...; st.rerun()` | **2** |
+
+La primera version plegaba los grupos con **botones que llamaban a
+`st.rerun()`**, asi que:
+
+- **mirar el menu costaba DOS ejecuciones** del script entero -- de una app que
+  redibuja la pantalla actual en cada una;
+- y como llegar a otro grupo pedia dos clics, un viaje cruzado eran **CUATRO**
+  ejecuciones donde el menu plano gastaba dos.
+
+**Por que dos y no una:** cuando `st.button` devuelve True **ya hubo un
+rerun** -- ese es el que le trae el clic. El `st.rerun()` de dentro fuerza un
+SEGUNDO. Con `on_click` la funcion corre ANTES del cuerpo del script y hay una
+sola ejecucion. Ese patron estaba en `sidebar_nav_button` **desde antes del
+rediseno**, asi que cada clic del menu de esta app costaba el doble desde
+siempre.
+
+Dos cambios, y el resultado medido:
+
+| | antes del rediseno | acordeon con botones | ahora |
+|---|---:|---:|---:|
+| abrir un grupo | (no existia) | 2 | **0** |
+| navegar a una pantalla | 2 | 2 | **1** |
+| viaje cruzado (grupo + item) | 2 | **4** | **1** |
+
+O sea que navegar quedo a **la mitad de lo que costaba antes del rediseno**, y
+explorar el menu es gratis.
+
+**El expander ademas CONSERVA su estado entre reruns** (comprobado), asi que
+`nav_grupo_abierto` desaparecio de `session_state`: guardarlo alli era justo lo
+que obligaba al rerun. `expanded` solo manda la primera vez que se dibuja cada
+grupo -- la primera ejecucion de la sesion --, y a partir de ahi manda quien
+usa la app. Un menu que se reordena solo debajo del raton no se puede usar.
+
+> **Regla general: plegar algo NUNCA debe costar un viaje al servidor.** Si la
+> unica razon del `st.rerun()` es que el estado del plegado vive en
+> `session_state`, el estado esta en el sitio equivocado.
+
+Y una prueba que se hizo mal antes de hacerse bien: la que comprueba que no hay
+`st.rerun()` leia `inspect.getsource`, asi que el **docstring** que explica por
+que no se usa la hacia fallar. Ahora mira el codigo con AST, sin el docstring.
+
+`scripts/test_navegacion.py` pasa de 18 a **22 pruebas**: las cuatro nuevas
+fijan la forma que da el numero bajo (`on_click`, `st.expander`, sin
+`nav_grupo_abierto`) y comprueban EJECUTANDO que los botones siguen navegando
+-- que un `on_click` mal escrito dejaria el menu inerte.
+
+`scripts/test_navegacion.py` (22 pruebas) fija todo esto, y
 `scripts/test_pantallas_reales.py` lleva Inicio en su lista.
 
 ### Y SIETE pruebas leian el TEXTO del menu en vez del dato
@@ -5100,7 +5159,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **73 archivos y ~2.257 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **73 archivos y ~2.261 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

@@ -18,6 +18,7 @@ from collections import Counter, OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -354,7 +355,9 @@ KPI_AUTO_REFRESH_SECONDS = 15 * 60
 OUTPUT_DIR = Path("outputs")
 KPI_CACHE_DIR = OUTPUT_DIR / "kpi_cache"
 SYNC_JOB_DIR = OUTPUT_DIR / "sync_jobs"
-KPI_CACHE_VERSION = "2026-07-04-missing-input-enriched-v1"
+# Se sube cuando cambia la FORMA o el VALOR de los KPI: un resultado guardado
+# con la version anterior se descarta en vez de mezclarse con el nuevo.
+KPI_CACHE_VERSION = "2026-09-14-universo-shopify-y-causas-v2"
 
 DEFAULT_ECOMM_SITE_WAREHOUSES = {
     "columbiape": ["320", "145", "143", "142", "139", "130", "114", "113", "112", "111", "96", "88", "84", "83", "59", "52", "46", "19", "18", "2"],
@@ -1566,15 +1569,37 @@ def olvidar_arti_de_la_sesion(brand_config):
         st.session_state.pop(clave, None)
 
 
-def read_arti_for_app(brand_config, mod_cols=None):
+def read_arti_for_app(brand_config, mod_cols=None, con_ean=True, bigquery_config=None):
+    """El maestro ARTI para la app, opcionalmente con el EAN completado.
+
+    `con_ean=False` se salta `enrich_arti_barcodes_from_bigquery_table`, y eso
+    NO es un detalle: esa funcion consulta el Maestro de Productos **en tandas
+    de 5.000 SKU** (`EAN_SKUS_POR_CONSULTA`), una consulta por tanda. Sobre el
+    maestro entero -- que es como lo pide el dashboard, sin `mod_cols` -- eso
+    son decenas de consultas encadenadas a BigQuery, cada una escaneando la
+    tabla de productos, **para completar una columna que los KPIs no leen**.
+    `CodBarras` solo se usa en la hoja "Variantes a crear" del Excel de modelos
+    no creados, que son unos cientos de codigos: ahi se completa aparte y en
+    una sola consulta. Ver `load_catalog_kpi_result`.
+
+    La carga completa sigue pidiendolo (`con_ean=True`), y ahi esta acotado
+    porque pasa los `mod_cols` del input.
+
+    `bigquery_config` se puede pasar ya resuelto para que esta funcion no tenga
+    que tocar `st.secrets`: asi se puede llamar desde un hilo.
+    """
+    if bigquery_config is None:
+        bigquery_config = get_bigquery_config()
     arti_df, source = read_arti_source(
-        bigquery_config=get_bigquery_config(),
+        bigquery_config=bigquery_config,
         allow_local_fallback=False,
         brand_config=brand_config,
         mod_cols=mod_cols,
     )
     arti_df = normalize_arti_columns_for_app(arti_df).dropna(how="all")
-    arti_df, ean_source = enrich_arti_barcodes_from_bigquery_table(arti_df, get_bigquery_config())
+    if not con_ean:
+        return arti_df, source
+    arti_df, ean_source = enrich_arti_barcodes_from_bigquery_table(arti_df, bigquery_config)
     if ean_source:
         source = f"{source} + {ean_source}"
     return arti_df, source
@@ -2104,6 +2129,38 @@ def to_excel_bytes(matrixify_df, issues_df, input_cols, arti_cols):
 
     buffer.seek(0)
     return buffer
+
+
+PASOS_DEL_ANALISIS = 5
+
+
+def _paso_del_analisis(aviso, numero, texto):
+    """Dice por que paso va el analisis del input comercial.
+
+    Por que existe
+    --------------
+    El analisis corria detras de UN solo `st.spinner` mudo mientras hacia cinco
+    cosas pesadas -- cruzar el input contra el maestro y el catalogo, enlazar
+    siblings, armar el Centry, guardar la Carga Sial y escribir el Excel --.
+    Con mil productos eso son varios minutos, y mientras tanto Streamlit deja a
+    la vista la pantalla ANTERIOR en gris (no se puede evitar: solo se poda
+    cuando la ejecucion termina, ver la seccion 5 tertrigies). Reportado
+    literal: *"le di analizar input pero no se si ya cargo, si sigue cargando
+    o no se, pero no bota nada"*.
+
+    `numero=0` limpia el aviso. **Nunca puede tumbar el analisis**: va dentro
+    de su `try`, igual que el aviso de progreso de la lectura del catalogo.
+    El hueco lo crea el LLAMADOR, siempre, nunca dentro de la rama que analiza.
+    """
+    if aviso is None:
+        return
+    try:
+        if not numero:
+            aviso.empty()
+            return
+        aviso.info(f"Paso {numero} de {PASOS_DEL_ANALISIS} · {texto}")
+    except Exception:
+        pass
 
 
 def _guardar_excel_en_disco(buffer, brand_config):
@@ -10034,7 +10091,46 @@ FROM stock_base
 """
 
 
-def read_current_stock_from_bigquery(bigquery_config):
+# Las bodegas eComm de un sitio son un punado (Columbia 4/13/6, Vans 103, Hush
+# Puppies 2/13) de las ~400 que hay en la tabla central. Sin acotarlo en el
+# WHERE se bajaba el stock de TODAS las tiendas del Peru para tirar el 99 % en
+# Python, en `apply_ecomm_stock_rules`.
+#
+# El filtro SQL es deliberadamente MAS LAXO que el de Python, nunca mas
+# estricto: se queda con la fila si CUALQUIERA de los numeros que trae
+# `codigo_tienda` esta en la lista, y tambien si el campo viene vacio -- ahi la
+# bodega sale de `CONCAT_TIENDA`, que se resuelve en Python
+# (`store_code_from_concat_tienda`). Asi quien decide que entra sigue siendo
+# `normalize_warehouse_code`, exactamente como antes; lo unico que cambia es
+# cuantos bytes viajan.
+def _stock_query_acotada_a_bodegas(query, bodegas):
+    codigos = sorted({safe_int_value(codigo) for codigo in bodegas or [] if safe_int_value(codigo) > 0})
+    if not codigos:
+        return ""
+    lista = ", ".join(str(codigo) for codigo in codigos)
+    return f"""
+SELECT * FROM (
+{query}
+)
+WHERE codigo_tienda IS NULL
+   OR TRIM(CAST(codigo_tienda AS STRING)) = ''
+   OR EXISTS (
+        SELECT 1
+        FROM UNNEST(REGEXP_EXTRACT_ALL(CAST(codigo_tienda AS STRING), r'[0-9]+')) AS numero_bodega
+        WHERE SAFE_CAST(numero_bodega AS INT64) IN ({lista})
+      )
+"""
+
+
+def read_current_stock_from_bigquery(bigquery_config, bodegas=()):
+    """El stock vigente, ya normalizado. `bodegas` acota la consulta en el WHERE.
+
+    `bodegas` son los codigos eComm del sitio (`ecomm_stock_rule_codes_for_site`)
+    y se resuelven en el hilo de la pantalla, porque esa funcion pasa por
+    `st.cache_data`. Si la consulta acotada falla -- una `stock_query` propia
+    que no expone `codigo_tienda`, por ejemplo -- se repite sin acotar y no se
+    pierde nada.
+    """
     try:
         from google.cloud import bigquery
         from google.oauth2 import service_account
@@ -10060,12 +10156,27 @@ def read_current_stock_from_bigquery(bigquery_config):
         return bigquery_a_dataframe(
             client.query(query_text, job_config=job_config, location=location))
 
-    try:
-        df = run_query(query)
-    except Exception:
-        if query.strip() == STOCK_QUERY_SAFE.strip():
-            raise
-        df = run_query(STOCK_QUERY_SAFE)
+    acotada = _stock_query_acotada_a_bodegas(query, bodegas)
+    df = None
+    if acotada:
+        try:
+            df = run_query(acotada)
+        except Exception:
+            df = None
+        # Vacia NO se da por buena: `load_catalog_kpi_result` corta con "0 filas
+        # de stock" para no pisar KPIs validos con ceros, y ese corte tiene que
+        # seguir significando "la tabla no respondio", no "este sitio no tiene
+        # stock en sus bodegas". Se repite sin acotar, que es lo que se hacia
+        # antes de este filtro.
+        if df is not None and df.empty:
+            df = None
+    if df is None:
+        try:
+            df = run_query(query)
+        except Exception:
+            if query.strip() == STOCK_QUERY_SAFE.strip():
+                raise
+            df = run_query(STOCK_QUERY_SAFE)
     if df.empty and configured_query:
         try:
             df = run_query(STOCK_QUERY_DEFAULT)
@@ -10399,19 +10510,37 @@ def stock_key_from_parts(mod_col, size):
 
 
 def filter_visible_kpi_sizes(df):
+    """Quita del maestro lo que no es una talla que el comprador vea.
+
+    Las internas `K` se van siempre; el `0` de cabecera solo cuando el producto
+    trae ademas una talla unica de verdad, que es lo que ese `0` acompana.
+
+    Va por columnas, no grupo a grupo. El bucle anterior hacia un `.copy()` y
+    un `.map()` **por modelo-color**: medido sobre 6.000 modelos, 6,2 s de los
+    32 que costaba el dashboard entero. Las tres pruebas de talla se resuelven
+    ahora una vez por talla DISTINTA -- son unas decenas -- y no una vez por
+    fila. El orden de salida se conserva ordenado por Mod-Col, que es el que
+    dejaba el `groupby` + `concat`: la hoja de modelos no creados recorre el
+    frame con `groupby(sort=False)` y sale en ese orden.
+    """
     if df is None or df.empty or "Mod-Col KPI" not in df.columns or "Talla KPI" not in df.columns:
         return df
     result = df.copy()
-    result = result[~result["Talla KPI"].map(is_internal_k_size)].copy()
-    keep_parts = []
-    for _, group in result.groupby("Mod-Col KPI", dropna=False):
-        has_one_size = group["Talla KPI"].map(is_one_size).any()
-        if has_one_size:
-            group = group[~group["Talla KPI"].map(is_zero_size)].copy()
-        keep_parts.append(group)
-    if not keep_parts:
+    tallas = result["Talla KPI"]
+    distintas = list(dict.fromkeys(tallas.tolist()))
+    internas = {talla: bool(is_internal_k_size(talla)) for talla in distintas}
+    result = result[~tallas.map(internas)]
+    if result.empty:
         return result.iloc[0:0].copy()
-    return pd.concat(keep_parts, ignore_index=True)
+
+    tallas = result["Talla KPI"]
+    unicas = {talla: bool(is_one_size(talla)) for talla in dict.fromkeys(tallas.tolist())}
+    ceros = {talla: bool(is_zero_size(talla)) for talla in unicas}
+    es_talla_unica = tallas.map(unicas)
+    modelos_con_talla_unica = set(result.loc[es_talla_unica, "Mod-Col KPI"].tolist())
+    sobra_el_cero = tallas.map(ceros) & result["Mod-Col KPI"].isin(modelos_con_talla_unica)
+    result = result[~sobra_el_cero]
+    return result.sort_values("Mod-Col KPI", kind="stable").reset_index(drop=True)
 
 
 def valid_kpi_price(value):
@@ -10434,14 +10563,49 @@ def numeric_kpi_value(value):
         return 0
 
 
+@lru_cache(maxsize=256)
+def _lookup_de_columnas_normalizadas(columnas):
+    """Nombre normalizado -> nombre real, calculado UNA vez por juego de columnas.
+
+    `row_first_value` lo rearmaba en cada llamada, y se llama una vez por campo
+    y por modelo. Medido en el Excel de modelos no creados: 27.672 llamadas
+    sobre un maestro con 48 columnas eran **1,3 millones** de `normalize_header`
+    -- una expresion regular cada una -- para resolver los mismos 48 nombres.
+    Las filas de un mismo recorrido comparten columnas, asi que se cachea.
+    """
+    # Gana la ULTIMA, igual que el diccionario por comprension que habia antes:
+    # con dos columnas que normalizan al mismo nombre, cambiar el criterio
+    # cambiaria en silencio de que columna sale el valor.
+    return {normalize_header(columna): columna for columna in columnas}
+
+
+def _claves_de_fila(row):
+    """Los nombres de columna de una fila, sea un `Series` o un dict.
+
+    Un dict no tiene `.index`, y pedirselo devolvia `[]` **sin fallar**: el
+    respaldo por nombre normalizado dejaba de encontrar la columna y el campo
+    salia vacio, que es el peor tipo de error. Misma idea que
+    `generate_columbia_matrixify.claves_de_fila`.
+    """
+    if row is None:
+        return ()
+    indice = getattr(row, "index", None)
+    if indice is not None:
+        return tuple(indice)
+    claves = getattr(row, "keys", None)
+    return tuple(claves()) if callable(claves) else ()
+
+
 def row_first_value(row, columns):
-    normalized_lookup = {}
     try:
-        normalized_lookup = {normalize_header(column): column for column in row.index}
+        presentes = _claves_de_fila(row)
+        normalized_lookup = _lookup_de_columnas_normalizadas(presentes)
     except Exception:
+        presentes = ()
         normalized_lookup = {}
+    disponibles = set(presentes)
     for column in columns:
-        source_column = column if column in row.index else normalized_lookup.get(normalize_header(column))
+        source_column = column if column in disponibles else normalized_lookup.get(normalize_header(column))
         if source_column is None:
             continue
         value = clean_value(row.get(source_column))
@@ -10490,7 +10654,16 @@ def compact_join_values(values, separator=", "):
     return separator.join(dict.fromkeys(cleaned))
 
 
-def build_missing_models_input_export(expected, missing_models, brand_config):
+def build_missing_models_input_export(expected, missing_models, brand_config, enriquecer_ean=None):
+    """El Excel de modelos con stock que todavia no estan en Shopify.
+
+    `enriquecer_ean` es la unica parte de los KPIs que necesita el codigo de
+    barras, y por eso se completa AQUI y no sobre el maestro entero: es un
+    callable que recibe las filas de los modelos que faltan y las devuelve con
+    `CodBarras` relleno. Sobre el maestro completo eso son decenas de consultas
+    a BigQuery (`EAN_SKUS_POR_CONSULTA` va de 5.000 en 5.000); sobre unos
+    cientos de codigos es una sola. Ver `read_arti_for_app(con_ean=False)`.
+    """
     if expected is None or expected.empty or missing_models is None or missing_models.empty:
         return (
             pd.DataFrame(),
@@ -10506,19 +10679,48 @@ def build_missing_models_input_export(expected, missing_models, brand_config):
     source = expected[expected["Mod-Col KPI"].map(lambda value: clean_value(value).upper() in missing_keys)].copy()
     if source.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    if enriquecer_ean is not None:
+        # Nunca puede tumbar el dashboard: sin EAN la hoja sale igual, con esa
+        # columna vacia, que es lo que pasaba cuando el maestro no lo tenia.
+        try:
+            enriquecidas = enriquecer_ean(source)
+            if isinstance(enriquecidas, pd.DataFrame) and not enriquecidas.empty:
+                source = enriquecidas
+        except Exception:
+            pass
 
     product_rows = []
     variant_rows = []
     missing_field_rows = []
     brand_label = clean_value(brand_config.get("label"))
 
-    for mod_col, group in source.groupby("Mod-Col KPI", sort=False):
-        group = group.copy()
-        group = group[group["SKU"].map(clean_value) != ""].copy() if "SKU" in group.columns else group
-        if group.empty:
+    # Se recorre en dicts, no con `groupby` + `iterrows`. Cada vuelta hacia un
+    # `.copy()` del grupo, un `drop_duplicates` y un `group.iloc[0]` -- que
+    # construye un Series con las 48 columnas del maestro -- y despues leia
+    # veinte campos de ese Series, pasando cada `.get()` por el indice de
+    # pandas. Medido sobre 6.000 modelos: esta funcion sola eran 23,6 s de los
+    # 32 que costaba el dashboard entero. Los valores no cambian: se agrupa por
+    # la misma clave y en el mismo orden de aparicion (`sort=False`), y el
+    # descarte de repetidos conserva la primera fila de cada (Talla, SKU).
+    grupos = OrderedDict()
+    tiene_sku = "SKU" in source.columns
+    for fila in source.to_dict("records"):
+        if tiene_sku and not clean_value(fila.get("SKU")):
             continue
-        group = group.drop_duplicates(subset=["Talla KPI", "SKU"], keep="first")
-        first_row = group.iloc[0]
+        grupos.setdefault(fila.get("Mod-Col KPI"), []).append(fila)
+
+    for mod_col, filas_del_modelo in grupos.items():
+        vistos = set()
+        group = []
+        for fila in filas_del_modelo:
+            clave = (fila.get("Talla KPI"), fila.get("SKU"))
+            if clave in vistos:
+                continue
+            vistos.add(clave)
+            group.append(fila)
+        if not group:
+            continue
+        first_row = group[0]
         model_code, color_code = split_mod_col_code(mod_col)
         vendor = brand_display_name(
             first_non_empty(row_first_value(first_row, ["MARCA_MA", "Marca", "Vendor"]), brand_label),
@@ -10602,9 +10804,9 @@ def build_missing_models_input_export(expected, missing_models, brand_config):
             mod_col,
         ]
         tags = compact_join_values(tags_parts)
-        valid_sizes = list(dict.fromkeys(group.get("Talla KPI", pd.Series(dtype=object)).map(clean_value).tolist()))
-        skus = list(dict.fromkeys(group.get("SKU", pd.Series(dtype=object)).map(clean_value).tolist()))
-        stock_total = safe_int_value(pd.to_numeric(group.get("stock_total", 0), errors="coerce").fillna(0).sum())
+        valid_sizes = list(dict.fromkeys(clean_value(fila.get("Talla KPI")) for fila in group))
+        skus = list(dict.fromkeys(clean_value(fila.get("SKU")) for fila in group))
+        stock_total = safe_int_value(sum(numeric_kpi_value(fila.get("stock_total")) for fila in group))
         price = row_first_value(first_row, ["Precio", "PRECIO", "Variant Price", "Price"])
         compare_at = row_first_value(first_row, ["Compare At Price", "Precio Compare At", "PRECIO_ANTES"])
 
@@ -10713,7 +10915,7 @@ def build_missing_models_input_export(expected, missing_models, brand_config):
                 "Observaciones": "Producto no creado en Shopify. Input sugerido desde ARTI/BigQuery.",
             }
         )
-        for _, variant in group.iterrows():
+        for variant in group:
             variant_rows.append(
                 {
                     "Mod-Col": mod_col,
@@ -10765,13 +10967,12 @@ def flatten_shopify_for_kpis(shopify_products):
         mod_col = clean_value(product.get("Mod-Col")).upper()
         status = clean_value(product.get("Status")).upper()
         online_url = clean_value(product.get("Online Store URL"))
-        published_field = clean_value(product.get("Published Online Store")).upper()
-        if published_field:
-            published_online = published_field in ("SI", "YES", "TRUE", "1", "PUBLISHED")
-            published_source = "publishedOnPublication"
-        else:
-            published_online = bool(online_url)
-            published_source = "onlineStoreUrl"
+        # La MISMA regla que usa el Status de carga. Estaba escrita dos veces y
+        # las dos versiones no decian lo mismo con el campo vacio: aqui mandaba
+        # la URL y alli se daba por no publicado, asi que el mismo producto
+        # salia visible en una pantalla y no visible en la otra. Ver
+        # `engines/load_status.publicado_en_la_web`.
+        published_online, published_source = status_carga.publicado_en_la_web(product)
         visible_online = status == "ACTIVE" and published_online
         variants = product.get("Variants") or []
         has_price = any(valid_kpi_price(variant.get("Variant Price")) for variant in variants)
@@ -10810,9 +11011,16 @@ def flatten_shopify_for_kpis(shopify_products):
     return pd.DataFrame(product_rows), pd.DataFrame(variant_rows)
 
 
-def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
-    arti = arti_df.copy() if isinstance(arti_df, pd.DataFrame) else pd.DataFrame()
+def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config, enriquecer_ean=None):
+    # Sin `.copy()` delante: `normalize_arti_columns_for_app` ya hace la suya
+    # (`coalesce_duplicate_columns(df).copy()`), asi que la de aqui era una
+    # segunda copia del maestro -- 337 MB medidos con el maestro real -- que se
+    # tiraba en la linea siguiente. El maestro que recibe esta funcion solo se
+    # LEE; lo que se muta es el resultado de la normalizacion.
+    arti = arti_df if isinstance(arti_df, pd.DataFrame) else pd.DataFrame()
     arti = normalize_arti_columns_for_app(arti)
+    if arti is None:
+        arti = pd.DataFrame()
     stock = stock_df.copy() if isinstance(stock_df, pd.DataFrame) else pd.DataFrame()
     allowed = set(brand_config.get("allowed_arti_brands") or [])
     if "MARCA_MA" in arti.columns and allowed:
@@ -10854,9 +11062,12 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         if not stock.empty and "key_producto" in stock.columns
         else 0
     )
-    if stock.empty:
-        stock = pd.DataFrame(columns=["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"])
-    stock["key_producto"] = stock["key_producto"].map(lambda value: clean_value(value).upper())
+    # `apply_ecomm_stock_rules` agrupa por `key_producto`, que ya viene en
+    # mayuscula de arriba: repetir aqui el `if stock.empty` y el `.map(upper)`
+    # era recorrer la columna entera una segunda vez sin cambiar un solo valor.
+    for columna in ("key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"):
+        if columna not in stock.columns:
+            stock[columna] = 0 if columna.startswith("stock_") else ""
     expected = expected.merge(
         stock[["key_producto", "stock_tiendas", "stock_bodega", "stock_total", "fecha_corte"]],
         how="left",
@@ -10948,18 +11159,19 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     model_stock["Tallas_sin_stock"] = pd.to_numeric(_stock_campo("tallas_sin_stock"), errors="coerce").fillna(0).astype(int)
     model_stock["Cobertura_tallas"] = pd.to_numeric(_stock_campo("cobertura", 0.0), errors="coerce").fillna(0.0)
     model_stock["Debe estar visible"] = _stock_campo("debe_estar_visible", False).map(bool)
-    model_stock["Estado"] = model_stock.apply(
-        lambda row: (
-            "OK visible con stock"
-            if row["Debe estar visible"] and row["Visible_Shopify"]
-            else "Con stock no visible"
-            if row["Debe estar visible"] and not row["Visible_Shopify"]
-            else "Sin stock visible"
-            if not row["Debe estar visible"] and row["Visible_Shopify"]
-            else "OK apagado sin stock"
-        ),
-        axis=1,
-    )
+    # Los mismos cuatro estados, pero vectorizados. `apply(axis=1)` construye
+    # un Series por fila -- con las catorce columnas de `model_stock` -- para
+    # leer dos booleanos, y esto se recorre una vez por modelo-color.
+    model_stock["Estado"] = [
+        "OK visible con stock" if debe and visible
+        else "Con stock no visible" if debe
+        else "Sin stock visible" if visible
+        else "OK apagado sin stock"
+        for debe, visible in zip(
+            model_stock["Debe estar visible"].astype(bool).to_numpy(),
+            model_stock["Visible_Shopify"].astype(bool).to_numpy(),
+        )
+    ]
 
     missing_models = model_stock[(model_stock["Debe estar visible"]) & (~model_stock["Producto_creado"])].copy()
     stock_not_visible = model_stock[
@@ -11084,6 +11296,19 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         & ~model_stock["Sin_foto_shopify"]
     )
 
+    # Cuantos productos hay de verdad en la tienda, y cuantos de ellos este
+    # panel NO puede mirar. Todos los KPI de abajo se calculan sobre el maestro
+    # ARTI: un producto que esta en Shopify y no en el maestro -- descatalogado,
+    # de otra marca, cargado por fuera -- no aparece en ningun numero. Sin esto,
+    # "Modelos ya creados en Shopify" se lee como el tamano del catalogo y no
+    # cuadra con lo que se ve en el admin, y nadie sabe por que.
+    arti_model_keys = {clean_value(value).upper() for value in model_stock["Mod-Col KPI"] if clean_value(value)}
+    shopify_codigos = [clean_value(value).upper() for value in products_df.get("Mod-Col", pd.Series(dtype=object))]
+    shopify_sin_codigo = sum(1 for codigo in shopify_codigos if not codigo)
+    shopify_fuera_del_maestro = sum(
+        1 for codigo in shopify_codigos if codigo and codigo not in arti_model_keys
+    )
+
     created_with_stock = int((model_stock["Debe estar visible"] & model_stock["Producto_creado"]).sum())
     created_without_stock = int((model_stock["Producto_creado"] & ~model_stock["Debe estar visible"]).sum())
     web_visible = int(model_stock["Listo_venta"].sum())
@@ -11092,16 +11317,26 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     ].copy()
 
     def non_visible_reason(row):
+        # El ORDEN importa: este es el motivo que sale en el grafico de causas,
+        # o sea al que se manda a la gente a trabajar. Van primero las dos
+        # puertas que cierran el producto entero -- un borrador no lo ve nadie
+        # tenga el stock que tenga --; stock, foto y precio son cosas que se
+        # arreglan DESPUES de que el producto este activo y publicado.
+        #
+        # Antes "Sin stock Shopify" iba primero, asi que un producto recien
+        # creado en borrador -- que todavia no tiene stock sincronizado --
+        # se reportaba como problema de stock. La lista de bloqueos completa
+        # sigue en la columna `Bloqueos`, que no cambia.
+        if clean_value(row.get("Status_Shopify")).upper() != "ACTIVE":
+            return "No activo Shopify"
+        if clean_value(row.get("Publicado_Shopify")).upper() != "SI":
+            return "No publicado Online Store"
         if row.get("Sin_stock_shopify"):
             return "Sin stock Shopify"
         if row.get("Sin_foto_shopify"):
             return "Sin foto"
         if row.get("Sin_precio_shopify"):
             return "Sin precio"
-        if clean_value(row.get("Status_Shopify")).upper() != "ACTIVE":
-            return "No activo Shopify"
-        if clean_value(row.get("Publicado_Shopify")).upper() != "SI":
-            return "No publicado Online Store"
         return "Otros por revisar"
 
     def non_visible_blockers(row):
@@ -11129,9 +11364,13 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         return " | ".join(pieces)
 
     if not non_visible_web.empty:
-        non_visible_web["Motivo principal"] = non_visible_web.apply(non_visible_reason, axis=1)
-        non_visible_web["Bloqueos"] = non_visible_web.apply(non_visible_blockers, axis=1)
-        non_visible_web["Estado operativo"] = non_visible_web.apply(non_visible_state, axis=1)
+        # Una pasada por dicts en vez de tres `apply(axis=1)`: cada `apply`
+        # construye un Series por fila para leer cinco campos, y aqui se
+        # recorrian las mismas filas tres veces seguidas.
+        _filas_no_visibles = non_visible_web.to_dict("records")
+        non_visible_web["Motivo principal"] = [non_visible_reason(f) for f in _filas_no_visibles]
+        non_visible_web["Bloqueos"] = [non_visible_blockers(f) for f in _filas_no_visibles]
+        non_visible_web["Estado operativo"] = [non_visible_state(f) for f in _filas_no_visibles]
         non_visible_web["ModCol_BQ"] = 1
         non_visible_web["ModCol_stock_shopify"] = non_visible_web["Con_stock_shopify"].map(lambda value: 1 if value else 0)
         non_visible_counts = non_visible_web["Motivo principal"].value_counts().to_dict()
@@ -11165,7 +11404,12 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "sin_stock_visibles": int(len(no_stock_visible)),
         "modelos_variantes_incompletas": int(model_stock["Variantes_stock_incompletas"].sum()),
         "productos_creados_sin_stock": created_without_stock,
-        "productos_visibles": int((model_stock["Debe estar visible"] & model_stock["Visible_Shopify"]).sum()),
+        # `modelos_visibles_web` es EL numero de visibles. Habia otras tres
+        # claves con exactamente el mismo valor (`productos_visibles` no, ese
+        # era otro y no lo leia nadie): tener cuatro nombres para un numero es
+        # como acaban dos pantallas mostrando cosas distintas creyendo que
+        # miran lo mismo. Queda `modelos_visibles_web` para la pantalla y
+        # `modelos_visibles_reales_web` para la tabla de auditoria.
         "modelos_visibles_web": web_visible,
         "modelos_no_visibles_web": max(created_with_stock - web_visible, 0),
         "no_visible_sin_stock_shopify": int(non_visible_counts.get("Sin stock Shopify", 0)),
@@ -11174,7 +11418,6 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "no_visible_no_activo": int(non_visible_counts.get("No activo Shopify", 0)),
         "no_visible_no_publicado": int(non_visible_counts.get("No publicado Online Store", 0)),
         "no_visible_otros": int(non_visible_counts.get("Otros por revisar", 0)),
-        "modelos_listos_tienda": web_visible,
         "modelos_con_stock_con_foto": int(
             (model_stock["Debe estar visible"] & model_stock["Producto_creado"] & model_stock["Con_foto_shopify"]).sum()
         ),
@@ -11194,7 +11437,6 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             ).sum()
             / created_with_stock
         ) if created_with_stock else 0,
-        "modelos_listos_venta": web_visible,
         "modelos_sin_precio": int(len(no_price_models)),
         "modelos_sin_foto": int(len(no_photo_models)),
         "productos_shopify_sin_foto_total": int(len(shopify_no_photo_all)),
@@ -11202,6 +11444,11 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         "stock_ecomm_units": int(stock_ecomm_units),
         "stock_ecomm_models": int(stock_ecomm_models),
         "modelos_total_auditoria": int(model_stock["Mod-Col KPI"].nunique()),
+        # El catalogo REAL de la tienda, para que se vea cuanto de el queda
+        # fuera de todos los numeros de arriba.
+        "productos_en_shopify": int(len(products_df)),
+        "productos_shopify_fuera_del_maestro": int(shopify_fuera_del_maestro),
+        "productos_shopify_sin_codigo": int(shopify_sin_codigo),
         "modelos_no_creados_shopify": int(len(missing_models)),
         "modelos_creados_no_visibles": int(len(non_visible_web)),
         "modelos_visibles_reales_web": int(web_visible),
@@ -11222,7 +11469,10 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
     }
     kpi_audit = pd.DataFrame(
         [
-            {"Indicador": "Total modelos fuente ARTI/BigQuery", "Valor": kpis["modelos_total_auditoria"], "Lectura": "Modelo-color detectados con tallas validas."},
+            {"Indicador": "Total modelos fuente ARTI/BigQuery", "Valor": kpis["modelos_total_auditoria"], "Lectura": "Modelo-color detectados con tallas validas. ESTE es el universo de todos los KPI de abajo."},
+            {"Indicador": "Productos en el catalogo Shopify", "Valor": kpis["productos_en_shopify"], "Lectura": "Lo que de verdad hay en la tienda. No tiene por que coincidir con la fila de arriba."},
+            {"Indicador": "Productos Shopify fuera del maestro", "Valor": kpis["productos_shopify_fuera_del_maestro"], "Lectura": "Estan en la tienda con codigo Modelo-Color, pero ese codigo no esta en ARTI. NO entran en ningun KPI: descatalogados, de otra marca o cargados por fuera."},
+            {"Indicador": "Productos Shopify sin codigo Modelo-Color", "Valor": kpis["productos_shopify_sin_codigo"], "Lectura": "Sin el metacampo custom.codigo_modelo_color no se pueden cruzar contra el maestro. Tampoco entran en los KPI."},
             {"Indicador": "Productos sin ninguna foto", "Valor": kpis["productos_sin_foto_ratio"], "Lectura": "Modelo-color sin una sola imagen en Shopify. Cuenta productos, no imagenes ni variantes."},
             {"Indicador": "Tallas consolidadas por modelo-color", "Valor": kpis["stock_tallas_total"], "Lectura": "Tallas unicas tras consolidar. El stock del producto se controla por modelo-color."},
             {"Indicador": "Tallas con stock", "Valor": kpis["stock_tallas_con_stock"], "Lectura": "Tallas con unidades disponibles despues de aplicar el stock de seguridad."},
@@ -11253,17 +11503,37 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
             axis=1,
         )
 
+    # Las mismas cinco listas, pero sin `iterrows()`: cada vuelta construia un
+    # Series con las catorce columnas de `model_stock` para leer tres. Se lee
+    # por columnas y se arma la fila con `zip`.
+    def _acciones(frame, problema, accion):
+        if frame is None or frame.empty:
+            return []
+        return [
+            {
+                "Mod-Col": mod_col,
+                "Marca": marca,
+                "Problema": problema,
+                "Acción sugerida": accion,
+                "Stock total": stock_total,
+            }
+            for mod_col, marca, stock_total in zip(
+                frame["Mod-Col KPI"].to_numpy(),
+                frame["Marca"].to_numpy(),
+                frame["Stock_total"].to_numpy(),
+            )
+        ]
+
     action_rows = []
-    for _, row in missing_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock no creado", "Acción sugerida": "Pedir input al Brand Manager", "Stock total": row["Stock_total"]})
-    for _, row in no_stock_visible.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Sin stock visible", "Acción sugerida": "Apagar producto en Shopify", "Stock total": row["Stock_total"]})
-    for _, row in no_price_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Creado con stock sin precio", "Acción sugerida": "Cargar precio en Shopify", "Stock total": row["Stock_total"]})
-    for _, row in no_photo_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock sin foto", "Acción sugerida": "Solicitar fotos al Brand Manager", "Stock total": row["Stock_total"]})
-    for _, row in no_shopify_stock_models.iterrows():
-        action_rows.append({"Mod-Col": row["Mod-Col KPI"], "Marca": row["Marca"], "Problema": "Modelo con stock eComm sin stock Shopify", "Acción sugerida": "Revisar sincronización de stock hacia Shopify", "Stock total": row["Stock_total"]})
+    action_rows += _acciones(missing_models, "Modelo con stock no creado", "Pedir input al Brand Manager")
+    action_rows += _acciones(no_stock_visible, "Sin stock visible", "Apagar producto en Shopify")
+    action_rows += _acciones(no_price_models, "Creado con stock sin precio", "Cargar precio en Shopify")
+    action_rows += _acciones(no_photo_models, "Modelo con stock sin foto", "Solicitar fotos al Brand Manager")
+    action_rows += _acciones(
+        no_shopify_stock_models,
+        "Modelo con stock eComm sin stock Shopify",
+        "Revisar sincronización de stock hacia Shopify",
+    )
 
     actions_df = pd.DataFrame(action_rows)
     missing_model_keys = {clean_value(value) for value in missing_models.get("Mod-Col KPI", pd.Series(dtype=object))}
@@ -11294,6 +11564,7 @@ def build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config):
         expected,
         missing_models,
         brand_config,
+        enriquecer_ean=enriquecer_ean,
     )
     return {
         "kpis": kpis,
@@ -11331,19 +11602,57 @@ def load_catalog_kpi_result(brand_config, shopify_config, force_refresh=False, a
     `aviso` es el hueco donde se cuenta por donde va la lectura, y **lo crea el
     llamador**: creado aqui solo existiria en los reruns que leen, y eso cambia
     la forma del arbol de elementos entre un rerun y el siguiente.
+
+    Las tres lecturas van EN PARALELO
+    ---------------------------------
+    Eran secuenciales -- maestro ARTI, stock y catalogo de Shopify, una detras
+    de otra -- y las tres son espera de red, no CPU: el dashboard tardaba la
+    SUMA de las tres pudiendo tardar la mas lenta.
+
+    Las dos de BigQuery van a un hilo; la de Shopify se queda en el hilo de la
+    pantalla porque `leer_catalogo_del_sitio` lee y escribe `st.session_state`,
+    y eso no se puede tocar desde un hilo (la misma regla que obliga a
+    consultar la cache fuera del hilo en `cargar_catalogos_de_todos_los_sitios`).
+    Por eso tambien se resuelven ANTES las dos cosas que pasan por Streamlit:
+    `get_bigquery_config()` (lee `st.secrets`) y `ecomm_stock_rule_codes_for_site`
+    (pasa por `st.cache_data`).
+
+    El EAN no se completa aqui
+    --------------------------
+    `read_arti_for_app(con_ean=False)`: el codigo de barras no entra en ningun
+    KPI y completarlo sobre el maestro entero son decenas de consultas
+    encadenadas a BigQuery. Se completa despues, solo para los modelos que
+    faltan por crear, que es la unica hoja que lo usa.
     """
-    arti_df, arti_source = read_arti_for_app(brand_config)
-    stock_df = read_current_stock_from_bigquery(get_bigquery_config())
+    bigquery_config = get_bigquery_config()
+    allowed_ecomm_codes = ecomm_stock_rule_codes_for_site(brand_config)
+
+    def _enriquecer_ean_de_los_que_faltan(filas):
+        return enrich_arti_barcodes_from_bigquery_table(filas, bigquery_config)[0]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futuro_arti = pool.submit(
+            read_arti_for_app, brand_config,
+            mod_cols=None, con_ean=False, bigquery_config=bigquery_config,
+        )
+        futuro_stock = pool.submit(
+            read_current_stock_from_bigquery, bigquery_config, allowed_ecomm_codes,
+        )
+        shopify_products = leer_catalogo_del_sitio(
+            brand_config.get("site_key"), shopify_config,
+            force_refresh=force_refresh, aviso=aviso,
+        )
+        arti_df, arti_source = futuro_arti.result()
+        stock_df = futuro_stock.result()
+
     if stock_df.empty:
         raise RuntimeError(
             "BigQuery devolvio 0 filas de stock. No se actualizo el dashboard para evitar pisar KPIs validos con ceros."
         )
-    shopify_products = leer_catalogo_del_sitio(
-        brand_config.get("site_key"), shopify_config,
-        force_refresh=force_refresh, aviso=aviso,
+    result = build_catalog_kpis(
+        arti_df, stock_df, shopify_products, brand_config,
+        enriquecer_ean=_enriquecer_ean_de_los_que_faltan,
     )
-    result = build_catalog_kpis(arti_df, stock_df, shopify_products, brand_config)
-    allowed_ecomm_codes = ecomm_stock_rule_codes_for_site(brand_config)
     result["meta"] = {
         "cache_version": KPI_CACHE_VERSION,
         "arti_source": arti_source,
@@ -20137,7 +20446,7 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 "Filtro eComm: "
                 f"{safe_int_value(meta.get('ecomm_bodegas_count'))} bodegas configuradas | "
                 f"fecha corte stock: {clean_value(meta.get('fecha_corte')) or 'sin fecha'} | "
-                f"filas BigQuery: {format_kpi_number(meta.get('stock_raw_rows'))} -> "
+                f"filas de stock leidas: {format_kpi_number(meta.get('stock_raw_rows'))} -> "
                 f"{format_kpi_number(meta.get('stock_cutoff_rows', meta.get('stock_raw_rows')))} ultimo corte | "
                 f"tallas eComm con stock: {format_kpi_number(meta.get('stock_filtered_rows'))}"
             )
@@ -20178,6 +20487,24 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
                 f"Sin match: {', '.join(missing_stores[:8])}"
             )
     render_kpi_cards(kpis)
+    # De que universo hablan los numeros de arriba. Se calculan sobre el
+    # maestro ARTI, asi que un producto que esta en Shopify y no en el maestro
+    # no aparece en ninguno: sin decirlo, "Creados con stock" se lee como el
+    # tamano del catalogo y no cuadra con el admin de Shopify.
+    _fuera = safe_int_value(kpis.get("productos_shopify_fuera_del_maestro"), 0) + safe_int_value(
+        kpis.get("productos_shopify_sin_codigo"), 0)
+    _pie_universo = (
+        f"Los KPI de arriba se calculan sobre el **maestro ARTI/BigQuery**, no sobre el catálogo entero. "
+        f"La tienda tiene **{format_kpi_number(kpis.get('productos_en_shopify'))} productos** leídos"
+    )
+    if _fuera:
+        _pie_universo += (
+            f", de los cuales **{format_kpi_number(_fuera)} quedan fuera de estos números** por no estar en el "
+            "maestro o no tener código Modelo-Color. El detalle está en *Auditoría de visibilidad Shopify*."
+        )
+    else:
+        _pie_universo += " y todos cruzan contra el maestro."
+    st.caption(_pie_universo)
     render_non_visible_combo_table(combo_summary_df)
 
     actions_df = result["actions"]
@@ -20193,11 +20520,15 @@ def render_catalog_kpi_dashboard(ui_config, brand_config, shopify_config, bigque
         {"label": "Pendientes de creacion", "short": "Pendientes", "value": kpis["modelos_pendientes"], "icon": "!"},
         {"label": "Visibles en web", "short": "Visibles web", "value": kpis["modelos_visibles_web"], "icon": "&#9711;"},
         {"label": "No visibles en web", "short": "No visibles web", "value": kpis["modelos_no_visibles_web"], "icon": "&#9676;"},
+        # En el mismo orden en que se decide el motivo (`non_visible_reason`):
+        # primero las dos puertas que cierran el producto entero. Que el
+        # grafico y el calculo no coincidan en el orden es como se acaba
+        # mandando a alguien a arreglar el problema equivocado.
+        {"label": "Causa principal: no activo", "short": "Causa activo", "value": kpis["no_visible_no_activo"], "icon": "&#9676;"},
+        {"label": "Causa principal: no publicado", "short": "No publicado", "value": kpis.get("no_visible_no_publicado", 0), "icon": "&#9676;"},
         {"label": "Causa principal: sin stock Shopify", "short": "Causa stock", "value": kpis["no_visible_sin_stock_shopify"], "icon": "S"},
         {"label": "Causa principal: sin foto", "short": "Causa foto", "value": kpis["no_visible_sin_foto"], "icon": "&#9673;"},
         {"label": "Causa principal: sin precio", "short": "Causa precio", "value": kpis["no_visible_sin_precio"], "icon": "$"},
-        {"label": "Causa principal: no activo", "short": "Causa activo", "value": kpis["no_visible_no_activo"], "icon": "&#9676;"},
-        {"label": "Causa principal: no publicado", "short": "No publicado", "value": kpis.get("no_visible_no_publicado", 0), "icon": "&#9676;"},
         {"label": "Variantes con stock eComm sin stock Shopify", "short": "Revisar sucursal", "value": kpis.get("variantes_stock_ecomm_sin_stock_shopify", 0), "icon": "&#8635;"},
     ]
     pareto_rows = [
@@ -22101,6 +22432,9 @@ def construir_status_de_carga(catalogos, solicitudes):
     orden = [FLUJO_ETIQUETAS[clave] for clave in FLUJO_ORDEN]
     return {
         "kpis": status_carga.kpis(filas, solicitudes, estado_legible, finales),
+        # La resta que el panel prometia y no hacia: lo que pidieron las marcas
+        # contra el catalogo REAL, no contra el estado de la propia solicitud.
+        "cruce": status_carga.cruce_de_solicitudes(filas, solicitudes),
         "matriz": status_carga.matriz_marcas_por_sitio(filas, sitios),
         "clases": status_carga.resumen_por_clase(filas),
         "visibilidad": status_carga.estado_de_visibilidad(filas),
@@ -22296,29 +22630,75 @@ def render_status_de_carga(ticket_actor):
         st.caption(f"Última actualización: {guardado.get('actualizado', '')}")
 
     kpis = tablas["kpis"]
-    tarjetas = [
-        ("Productos cargados", kpis["Productos cargados"], "blue", "&#9633;"),
-        ("Prendidos y visibles", kpis["Prendidos y visibles"], "green", "&#9711;"),
-        ("No visibles", kpis["No visibles"], "orange", "&#9676;"),
-        ("% visible", f"{kpis['% visible']:.1f}%", "purple", "%"),
-        ("SKUs inyectados", kpis["SKUs inyectados"], "blue", "&#8595;"),
-        ("SKUs en curso", kpis["SKUs en curso"], "orange", "!"),
-        ("Solicitudes en curso", kpis["Solicitudes en curso"], "orange", "&#9679;"),
-        # La ETIQUETA lleva tilde porque la lee una persona; la CLAVE no,
-        # porque `engines/load_status` no usa tildes en ninguna. Pedirla con
-        # tilde era un KeyError que tumbaba la pantalla entera.
-        ("Marcas con catálogo", kpis["Marcas con catalogo"], "purple", "&#9670;"),
-    ]
-    render_html(
-        '<div class="kpi-section-label">Operatividad de carga en todos los sitios</div>'
-        '<div class="kpi-card-grid">'
-        + "".join(
-            f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
-            f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
-            for titulo, valor, tono, icono in tarjetas
+    cruce = tablas.get("cruce") or {}
+
+    def _bloque_de_tarjetas(titulo_bloque, tarjetas):
+        render_html(
+            f'<div class="kpi-section-label">{titulo_bloque}</div>'
+            '<div class="kpi-card-grid">'
+            + "".join(
+                f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+                f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+                for titulo, valor, tono, icono in tarjetas
+            )
+            + "</div>"
         )
-        + "</div>"
+
+    # Dos bloques, y no uno de ocho tarjetas mezcladas. Las cuatro primeras son
+    # una FOTO del catalogo de hoy; las de abajo son un ACUMULADO historico de
+    # lo que pidieron las marcas. Puestas en la misma rejilla invitaban a
+    # restarlas, y esa resta no significa nada.
+    #
+    # "No visibles" se partio en dos: un borrador o un activo sin publicar
+    # estan a un paso de verse -- eso es trabajo pendiente -- y un ARCHIVADO
+    # esta apagado a proposito. Sumados, el numero que se lee como "lo que me
+    # falta prender" venia inflado con productos que nadie va a publicar.
+    _bloque_de_tarjetas(
+        "El catálogo hoy, en todas las webs",
+        [
+            ("Fichas cargadas", kpis["Productos cargados"], "blue", "&#9633;"),
+            ("Prendidos y visibles", kpis["Prendidos y visibles"], "green", "&#9711;"),
+            ("Pendientes de publicar", kpis["Pendientes de publicar"], "orange", "!"),
+            ("Archivados", kpis["Archivados"], "purple", "&#9675;"),
+            ("% visible", f"{kpis['% visible']:.1f}%", "purple", "%"),
+        ],
     )
+    st.caption(
+        "**Pendientes de publicar** son los que están en borrador o activos sin publicar: a un paso de verse. "
+        "**Archivados** están apagados a propósito y no son trabajo pendiente — antes los dos iban juntos en "
+        "*No visibles*, así que ese número venía inflado con productos que nadie va a publicar. "
+    )
+    st.caption(
+        f"**Fichas cargadas** cuenta una por sitio: el mismo Modelo-Color publicado en tres webs son tres fichas, "
+        f"porque se prende o se apaga en cada una por separado. Productos distintos contando todas las webs juntas: "
+        f"**{format_kpi_number(kpis.get('Productos unicos'))}** — esa es la base de las pestañas *SKUs por clase* y "
+        f"*Marcas por sitio*, y por eso sus totales son más bajos que el de arriba."
+    )
+
+    # Esta es la resta que el panel prometia y no hacia: lo que las marcas
+    # pidieron contra el CATALOGO REAL. Antes solo se comparaban solicitudes
+    # contra solicitudes -- cuantas llegaron a un estado final --, asi que una
+    # solicitud marcada "Finalizada" cuyos productos no estaban en ninguna
+    # tienda se contaba como terminada y nada lo decia.
+    _bloque_de_tarjetas(
+        "Lo que pidieron las marcas, contra lo que hay en la web",
+        [
+            ("Códigos pedidos", cruce.get("Codigos pedidos", 0), "blue", "&#8595;"),
+            ("Ya cargados", cruce.get("Codigos pedidos cargados", 0), "green", "&#9679;"),
+            ("Sin cargar", cruce.get("Codigos pedidos sin cargar", 0), "orange", "!"),
+            ("Solicitudes en curso", kpis["Solicitudes en curso"], "orange", "&#9673;"),
+        ],
+    )
+    _pie_cruce = [
+        "**Códigos pedidos** son Modelo-Color distintos: un código pedido en dos solicitudes cuenta una vez. "
+        "**Sin cargar** es el que no aparece en el catálogo de ninguna web — da igual en qué estado esté su solicitud."
+    ]
+    if safe_int_value(cruce.get("Solicitudes sin detalle"), 0):
+        _pie_cruce.append(
+            f"**{format_kpi_number(cruce.get('Solicitudes sin detalle'))} solicitudes no entran en este cruce**: "
+            "se guardaron sin la lista de códigos, solo con el total. Su avance sigue en *Avance por marca*."
+        )
+    st.caption(" ".join(_pie_cruce))
 
     sitios_df = _tabla_status(guardado.get("sitios"))
     if not sitios_df.empty and (sitios_df["Estado"] != "Leido").any():
@@ -22399,7 +22779,10 @@ def render_status_de_carga(ticket_actor):
         st.dataframe(_tabla_status(tablas["por_estado"]), width="stretch", hide_index=True)
 
     hojas = {
-        "Resumen": pd.DataFrame([{"Indicador": k, "Valor": v} for k, v in kpis.items()]),
+        "Resumen": pd.DataFrame(
+            [{"Indicador": k, "Valor": v} for k, v in kpis.items()]
+            + [{"Indicador": k, "Valor": v} for k, v in cruce.items()]
+        ),
         "Sitios leidos": sitios_df,
         "Prendido y visible": _tabla_status(tablas["visibilidad"]),
         "No visibles": _tabla_status(tablas["no_visibles"]),
@@ -31451,6 +31834,13 @@ api_version = "{DEFAULT_API_VERSION}"
                 with st.container(key="action_panel"):
                     render_analyze_card(ui_config)
                     analyze_clicked = st.button("Analizar input", type="primary", key=f"analyze_input_{brand_config['site_key']}")
+                    # El hueco del avance se crea SIEMPRE, no dentro del `if`.
+                    # Creado en la rama solo existiria en los reruns que
+                    # analizan, y eso cambia la FORMA del arbol de elementos
+                    # entre un rerun y el siguiente: Streamlit deja de poder
+                    # reemplazar el bloque de abajo y lo AGREGA debajo del
+                    # viejo. Es el fallo de la seccion 5 terdecies.
+                    aviso_analisis = st.empty()
                 render_validations_card()
                 if complete_source == "Shopify API":
                     render_catalogo_leido(brand_config["site_key"])
@@ -31477,6 +31867,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     )
                     st.session_state.pop("complete_data_context", None)
                     st.stop()
+                _paso_del_analisis(aviso_analisis, 1, f"cruzando {len(input_df):,} productos con el maestro ARTI y el catálogo")
                 with st.spinner("Analizando input y cruzando contra Shopify/BigQuery..."):
                     matrixify_df, summary_df, issues_df, type_warnings_df, skipped_df, sial_df = build_columbia_matrixify(
                         input_df, arti_df, template_df, brand_config=brand_config
@@ -31488,10 +31879,12 @@ api_version = "{DEFAULT_API_VERSION}"
                 skipped_df = coalesce_duplicate_columns(skipped_df)
                 sial_df = coalesce_duplicate_columns(sial_df)
                 if complete_source == "Shopify API":
+                    _paso_del_analisis(aviso_analisis, 2, "enlazando los otros colores del mismo modelo (siblings)")
                     matrixify_df = apply_shopify_siblings_to_matrixify(
                         matrixify_df,
                         st.session_state.get("complete_shopify_products", []),
                     )
+                _paso_del_analisis(aviso_analisis, 3, "armando la hoja Centry")
                 centry_df, centry_issues_df = build_centry_from_matrixify(matrixify_df, brand_config, arti_df=arti_df)
                 st.session_state["complete_matrixify_df"] = matrixify_df
                 st.session_state["complete_summary_df"] = summary_df
@@ -31505,10 +31898,15 @@ api_version = "{DEFAULT_API_VERSION}"
                 # y, del Sial, la ruta en disco para poder adjuntarlo al cerrar
                 # la solicitud. El Excel completo ya se escribio en disco.
                 st.session_state["complete_centry_resumen"] = resumen_centry_para_pantalla(centry_df)
+                _paso_del_analisis(aviso_analisis, 4, "guardando la hoja Carga Sial")
                 _guardar_resumen_sial(sial_df, brand_config)
                 st.session_state["complete_analysis_message"] = (
                     f"Analisis terminado: {len(matrixify_df):,} filas Matrixify, "
                     f"{len(issues_df):,} observaciones, {len(skipped_df):,} omitidos sin cambios."
+                )
+                _paso_del_analisis(
+                    aviso_analisis, 5,
+                    f"escribiendo el Excel de {len(matrixify_df):,} filas — es el paso más lento, no cierres la pestaña",
                 )
                 st.session_state["complete_excel_path"] = _guardar_excel_en_disco(
                     columbia_to_excel_bytes(
@@ -31516,6 +31914,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     ),
                     brand_config,
                 )
+                _paso_del_analisis(aviso_analisis, 0, "")
                 # El catalogo Shopify en crudo ya no se necesita: los siblings
                 # se aplicaron arriba. Retenerlo era decenas de MB por sesion.
                 st.session_state.pop("complete_shopify_products", None)

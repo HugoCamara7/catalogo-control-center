@@ -662,13 +662,30 @@ from engines.tallas import es_reconocida as talla_reconocida  # noqa: E402
 
 
 def normalize_size(value):
+    """La talla en su forma canonica. UNICO normalizador de tallas de la app.
+
+    El trabajo va en `_normalize_size_texto`, que esta CACHEADO. Un catalogo
+    entero tiene unas decenas de tallas distintas y esta funcion se llama
+    cientos de miles de veces: medido en una carga de 1.008 productos,
+    **335.673 llamadas** -- 37 por fila del Matrixify -- cada una corriendo
+    cinco expresiones regulares sobre el mismo punado de cadenas.
+
+    La cache va sobre el TEXTO ya limpio, nunca sobre el valor original: con el
+    valor como clave, `1`, `1.0` y `True` comparten hash y entrada de cache
+    (`hash(1) == hash(1.0) == hash(True)`), asi que un booleano se llevaria la
+    respuesta de un numero. Es un error que no revienta.
+    """
     if value is None or pd.isna(value):
         return ""
 
     if isinstance(value, (pd.Timestamp, datetime)):
         return f"{value.day}/{value.month}"
 
-    text = clean(value).upper()
+    return _normalize_size_texto(clean(value).upper())
+
+
+@lru_cache(maxsize=8192)
+def _normalize_size_texto(text):
     if not text:
         return ""
     if text in {"NAN", "NONE", "NULL", "NA", "N/A", "#N/A", "#N/D", "#ND", "SIN TALLA"}:
@@ -1340,8 +1357,18 @@ def category_blocks_zero_size(product):
 
 
 def is_zero_size(value):
-    raw_text = clean(value).upper()
-    normalized_text = clean(normalize_size(value)).upper()
+    """El `0` de cabecera que el maestro pone al lado de una talla unica.
+
+    Se llama una vez por fila y por talla -- 127.008 veces en una carga de
+    1.008 productos --, y solo depende del TEXTO de la talla. Igual que
+    `normalize_size`, el trabajo va cacheado por texto y no por valor.
+    """
+    return _is_zero_size_texto(clean(value).upper())
+
+
+@lru_cache(maxsize=8192)
+def _is_zero_size_texto(raw_text):
+    normalized_text = clean(_normalize_size_texto(raw_text)).upper()
     candidates = {raw_text, normalized_text}
     for text in candidates:
         text = re.sub(r"\b(TALLA|SIZE|TAL)\b", "", text)
@@ -1360,13 +1387,23 @@ def is_one_size(value):
     return size in ("O/S", "OS", "ONESIZE", "UNICA", "ÚNICA", "TALLAUNICA")
 
 
-def es_calzado(product_type):
-    """True si ese tipo de prenda es calzado, segun el diccionario maestro."""
+@lru_cache(maxsize=4096)
+def _clase_de_tipo_cacheada(product_type):
+    """`clase_de` sobre el diccionario de tipos, memoizado.
+
+    El tipo de prenda se repite en todas las filas del mismo producto y el
+    diccionario no cambia durante la ejecucion.
+    """
     try:
         from engines.garment_types import clase_de
     except ImportError:
-        return False
-    return clean(clase_de(product_type)).casefold() == "calzado"
+        return ""
+    return clean(clase_de(product_type)).casefold()
+
+
+def es_calzado(product_type):
+    """True si ese tipo de prenda es calzado, segun el diccionario maestro."""
+    return _clase_de_tipo_cacheada(product_type) == "calzado"
 
 
 

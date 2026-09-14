@@ -5143,6 +5143,248 @@ PLP**, que es donde estan esos criterios y su vista previa. Este Excel fija el
 orden que tu escribas (o el de las filas); el Boost lo recalcula con datos de
 la tienda.
 
+## 5 quaterquadragies. Los dashboards: lo que costaba leerlos y lo que decian (septiembre 2026)
+
+Pedido literal: *"las consultas con el big query siento que siguen demorando
+mucho porque los dashboard demoran, adicional siento que el de status esta mal
+hecho los kpis no tienen tanto sentido revisalo bien, al igual revisate los kpis
+de catalogo esten super bien"*. Y a mitad del trabajo, con una captura de Carga
+completa: *"le di analizar input pero no se si ya cargo, si sigue cargando o no
+se, pero no bota nada, se demora un monton"*.
+
+### 1. El EAN: decenas de consultas a BigQuery que ningun KPI lee
+
+`load_catalog_kpi_result` leia el maestro con `read_arti_for_app`, que llama a
+`enrich_arti_barcodes_from_bigquery_table`. Esa funcion consulta el Maestro de
+Productos **en tandas de 5.000 SKU, una consulta por tanda**
+(`EAN_SKUS_POR_CONSULTA`). El dashboard pide el maestro SIN `mod_cols`, o sea
+entero: con 200.000 SKU sin EAN son **40 consultas encadenadas**, cada una
+escaneando la tabla de productos.
+
+**Ningun KPI lee `CodBarras`.** Comprobado recorriendo la funcion: lo usa una
+sola columna, `EAN / Barcode`, de la hoja "Variantes a crear" del Excel de
+modelos no creados -- que son unos cientos de codigos, no el maestro.
+
+`read_arti_for_app(con_ean=False)` se lo salta, y el EAN se completa **solo
+para los modelos que faltan**, dentro de `build_missing_models_input_export`
+(`enriquecer_ean`): una consulta o ninguna. Si esa consulta falla, la hoja sale
+igual con la columna vacia -- que es lo que pasaba cuando el maestro no traia
+el codigo --; un fallo de BigQuery no puede tumbar el dashboard.
+
+**La carga completa sigue pidiendolo** (`con_ean=True`), y ahi va acotado
+porque pasa los `mod_cols` del input.
+
+### 2. El stock se bajaba entero para tirar el 99 % en Python
+
+`STOCK_QUERY_DEFAULT` bajaba `stg_pe_central_stock_bi` del ultimo corte para
+**todas las tiendas del Peru**, y el filtro real ocurria despues, en
+`apply_ecomm_stock_rules`. Las bodegas eComm de un sitio son un punado
+(Columbia 4/13/6, Vans 103, Hush Puppies 2/13) de las ~400 de la tabla.
+
+`_stock_query_acotada_a_bodegas` envuelve la consulta y filtra en el WHERE. Tres
+cosas que no son negociables:
+
+- **El filtro SQL es MAS LAXO que el de Python, nunca mas estricto.** Pasa la
+  fila si CUALQUIERA de los numeros que trae `codigo_tienda` esta en la lista
+  (`REGEXP_EXTRACT_ALL`), y tambien si el campo viene vacio -- ahi la bodega
+  sale de `CONCAT_TIENDA` y se resuelve en Python. Asi quien decide que entra
+  sigue siendo `normalize_warehouse_code`, exactamente como antes; lo unico que
+  cambia es cuantos bytes viajan.
+- **Una consulta acotada VACIA no se da por buena**: se repite sin acotar.
+  `load_catalog_kpi_result` corta con "BigQuery devolvio 0 filas de stock" para
+  no pisar KPIs validos con ceros, y ese corte tiene que seguir significando
+  "la tabla no respondio", no "este sitio no tiene stock".
+- Si la consulta acotada falla -- una `stock_query` propia de Secrets que no
+  expone `codigo_tienda` --, se repite sin acotar y no se pierde nada.
+
+### 3. Las tres lecturas iban una detras de otra
+
+Maestro ARTI, stock y catalogo de Shopify: las tres son espera de RED, y el
+dashboard tardaba la SUMA pudiendo tardar la mas lenta. Las dos de BigQuery van
+ahora a un hilo y la de Shopify se queda en el hilo de la pantalla, porque
+`leer_catalogo_del_sitio` **lee y escribe `st.session_state`** y eso no se puede
+tocar desde un hilo -- la misma regla de la seccion 5 quater.
+
+Por eso tambien se resuelven ANTES las dos cosas que pasan por Streamlit:
+`get_bigquery_config()` (lee `st.secrets`) y `ecomm_stock_rule_codes_for_site`
+(pasa por `st.cache_data`). Hay una prueba que comprueba en que hilo corre cada
+una.
+
+### 4. El calculo de los KPI: 15,9 s a 2,1 s, con la salida IDENTICA
+
+Medido con 6.000 modelo-color, 27.258 filas de maestro y 4.200 productos de
+Shopify. Con cProfile, **`build_missing_models_input_export` era 23,6 de los 32
+segundos** -- y es la hoja de un boton de descarga dentro de un desplegable
+cerrado, que se calculaba entera en cada refresco.
+
+| | antes | ahora |
+|---|---:|---:|
+| `build_catalog_kpis` | **15,87 s** | **2,10 s** |
+
+Cuatro cosas, y ninguna cambia un solo valor:
+
+1. **`row_first_value` rearmaba el mapa de columnas normalizadas en CADA
+   llamada.** 27.672 llamadas sobre un maestro de 48 columnas eran **1,3
+   millones** de `normalize_header` -- una expresion regular cada una -- para
+   resolver siempre los mismos 48 nombres. Ahora va por `lru_cache` sobre la
+   tupla de columnas, como ya hacia `_column_key_maps`. Gana la ULTIMA columna
+   que normalice igual, que es lo que hacia el diccionario por comprension:
+   cambiar el criterio cambiaria en silencio de que columna sale el valor.
+2. **`filter_visible_kpi_sizes` hacia un `.copy()` y dos `.map()` POR
+   MODELO-COLOR.** Las tres pruebas de talla se resuelven ahora una vez por
+   talla DISTINTA -- son unas decenas -- y no una vez por fila. El orden de
+   salida se conserva ordenado por Mod-Col, que es el que dejaba el `groupby` +
+   `concat`: la hoja de modelos no creados recorre el frame con
+   `groupby(sort=False)` y sale en ese orden.
+3. **El bucle de modelos no creados recorria `groupby` + `iterrows`**, con un
+   `group.iloc[0]` que construye un Series de 48 columnas para leer veinte
+   campos. Ahora recorre dicts. `row_first_value` acepta las dos formas
+   (`_claves_de_fila`): con un dict, `getattr(row, "index")` devolvia `[]`
+   **sin fallar**, y el respaldo por nombre normalizado dejaba de encontrar la
+   columna -- el peor tipo de error.
+4. **`.apply(axis=1)` x4 y `iterrows()` x5** en el resto de la funcion, mas un
+   `arti_df.copy()` de 337 MB que se tiraba en la linea siguiente (la copia la
+   hace ya `normalize_arti_columns_for_app`) y una normalizacion de
+   `stock["key_producto"]` escrita dos veces seguidas.
+
+**Comparadas las 18 tablas y los 46 KPI antes y despues: cero celdas
+distintas.**
+
+### 5. Los KPI de catalogo: cuatro cosas que no cuadraban
+
+**El universo es el maestro ARTI, y no se decia en ninguna parte.** Un producto
+que esta en Shopify y no en el maestro -- descatalogado, de otra marca, cargado
+por fuera, o sin el metacampo `custom.codigo_modelo_color` -- **no aparece en
+ningun numero**. Asi "Modelos ya creados en Shopify" se leia como el tamano del
+catalogo, no cuadraba con el admin de Shopify y nadie sabia por que. Ahora hay
+tres KPI nuevos (`productos_en_shopify`,
+`productos_shopify_fuera_del_maestro`, `productos_shopify_sin_codigo`), la
+tabla de auditoria los explica y la pantalla lo dice debajo de las tarjetas.
+
+**La causa principal mandaba al equipo equivocado.** `non_visible_reason`
+evaluaba "Sin stock Shopify" ANTES que "no activo" y "no publicado", asi que un
+producto recien creado en borrador -- que todavia no tiene stock sincronizado
+-- se reportaba como problema de STOCK. Van primero las dos puertas que cierran
+el producto entero: un borrador no lo ve nadie tenga el stock que tenga. La
+columna `Bloqueos` sigue listandolos todos, y el grafico de causas se reordeno
+para leerse en el mismo orden en que se decide -- que el grafico y el calculo
+no coincidan es otra forma de mandar a alguien al problema equivocado. Medido
+en la prueba sintetica: **247 modelos cambiaron de causa**.
+
+**Cuatro claves para el mismo numero.** `modelos_visibles_web`,
+`modelos_listos_tienda`, `modelos_listos_venta` y `modelos_visibles_reales_web`
+valian exactamente lo mismo, y dos de ellas no las leia nadie. Se fueron esas
+dos y `productos_visibles`, que tampoco se leia. Tener cuatro nombres para un
+numero es como acaban dos pantallas mostrando cosas distintas creyendo que
+miran lo mismo.
+
+**Y `KPI_CACHE_VERSION` se subio**, porque los numeros cambian: un resultado
+guardado con la version anterior se descarta en vez de mezclarse.
+
+### 6. "Publicado en Online Store" se decidia con DOS reglas distintas
+
+`flatten_shopify_for_kpis` (KPIs de catalogo) y `load_status.estado_web`
+(Status de carga) leen el MISMO producto y no contestaban lo mismo. Con
+`Published Online Store` vacio -- que es lo que llega cuando la tienda no expone
+el canal -- el primero miraba `Online Store URL` y el segundo daba por NO
+publicado. O sea que el mismo producto salia **visible en una pantalla y no
+visible en la otra**, y en una tienda que no exponga el canal eso no es un
+producto: es el catalogo entero. Es la trampa de las dos `normalize_size`.
+
+Manda el que tiene razon: Shopify devuelve `onlineStoreUrl` **null justamente
+cuando el producto no esta publicado** en Online Store, asi que una URL es
+prueba, no una suposicion. La regla vive ahora en
+`load_status.publicado_en_la_web`, que devuelve `(publicado, fuente)`, y la
+llaman las dos. Hay una prueba que recorre las doce combinaciones de
+estado x publicado x URL y exige que las dos pantallas coincidan.
+
+### 7. Los KPI del Status de carga
+
+**"No visibles" metia los archivados.** Un borrador y un activo sin publicar
+estan a un paso de verse -- eso es trabajo pendiente --; un ARCHIVADO esta
+apagado a proposito. Sumados, el numero que se lee como "lo que me falta
+prender" venia inflado con productos que nadie va a publicar, y hundia el
+`% visible`. Ahora son dos: `Pendientes de publicar` y `Archivados`.
+`No visibles` se queda y sigue siendo la suma de los dos.
+
+**Habia TRES bases de conteo distintas en la misma pantalla y ninguna
+explicada.** El titular contaba **fichas** (sitio x producto: el mismo
+Modelo-Color en tres webs son tres); la pestana "SKUs por clase" y "Marcas por
+sitio" cuentan **productos unicos** entre todas las webs; y `Modelo-Color
+unicos` -- que ni se mostraba -- deja fuera los productos sin metacampo. Asi el
+titular decia 20.000 y la pestana de abajo 14.000 para el mismo catalogo. Se
+agrego `Productos unicos`, que es exactamente la base de esas pestanas, y la
+pantalla dice cual es cual. Hay una prueba que exige que ese KPI y el total de
+"SKUs por clase" den el mismo numero.
+
+**El panel no cruzaba NUNCA las solicitudes contra el catalogo real.**
+Comparaba solicitudes contra solicitudes -- cuantas llegaron a un estado final
+-- y catalogo contra catalogo, pero nunca lo uno contra lo otro, que es
+justamente lo que el modulo promete desde su docstring. Consecuencia: una
+solicitud marcada "Finalizada" cuyos productos no estan en ninguna tienda se
+contaba como terminada y nada lo decia.
+
+`cruce_de_solicitudes` responde la resta: de los codigos que pidieron las
+marcas, cuantos estan cargados, cuantos se ven y cuantos no estan en ninguna
+web. **Solo entran las solicitudes que traen su lista `model_colors`**: las
+viejas guardaron solo el CONTEO (`summary.products`), y cruzar un numero contra
+un conjunto de codigos daria un porcentaje inventado. Cuantas quedaron fuera se
+reporta, para que el total no parezca completo cuando no lo es.
+
+**Y las tarjetas se partieron en dos bloques**, porque las del catalogo son una
+FOTO de hoy y las de solicitudes un ACUMULADO historico: puestas en la misma
+rejilla invitaban a restarlas, y esa resta no significa nada. "Marcas con
+catalogo" salio del titular -- es un conteo de dimensiones, no un indicador
+accionable -- y se queda en el dict y en la hoja Resumen del Excel.
+
+### 8. "Analizar input": el spinner mudo
+
+Reportado con la pantalla a la vista. El analisis corria detras de **UN solo
+`st.spinner`** mientras hacia cinco cosas pesadas -- cruzar el input contra el
+maestro y el catalogo, enlazar siblings, armar el Centry, guardar la Carga Sial
+y escribir el Excel --. Medido con 1.008 productos de Vans (9.072 filas de
+Matrixify): **19,4 s de CPU** solo en esos tres pasos, mas las lecturas de red.
+Y mientras tanto Streamlit deja a la vista la pantalla ANTERIOR en gris, que no
+se puede evitar desde el script (seccion 5 tertrigies).
+
+`_paso_del_analisis` numera los cinco pasos y el ultimo dice cual es el mas
+lento. **El hueco lo crea el LLAMADOR, siempre, nunca dentro de `if
+analyze_clicked:`**: creado en la rama solo existiria en los reruns que
+analizan, y eso cambia la FORMA del arbol de elementos entre un rerun y el
+siguiente -- el bloque de abajo se AGREGA debajo del viejo en vez de
+reemplazarlo. Hay una prueba AST que falla si el hueco vuelve a caer dentro de
+la rama.
+
+**Y `normalize_size` se llamaba 335.673 veces** en esa carga -- 37 por fila --,
+cada una corriendo cinco expresiones regulares sobre el mismo punado de
+cadenas; `is_zero_size`, 127.008. Un catalogo entero tiene unas decenas de
+tallas distintas. Los dos van ahora por `lru_cache`, y **la cache va sobre el
+TEXTO ya limpio, nunca sobre el valor original**: con el valor como clave, `1`,
+`1.0` y `True` comparten hash y entrada de cache, asi que un booleano se
+llevaria la respuesta de un numero -- otro error que no revienta. Medido:
+`normalize_size` pasa de 3,74 s a 0,51 s de perfil acumulado, y el analisis de
+21,2 s a 19,4 s. Despues de eso el perfil queda plano: no hay un segundo
+cuello, es trabajo repartido.
+
+`scripts/test_kpis_y_bigquery.py` (37 pruebas) fija todo esto; **30 fallan con
+el codigo anterior** y las que pasan en las dos versiones son las que exigen que
+nada cambie. Las pruebas EJECUTAN -- arman maestro, stock y catalogo falsos,
+llaman a `load_catalog_kpi_result` con las lecturas espiadas y miden en que
+hilo corre cada una --: leer el codigo no es ejecutarlo.
+
+### Lo que NO se hizo, y por que
+
+- **Cachear el stock en sesion.** El resultado de los KPI ya se cachea en disco
+  y en sesion, y el unico camino que vuelve a leer stock es "Actualizar", que
+  es justo la orden de NO usar cache. Seria cache por la cache.
+- **Pedirle a BigQuery solo las columnas del maestro que usan los KPI.** La
+  hoja de modelos no creados lee veinte campos del maestro (temporada,
+  coleccion, material, cuidado, ocasion, deporte...), asi que acotar columnas
+  vaciaria ese Excel.
+- **Mover el analisis al worker.** Sigue siendo el Pendiente 7.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -5385,7 +5627,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **74 archivos y ~2.288 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **75 archivos y ~2.325 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

@@ -36,6 +36,7 @@ TIEMPO = 420
 
 # Las pantallas del menu principal, con el valor que escribe cada boton.
 AREAS = [
+    "Inicio",
     "KPIs de catálogo",
     "Status de carga",
     "Carga Supermall",

@@ -265,7 +265,11 @@ class TestPantallaCargaParcial(unittest.TestCase):
     ]
 
     def test_la_opcion_esta_en_el_desplegable(self):
-        self.assertIn('CARGA_SIAL_LABEL: "sial",', FUENTE_APP)
+        # Le pregunta al MODELO del menu (`carga_parcial_operaciones`) y no al
+        # texto del archivo: reorganizar el menu no puede poner roja una prueba
+        # cuyo contrato -- "esta operacion se puede elegir" -- sigue intacto.
+        import app_matrixify as _app
+        self.assertIn("sial", _app.carga_parcial_operaciones().values())
         self.assertIn('CARGA_SIAL_LABEL = "Carga Sial"', FUENTE_APP)
 
     def test_el_excel_de_codigos_sirve_a_las_dos_entregas(self):

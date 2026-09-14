@@ -293,25 +293,18 @@ class TestLaPantalla(unittest.TestCase):
     def test_esta_en_el_menu_principal(self):
         """Supermall es una funcionalidad central, no una opcion escondida
         dentro de Carga parcial."""
-        import ast
-
         import app_matrixify as app
         fuente = inspect.getsource(app)
-        # Se mira que SUPERMALL_LABEL este en la lista `nav_options` del menu,
-        # no que sea vecino de "Input comercial": esa era la comprobacion
-        # anterior y se rompio sola al meter "Diccionarios" en medio, sin que
-        # Supermall se hubiera movido del menu.
-        opciones = []
-        for nodo in ast.walk(ast.parse(fuente)):
-            if not isinstance(nodo, ast.Assign):
-                continue
-            destinos = [d.id for d in nodo.targets if isinstance(d, ast.Name)]
-            if "nav_options" in destinos and isinstance(nodo.value, ast.List):
-                opciones = [
-                    e.id if isinstance(e, ast.Name) else getattr(e, "value", None)
-                    for e in nodo.value.elts
-                ]
-        self.assertIn("SUPERMALL_LABEL", opciones)
+        # Tercera version de esta comprobacion, y la primera que no depende de
+        # como este escrito el menu. Miraba si SUPERMALL_LABEL era vecino de
+        # "Input comercial" (se rompio al meter "Diccionarios" en medio), luego
+        # si estaba en la lista `nav_options` (se rompio al agrupar el menu), y
+        # las dos veces **Supermall no se habia movido de ningun sitio**. Ahora
+        # se le pregunta al MODELO: esta en el menu y esta en un grupo.
+        self.assertIn(app.SUPERMALL_LABEL, app.nav_areas(puede_auditar=True))
+        grupo, item = app.nav_item_activo(app.SUPERMALL_LABEL, "")
+        self.assertIsNotNone(grupo, "Supermall no cae en ningun grupo del menu")
+        self.assertEqual(item["area"], app.SUPERMALL_LABEL)
         self.assertIn("if operation_area == SUPERMALL_LABEL:", fuente)
 
     def test_no_escribe_en_shopify_al_analizar(self):

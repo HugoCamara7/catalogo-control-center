@@ -5047,6 +5047,102 @@ de los dos archivos fallan con el codigo anterior.
 - **La cache por sha vive en el proceso.** Un reinicio del contenedor de
   Streamlit Cloud la pierde y la primera bandeja vuelve a costar sus 3,5 s.
 
+## 5 trequadragies. Un Excel que dice a que coleccion va cada codigo (septiembre 2026)
+
+Pedido literal: *"lo que me falta es un mantenedor de colecciones donde ponga
+el codigo modelo color y en otra columna ponga el nombre de la coleccion que
+quiero que se cree y luego ya ver el orden"*.
+
+El Mantenedor de Colecciones (seccion 5 quadragies) ya cargaba un Excel de
+codigos, pero **a UNA coleccion, elegida en pantalla y que tenia que existir
+ya**. Para armar diez colecciones nuevas habia que crearlas a mano una por una
+en el panel de arriba y despues subir diez archivos.
+
+Ahora el Excel lleva su propia columna:
+
+```
+Código Modelo Color | Colección    | Orden
+AB1-N11             | Hiking Mujer | 1
+CD2-X01             | Hiking Mujer | 2
+EF3-Z09             | Novedades    |
+```
+
+y **las colecciones que no existan se crean**.
+
+### No es un segundo camino de carga
+
+Un radio al principio del panel elige entre las dos formas, y el modo nuevo
+reusa entero lo que ya estaba probado: `validar_asignacion` contra el catalogo,
+`plan_de_coleccion` para el plan minimo y `_ejecutar_plan` para escribir --
+quitar, agregar, pasar a MANUAL y reordenar, en ese orden. Lo unico nuevo es
+agrupar por coleccion (`filas_por_coleccion`) y emparejar los nombres con la
+tienda (`emparejar_colecciones`). Un segundo camino se separaria del primero
+sin que nadie lo note, que es la trampa de las dos `normalize_size`.
+
+### Lo que cambia respecto de un Excel de una sola coleccion
+
+- **El mismo codigo PUEDE ir a varias colecciones.** Un producto esta en
+  "Hiking" y en "Novedades" a la vez; eso no es un duplicado. La deduplicacion
+  es POR coleccion, no global -- global, el producto se caia de la segunda.
+- **El orden tambien es por coleccion.** El 1 de una no contradice al 1 de
+  otra.
+- **El nombre se conserva como se escribio la PRIMERA vez** -- con ese texto se
+  crea la coleccion -- y se agrupa sin distinguir mayusculas ni espacios de
+  mas, asi que "Hiking" y "  hiking " son una sola.
+
+### Los acentos NO se ignoran al emparejar, pero se avisan
+
+"Niño" y "Nino" son dos titulos distintos: tratarlos como uno escribiria en la
+coleccion equivocada, y eso no se ve hasta que alguien abre la PLP. Pero crear
+"Nino" teniendo "Niño" deja dos colecciones casi iguales con los productos
+repartidos, y eso tampoco lo quiere nadie. Por eso empareja **con** acentos y
+la pantalla **avisa** de los parecidos antes de crear nada.
+
+**Dos colecciones con el mismo titulo en la tienda son AMBIGUAS** y bloquean:
+no se elige una a dedo. El modo de una sola coleccion sigue ahi para ese caso,
+porque ahi se elige de una lista.
+
+### Las nuevas se crean en MANUAL, y publicadas
+
+- **MANUAL no es un detalle:** con cualquier otro `sortOrder` Shopify reordena
+  por su cuenta y el orden del Excel **no se ve** (seccion 5 quadragies). Seria
+  un boton que escribe y no se nota nada.
+- **Publicar va marcado por defecto**, porque una coleccion creada por API
+  queda SIN publicar: existe, se llena y no la ve nadie. Es el mismo "cargado
+  no es lo mismo que visible" de los productos. Que falle la publicacion no
+  deshace la creacion -- se avisa y se sigue.
+
+### Una coleccion que falla no detiene a las demas
+
+Se reporta y se sigue, que es la misma regla que la limpieza de auditoria:
+cortar en seco deja sin saber que alcanzo a aplicarse.
+
+Y `_ejecutar_plan` recibe `refrescar=False` en este camino: releer las
+colecciones de la tienda despues de CADA una serian N lecturas del mismo dato.
+Se refresca una sola vez al terminar.
+
+### Verificado EJECUTANDOLO, no leyendo el codigo
+
+`scripts/test_mantenedor_colecciones.py` pasa de 63 a **79 pruebas**; 19 fallan
+con el codigo anterior. Una entra a la app con `AppTest` y **exige que el modo
+nuevo dibuje su `file_uploader`** -- es la leccion de la seccion 5 octotrigies,
+donde "Nombre corto y Descripcion corta" tenia el motor completo, 63 pruebas
+verdes y nadie habia escrito el subidor.
+
+Y ademas se probo **en la app real**, con Chromium y una tienda Shopify
+simulada: se sube un Excel de verdad, se valida, se confirma y se aplica. El
+resultado: las dos colecciones creadas en MANUAL, `+2` productos en una y `+1`
+en la otra, y el orden del Excel respetado sin ningun movimiento -- porque
+`collectionAddProductsV2` agrega al final y el plan ya los manda en el orden
+pedido. Comprobado tambien a 390 px: `scrollWidth` 390 de 390, sin desborde.
+
+### Lo que sigue igual
+
+El **orden fino** -- por ventas, stock o novedad -- sigue siendo el **Boost
+PLP**, que es donde estan esos criterios y su vista previa. Este Excel fija el
+orden que tu escribas (o el de las filas); el Boost lo recalcula con datos de
+la tienda.
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -5289,7 +5385,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **74 archivos y ~2.272 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **74 archivos y ~2.288 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

@@ -83,6 +83,7 @@ app_matrixify.py        25.6xx lineas · 595 funciones · UI + routing + logica
 │   ├── load_status.py   diagnostico de carga de todos los sitios (37 pruebas)
 │   ├── espejo_supermall.py  que le falta al espejo (35 pruebas)
 │   ├── colecciones.py  colecciones por marca segun los tags (54 pruebas)
+│   ├── colecciones_admin.py  crear/llenar/ordenar colecciones + Boost (63 pruebas)
 │   ├── garment_types.py  el UNICO diccionario de tipos (60 tipos, 523 nombres)
 │   ├── orden_tallas.py  orden y escala de las tallas (34 pruebas)
 │   ├── tallas_calzado.py conversion US -> PE con la guia oficial de Vans
@@ -4413,6 +4414,245 @@ ejecutarlo**.
 
 ---
 
+## 5 quadragies. Mantenedor de Colecciones y Boost del orden de la PLP (septiembre 2026)
+
+`engines/colecciones_admin.py` (sin Streamlit ni pandas) + 17 funciones nuevas
+en `shopify_api.py` + `render_colecciones_center()`, con **dos** entradas en el
+menu principal: **Colecciones** y **Boost PLP**.
+
+### El agujero que cierra
+
+`engines/colecciones` sabia LEER: responde "en que colecciones cae este
+producto". Lo contrario -- decidir que productos entran y **en que orden se
+ven** -- se hacia a mano en el admin de Shopify, coleccion por coleccion y
+arrastrando tarjetas con el raton. Para una coleccion de 800 productos eso no
+se hace: se deja como este.
+
+Son tres trabajos distintos y por eso son tres capas:
+
+| Capa | Que hace | Donde |
+|---|---|---|
+| decidir | valida, ordena y calcula el PLAN | `engines/colecciones_admin` |
+| escribir | las mutaciones de la Admin GraphQL API | `shopify_api` |
+| dibujar | vista previa, confirmacion y avance | `app_matrixify` |
+
+**Ninguna funcion del motor toca Shopify.** Todas devuelven un plan. Una
+coleccion mal ordenada no revienta -- se ve normal y llega al comprador --, que
+es el peor error silencioso, el mismo criterio que el video en la posicion 2.
+Hay una prueba que entra a las dos pantallas con las seis mutaciones espiadas y
+falla si dibujar escribe algo.
+
+### Las APIs, y las que se evitaron por DEPRECADAS
+
+- **`collectionCreate` / `collectionUpdate` tienen DOS argumentos.** El viejo
+  (`input: CollectionInput!`) esta deprecado en favor del nuevo
+  (`collection: CollectionCreateInput!` / `CollectionUpdateInput!`), pero el
+  nuevo no existe en todas las versiones. Se intenta el nuevo y **se cae al
+  viejo leyendo el error**, que es exactamente lo que ya hace `product_update`
+  con `ProductUpdateInput`/`ProductInput`. Escribir solo uno seria elegir entre
+  romperse hoy o romperse manana. Hay dos pruebas, una por camino.
+- **Un error que NO es de argumento no se reintenta.** Un fallo de permisos o
+  de red reintentado con el argumento viejo taparia el motivo real y dejaria un
+  mensaje que manda a mirar donde no es.
+- **`PRODUCT_TAXONOMY_NODE_ID` esta deprecado** en `CollectionRuleColumn` en
+  favor de `PRODUCT_CATEGORY_ID`. El motor emite el nuevo y hay una prueba que
+  falla si el viejo vuelve a aparecer. Ojo: `engines/colecciones.CAMPOS_EVALUABLES`
+  todavia lo nombra, y eso es **preexistente** -- ahi solo sirve para LEER una
+  regla que ya existe en la tienda, asi que no se toco.
+- **`collectionAddProducts` (V1) esta deprecada**: se usa `collectionAddProductsV2`.
+- `collectionByHandle` esta deprecado en las versiones nuevas en favor de
+  `collection(handle:)`. Se intenta el primero y se cae al segundo.
+
+### Agregar, quitar y reordenar son ASINCRONAS
+
+Las tres devuelven un **`Job`**, no el resultado: la mutacion vuelve enseguida
+y el trabajo sigue del lado de Shopify. Lanzar el bloque siguiente sin esperar
+al anterior deja el orden **a medias**, y un orden a medias no revienta. Por
+eso `wait_job` no es opcional entre bloques, y hay una prueba que comprueba la
+secuencia exacta `add, job, add, job`.
+
+`wait_job` devuelve `False` cuando se agota la espera, **no levanta**: el
+trabajo sigue corriendo del lado de Shopify, asi que "no termino a tiempo" es
+cierto y "fallo" no lo seria.
+
+**El tope es 250 por llamada** y no es una eleccion nuestra: los input objects
+de GraphQL estan limitados a 250 elementos. Vale para los tres.
+
+### Los movimientos se SIMULAN, no se restan
+
+Shopify aplica los movimientos **uno detras de otro**: cada uno saca el
+producto de donde esta y lo mete en la posicion pedida, corriendo a todos los
+demas. Por eso no se puede calcular comparando las dos listas posicion a
+posicion -- eso daria posiciones que ya no son las que Shopify vera cuando le
+toque ese movimiento.
+
+`movimientos()` simula el estado y emite lo MINIMO: mover un producto del final
+al principio de una coleccion de 50 es **un** movimiento, no 50. Hay una prueba
+que genera **900 permutaciones aleatorias**, las aplica secuencialmente como
+haria Shopify y exige que den el orden pedido. Un juego de casos escritos a
+mano no sirve para esto: prueba lo que a uno se le ocurre.
+
+**La posicion empieza en 0 y va en TEXTO** (`UnsignedInt64`). La "posicion 2"
+que ve una persona es `newPosition: "1"`. Es el mismo detalle que dejaba el
+video en la posicion 3 creyendo que se pedia la 2.
+
+**Un bug que destapo esa prueba:** pedir un orden que nombra un producto que NO
+esta en la coleccion (lo normal cuando el Excel trae altas) hacia que la
+posicion siguiera avanzando, y el producto siguiente se pedia una casilla mas
+abajo de la que le toca. O sea: **desordenaba una coleccion que ya estaba
+bien**. Ahora lo que falta se quita del orden deseado ANTES de numerar las
+posiciones; eso es un alta y va por `collectionAddProductsV2`.
+
+### El orden de escritura importa, y no es cosmetico
+
+```
+quitar  ->  agregar  ->  pasar a MANUAL  ->  reordenar
+```
+
+- **Quitar antes de agregar**, o un producto que sale y vuelve a entrar podria
+  acabar fuera.
+- **Agregar antes de reordenar**, porque `collectionAddProductsV2` agrega al
+  FINAL: los movimientos se calculan sobre el estado de DESPUES de agregar
+  (`plan_de_coleccion` lo hace asi), y aplicarlos antes los dejaria corridos.
+- **MANUAL antes de reordenar.** Con cualquier otro `sortOrder` Shopify
+  reordena por su cuenta y los movimientos **no se ven**: el Boost seria un
+  boton que escribe y no se nota nada. El dashboard cuenta cuantas colecciones
+  estan asi y lo avisa ANTES, porque pasarlas a MANUAL es un cambio visible en
+  la tienda.
+
+### "Mas vendidos" solo existe DENTRO de una coleccion
+
+`ProductSortKeys` -- el del catalogo -- **no tiene `BEST_SELLING`**. Solo lo
+tiene `ProductCollectionSortKeys`, o sea el contexto de una coleccion. Asi que
+"mas vendidos" es siempre "mas vendidos DE ESTA COLECCION", y la pantalla lo
+dice. Es una limitacion de la API, no una decision nuestra: un ranking de
+ventas global pediria la API de pedidos o ShopifyQL, que es otro scope y otro
+proyecto.
+
+Los dos rangos que la app no puede calcular sola -- ventas y novedad -- salen
+de **leer la propia coleccion ordenada por Shopify** (`BEST_SELLING` y
+`CREATED`), no de agregar campos a `CAMPOS_PRODUCTO`. Eso cambiaria la lectura
+que usa la carga entera para ganar un dato que solo necesita esta pantalla.
+
+### El Boost: la prioridad es el orden en que eliges
+
+Ocho criterios: orden del Excel, mas vendidos, mas nuevos, stock, genero, tipo
+de prenda, titulo y orden manual. Se aplican con una ordenacion **estable por
+criterio, del ultimo al primero**, que es la forma clasica de componer varias
+claves y tiene la propiedad que aqui importa: cada criterio conserva el orden
+que dejo el anterior cuando empata, asi que **el ultimo desempate siempre es la
+posicion de origen**. Sin eso, dos productos que empatan en todo saldrian
+distintos en cada ejecucion y el plan no se podria comparar con el anterior --
+es el fallo que ya se pago en `avisos_de_talla_a_issues`. Hay una prueba que
+ordena veinte veces y exige el mismo resultado.
+
+**Cada criterio devuelve `(falta, valor)`, y el `falta` va APARTE del valor.**
+Un producto del que no sabemos las ventas no puede colarse arriba porque su
+valor sea cero: los que no tienen el dato van al final del tramo **se ordene
+ascendente o descendente**. Con el flag dentro del valor, invertir el orden los
+subiria a los primeros puestos.
+
+**Un criterio sin su dato no se ofrece**, y se dice por que
+(`criterios_disponibles`). Un criterio que se ofrece y no tiene dato produce un
+orden que no cambia nada, y eso se lee como "el Boost no funciona".
+
+**La prioridad de tipos por defecto son los que MAS productos tienen**, con
+desempate alfabetico. No es una jerarquia comercial -- esa no la sabe la app --
+pero es determinista y pone delante lo que de verdad llena la coleccion.
+
+### Las colecciones inteligentes: la marca no es un campo de Shopify
+
+La marca, el genero y el color viven en metacampos `custom.*` que escribe esta
+app. Shopify sabe filtrar por ellos (`PRODUCT_METAFIELD_DEFINITION`), **pero
+solo si la definicion tiene activada la condicion de coleccion** en el admin.
+Sin eso Shopify **acepta la regla y la coleccion sale VACIA** -- el fallo
+silencioso de siempre.
+
+Por eso `fetch_collection_condition_definitions` lee que definiciones lo tienen
+habilitado y `regla_de_concepto` **rechaza la regla antes de crearla**,
+diciendo exactamente donde se activa. Las reglas por tag, tipo, titulo y
+proveedor no necesitan definicion y siguen funcionando igual.
+
+`conditionObjectId` es obligatorio en esas reglas y hay una prueba que lo fija.
+
+**La vista previa de una regla es una APROXIMACION y se dice.** La coleccion
+automatica la resuelve Shopify, no nosotros: esto sirve para revisar antes de
+crear -- que es justo lo que hoy no se puede hacer en el admin --, no para
+reemplazar el conteo real. Y una regla por precio o inventario devuelve
+**`None`**, no `False`: es la misma regla de `engines/colecciones`, porque
+devolver "no entra" dejaria al producto fuera sin que nadie se entere.
+
+### El Excel, y por que cada descarte se explica
+
+Columnas `Código Modelo Color` (obligatoria) y `Orden` (opcional). Sin la
+columna de orden manda el orden de las filas, que es lo que la gente espera de
+un Excel. La cabecera no distingue tildes ni mayusculas.
+
+**Cada descarte lleva su motivo y su numero de fila**: duplicado, orden
+repetido, orden que no es un numero. Pedir 200 y procesar 160 se lee igual de
+bien que procesar 200 si nadie dice que paso con los otros 40 -- es la misma
+regla que `png_codigos_desde_excel` y `sial_codigos_sin_filas`.
+
+La validacion reparte en **cinco listas separadas** y no las mezcla: "no
+existe" y "ya estaba dentro" son situaciones distintas, y juntarlas haria creer
+que hay que arreglar algo que ya esta bien. Lo que ya esta dentro **no se
+vuelve a agregar**: en una lista de 5.000 serian 20 llamadas que no escriben
+nada.
+
+**Un codigo que esta en dos productos es AMBIGUO**, no "el primero que caiga".
+Y se cuenta por `clave_de_producto`, nunca por `Mod-Col` a secas: con `set()`
+sobre ese campo, todos los productos sin metacampo comparten la cadena vacia y
+el conjunto los colapsa en uno. Hay una prueba con dos productos sin codigo.
+
+**Por defecto el Excel AGREGA.** Vaciar lo que no nombra es una casilla aparte:
+50 codigos sobre una coleccion de 3.000 le quitarian 2.950, y eso no se deshace
+desde la app.
+
+### La memoria: solo lo que hace falta en la sesion
+
+Esta pantalla **no guarda productos enteros en `session_state`**. Del catalogo
+se queda el GID por clave, y de la coleccion un resumen de ocho campos por
+producto -- ni variantes ni media. Un catalogo completo en sesion son cientos
+de MB y el contenedor da **1 GB PARA TODA LA APP** (seccion 5 nonies).
+
+Las colecciones si se cachean en sesion: son unas decenas y dos o tres viajes,
+pero la pantalla se redibuja en CADA clic. **Y la cache se ve**: el boton
+"Volver a leer" esta al lado con la fecha de lectura. Una cache invisible sobre
+el dato que decide que se escribe es una trampa, igual que en la lectura del
+catalogo.
+
+### Lo que NO se hizo, y por que
+
+- **No va por el runner de GitHub Actions.** Medido: una coleccion de 3.000
+  productos reordenada entera son **12 llamadas** (bloques de 250), no miles
+  como una carga de catalogo. El job del runner cuelga de una clave POR
+  PRODUCTO (`_sync_job_product_key_series`) y aqui la unidad es la COLECCION:
+  encajarlo pedia un tercer formato de archivo en el worker, que es como se
+  acaba teniendo dos motores. Si aparece un caso de decenas de colecciones a la
+  vez, la puerta esta en `lanzar_carga_remota_suelta`, que ya acepta el archivo
+  explicito.
+- **No se reordena arrastrando con el raton.** Streamlit no tiene drag-and-drop
+  de filas, y el orden manual se cubre con la columna `Orden` del Excel y con
+  el criterio "Orden manual". Escribir un componente propio seria un proyecto
+  aparte.
+- **El nuevo modelo de colecciones por SOURCES no se usa**, y es a proposito:
+  llega en **2026-07** y este repositorio esta en **2026-04**, una version que
+  "no puede representar colecciones del modelo nuevo y las filtra". En 2026-07
+  `collectionAddProductsV2`, `collectionRemoveProducts` y `Collection.ruleSet`
+  quedan deprecados pero **siguen disponibles**, asi que subir de version no
+  rompe nada de esto. Cuando se suba, hay que mirar esto: **una tienda con
+  colecciones del modelo nuevo leidas desde 2026-04 las devuelve INCOMPLETAS**,
+  y esta pantalla las contaria como inexistentes.
+
+`scripts/test_mantenedor_colecciones.py` (63 pruebas) fija todo esto, y
+`scripts/test_pantallas_reales.py` pasa de 10 a 10 con las dos areas nuevas en
+su lista. Las pruebas **EJECUTAN**: publican contra un Shopify falso, parten en
+bloques de verdad, aplican los movimientos como los aplicaria Shopify y entran
+a la app con `AppTest`. Es la leccion de `start_suelto`: **leer el codigo no es
+ejecutarlo**.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -4648,7 +4888,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **71 archivos y ~2.176 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **72 archivos y ~2.239 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

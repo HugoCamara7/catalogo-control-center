@@ -67,10 +67,18 @@ class StoreEspia(GitHubTicketStore):
             self.peticiones += 1
         if path == self.prefix + "/tickets":
             return [
-                {"type": "file", "name": Path(ruta).name, "path": ruta}
+                {"type": "file", "name": Path(ruta).name, "path": ruta,
+                 "sha": self._sha(ruta)}
                 for ruta in self.archivos
             ]
         return None
+
+    def _sha(self, ruta):
+        """El sha del blob: el hash del CONTENIDO, como el de GitHub."""
+        datos = self.archivos.get(ruta)
+        if datos is None:
+            return ""
+        return "sha-" + str(hash(json.dumps(datos, sort_keys=True)))
 
     def _get_file(self, path):
         with self._candado:
@@ -82,7 +90,7 @@ class StoreEspia(GitHubTicketStore):
             datos = self.archivos.get(path)
             if datos is None:
                 return None, None
-            return json.dumps(datos).encode("utf-8"), "sha-" + datos["code"]
+            return json.dumps(datos).encode("utf-8"), self._sha(path)
         finally:
             with self._candado:
                 self._vivos -= 1
@@ -119,7 +127,102 @@ class TestDescargaParalela(unittest.TestCase):
     def test_conserva_la_revision_de_cada_archivo(self):
         store = StoreEspia(cantidad=3, retardo=0)
         for ticket in store.list_tickets():
-            self.assertEqual(ticket["_revision"], "sha-" + ticket["code"])
+            ruta = "catalog_tickets/tickets/%s.json" % ticket["code"]
+            self.assertEqual(ticket["_revision"], store._sha(ruta))
+
+
+class TestRefrescoPorSha(unittest.TestCase):
+    """Al refrescar, solo se baja lo que CAMBIO.
+
+    Por que: la lista se guarda 25 segundos, asi que cada 25 segundos el
+    siguiente clic la volvia a bajar ENTERA -- un archivo por solicitud. Medido
+    con 120 solicitudes y 250 ms de latencia (lo que tarda api.github.com desde
+    Streamlit Cloud): **121 viajes y 4,06 s** en un clic cualquiera. Eso es lo
+    que se veia como "hago clic y se queda pegada la pantalla anterior", porque
+    mientras el script espera a la red Streamlit deja a la vista, en gris, la
+    pantalla del rerun anterior.
+
+    El listado del directorio ya trae el `sha` de cada archivo, y ese sha es el
+    del blob: el hash del contenido. Si no cambio, el archivo no cambio.
+    """
+
+    def setUp(self):
+        limpiar_cache_bandeja()
+
+    def tearDown(self):
+        limpiar_cache_bandeja()
+
+    def _refrescar(self, store):
+        """Un refresco como el que hace el clic que cae tras los 25 segundos."""
+        return store.list_tickets(force_refresh=True)
+
+    def test_refrescar_sin_cambios_es_UN_solo_viaje(self):
+        store = StoreEspia(cantidad=30, retardo=0)
+        store.list_tickets()
+        self.assertEqual(store.peticiones, 31, "la primera vez se bajan todas")
+        store.peticiones = 0
+        tickets = self._refrescar(store)
+        self.assertEqual(len(tickets), 30)
+        self.assertEqual(store.peticiones, 1,
+                         "volvio a bajar archivos que no habian cambiado")
+
+    def test_la_solicitud_que_cambia_SI_se_vuelve_a_bajar(self):
+        store = StoreEspia(cantidad=10, retardo=0)
+        store.list_tickets()
+        ruta = "catalog_tickets/tickets/CAT-2026-000004.json"
+        store.archivos[ruta]["status"] = "completed"
+        store.peticiones = 0
+        tickets = self._refrescar(store)
+        self.assertEqual(store.peticiones, 2, "el listado y la que cambio")
+        cambiada = [t for t in tickets if t["code"] == "CAT-2026-000004"][0]
+        self.assertEqual(cambiada["status"], "completed",
+                         "sirvio una copia vieja de una solicitud que cambio")
+
+    def test_una_solicitud_nueva_se_baja_y_las_demas_no(self):
+        store = StoreEspia(cantidad=5, retardo=0)
+        store.list_tickets()
+        ruta = "catalog_tickets/tickets/CAT-2026-000099.json"
+        store.archivos[ruta] = {"code": "CAT-2026-000099", "brand": "Vans",
+                                "status": "draft", "created_at": "2026-09-01T10:00:00Z"}
+        store.peticiones = 0
+        tickets = self._refrescar(store)
+        self.assertEqual(store.peticiones, 2)
+        self.assertEqual(len(tickets), 6)
+
+    def test_el_resultado_es_EL_MISMO_que_bajandolo_todo(self):
+        """Reusar por sha no puede cambiar ni un dato."""
+        store = StoreEspia(cantidad=12, retardo=0)
+        completo = store.list_tickets()
+        limpiar_cache_bandeja()
+        store2 = StoreEspia(cantidad=12, retardo=0)
+        de_cero = store2.list_tickets()
+        limpiar_cache_bandeja()
+        store3 = StoreEspia(cantidad=12, retardo=0)
+        store3.list_tickets()
+        reusado = store3.list_tickets(force_refresh=True)
+        self.assertEqual(completo, de_cero)
+        self.assertEqual(completo, reusado)
+
+    def test_sin_sha_en_el_listado_se_baja_todo(self):
+        """Un GitHub que no diera el sha no puede dejar la bandeja vacia."""
+        class SinSha(StoreEspia):
+            def _sha(self, ruta):
+                return ""
+        store = SinSha(cantidad=6, retardo=0)
+        store.list_tickets()
+        store.peticiones = 0
+        tickets = store.list_tickets(force_refresh=True)
+        self.assertEqual(len(tickets), 6)
+        self.assertEqual(store.peticiones, 7, "sin sha hay que bajarlas todas")
+
+    def test_quien_recibe_la_lista_no_ensucia_la_cache(self):
+        """La copia por sha se entrega en deepcopy, como la de la lista."""
+        store = StoreEspia(cantidad=3, retardo=0)
+        store.list_tickets()
+        primera = store.list_tickets(force_refresh=True)
+        primera[0]["brand"] = "TOCADO"
+        segunda = store.list_tickets(force_refresh=True)
+        self.assertNotIn("TOCADO", [t.get("brand") for t in segunda])
 
 
 class TestCacheDeLaBandeja(unittest.TestCase):

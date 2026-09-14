@@ -4924,6 +4924,129 @@ codigo no es ejecutarlo", un escalon mas arriba.
 
 ---
 
+## 5 duoquadragies. Cada clic esperaba a GitHub (septiembre 2026)
+
+Reportado con una captura de Carga completa a medio dibujar: *"cuando hago
+click dentro de carga completa es muy lenta al ponerse la pantalla y se queda
+pegado lo anterior, y pasa en todos los botones"*.
+
+Lo de "se queda pegado lo anterior" es el gris de Streamlit de la seccion 5
+tertrigies, y sigue sin poderse quitar desde el script: mientras la ejecucion
+no TERMINA, los elementos que la pantalla nueva todavia no ha escrito siguen
+mostrando los de la anterior, atenuados. Asi que la unica respuesta posible es
+**que el rerun no dure**. Y duraba, pero no por CPU: **por red**.
+
+### Lo medido, con el usuario administrador
+
+Con `urlopen` sustituido por un GitHub falso con **250 ms de latencia**, que es
+lo que tarda `api.github.com` desde Streamlit Cloud, y 120 solicitudes:
+
+| | antes | ahora |
+|---|---:|---:|
+| un clic en CUALQUIER pantalla | 4 viajes · **1,03 s** | 0 viajes · **0,03 s** |
+| el clic que cae tras los 25 s de la bandeja | 121 viajes · **4,06 s** | 1 viaje · **0,30 s** |
+| abrir la app (bandeja fria) | 127 viajes · 5,4 s | **3,45 s** |
+| medido en Chromium, clic del menu | 1,68 s | **0,78 s** |
+
+**Nada de esto era CPU.** El CPU de un rerun son 25-100 ms y ya estaba bien: el
+script estaba PARADO esperando a la red.
+
+### 1. `check_storage()` en la barra lateral: cuatro viajes por clic
+
+`render_sidebar_storage_status` dibuja UNA linea -- "Almacenamiento
+persistente" -- y para eso llamaba a `check_storage()`, que hace **cuatro
+peticiones** a GitHub: el token (`/user`), el repositorio, la rama y el listado
+de solicitudes. La barra lateral se dibuja al principio de `main`, o sea en
+**cada rerun y en todas las pantallas**: por eso "pasa en todos los botones".
+
+Ahora esa linea sale de `estado_almacenamiento()`, cacheada 10 minutos. Es un
+diagnostico de **configuracion** -- token, repositorio, rama, permiso de
+escritura --: entre dos clics no cambia.
+
+**La pantalla de Auditoria sigue comprobando de verdad**, sin cache, y eso es a
+proposito: ahi la pregunta es "¿esto funciona AHORA?" y esa no se responde con
+una copia de hace diez minutos. Cuesta 1,5 s abrirla, y ese es el sitio donde
+ese gasto significa algo.
+
+La firma de la cache lleva repositorio, rama y carpeta, **nunca el token**: un
+token no entra en una clave de cache. Cambiar de repositorio en Secrets si
+invalida.
+
+### 2. La bandeja se bajaba ENTERA cada 25 segundos
+
+La lista de solicitudes se guarda 25 s (seccion de `ticket_system`), asi que
+cada 25 s el siguiente clic la volvia a bajar entera: **un archivo por
+solicitud**, porque la API de contenidos de GitHub no devuelve el contenido al
+listar un directorio. Con 120 solicitudes eran 121 viajes, y con la portada
+leyendo pendientes eso ocurre en cualquier pantalla.
+
+**El listado ya trae el `sha` de cada archivo, y ese sha es el del blob: el
+hash del contenido.** Si no cambio, el archivo no cambio. Ahora se baja **solo
+lo que tiene un sha que no se habia visto**, y refrescar cuesta 1 viaje.
+
+Tres cosas que no son obvias:
+
+- **La cache por sha sobrevive al TTL de la lista, a proposito.** Lo que caduca
+  es "cuando mire por ultima vez", no el contenido de un sha, que es inmutable
+  por construccion. Por eso reusarlo **no puede** servir un dato viejo: una
+  solicitud que cambio tiene otro sha y se baja.
+- **`invalidate_cache` no toca la cache por sha.** Lo que hay que rehacer tras
+  una escritura es el LISTADO, para enterarse de los shas nuevos; lo guardado
+  por sha sigue siendo cierto.
+- **Sin sha en el listado se baja todo.** Un GitHub que no lo diera no puede
+  dejar la bandeja vacia. Hay una prueba de ese caso.
+
+Y las descargas paralelas pasan de 8 a **16**: con la cache por sha eso ya solo
+se paga con la bandeja fria -- la primera vez, o tras un reinicio del
+contenedor --, y ahi son todas de golpe. Sigue muy por debajo de las 100
+peticiones concurrentes que GitHub admite.
+
+De paso resuelve un limite que estaba a la vuelta de la esquina: 121 peticiones
+cada 25 segundos son **17.400 a la hora**, y el limite de GitHub son 5.000.
+
+### Lo que NO era el problema, medido
+
+- **El CSS y los logos.** Por clic viajan 10-16 KB: los mensajes grandes van
+  por el `ForwardMsgCache` de Streamlit, que manda el hash.
+- **Reejecutar el cuerpo del modulo** (31.343 lineas, 595 funciones) en cada
+  rerun: **15 ms**. Compilar cuesta 0,27 s pero Streamlit lo cachea.
+- **`inject_custom_css`**: 9 ms. Ya estaba medido en la seccion 5 septies.
+- **`AppTest` decia 1,6-2,0 s por rerun y era mentira**: crea un `ScriptCache`
+  nuevo en cada `run()`, asi que vuelve a parsear e instrumentar el AST del
+  archivo entero -- el 30 % de su tiempo -- y eso en produccion esta cacheado.
+  Es la leccion de siempre: **si el numero sale raro, lo primero que hay que
+  mirar es el propio instrumento.**
+
+### La regla, y lo que la hace cumplir
+
+> **Un clic no puede quedarse esperando a la red.** Lo que el camino comun de
+> un rerun necesite de fuera va cacheado, o va en un hilo aparte.
+
+`scripts/test_reruns_sin_red.py` (5 pruebas) **entra a la app** con un
+`urlopen` espia y recorre las diez pantallas del menu exigiendo **cero viajes**
+por rerun. No lee el codigo: lo ejecuta -- es la leccion de `start_suelto`, que
+tenia ocho pruebas leyendo su fuente y ninguna la llamaba.
+
+Cuenta los viajes que el clic **espera**: quedan fuera los hilos `auditoria` y
+`notificaciones`, que existen justo para que la pantalla no espere; los del
+pool de la bandeja SI cuentan, porque el script se queda esperandolos.
+
+`scripts/test_bandeja_rendimiento.py` pasa de 13 a **19 pruebas**, con el
+espia devolviendo el sha en el listado como hace GitHub. Las 9 pruebas nuevas
+de los dos archivos fallan con el codigo anterior.
+
+### Lo que sigue pendiente
+
+- **Input comercial cuesta 2,2 s la primera vez** que se abre con cada marca:
+  `build_brand_commercial_input_workbook` arma la plantilla con **openpyxl**, y
+  `st.download_button` exige los bytes por adelantado. Despues esta cacheado
+  (medido: 0,072 s). Es el mismo cambio que ya se hizo en
+  `dataframe_to_excel_bytes` -- pasar a xlsxwriter (seccion 5 tervicies) --,
+  pero esta plantilla lleva estilos y validaciones y migrarla es un trabajo
+  aparte.
+- **La cache por sha vive en el proceso.** Un reinicio del contenedor de
+  Streamlit Cloud la pierde y la primera bandeja vuelve a costar sus 3,5 s.
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -5012,7 +5135,14 @@ archivos.
    otra no se pierde (vive en el repositorio de datos), pero desde la pantalla
    hay que ir a Actions. Habría que guardar los jobs vivos por operación.
 
-12. **Rotar las credenciales del código.** `get_auth_users()` tiene un
+12. **La plantilla del Input comercial se arma con openpyxl.**
+   `build_brand_commercial_input_workbook` cuesta **2,2 s medidos** la primera
+   vez que se abre la pantalla con cada marca, porque `st.download_button`
+   exige los bytes por adelantado. Está cacheada, así que se paga una vez por
+   marca y sesión. Pasarla a xlsxwriter es el mismo cambio de la sección 5
+   tervicies, pero lleva estilos y validaciones de datos.
+
+13. **Rotar las credenciales del código.** `get_auth_users()` tiene un
    diccionario de usuarios y contraseñas como fallback, y está en un repo
    público.
 
@@ -5159,7 +5289,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **73 archivos y ~2.261 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **74 archivos y ~2.272 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

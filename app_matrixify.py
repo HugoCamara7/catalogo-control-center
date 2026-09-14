@@ -22326,6 +22326,45 @@ def check_storage():
     )
 
 
+# Cuanto vale la linea de estado del almacenamiento antes de volver a
+# comprobarlo. Es un diagnostico de CONFIGURACION -- token, repositorio, rama,
+# permiso de escritura --, no un dato de trabajo: entre dos clics no cambia.
+ESTADO_ALMACENAMIENTO_TTL = 600
+
+
+@st.cache_data(ttl=ESTADO_ALMACENAMIENTO_TTL, show_spinner=False)
+def estado_almacenamiento(_firma):
+    """`check_storage()` cacheado, para la linea de la barra lateral.
+
+    Por que existe: `check_storage` hace CUATRO peticiones a api.github.com
+    (token, repositorio, rama y listado de solicitudes) y la barra lateral se
+    dibuja al principio de `main`, o sea en CADA rerun y en TODAS las
+    pantallas. Medido con 250 ms de latencia -- lo que tarda api.github.com
+    desde Streamlit Cloud --: **1,03 s de espera pura en cada clic**, para
+    pintar una linea que dice "Almacenamiento persistente". Eso es la mitad de
+    lo que se veia como "hago clic y se queda pegada la pantalla anterior":
+    mientras el script espera a la red, Streamlit deja a la vista, en gris, los
+    elementos del rerun anterior.
+
+    `_firma` lleva guion bajo para que Streamlit no la hashee como dato: es
+    solo la clave, y ademas asi el token NUNCA entra en una clave de cache.
+    Cambiar de repositorio o de rama en Secrets si invalida, porque eso cambia
+    la firma.
+
+    El diagnostico COMPLETO de Auditoria sigue llamando a `check_storage()`
+    directo: ahi la pregunta es "¿esto funciona AHORA?" y la respuesta no puede
+    salir de una copia de hace diez minutos.
+    """
+    return check_storage()
+
+
+def _firma_almacenamiento():
+    """Que hay que cambiar en Secrets para que la comprobacion se rehaga."""
+    cfg = _ticketing_config()
+    return (cfg["backend"], cfg.get("owner", ""), cfg.get("repo", ""),
+            cfg.get("branch", ""), cfg.get("prefix", ""), cfg.get("local_path", ""))
+
+
 def _registrar_accion_ticket(accion, usuario="", rol="", **kwargs):
     """Puente entre AuditedTicketService y log_user_activity."""
     log_user_activity(
@@ -23000,7 +23039,7 @@ def render_sidebar_storage_status(username=None):
     if not can_view_user_activity_log(username):
         return
     try:
-        resultado = check_storage()
+        resultado = estado_almacenamiento(_firma_almacenamiento())
     except Exception:
         return
     estado, titulo = storage_resumen(resultado)

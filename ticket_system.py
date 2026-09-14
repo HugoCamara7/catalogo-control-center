@@ -324,13 +324,44 @@ BANDEJA_CACHE_SEGUNDOS = 25
 # Cuantos archivos de solicitud se bajan a la vez. GitHub no da la lista con
 # contenido: hay que pedir un archivo por solicitud. En serie eran 30+ viajes
 # encadenados por cada clic.
-BANDEJA_DESCARGAS_PARALELAS = 8
+#
+# 16 y no 8: con la cache por sha esto ya solo se paga con la bandeja fria --
+# la primera vez que alguien entra, o tras un reinicio del contenedor --, y ahi
+# son todas las solicitudes de golpe. Medido con 120 solicitudes y 250 ms de
+# latencia: 15 tandas encadenadas (3,9 s) contra 8 (2,1 s). Sigue muy por
+# debajo de lo que GitHub considera una rafaga: su limite de concurrencia son
+# 100 peticiones.
+BANDEJA_DESCARGAS_PARALELAS = 16
+
+# Cache del CONTENIDO de cada solicitud, por su sha.
+#
+# El `sha` que devuelve la API de contenidos de GitHub es el del blob, o sea el
+# hash del propio archivo: si no cambio, el contenido no cambio. Asi que al
+# refrescar la bandeja basta con UN viaje -- el listado del directorio -- y
+# bajar solo las solicitudes cuyo sha no se haya visto antes.
+#
+# Medido con 120 solicitudes y 250 ms de latencia (lo que tarda api.github.com
+# desde Streamlit Cloud): refrescar la bandeja pasa de **121 viajes y 3,9 s** a
+# **1 viaje y 0,3 s**. Eso se pagaba cada vez que caducaban los 25 segundos, y
+# con la portada leyendo pendientes eso es en cualquier pantalla: es lo que se
+# veia como "hago clic y se queda pegada la pantalla anterior".
+#
+# Esta cache sobrevive al TTL de la bandeja A PROPOSITO: lo que caduca es
+# "cuando mire por ultima vez", no el contenido de un sha, que es inmutable por
+# construccion. Por eso reusarlo no puede servir un dato viejo: un ticket que
+# cambio tiene otro sha y se baja.
+_TICKETS_POR_SHA = {}
+# Techo de la cache de contenido. Cada solicitud son unos pocos KB; el tope
+# existe para que una sesion larga no la deje crecer sin limite -- el
+# contenedor da 1 GB PARA TODA LA APP.
+TICKETS_POR_SHA_MAXIMO = 4000
 
 
 def limpiar_cache_bandeja():
     """Vacia la cache entera. Util en pruebas y al cambiar de backend."""
     with _BANDEJA_CACHE_LOCK:
         _BANDEJA_CACHE.clear()
+        _TICKETS_POR_SHA.clear()
 
 
 class LocalTicketStore:
@@ -504,9 +535,32 @@ class GitHubTicketStore:
             _BANDEJA_CACHE[self._clave_cache()] = (time.monotonic(), deepcopy(tickets))
 
     def invalidate_cache(self):
-        """Tira la lista guardada. La llama toda escritura sobre un ticket."""
+        """Tira la lista guardada. La llama toda escritura sobre un ticket.
+
+        La cache de contenido por sha NO se toca: un sha es el hash del
+        archivo, asi que lo que guarda sigue siendo cierto. Lo que hay que
+        rehacer es el listado, para enterarse de los shas nuevos.
+        """
         with _BANDEJA_CACHE_LOCK:
             _BANDEJA_CACHE.pop(self._clave_cache(), None)
+
+    def _ticket_cacheado(self, path, sha):
+        """La solicitud ya conocida con ESE sha, o None si hay que bajarla."""
+        if not sha:
+            return None
+        with _BANDEJA_CACHE_LOCK:
+            ticket = _TICKETS_POR_SHA.get((self._clave_cache(), path, sha))
+        return deepcopy(ticket) if ticket is not None else None
+
+    def _guardar_ticket_por_sha(self, path, sha, ticket):
+        if not sha:
+            return
+        with _BANDEJA_CACHE_LOCK:
+            _TICKETS_POR_SHA[(self._clave_cache(), path, sha)] = deepcopy(ticket)
+            # El dict conserva el orden de insercion, asi que lo que sale
+            # primero es lo mas viejo.
+            while len(_TICKETS_POR_SHA) > TICKETS_POR_SHA_MAXIMO:
+                _TICKETS_POR_SHA.pop(next(iter(_TICKETS_POR_SHA)), None)
 
     def _request(self, method, path, payload=None, ref=True):
         url = f"{self.base}/{quote(path, safe='/')}"
@@ -589,22 +643,32 @@ class GitHubTicketStore:
         data = self._request("GET", f"{self.prefix}/tickets")
         if not isinstance(data, list):
             return []
-        rutas = [
-            item["path"]
+        archivos = [
+            (item["path"], normalize_text(item.get("sha")))
             for item in data
             if item.get("type") == "file" and item.get("name", "").endswith(".json")
         ]
+        # El listado ya trae el sha de cada archivo. Lo que ya se conoce con
+        # ese sha no se vuelve a bajar: es el mismo contenido, byte a byte.
         tickets = []
+        rutas = []
+        for path, sha in archivos:
+            ticket = self._ticket_cacheado(path, sha)
+            if ticket is None:
+                rutas.append(path)
+            else:
+                tickets.append(ticket)
         if rutas:
             with ThreadPoolExecutor(max_workers=min(self.max_workers, len(rutas))) as pool:
                 descargas = list(pool.map(self._get_file, rutas))
-            for raw, sha in descargas:
+            for path, (raw, sha) in zip(rutas, descargas):
                 try:
                     ticket = json.loads(raw.decode("utf-8"))
                 except (AttributeError, json.JSONDecodeError):
                     continue
                 ticket = upgrade_ticket(ticket)
                 ticket["_revision"] = sha
+                self._guardar_ticket_por_sha(path, sha, ticket)
                 tickets.append(ticket)
         tickets.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         self._cache_guardar(tickets)

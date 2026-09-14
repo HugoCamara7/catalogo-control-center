@@ -45,6 +45,8 @@ from engines import carga_supermall
 from engines import sial_campos
 from engines.tallas import clave_de_orden as orden_de_talla
 from engines import video_media as video_motor
+from engines import colecciones as dicc_colecciones
+from engines import colecciones_admin as colecciones_motor
 
 try:
     from engines import enrich as enriquecimiento
@@ -301,6 +303,20 @@ fetch_product_media = _shopify_attr("fetch_product_media", None)
 product_reorder_media = _shopify_attr("product_reorder_media", None)
 wait_video_media_ready = _shopify_attr("wait_video_media_ready", None)
 search_products = _shopify_attr("search_products", None)
+# Mantenedor de Colecciones y Boost del orden de la PLP. Mismo respaldo None:
+# la app tiene que poder arrancar contra un shopify_api.py viejo y decir que
+# falta actualizarlo, en vez de tumbar el import entero de la aplicacion.
+fetch_collections = _shopify_attr("fetch_collections", None)
+coleccion_a_registro = _shopify_attr("coleccion_a_registro", None)
+fetch_collection_products = _shopify_attr("fetch_collection_products", None)
+fetch_collection_by_handle = _shopify_attr("fetch_collection_by_handle", None)
+fetch_collection_condition_definitions = _shopify_attr("fetch_collection_condition_definitions", None)
+collection_create = _shopify_attr("collection_create", None)
+collection_update = _shopify_attr("collection_update", None)
+collection_add_products = _shopify_attr("collection_add_products", None)
+collection_remove_products = _shopify_attr("collection_remove_products", None)
+collection_reorder_products = _shopify_attr("collection_reorder_products", None)
+collection_publish = _shopify_attr("collection_publish", None)
 
 try:
     from centry_static_masters import (
@@ -16379,6 +16395,8 @@ def inject_custom_css(config):
         div.st-key-operation_nav_status button,
         div.st-key-operation_nav_supermall button,
         div.st-key-operation_nav_colecciones button,
+        div.st-key-operation_nav_boost button,
+        div.st-key-operation_nav_mantenedor button,
         div.st-key-operation_nav_input button,
         div.st-key-operation_nav_tickets button,
         div.st-key-operation_nav_audit button,
@@ -16415,6 +16433,8 @@ def inject_custom_css(config):
         div.st-key-operation_nav_status button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_supermall button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_colecciones button [data-testid="stMarkdownContainer"],
+        div.st-key-operation_nav_boost button [data-testid="stMarkdownContainer"],
+        div.st-key-operation_nav_mantenedor button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_input button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_tickets button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_audit button [data-testid="stMarkdownContainer"],
@@ -16432,6 +16452,8 @@ def inject_custom_css(config):
         div.st-key-operation_nav_status button p,
         div.st-key-operation_nav_supermall button p,
         div.st-key-operation_nav_colecciones button p,
+        div.st-key-operation_nav_boost button p,
+        div.st-key-operation_nav_mantenedor button p,
         div.st-key-operation_nav_input button p,
         div.st-key-operation_nav_tickets button p,
         div.st-key-operation_nav_audit button p,
@@ -16454,6 +16476,8 @@ def inject_custom_css(config):
         div.st-key-operation_nav_status button::before,
         div.st-key-operation_nav_supermall button::before,
         div.st-key-operation_nav_colecciones button::before,
+        div.st-key-operation_nav_boost button::before,
+        div.st-key-operation_nav_mantenedor button::before,
         div.st-key-operation_nav_input button::before,
         div.st-key-operation_nav_tickets button::before,
         div.st-key-operation_nav_audit button::before,
@@ -16488,6 +16512,12 @@ def inject_custom_css(config):
         div.st-key-operation_nav_colecciones button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0l-7.2-7.2A2 2 0 0 1 3 12V4a1 1 0 0 1 1-1h8a2 2 0 0 1 1.4.6l7.2 7.2a2 2 0 0 1 0 2.6z'/%3E%3Cpath d='M7.5 7.5h.01'/%3E%3C/svg%3E") !important;
         }}
+        div.st-key-operation_nav_mantenedor button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='7' height='7' rx='1.5'/%3E%3Crect x='14' y='3' width='7' height='7' rx='1.5'/%3E%3Crect x='3' y='14' width='7' height='7' rx='1.5'/%3E%3Crect x='14' y='14' width='7' height='7' rx='1.5'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-operation_nav_boost button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 20V13'/%3E%3Cpath d='M12 20V9'/%3E%3Cpath d='M19 20V5'/%3E%3Cpath d='m15.5 8.5 3.5-3.5 3.5 3.5'/%3E%3C/svg%3E") !important;
+        }}
         div.st-key-operation_nav_input button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/%3E%3Cpath d='M14 2v6h6'/%3E%3Cpath d='M8 13h8'/%3E%3Cpath d='M8 17h6'/%3E%3C/svg%3E") !important;
         }}
@@ -16518,6 +16548,8 @@ def inject_custom_css(config):
         div.st-key-operation_nav_status button:hover,
         div.st-key-operation_nav_supermall button:hover,
         div.st-key-operation_nav_colecciones button:hover,
+        div.st-key-operation_nav_boost button:hover,
+        div.st-key-operation_nav_mantenedor button:hover,
         div.st-key-operation_nav_input button:hover,
         div.st-key-operation_nav_tickets button:hover,
         div.st-key-operation_nav_audit button:hover,
@@ -20533,6 +20565,1005 @@ def render_diccionario_colecciones():
             on_click=log_descarga,
             args=("Descargar diccionario de tipos", "render_diccionario_colecciones"),
         )
+
+
+# ===========================================================================
+# MANTENEDOR DE COLECCIONES Y BOOST DEL ORDEN DE LA PLP
+# ===========================================================================
+# Son DOS entradas de menu y UNA sola pantalla, con la seccion elegida por el
+# boton. Comparten la lectura de colecciones -- unas decenas por tienda, pero
+# esta pantalla se redibuja en cada clic --, y separarlas en dos pantallas
+# costaria leerlas dos veces.
+#
+# Nada de aqui escribe en Shopify hasta que alguien confirma. Las funciones que
+# deciden viven en `engines/colecciones_admin` (sin Streamlit) y las que
+# escriben en `shopify_api`: esta capa solo dibuja y encadena.
+COLECCIONES_LABEL = "Colecciones"
+BOOST_LABEL = "Boost PLP"
+
+# Un techo, no una reserva: se piden los campos MINIMOS por producto.
+BOOST_PRODUCTOS_MAXIMOS = 5000
+
+# El genero y el tipo se ordenan por una lista declarada y no alfabeticamente:
+# alfabetico inventaria una jerarquia comercial que nadie pidio.
+BOOST_PRIORIDAD_GENERO = ["Mujer", "Hombre", "Unisex", "Niña", "Niño", "Bebé"]
+
+
+def _avisar_pantalla(progreso, mensaje):
+    """Avisar NUNCA puede tumbar la lectura: misma regla que `_avisar`."""
+    if progreso is None:
+        return
+    try:
+        progreso(mensaje)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _colecciones_estado():
+    return st.session_state.setdefault(
+        "colecciones_estado",
+        {"site_key": "", "colecciones": [], "definiciones": {}, "leido": "", "error": ""},
+    )
+
+
+def _colecciones_historial():
+    """El historial de la sesion.
+
+    El registro DURADERO es la auditoria, que ya guarda quien, cuando y con que
+    resultado en el repositorio de datos. Esto es la vista rapida de lo hecho
+    en esta pantalla; un segundo almacen daria dos historiales que se separan.
+    """
+    return st.session_state.setdefault("colecciones_historial", [])
+
+
+def _anotar_historial(accion, coleccion, detalle, resultado="ok", site_key=""):
+    historial = _colecciones_historial()
+    historial.insert(0, {
+        "Fecha": _now_lima_text(),
+        "Sitio": clean_value(site_key),
+        "Acción": clean_value(accion),
+        "Colección": clean_value(coleccion),
+        "Detalle": clean_value(detalle)[:400],
+        "Resultado": clean_value(resultado),
+    })
+    del historial[80:]
+    log_user_activity(
+        "coleccion_" + clean_value(accion).lower().replace(" ", "_")[:40],
+        detail=f"{coleccion}: {detalle}"[:500],
+        site_key=site_key,
+        module=COLECCIONES_LABEL,
+        resultado=resultado,
+    )
+
+
+def colecciones_api_lista():
+    """`(ok, que_falta)`. La app tiene que poder arrancar con un shopify_api
+    viejo y DECIR que falta, no reventar al entrar."""
+    faltan = [nombre for nombre, funcion in (
+        ("fetch_collections", fetch_collections),
+        ("coleccion_a_registro", coleccion_a_registro),
+        ("fetch_collection_products", fetch_collection_products),
+        ("collection_create", collection_create),
+        ("collection_add_products", collection_add_products),
+        ("collection_reorder_products", collection_reorder_products),
+    ) if funcion is None]
+    return (not faltan), faltan
+
+
+def leer_colecciones_del_sitio(site_key, shopify_config, force_refresh=False, aviso=None):
+    """Las colecciones del sitio, cacheadas en la sesion.
+
+    **`aviso` lo crea el LLAMADOR**, igual que en `leer_catalogo_del_sitio`: un
+    `st.empty()` creado dentro de la rama que lee solo existe en algunos
+    reruns, y eso cambia la forma del arbol de elementos -- Streamlit deja de
+    poder reemplazar el bloque de abajo y lo AGREGA debajo del viejo, o sea
+    media pantalla duplicada en gris mientras dura el trabajo.
+    """
+    estado = _colecciones_estado()
+    if not force_refresh and estado.get("site_key") == site_key and estado.get("leido"):
+        return estado
+    progreso = (lambda mensaje: aviso.caption(mensaje)) if aviso is not None else None
+    try:
+        _avisar_pantalla(progreso, "Leyendo las colecciones de la tienda...")
+        crudas = fetch_collections(shopify_config)
+        registros = []
+        for cruda in crudas:
+            registro = coleccion_a_registro(cruda)
+            registro["id"] = clean_value((cruda or {}).get("id"))
+            registro["orden_shopify"] = clean_value((cruda or {}).get("sortOrder"))
+            registros.append(registro)
+        _avisar_pantalla(progreso, "Viendo qué metacampos admiten condición de colección...")
+        definiciones = {}
+        if fetch_collection_condition_definitions is not None:
+            definiciones = fetch_collection_condition_definitions(shopify_config)
+        estado.update({"site_key": site_key, "colecciones": registros,
+                       "definiciones": definiciones, "leido": _now_lima_text(), "error": ""})
+    except Exception as exc:  # noqa: BLE001 - una tienda caida no tumba la pantalla
+        estado.update({"site_key": site_key, "colecciones": [], "definiciones": {},
+                       "leido": "", "error": f"{type(exc).__name__}: {exc}"})
+    finally:
+        if aviso is not None:
+            aviso.empty()
+    return estado
+
+
+def _clave_de_registro(registro):
+    """La identidad de un producto leido de una coleccion.
+
+    Tiene que dar EXACTAMENTE lo mismo que sobre el mismo producto leido del
+    catalogo, o el Boost compararia dos universos y creeria que hay que mover
+    todo. Por eso llama a la canonica en vez de escribir un segundo criterio.
+    """
+    return status_carga.clave_de_producto(registro)
+
+
+def _render_colecciones_dashboard(estado):
+    colecciones = estado.get("colecciones") or []
+    automaticas = [c for c in colecciones if c.get("automatica")]
+    vacias = [c for c in colecciones if not (c.get("productos_shopify") or 0)]
+    sin_manual = [c for c in colecciones
+                  if clean_value(c.get("orden_shopify")).upper() not in ("", "MANUAL")]
+    tarjetas = [
+        ("Colecciones", len(colecciones), "blue", "&#9635;"),
+        ("Automáticas", len(automaticas), "purple", "&#9881;"),
+        ("Manuales", len(colecciones) - len(automaticas), "blue", "&#9997;"),
+        ("Vacías", len(vacias), "orange" if vacias else "green", "!"),
+        ("Sin orden manual", len(sin_manual), "orange" if sin_manual else "green", "&#8645;"),
+    ]
+    render_html(
+        '<div class="kpi-card-grid">'
+        + "".join(
+            f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+            f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+            for titulo, valor, tono, icono in tarjetas
+        )
+        + "</div>"
+    )
+    if sin_manual:
+        st.info(
+            f"**{len(sin_manual)} colecciones no están en orden manual.** Shopify las reordena "
+            "por su cuenta (más vendidos, precio, alfabético), así que un Boost aplicado ahí "
+            "**no se vería**. Al aplicar un orden la app las pasa a MANUAL, pero conviene "
+            "saberlo antes: es un cambio visible en la tienda."
+        )
+    if vacias:
+        with st.expander(f"{len(vacias)} colecciones sin un solo producto"):
+            st.caption(
+                "Una colección automática vacía casi siempre es una regla que no encuentra nada "
+                "— por ejemplo un tag escrito distinto del que llevan los productos."
+            )
+            st.dataframe(
+                pd.DataFrame([{
+                    "Colección": c.get("titulo"), "Handle": c.get("handle"),
+                    "Tipo": "Automática" if c.get("automatica") else "Manual",
+                    "Regla": " · ".join(
+                        f"{r.get('campo')} {r.get('relacion')} {r.get('valor')}"
+                        for r in (c.get("reglas") or [])) or "(manual)",
+                } for c in vacias]),
+                width="stretch", hide_index=True,
+            )
+
+
+def _etiqueta_de_coleccion(coleccion):
+    tipo = "automática" if coleccion.get("automatica") else "manual"
+    return (f"{coleccion.get('titulo')} · {coleccion.get('productos_shopify') or 0} productos "
+            f"· {tipo}")
+
+
+def _elegir_coleccion(estado, clave, etiqueta="Colección"):
+    colecciones = estado.get("colecciones") or []
+    if not colecciones:
+        return None
+    opciones = {_etiqueta_de_coleccion(c): c for c in colecciones}
+    elegida = st.selectbox(etiqueta, list(opciones), key=clave, index=None,
+                           placeholder="Elige una colección...")
+    return opciones.get(elegida) if elegida else None
+
+
+# --- crear colecciones -----------------------------------------------------
+def _render_crear_coleccion(estado, site_key, shopify_config):
+    st.markdown('<div class="section-card"><h2>Crear una colección</h2>', unsafe_allow_html=True)
+    st.caption(
+        "**Manual**: la llenas tú, con un Excel de códigos, y puedes ordenarla con el Boost. "
+        "**Inteligente**: Shopify la llena sola con una regla, y se mantiene al día con cada "
+        "producto nuevo que cumpla — pero su orden lo decide Shopify salvo que la pases a manual."
+    )
+    tipo = st.radio(
+        "Tipo de colección", ["Manual (yo elijo los productos)", "Inteligente (por reglas)"],
+        key="coleccion_crear_tipo", horizontal=True,
+    )
+    inteligente = tipo.startswith("Inteligente")
+
+    columna_nombre, columna_orden = st.columns([2, 1], gap="large")
+    with columna_nombre:
+        nombre = st.text_input("Nombre de la colección", key="coleccion_crear_nombre",
+                               placeholder="Hiking Mujer")
+        handle = st.text_input(
+            "Handle (la URL)", key="coleccion_crear_handle",
+            placeholder="se genera del nombre si lo dejas vacío",
+            help="Es la dirección de la colección en la tienda. Cambiarlo después rompe el enlace.",
+        )
+    with columna_orden:
+        # Con cualquier orden que no sea MANUAL, los movimientos del Boost no
+        # se ven: Shopify reordena por su cuenta. Se avisa aqui y no despues.
+        orden = st.selectbox(
+            "Orden de los productos", list(colecciones_motor.ORDENES_DE_SHOPIFY),
+            key="coleccion_crear_orden", index=0,
+            help="MANUAL es el único que permite aplicar un Boost producto a producto.",
+        )
+        publicar = st.checkbox(
+            "Publicar en Online Store", key="coleccion_crear_publicar", value=True,
+            help=(
+                "Una colección creada por API queda SIN publicar: existe, se puede llenar y no "
+                "la ve nadie. Es el mismo «cargado no es lo mismo que visible» de los productos."
+            ),
+        )
+    descripcion = st.text_area("Descripción (HTML)", key="coleccion_crear_descripcion", height=80)
+
+    reglas, errores_regla, disyuntiva = [], [], False
+    if inteligente:
+        reglas, errores_regla, disyuntiva = _render_reglas(estado)
+
+    if clean_value(handle):
+        existente = {}
+        if fetch_collection_by_handle is not None:
+            try:
+                existente = fetch_collection_by_handle(shopify_config, handle) or {}
+            except Exception:  # noqa: BLE001 - preguntar no puede tumbar la pantalla
+                existente = {}
+        if not existente and clean_value(handle) in {
+                clean_value(c.get("handle")) for c in estado.get("colecciones") or []}:
+            existente = {"title": clean_value(handle)}
+        if existente:
+            st.error(
+                f"Ya existe una colección con el handle `{clean_value(handle)}` "
+                f"(«{clean_value(existente.get('title')) or handle}»). Shopify no admite dos "
+                "iguales: elige otro handle, o usa el panel de abajo para cargarle productos "
+                "a la que ya existe."
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+
+    puede = bool(clean_value(nombre)) and (not inteligente or (reglas and not errores_regla))
+    if not clean_value(nombre):
+        st.info("Escribe el nombre de la colección para poder crearla.")
+    elif inteligente and not reglas:
+        st.info("Una colección inteligente necesita al menos una regla que Shopify pueda aplicar.")
+    elif inteligente and errores_regla:
+        st.warning("Arregla las reglas marcadas arriba antes de crear la colección.")
+
+    if st.button("Crear colección en Shopify", type="primary", key="coleccion_crear_boton",
+                 disabled=not puede):
+        try:
+            with st.spinner("Creando la colección..."):
+                creada = collection_create(
+                    shopify_config, nombre, handle=handle, body_html=descripcion,
+                    sort_order=orden, reglas=reglas, disyuntiva=disyuntiva,
+                )
+                if publicar and collection_publish is not None:
+                    try:
+                        collection_publish(shopify_config, creada.get("id"))
+                    except Exception as exc:  # noqa: BLE001
+                        # Que no se pueda publicar NO deshace la creacion: la
+                        # coleccion existe y se publica a mano. Callarlo la
+                        # dejaria invisible sin que nadie supiera por que.
+                        st.warning(f"La colección se creó pero no se pudo publicar: {exc}")
+            detalle = ("inteligente, %d reglas" % len(reglas)) if inteligente else "manual"
+            _anotar_historial("Crear", nombre, f"{detalle}, orden {orden}", site_key=site_key)
+            st.success(
+                f"Colección **{nombre}** creada (`{creada.get('handle')}`). "
+                + ("Shopify la irá llenando con la regla." if inteligente
+                   else "Ahora cárgale productos con el Excel de abajo.")
+            )
+            leer_colecciones_del_sitio(site_key, shopify_config, force_refresh=True)
+            st.rerun()
+        except Exception as exc:  # noqa: BLE001
+            _anotar_historial("Crear", nombre, str(exc), resultado="error", site_key=site_key)
+            st.error(f"No se pudo crear la colección: {exc}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_reglas(estado):
+    """Las reglas de una coleccion inteligente. Devuelve `(reglas, errores, disyuntiva)`.
+
+    La marca, el genero y el color NO son campos de Shopify: son metacampos
+    `custom.*`. Shopify sabe filtrar por ellos, pero **solo si la definicion
+    tiene activada la condicion de coleccion**; sin eso acepta la regla y la
+    coleccion sale VACIA. Por eso se lee antes que definiciones admite la
+    tienda y se dice cual falta, en vez de dejar que se descubra solo.
+    """
+    definiciones = estado.get("definiciones") or {}
+    st.markdown("**Reglas**")
+    modo = st.radio(
+        "Cuándo entra un producto",
+        ["Tiene que cumplir TODAS las reglas", "Le basta con cumplir UNA"],
+        key="coleccion_reglas_modo", horizontal=True,
+    )
+    disyuntiva = modo.endswith("UNA")
+    cuantas = st.number_input("Cuántas reglas", min_value=1, max_value=8, value=1, step=1,
+                              key="coleccion_reglas_cuantas")
+
+    conceptos = list(colecciones_motor.CONCEPTOS)
+    reglas, errores = [], []
+    for numero in range(int(cuantas)):
+        col_concepto, col_relacion, col_valor = st.columns([1.2, 1, 1.5], gap="small")
+        with col_concepto:
+            concepto = st.selectbox(
+                "Concepto", conceptos, key=f"coleccion_regla_concepto_{numero}",
+                format_func=lambda c: colecciones_motor.CONCEPTOS[c]["etiqueta"],
+                label_visibility="visible" if numero == 0 else "collapsed",
+            )
+        with col_relacion:
+            relaciones = list(colecciones_motor.relaciones_de(concepto))
+            relacion = st.selectbox(
+                "Relación", relaciones, key=f"coleccion_regla_relacion_{numero}",
+                format_func=lambda r: colecciones_motor.RELACIONES.get(r, r),
+                label_visibility="visible" if numero == 0 else "collapsed",
+            )
+        with col_valor:
+            valor = st.text_input(
+                "Valor", key=f"coleccion_regla_valor_{numero}",
+                label_visibility="visible" if numero == 0 else "collapsed",
+                placeholder="Hiking",
+            )
+        if not clean_value(valor):
+            continue
+        regla, error = colecciones_motor.regla_de_concepto(concepto, relacion, valor, definiciones)
+        if error:
+            errores.append(error)
+            st.error(error)
+        else:
+            reglas.append(regla)
+    if reglas:
+        union = " **y** " if not disyuntiva else " **o** "
+        st.caption("Entrará el producto cuyo " + union.join(
+            colecciones_motor.describir_regla(r) for r in reglas) + ".")
+    return reglas, errores, disyuntiva
+
+
+# --- asignar productos por Excel ------------------------------------------
+def _render_asignar_por_excel(estado, site_key, shopify_config):
+    st.markdown('<div class="section-card"><h2>Cargar productos desde un Excel</h2>',
+                unsafe_allow_html=True)
+    st.caption(
+        "Arrastra un Excel con una columna **Código Modelo Color** y, si quieres, una columna "
+        "**Orden**. Sin la columna de orden manda el orden de las filas del archivo. "
+        "Nada se escribe hasta que revises la validación y confirmes."
+    )
+    coleccion = _elegir_coleccion(estado, "coleccion_excel_destino", "Colección de destino")
+    archivo = st.file_uploader(
+        "Excel de códigos", type=["xlsx", "xls"], key="coleccion_excel_archivo",
+        help="Columnas: Código Modelo Color (obligatoria) y Orden (opcional).",
+    )
+    if coleccion is None:
+        st.info("Elige la colección de destino.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+    if archivo is None:
+        st.info("Sube el Excel con los códigos para ver la validación.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    df_excel = read_uploaded_excel_cached(archivo, "coleccion_excel")
+    if df_excel is None or df_excel.empty:
+        st.error("El Excel no tiene filas.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+    items, descartes = colecciones_motor.filas_de_asignacion(
+        df_excel.to_dict(orient="records"))
+
+    quitar_sobrantes = st.checkbox(
+        "Quitar de la colección lo que NO esté en el Excel", key="coleccion_excel_quitar",
+        help=(
+            "Sin marcar, el Excel AGREGA. Marcado, la colección queda exactamente con lo del "
+            "archivo: un Excel de 50 códigos sobre una colección de 3.000 le quitaría 2.950, y "
+            "eso no se deshace desde la app."
+        ),
+    )
+    # El hueco del aviso se crea SIEMPRE, no dentro de la rama que lee: un
+    # `st.empty()` condicional cambia la forma del arbol entre reruns y deja
+    # media pantalla duplicada en gris mientras dura el trabajo.
+    aviso = st.empty()
+    if st.button("Validar contra el catálogo", type="primary", key="coleccion_excel_validar"):
+        with st.spinner("Leyendo el catálogo del sitio y la colección..."):
+            productos = leer_catalogo_del_sitio(site_key, shopify_config, aviso=aviso)
+            actuales = fetch_collection_products(
+                shopify_config, coleccion.get("id"), sort_key="MANUAL",
+                max_items=BOOST_PRODUCTOS_MAXIMOS,
+            )
+        indice = colecciones_motor.indice_de_catalogo(productos)
+        claves_actuales = [_clave_de_registro(p) for p in actuales]
+        informe = colecciones_motor.validar_asignacion(items, indice, claves_actuales)
+        st.session_state["coleccion_excel_informe"] = {
+            "informe": informe, "descartes": descartes,
+            "claves_actuales": claves_actuales,
+            "gid_por_clave": {_clave_de_registro(p): p.get("Product ID") for p in actuales},
+            "coleccion": coleccion, "quitar": bool(quitar_sobrantes),
+            # Del catalogo solo se guarda el GID, nunca el producto entero:
+            # un catalogo completo en `session_state` son cientos de MB y el
+            # contenedor da 1 GB PARA TODA LA APP.
+            "gid_del_catalogo": {clave: clean_value(producto.get("Product ID"))
+                                 for clave, producto in
+                                 ((status_carga.clave_de_producto(p), p) for p in productos)
+                                 if clave and clean_value(producto.get("Product ID"))},
+        }
+
+    guardado = st.session_state.get("coleccion_excel_informe")
+    if not guardado or guardado.get("coleccion", {}).get("id") != coleccion.get("id"):
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+    _render_validacion_excel(guardado, site_key, shopify_config)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_validacion_excel(guardado, site_key, shopify_config):
+    informe = guardado["informe"]
+    descartes = guardado["descartes"]
+    coleccion = guardado["coleccion"]
+
+    tarjetas = [
+        ("Listos para cargar", len(informe["listos"]), "green", "&#10003;"),
+        ("Ya estaban dentro", len(informe["ya_estaban"]), "blue", "="),
+        ("No están en la tienda", len(informe["no_encontrados"]), "red", "&#10005;"),
+        ("Códigos ambiguos", len(informe["ambiguos"]), "orange", "?"),
+        ("Repetidos en el Excel", len(informe["repetidos"]) + len(descartes), "orange", "!"),
+    ]
+    render_html(
+        '<div class="kpi-card-grid">'
+        + "".join(
+            f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+            f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+            for titulo, valor, tono, icono in tarjetas
+        )
+        + "</div>"
+    )
+
+    # Los problemas van PRIMERO: con el orden del archivo, lo único visible sin
+    # bajar podía ser una fila correcta y el aviso quedaba enterrado.
+    for titulo, filas, tono in (
+        ("No están en el catálogo de esta tienda", informe["no_encontrados"], "error"),
+        ("El código está en más de un producto", informe["ambiguos"], "error"),
+        ("Filas que apuntan al mismo producto", informe["repetidos"], "warning"),
+    ):
+        if not filas:
+            continue
+        getattr(st, tono)(f"**{len(filas)} · {titulo}**")
+        with st.expander(f"Ver las {len(filas)} filas"):
+            st.dataframe(
+                pd.DataFrame([{"Fila": f.get("fila"), "Código": f.get("codigo"),
+                               "Motivo": f.get("motivo")} for f in filas]),
+                width="stretch", hide_index=True,
+            )
+    if descartes:
+        with st.expander(f"{len(descartes)} filas descartadas al leer el Excel"):
+            st.dataframe(pd.DataFrame(descartes), width="stretch", hide_index=True)
+
+    if informe["listos"] or informe["ya_estaban"]:
+        with st.expander(
+                f"Vista previa: {len(informe['listos'])} productos a agregar", expanded=True):
+            st.dataframe(
+                pd.DataFrame([{
+                    "Orden": f.get("orden") if f.get("orden") is not None else numero,
+                    "Código": f.get("codigo"), "Producto": f.get("titulo"),
+                    "Handle": f.get("handle"),
+                } for numero, f in enumerate(informe["listos"], start=1)]),
+                width="stretch", hide_index=True,
+            )
+
+    if not colecciones_motor.hay_que_revisar(informe) and not descartes:
+        st.success("El Excel está limpio: todos los códigos existen y ninguno se repite.")
+
+    if informe["bloqueado"]:
+        st.error(
+            "**No se puede ejecutar con códigos sin resolver.** Cargar sólo los que sí existen "
+            "dejaría la colección a medias sin que quede constancia de cuáles faltaron. "
+            "Corrige el Excel o quita esas filas."
+        )
+        return
+    if not informe["listos"] and not guardado["quitar"]:
+        st.success("Todos los códigos del Excel ya estaban en la colección. No hay nada que hacer.")
+        return
+
+    _render_ejecutar_asignacion(guardado, site_key, shopify_config)
+
+
+def _render_ejecutar_asignacion(guardado, site_key, shopify_config):
+    informe = guardado["informe"]
+    coleccion = guardado["coleccion"]
+    # El orden pedido: primero lo que el Excel numera, en su numero; despues lo
+    # que no trae numero, en el orden del archivo.
+    pedidos = sorted(
+        informe["listos"] + informe["ya_estaban"],
+        key=lambda f: (0, f["orden"]) if f.get("orden") is not None else (1, f["fila"]),
+    )
+    claves_deseadas = [f["clave"] for f in pedidos]
+    plan = colecciones_motor.plan_de_coleccion(
+        coleccion, guardado["claves_actuales"], claves_deseadas,
+        quitar_sobrantes=guardado["quitar"],
+    )
+
+    st.markdown("#### Lo que se va a escribir en Shopify")
+    resumen = st.columns(4)
+    resumen[0].metric("Se agregan", f"{len(plan['agregar']):,}")
+    resumen[1].metric("Se quitan", f"{len(plan['quitar']):,}")
+    resumen[2].metric("Se reordenan", f"{len(plan['movimientos']):,}")
+    resumen[3].metric("Llamadas a la API", f"{plan['llamadas']:,}")
+
+    if plan["sin_cambios"]:
+        st.success("La colección ya está exactamente así. No hay nada que escribir.")
+        return
+    if plan["quitar"]:
+        st.warning(
+            f"**Se van a QUITAR {len(plan['quitar']):,} productos** de la colección porque no "
+            "están en el Excel. Esto no se deshace desde la app."
+        )
+    orden_actual = clean_value(coleccion.get("orden_shopify")).upper()
+    if plan["movimientos"] and orden_actual not in ("", "MANUAL"):
+        st.warning(
+            f"La colección está en orden **{orden_actual}**, así que Shopify la reordena por su "
+            "cuenta y el orden del Excel no se vería. Al ejecutar se pasa a **MANUAL**."
+        )
+
+    confirmado = st.checkbox(
+        f"Confirmo que quiero modificar «{coleccion.get('titulo')}» en Shopify",
+        key="coleccion_excel_confirmar",
+    )
+    if not st.button("Aplicar a Shopify", type="primary", key="coleccion_excel_aplicar",
+                     disabled=not confirmado):
+        return
+    # Los GID salen de dos sitios y se unen: los que ya estan en la coleccion
+    # los trae su lectura, y los que hay que AGREGAR solo estan en el catalogo.
+    gids = dict(guardado.get("gid_del_catalogo") or {})
+    gids.update({c: g for c, g in (guardado.get("gid_por_clave") or {}).items() if g})
+    _ejecutar_plan(plan, gids, site_key, shopify_config, origen="Excel")
+
+
+def _ejecutar_plan(plan, gid_por_clave, site_key, shopify_config, origen=""):
+    """Aplica el plan: quitar, agregar, pasar a MANUAL y reordenar. EN ESE ORDEN.
+
+    El orden importa y no es cosmetico:
+
+    - **Quitar antes de agregar**, o un producto que sale y vuelve a entrar
+      podria acabar fuera.
+    - **Agregar antes de reordenar**, porque `collectionAddProductsV2` agrega
+      al FINAL: los movimientos se calcularon sobre el estado de DESPUES de
+      agregar, y aplicarlos antes los dejaria todos corridos.
+    - **MANUAL antes de reordenar**, o Shopify reordena por su cuenta y los
+      movimientos no se ven: el boton habria escrito y no se notaria nada.
+    """
+    coleccion = plan["coleccion"]
+    identificador = coleccion.get("id")
+    aviso = st.empty()
+    barra = st.progress(0.0)
+    pasos, hechos = [], 0
+
+    def gid(clave):
+        return clean_value(gid_por_clave.get(clave))
+
+    try:
+        total = max(1, bool(plan["quitar"]) + bool(plan["agregar"]) + bool(plan["movimientos"]) + 1)
+        if plan["quitar"]:
+            aviso.caption("Quitando productos...")
+            ids = [gid(c) for c in plan["quitar"]]
+            collection_remove_products(shopify_config, identificador,
+                                       [i for i in ids if i],
+                                       progreso=lambda m: aviso.caption(m))
+            pasos.append({"Paso": "Quitar", "Estado": "ok",
+                          "Detalle": f"{len([i for i in ids if i]):,} productos"})
+            hechos += 1
+            barra.progress(hechos / total)
+
+        if plan["agregar"]:
+            aviso.caption("Agregando productos...")
+            ids = [gid(c) for c in plan["agregar"]]
+            faltan = [c for c, i in zip(plan["agregar"], ids) if not i]
+            if faltan:
+                # Un producto sin GID no se puede agregar y callarlo dejaria la
+                # coleccion incompleta sin que nadie supiera cuales faltaron.
+                pasos.append({"Paso": "Agregar", "Estado": "aviso",
+                              "Detalle": f"{len(faltan)} sin id de Shopify: "
+                                         + ", ".join(faltan[:5])})
+            collection_add_products(shopify_config, identificador, [i for i in ids if i],
+                                    progreso=lambda m: aviso.caption(m))
+            pasos.append({"Paso": "Agregar", "Estado": "ok",
+                          "Detalle": f"{len([i for i in ids if i]):,} productos"})
+            hechos += 1
+            barra.progress(hechos / total)
+
+        if plan["movimientos"]:
+            orden_actual = clean_value(coleccion.get("orden_shopify")).upper()
+            if orden_actual not in ("", colecciones_motor.ORDEN_MANUAL):
+                aviso.caption("Pasando la colección a orden manual...")
+                collection_update(shopify_config, identificador,
+                                  sort_order=colecciones_motor.ORDEN_MANUAL)
+                pasos.append({"Paso": "Orden manual", "Estado": "ok",
+                              "Detalle": f"de {orden_actual} a MANUAL"})
+            aviso.caption("Reordenando...")
+            moves = [{"id": gid(m["clave"]), "newPosition": m["posicion"]}
+                     for m in plan["movimientos"]]
+            collection_reorder_products(shopify_config, identificador,
+                                        [m for m in moves if m["id"]],
+                                        progreso=lambda m: aviso.caption(m))
+            pasos.append({"Paso": "Reordenar", "Estado": "ok",
+                          "Detalle": f"{len([m for m in moves if m['id']]):,} movimientos"})
+            hechos += 1
+            barra.progress(hechos / total)
+
+        barra.progress(1.0)
+        aviso.empty()
+        detalle = (f"+{len(plan['agregar'])} −{len(plan['quitar'])} "
+                   f"↕{len(plan['movimientos'])} ({origen})")
+        _anotar_historial("Aplicar", coleccion.get("titulo"), detalle, site_key=site_key)
+        st.success(f"Listo. {detalle}")
+        st.dataframe(pd.DataFrame(pasos), width="stretch", hide_index=True)
+        # La lectura cacheada quedo vieja: la coleccion tiene otros productos y
+        # otro `sortOrder`. Servir la vieja haria que el siguiente plan se
+        # calculara sobre un estado que ya no existe.
+        leer_colecciones_del_sitio(site_key, shopify_config, force_refresh=True)
+    except Exception as exc:  # noqa: BLE001
+        barra.empty()
+        aviso.empty()
+        pasos.append({"Paso": "Error", "Estado": "error", "Detalle": str(exc)[:300]})
+        _anotar_historial("Aplicar", coleccion.get("titulo"), str(exc),
+                          resultado="error", site_key=site_key)
+        st.error(f"Falló al escribir en Shopify: {exc}")
+        st.dataframe(pd.DataFrame(pasos), width="stretch", hide_index=True)
+        st.caption(
+            "Lo que sí alcanzó a aplicarse está arriba. Volver a ejecutar es seguro: agregar un "
+            "producto que ya está no lo duplica, y el orden se recalcula desde el estado real."
+        )
+
+
+# --- el Boost --------------------------------------------------------------
+def _render_mantenedor_boost(estado, site_key, shopify_config):
+    st.markdown('<div class="section-card"><h2>Boost: en qué orden se ven los productos</h2>',
+                unsafe_allow_html=True)
+    st.caption(
+        "Elige los criterios **en orden de prioridad**: el primero manda y los siguientes sólo "
+        "desempatan. Se ve el resultado antes de tocar nada."
+    )
+    coleccion = _elegir_coleccion(estado, "boost_coleccion", "Colección a ordenar")
+    if coleccion is None:
+        st.info("Elige la colección que quieres ordenar.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    orden_actual = clean_value(coleccion.get("orden_shopify")).upper()
+    if orden_actual not in ("", colecciones_motor.ORDEN_MANUAL):
+        st.warning(
+            f"Esta colección está en orden **{orden_actual}**: Shopify la reordena por su cuenta "
+            "y hoy tu Boost no se vería. Al aplicar, la app la pasa a **MANUAL** — es un cambio "
+            "visible en la tienda."
+        )
+
+    archivo = st.file_uploader(
+        "Excel de orden (opcional)", type=["xlsx", "xls"], key="boost_excel",
+        help=(
+            "Con columnas Código Modelo Color y Orden. Sólo hace falta si vas a usar el criterio "
+            "«Orden del Excel»."
+        ),
+    )
+    orden_del_excel, descartes_excel = {}, []
+    if archivo is not None:
+        df_orden = read_uploaded_excel_cached(archivo, "boost_orden")
+        if df_orden is not None and not df_orden.empty:
+            items, descartes_excel = colecciones_motor.filas_de_asignacion(
+                df_orden.to_dict(orient="records"))
+            orden_del_excel = {
+                item["codigo"]: (item["orden"] if item["orden"] is not None else numero)
+                for numero, item in enumerate(items, start=1)
+            }
+            st.caption(f"{len(orden_del_excel):,} códigos con orden leídos del archivo.")
+
+    usar_ventas = st.checkbox(
+        "Traer el ranking de más vendidos", key="boost_ventas", value=False,
+        help=(
+            "Cuesta una lectura más de la colección. Shopify sólo sabe decir «más vendidos» "
+            "DENTRO de una colección: no existe ese ranking a nivel de catálogo."
+        ),
+    )
+    aviso = st.empty()
+    if st.button("Leer la colección y preparar el orden", type="primary", key="boost_leer"):
+        _preparar_boost(coleccion, site_key, shopify_config, orden_del_excel, usar_ventas, aviso)
+
+    datos = st.session_state.get("boost_datos")
+    if not datos or datos.get("coleccion_id") != coleccion.get("id"):
+        st.info("Pulsa el botón para leer la colección y ver su orden actual.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+    if descartes_excel:
+        with st.expander(f"{len(descartes_excel)} filas descartadas del Excel de orden"):
+            st.dataframe(pd.DataFrame(descartes_excel), width="stretch", hide_index=True)
+    _render_criterios_y_preview(datos, coleccion, site_key, shopify_config)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _preparar_boost(coleccion, site_key, shopify_config, orden_del_excel, usar_ventas, aviso):
+    """Lee la coleccion y arma el contexto del Boost.
+
+    Se guarda en la sesion SOLO lo que hace falta para ordenar y para escribir
+    -- claves, rangos y unos pocos campos por producto --, nunca los productos
+    enteros. Un catalogo completo en `session_state` son cientos de MB, y el
+    contenedor da 1 GB PARA TODA LA APP.
+    """
+    progreso = lambda mensaje: aviso.caption(mensaje)  # noqa: E731
+    try:
+        with st.spinner("Leyendo la colección..."):
+            actuales = fetch_collection_products(
+                shopify_config, coleccion.get("id"), sort_key="MANUAL",
+                max_items=BOOST_PRODUCTOS_MAXIMOS, progreso=progreso,
+            )
+            rango_ventas = {}
+            if usar_ventas:
+                vendidos = fetch_collection_products(
+                    shopify_config, coleccion.get("id"), sort_key="BEST_SELLING",
+                    max_items=BOOST_PRODUCTOS_MAXIMOS, progreso=progreso,
+                )
+                rango_ventas = {_clave_de_registro(p): n for n, p in enumerate(vendidos)}
+            nuevos = fetch_collection_products(
+                shopify_config, coleccion.get("id"), sort_key="CREATED",
+                max_items=BOOST_PRODUCTOS_MAXIMOS, reverse=True, progreso=progreso,
+            )
+    except Exception as exc:  # noqa: BLE001
+        aviso.empty()
+        st.error(f"No se pudo leer la colección: {exc}")
+        return
+    aviso.empty()
+
+    claves = [_clave_de_registro(p) for p in actuales]
+    # Sólo los campos que los criterios leen. `Variants` NO se guarda: el stock
+    # ya viene resumido en `totalInventory` y guardar las variantes multiplicaría
+    # la memoria por el número de tallas.
+    resumen = {}
+    for producto, clave in zip(actuales, claves):
+        if not clave:
+            continue
+        resumen[clave] = {
+            "Title": producto.get("Title"), "Handle": producto.get("Handle"),
+            "Type": producto.get("Type"), "Genero": producto.get("Genero"),
+            "Marca": producto.get("Marca"), "Mod-Col": producto.get("Mod-Col"),
+            "Status": producto.get("Status"), "Product ID": producto.get("Product ID"),
+            "Variants": [{"Variant Inventory Qty": producto.get("Total Inventory")}],
+        }
+    st.session_state["boost_datos"] = {
+        "coleccion_id": coleccion.get("id"),
+        "claves": [c for c in claves if c],
+        "productos": resumen,
+        "rango_ventas": rango_ventas,
+        "rango_novedad": {_clave_de_registro(p): n for n, p in enumerate(nuevos)},
+        "orden": {clave: orden_del_excel[codigo]
+                  for clave, codigo in ((c, clean_value(resumen[c].get("Mod-Col")).upper())
+                                        for c in resumen)
+                  if codigo in orden_del_excel},
+        "leido": _now_lima_text(),
+    }
+
+
+def _render_criterios_y_preview(datos, coleccion, site_key, shopify_config):
+    contexto = {
+        "productos": datos["productos"],
+        "rango_ventas": datos["rango_ventas"],
+        "rango_novedad": datos["rango_novedad"],
+        "orden": datos["orden"],
+        "prioridad_genero": BOOST_PRIORIDAD_GENERO,
+        "prioridad_tipo": _prioridad_de_tipos(datos),
+    }
+    disponibles = colecciones_motor.criterios_disponibles(contexto)
+    listos = [c for c in disponibles if c["listo"]]
+    faltan = [c for c in disponibles if not c["listo"]]
+
+    st.markdown(f"**{len(datos['claves']):,} productos** leídos el {datos['leido']}.")
+    if faltan:
+        st.caption(
+            "No disponibles todavía: "
+            + ", ".join(f"**{c['etiqueta']}** ({c['ayuda']})" for c in faltan)
+        )
+
+    elegidos = st.multiselect(
+        "Criterios, en orden de prioridad",
+        [c["clave"] for c in listos],
+        key="boost_criterios",
+        format_func=lambda c: colecciones_motor.CRITERIOS[c]["etiqueta"],
+        help="El primero manda; los siguientes sólo desempatan a los que igualan en el anterior.",
+    )
+    if not elegidos:
+        st.info(
+            "Elige al menos un criterio. El orden en que los elijas **es** la prioridad: "
+            "«Más vendidos» y luego «Stock» ordena por ventas y sólo usa el stock entre los "
+            "que vendieron lo mismo."
+        )
+        return
+
+    criterios = []
+    columnas = st.columns(min(4, len(elegidos)))
+    for numero, clave in enumerate(elegidos):
+        datos_criterio = colecciones_motor.CRITERIOS[clave]
+        with columnas[numero % len(columnas)]:
+            descendente = st.checkbox(
+                f"{numero + 1}. {datos_criterio['etiqueta']} ↓",
+                value=datos_criterio["descendente"],
+                key=f"boost_desc_{clave}",
+                help="Marcado: de mayor a menor. " + datos_criterio["ayuda"],
+            )
+        criterios.append({"clave": clave, "descendente": descendente})
+
+    orden_deseado = colecciones_motor.ordenar(datos["claves"], criterios, contexto)
+    movimientos = colecciones_motor.movimientos(datos["claves"], orden_deseado)
+
+    resumen = st.columns(3)
+    resumen[0].metric("Productos", f"{len(datos['claves']):,}")
+    resumen[1].metric("Cambian de sitio", f"{len(movimientos):,}")
+    resumen[2].metric(
+        "Llamadas a la API",
+        f"{len(colecciones_motor.bloques(movimientos, colecciones_motor.MOVIMIENTOS_POR_LLAMADA)):,}")
+
+    if not movimientos:
+        st.success("Con esos criterios la colección ya está en ese orden. No hay nada que mover.")
+        return
+
+    st.markdown("#### Cómo quedaría")
+    cuantos = st.slider("Cuántos productos ver", 10, min(200, len(orden_deseado)),
+                        min(30, len(orden_deseado)), key="boost_cuantos")
+    posicion_actual = {clave: numero for numero, clave in enumerate(datos["claves"], start=1)}
+    filas = []
+    for numero, clave in enumerate(orden_deseado[:cuantos], start=1):
+        producto = datos["productos"].get(clave, {})
+        antes = posicion_actual.get(clave)
+        filas.append({
+            "Nueva": numero, "Antes": antes,
+            "Sube/Baja": ("=" if antes == numero else
+                          f"▲ {antes - numero}" if antes and antes > numero
+                          else f"▼ {numero - (antes or numero)}"),
+            "Producto": producto.get("Title"), "Código": producto.get("Mod-Col"),
+            "Tipo": producto.get("Type"), "Género": producto.get("Genero"),
+            "Stock": (producto.get("Variants") or [{}])[0].get("Variant Inventory Qty"),
+            "Ranking ventas": datos["rango_ventas"].get(clave),
+        })
+    st.dataframe(pd.DataFrame(filas), width="stretch", hide_index=True)
+
+    st.download_button(
+        "Descargar el orden completo en Excel",
+        data=dataframe_to_excel_bytes({"Orden propuesto": pd.DataFrame([{
+            "Posición": numero, "Código": datos["productos"].get(c, {}).get("Mod-Col"),
+            "Producto": datos["productos"].get(c, {}).get("Title"),
+            "Handle": datos["productos"].get(c, {}).get("Handle"),
+            "Posición anterior": posicion_actual.get(c),
+        } for numero, c in enumerate(orden_deseado, start=1)])}),
+        file_name=f"boost_{clean_value(coleccion.get('handle'))}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="boost_descargar",
+        on_click=log_descarga,
+        args=("Orden propuesto del Boost", COLECCIONES_LABEL),
+    )
+
+    confirmado = st.checkbox(
+        f"Confirmo que quiero reordenar «{coleccion.get('titulo')}» en Shopify",
+        key="boost_confirmar",
+    )
+    if st.button("Aplicar este orden a Shopify", type="primary", key="boost_aplicar",
+                 disabled=not confirmado):
+        plan = {
+            "coleccion": coleccion, "agregar": [], "quitar": [],
+            "orden_final": orden_deseado, "movimientos": movimientos,
+            "llamadas": len(colecciones_motor.bloques(
+                movimientos, colecciones_motor.MOVIMIENTOS_POR_LLAMADA)),
+            "sin_cambios": False,
+        }
+        gid_por_clave = {c: p.get("Product ID") for c, p in datos["productos"].items()}
+        _ejecutar_plan(plan, gid_por_clave, site_key, shopify_config,
+                       origen=" + ".join(colecciones_motor.CRITERIOS[c["clave"]]["etiqueta"]
+                                         for c in criterios))
+        # El orden que la sesion tiene guardado ya no es el de la tienda.
+        st.session_state.pop("boost_datos", None)
+
+
+def _prioridad_de_tipos(datos):
+    """La prioridad de tipos por defecto: los que MAS productos tienen primero.
+
+    No es una jerarquia comercial -- esa no la sabe la app --, pero es
+    determinista y util: pone delante lo que de verdad llena la coleccion. El
+    desempate es alfabetico para que dos ejecuciones den lo mismo.
+    """
+    conteo = Counter(clean_value(p.get("Type")) for p in datos["productos"].values()
+                     if clean_value(p.get("Type")))
+    return [tipo for tipo, _ in sorted(conteo.items(), key=lambda par: (-par[1], par[0]))]
+
+
+# --- historial -------------------------------------------------------------
+def _render_historial_colecciones():
+    historial = _colecciones_historial()
+    with st.expander(f"Historial de cambios de esta sesión ({len(historial)})"):
+        if not historial:
+            st.caption(
+                "Todavía no has hecho ningún cambio en esta sesión. El registro **duradero** "
+                "está en Auditoría, que guarda cada acción con quién y cuándo en el repositorio "
+                "de datos: esto es sólo la vista rápida de lo que llevas hecho aquí."
+            )
+            return
+        st.dataframe(pd.DataFrame(historial), width="stretch", hide_index=True)
+        st.caption(
+            "Esto vive en la sesión y se pierde al cerrarla. El registro que queda está en "
+            "**Auditoría**."
+        )
+
+
+# --- el punto de entrada ---------------------------------------------------
+def render_colecciones_center(brand_config, shopify_config, seccion="colecciones"):
+    """Mantenedor de Colecciones y Boost del orden de la PLP.
+
+    `seccion` decide que se dibuja: los dos botones del menu llevan aqui y
+    comparten la lectura de colecciones. Dos pantallas separadas costarian
+    leerlas dos veces para responder a la misma pregunta.
+    """
+    titulo = "Colecciones" if seccion == "colecciones" else "Boost del orden de la PLP"
+    bajada = (
+        "Crea colecciones, cárgalas con un Excel de códigos y revisa qué falta — "
+        "todo contra la Admin GraphQL API, con vista previa antes de escribir."
+        if seccion == "colecciones" else
+        "Ordena los productos dentro de una colección por criterios combinados, "
+        "mira cómo queda y aplícalo a la tienda."
+    )
+    render_html(
+        f"""
+        <div class="kpi-hero">
+            <div class="kpi-title">
+                <h2>{escape(titulo)}</h2>
+                <p>{escape(bajada)}</p>
+            </div>
+        </div>
+        """
+    )
+
+    lista, faltan = colecciones_api_lista()
+    if not lista:
+        # La app arranca contra un shopify_api.py viejo y lo DICE, en vez de
+        # tumbar el import entero o dibujar una pantalla que no puede funcionar.
+        st.error(
+            "**Falta actualizar `shopify_api.py`**: no tiene "
+            + ", ".join(f"`{nombre}`" for nombre in faltan)
+            + ". Actualiza el repositorio y vuelve a desplegar."
+        )
+        return
+
+    site_key = clean_value(brand_config.get("site_key"))
+    if not is_shopify_configured(shopify_config):
+        st.error(
+            f"**{brand_config.get('site_label') or site_key} no tiene Shopify configurado en "
+            "Secrets.** Las colecciones viven en la tienda: sin credenciales no hay nada que "
+            "leer ni dónde escribir. Falta la sección "
+            f"`[shopify_sites.{site_key}]` con `shop_domain` y `admin_api_access_token`."
+        )
+        return
+
+    columna_boton, columna_estado = st.columns([1, 3], gap="large")
+    with columna_boton:
+        refrescar = st.button("Volver a leer las colecciones", key="colecciones_refrescar")
+    aviso = st.empty()
+    estado = leer_colecciones_del_sitio(site_key, shopify_config,
+                                        force_refresh=bool(refrescar), aviso=aviso)
+    if estado.get("error"):
+        st.error(
+            f"No se pudieron leer las colecciones de "
+            f"{brand_config.get('site_label') or site_key}: {estado['error']}"
+        )
+        return
+    with columna_estado:
+        st.caption(
+            f"**{len(estado.get('colecciones') or []):,} colecciones** de "
+            f"{brand_config.get('site_label') or site_key}, leídas el {estado.get('leido')}. "
+            "Una caché invisible sobre el dato que decide qué se escribe sería una trampa: "
+            "el botón de al lado la borra."
+        )
+
+    _render_colecciones_dashboard(estado)
+
+    if seccion == "boost":
+        _render_mantenedor_boost(estado, site_key, shopify_config)
+    else:
+        _render_crear_coleccion(estado, site_key, shopify_config)
+        _render_asignar_por_excel(estado, site_key, shopify_config)
+
+    _render_historial_colecciones()
 
 
 STATUS_CARGA_LABEL = "Status de carga"
@@ -28057,6 +29088,8 @@ def main():
         STATUS_CARGA_LABEL,
         SUPERMALL_LABEL,
         DICCIONARIOS_LABEL,
+        COLECCIONES_LABEL,
+        BOOST_LABEL,
         "Input comercial",
         "Solicitudes",
         "Carga de catálogo",
@@ -28071,6 +29104,8 @@ def main():
         sidebar_nav_button(STATUS_CARGA_LABEL, "operation_area_choice", STATUS_CARGA_LABEL, "operation_nav_status")
         sidebar_nav_button(SUPERMALL_LABEL, "operation_area_choice", SUPERMALL_LABEL, "operation_nav_supermall")
         sidebar_nav_button(DICCIONARIOS_LABEL, "operation_area_choice", DICCIONARIOS_LABEL, "operation_nav_colecciones")
+        sidebar_nav_button(COLECCIONES_LABEL, "operation_area_choice", COLECCIONES_LABEL, "operation_nav_mantenedor")
+        sidebar_nav_button(BOOST_LABEL, "operation_area_choice", BOOST_LABEL, "operation_nav_boost")
         sidebar_nav_button("Input comercial", "operation_area_choice", "Input comercial", "operation_nav_input")
         sidebar_nav_button("Solicitudes", "operation_area_choice", "Solicitudes", "operation_nav_tickets")
         if can_view_user_activity_log(auth_user):
@@ -28151,6 +29186,14 @@ api_version = "{DEFAULT_API_VERSION}"
     if operation_area == DICCIONARIOS_LABEL:
         log_acceso_modulo(DICCIONARIOS_LABEL)
         render_diccionario_colecciones()
+        return
+    if operation_area == COLECCIONES_LABEL:
+        log_acceso_modulo(COLECCIONES_LABEL)
+        render_colecciones_center(brand_config, shopify_config, seccion="colecciones")
+        return
+    if operation_area == BOOST_LABEL:
+        log_acceso_modulo(BOOST_LABEL)
+        render_colecciones_center(brand_config, shopify_config, seccion="boost")
         return
     if operation_area == "Input comercial":
         render_commercial_input_center(actor=ticket_actor)

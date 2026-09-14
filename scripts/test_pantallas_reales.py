@@ -40,6 +40,8 @@ AREAS = [
     "Status de carga",
     "Carga Supermall",
     "Diccionarios",
+    "Colecciones",
+    "Boost PLP",
     "Input comercial",
     "Solicitudes",
     "Auditoria",

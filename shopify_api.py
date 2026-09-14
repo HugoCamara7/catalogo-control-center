@@ -2622,3 +2622,605 @@ def search_products(config, search_query, first=20):
         for node in nodes
         if node
     ]
+
+
+# ===========================================================================
+# COLECCIONES: escribir, no solo leer
+# ===========================================================================
+# `fetch_collections` ya leia las colecciones con su regla. Lo que no habia era
+# forma de CREARLAS, llenarlas ni ordenarlas desde la app: eso se hacia a mano
+# en el admin, coleccion por coleccion y arrastrando tarjetas.
+#
+# Tres cosas que hay que saber de esta parte de la API, y que no son obvias:
+#
+# 1. **`collectionCreate` y `collectionUpdate` tienen DOS argumentos.** El
+#    viejo (`input: CollectionInput!`) esta DEPRECADO en favor del nuevo
+#    (`collection: CollectionCreateInput!` / `CollectionUpdateInput!`), pero el
+#    nuevo no existe en todas las versiones. Se intenta el nuevo y se cae al
+#    viejo mirando el error, que es exactamente lo que ya hace `product_update`
+#    con `ProductUpdateInput`/`ProductInput`. Escribir solo uno de los dos
+#    seria elegir entre romperse hoy o romperse manana.
+#
+# 2. **Agregar, quitar y reordenar devuelven un JOB, no el resultado.** Son
+#    asincronas: la mutacion vuelve enseguida y el trabajo sigue del lado de
+#    Shopify. Encadenar la siguiente llamada sin esperar a que la anterior
+#    termine deja el orden a medias -- y un orden a medias se ve normal y llega
+#    al comprador. Por eso `wait_job` no es opcional entre bloques.
+#
+# 3. **El tope es 250 por llamada**, y no es una eleccion nuestra: los input
+#    objects de GraphQL estan limitados a 250 elementos.
+COLECCION_MOVIMIENTOS_POR_LLAMADA = 250
+COLECCION_PRODUCTOS_POR_LLAMADA = 250
+
+# Los campos de la coleccion, escritos UNA vez. Los usan las tres lecturas
+# (por id, por handle y el listado), para que no puedan separarse: si una
+# trajera `sortOrder` y otra no, la pantalla diria que la coleccion esta en
+# MANUAL o no segun por donde se leyo.
+CAMPOS_COLECCION = """
+      id
+      handle
+      title
+      descriptionHtml
+      sortOrder
+      updatedAt
+      templateSuffix
+      productsCount {
+        count
+      }
+      ruleSet {
+        appliedDisjunctively
+        rules {
+          column
+          relation
+          condition
+        }
+      }
+"""
+
+
+def _regla_a_input(regla):
+    """Una regla del motor, con la forma que pide `CollectionRuleInput`.
+
+    `PRODUCT_TAXONOMY_NODE_ID` esta deprecado en favor de
+    `PRODUCT_CATEGORY_ID`; el motor ya emite el nuevo y aqui no se traduce
+    ninguno de los dos a mano.
+    """
+    entrada = {
+        "column": clean(regla.get("campo")).upper(),
+        "relation": clean(regla.get("relacion")).upper(),
+        "condition": clean(regla.get("valor")),
+    }
+    # Una regla por metacampo necesita DECIR de que definicion habla. Sin
+    # `conditionObjectId` Shopify acepta la regla y la coleccion sale vacia.
+    definicion = clean(regla.get("definicion_id"))
+    if definicion:
+        entrada["conditionObjectId"] = definicion
+    return entrada
+
+
+def _rule_set_input(reglas, disyuntiva=False):
+    reglas = [_regla_a_input(r) for r in reglas or []]
+    if not reglas:
+        return None
+    return {"appliedDisjunctively": bool(disyuntiva), "rules": reglas}
+
+
+def _es_error_de_argumento(texto):
+    """Si el fallo es "esta version no conoce ese argumento" y no otra cosa.
+
+    Un error de permisos o de red NO se reintenta con el argumento viejo: eso
+    taparia el motivo real y dejaria un mensaje que manda a mirar donde no es.
+    """
+    texto = str(texto or "")
+    marcas = (
+        "variableMismatch", "InvalidValue", "argument", "Argument",
+        "CollectionCreateInput", "CollectionUpdateInput", "CollectionInput",
+        "doesn't accept", "is not defined", "Field is not defined",
+        "Unknown argument", "undefinedField",
+    )
+    return any(marca in texto for marca in marcas)
+
+
+def _collection_write(config, nombre_mutacion, campo_respuesta, datos, collection_id=None):
+    """`collectionCreate` / `collectionUpdate`, con el argumento nuevo y el
+    respaldo al viejo."""
+    shop_domain, api_version, token = _client(config)
+
+    def correr(argumento, tipo):
+        entrada = dict(datos)
+        if collection_id:
+            entrada["id"] = collection_id
+        mutation = """
+    mutation __NOMBRE__($entrada: __TIPO__!) {
+      __MUTACION__(__ARG__: $entrada) {
+        collection {
+__CAMPOS__
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+        """
+        mutation = (mutation
+                    .replace("__NOMBRE__", nombre_mutacion[0].upper() + nombre_mutacion[1:])
+                    .replace("__MUTACION__", nombre_mutacion)
+                    .replace("__ARG__", argumento)
+                    .replace("__TIPO__", tipo)
+                    .replace("__CAMPOS__", CAMPOS_COLECCION))
+        data = graphql_request(shop_domain, token, mutation, {"entrada": entrada},
+                               api_version=api_version, timeout=45)
+        payload = data.get(campo_respuesta) or {}
+        errores = payload.get("userErrors") or []
+        if errores:
+            raise ShopifyApiError(json.dumps(errores, ensure_ascii=False))
+        return payload.get("collection") or {}
+
+    nuevo = "CollectionCreateInput" if nombre_mutacion == "collectionCreate" else "CollectionUpdateInput"
+    try:
+        return correr("collection", nuevo)
+    except ShopifyApiError as exc:
+        if not _es_error_de_argumento(exc):
+            raise
+        return correr("input", "CollectionInput")
+
+
+def collection_create(config, title, handle="", body_html="", sort_order="",
+                      reglas=None, disyuntiva=False, template_suffix=""):
+    """Crea la coleccion. Manual si no lleva reglas, automatica si las lleva.
+
+    `sort_order` en MANUAL es lo que permite ordenar producto a producto. Con
+    cualquier otro valor Shopify reordena por su cuenta y los movimientos del
+    Boost no se ven -- el boton existiria y no haria nada.
+    """
+    title = clean(title)
+    if not title:
+        raise ShopifyApiError("La coleccion necesita un nombre.")
+    datos = {"title": title}
+    if clean(handle):
+        datos["handle"] = clean(handle)
+    if clean(body_html):
+        datos["descriptionHtml"] = clean(body_html)
+    if clean(sort_order):
+        datos["sortOrder"] = clean(sort_order).upper()
+    if clean(template_suffix):
+        datos["templateSuffix"] = clean(template_suffix)
+    rule_set = _rule_set_input(reglas, disyuntiva)
+    if rule_set:
+        datos["ruleSet"] = rule_set
+    return _collection_write(config, "collectionCreate", "collectionCreate", datos)
+
+
+def collection_update(config, collection_id, title=None, body_html=None, sort_order=None,
+                      reglas=None, disyuntiva=False, template_suffix=None):
+    """Actualiza SOLO lo que se le pasa.
+
+    Los `None` no viajan a proposito: mandar `descriptionHtml: ""` porque la
+    pantalla no lo tocaba BORRARIA la descripcion de la coleccion. Es la misma
+    regla que "vacio no borra" de los textos cortos.
+    """
+    collection_id = clean(collection_id)
+    if not collection_id:
+        raise ShopifyApiError("Falta el id de la coleccion.")
+    datos = {}
+    if title is not None:
+        datos["title"] = clean(title)
+    if body_html is not None:
+        datos["descriptionHtml"] = body_html
+    if sort_order is not None:
+        datos["sortOrder"] = clean(sort_order).upper()
+    if template_suffix is not None:
+        datos["templateSuffix"] = clean(template_suffix)
+    if reglas is not None:
+        rule_set = _rule_set_input(reglas, disyuntiva)
+        if rule_set:
+            datos["ruleSet"] = rule_set
+    if not datos:
+        return {}
+    return _collection_write(config, "collectionUpdate", "collectionUpdate", datos,
+                             collection_id=collection_id)
+
+
+def fetch_job(config, job_id):
+    """`(terminado, id)` de un job asincrono de Shopify."""
+    job_id = clean(job_id)
+    if not job_id:
+        return True, ""
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query JobEstado($id: ID!) {
+      job(id: $id) {
+        id
+        done
+      }
+    }
+    """
+    data = graphql_request(shop_domain, token, query, {"id": job_id}, api_version=api_version)
+    job = data.get("job") or {}
+    return bool(job.get("done")), clean(job.get("id"))
+
+
+def wait_job(config, job_id, attempts=40, delay_seconds=1.5, progreso=None):
+    """Espera a que el job termine. Devuelve True si termino.
+
+    **No es opcional entre bloques.** Agregar, quitar y reordenar son
+    asincronas: lanzar el bloque siguiente sin esperar al anterior deja el
+    orden a medias, y un orden a medias no revienta -- se ve normal y llega al
+    comprador. Es el mismo criterio que releer la galeria para comprobar que el
+    video quedo en la posicion 2.
+
+    Si se agota la espera devuelve False en vez de levantar: el trabajo sigue
+    corriendo del lado de Shopify y decir "no termino a tiempo" es cierto,
+    mientras que "fallo" no lo seria.
+    """
+    job_id = clean(job_id)
+    if not job_id:
+        return True
+    for intento in range(1, max(1, int(attempts)) + 1):
+        try:
+            terminado, _ = fetch_job(config, job_id)
+        except ShopifyApiError:
+            terminado = False
+        if terminado:
+            return True
+        _avisar(progreso, "Esperando a que Shopify termine (%d/%d)..." % (intento, attempts))
+        time.sleep(delay_seconds)
+    return False
+
+
+def _collection_products_mutation(config, nombre, collection_id, product_ids, progreso=None):
+    """El tronco comun de agregar y quitar: los dos parten en bloques de 250,
+    los dos devuelven un job y los dos hay que esperarlos."""
+    collection_id = clean(collection_id)
+    product_ids = [clean(p) for p in product_ids or [] if clean(p)]
+    if not collection_id or not product_ids:
+        return []
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation __NOMBRE__($id: ID!, $productIds: [ID!]!) {
+      __MUTACION__(id: $id, productIds: $productIds) {
+        job {
+          id
+          done
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """.replace("__NOMBRE__", nombre[0].upper() + nombre[1:]).replace("__MUTACION__", nombre)
+
+    jobs = []
+    total = (len(product_ids) + COLECCION_PRODUCTOS_POR_LLAMADA - 1) // COLECCION_PRODUCTOS_POR_LLAMADA
+    for numero, inicio in enumerate(range(0, len(product_ids), COLECCION_PRODUCTOS_POR_LLAMADA), start=1):
+        bloque = product_ids[inicio:inicio + COLECCION_PRODUCTOS_POR_LLAMADA]
+        _avisar(progreso, "%s: bloque %d de %d (%d productos)..." % (nombre, numero, total, len(bloque)))
+        data = graphql_request(shop_domain, token, mutation,
+                               {"id": collection_id, "productIds": bloque},
+                               api_version=api_version, timeout=60)
+        payload = data.get(nombre) or {}
+        errores = payload.get("userErrors") or []
+        if errores:
+            raise ShopifyApiError(json.dumps(errores, ensure_ascii=False))
+        job = payload.get("job") or {}
+        job_id = clean(job.get("id"))
+        jobs.append(job_id)
+        if job_id and not job.get("done"):
+            wait_job(config, job_id, progreso=progreso)
+    return jobs
+
+
+def collection_add_products(config, collection_id, product_ids, progreso=None):
+    """`collectionAddProductsV2`, en bloques de 250 y esperando cada job.
+
+    La V1 (`collectionAddProducts`) esta deprecada; la V2 es la asincrona y es
+    la que hay que usar. Los productos se agregan al FINAL de la coleccion, asi
+    que el orden se arregla despues con `collection_reorder_products` -- no
+    antes, o los movimientos saldrian corridos.
+    """
+    return _collection_products_mutation(config, "collectionAddProductsV2",
+                                         collection_id, product_ids, progreso)
+
+
+def collection_remove_products(config, collection_id, product_ids, progreso=None):
+    return _collection_products_mutation(config, "collectionRemoveProducts",
+                                         collection_id, product_ids, progreso)
+
+
+def collection_reorder_products(config, collection_id, moves, progreso=None):
+    """`collectionReorderProducts`, en bloques de 250 y esperando cada job.
+
+    `moves` es `[{"id": gid, "newPosition": "0"}]`. Dos cosas que confundirlas
+    deja todo corrido un puesto:
+
+    - **La posicion empieza en 0**, no en 1. La "posicion 2" que ve una persona
+      es `newPosition: "1"`. Es el mismo detalle que deja un video en la
+      posicion 3 creyendo que se pidio la 2.
+    - **`newPosition` va en TEXTO** (`UnsignedInt64`), no como numero.
+
+    Y los bloques NO se pueden lanzar en paralelo: Shopify aplica los
+    movimientos uno detras de otro, asi que el bloque 2 se calculo suponiendo
+    que el 1 ya se aplico.
+    """
+    collection_id = clean(collection_id)
+    moves = [m for m in moves or [] if clean((m or {}).get("id"))]
+    if not collection_id or not moves:
+        return []
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation CollectionReorderProducts($id: ID!, $moves: [MoveInput!]!) {
+      collectionReorderProducts(id: $id, moves: $moves) {
+        job {
+          id
+          done
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    jobs = []
+    total = (len(moves) + COLECCION_MOVIMIENTOS_POR_LLAMADA - 1) // COLECCION_MOVIMIENTOS_POR_LLAMADA
+    for numero, inicio in enumerate(range(0, len(moves), COLECCION_MOVIMIENTOS_POR_LLAMADA), start=1):
+        bloque = [
+            {"id": clean(m.get("id")), "newPosition": str(int(m.get("newPosition", 0)))}
+            for m in moves[inicio:inicio + COLECCION_MOVIMIENTOS_POR_LLAMADA]
+        ]
+        _avisar(progreso, "Reordenando: bloque %d de %d (%d movimientos)..."
+                % (numero, total, len(bloque)))
+        data = graphql_request(shop_domain, token, mutation,
+                               {"id": collection_id, "moves": bloque},
+                               api_version=api_version, timeout=60)
+        payload = data.get("collectionReorderProducts") or {}
+        errores = payload.get("userErrors") or []
+        if errores:
+            raise ShopifyApiError(json.dumps(errores, ensure_ascii=False))
+        job = payload.get("job") or {}
+        job_id = clean(job.get("id"))
+        jobs.append(job_id)
+        if job_id and not job.get("done"):
+            wait_job(config, job_id, progreso=progreso)
+    return jobs
+
+
+ORDENES_DE_LECTURA = ("MANUAL", "BEST_SELLING", "CREATED", "TITLE", "PRICE", "COLLECTION_DEFAULT")
+
+
+def fetch_collection_products(config, collection_id, sort_key="MANUAL", max_items=5000,
+                              reverse=False, progreso=None):
+    """Los productos de una coleccion, EN EL ORDEN que pida `sort_key`.
+
+    De aqui salen los dos rangos del Boost que la app no puede calcular sola:
+
+    - **`BEST_SELLING`** es el ranking de ventas que calcula Shopify. No existe
+      forma de pedirlo fuera del contexto de una coleccion -- `ProductSortKeys`
+      del catalogo no tiene esa clave --, asi que "mas vendidos" es siempre
+      "mas vendidos DE ESTA COLECCION". Es una limitacion de la API, no una
+      decision nuestra, y la pantalla lo dice.
+    - **`CREATED`** es la fecha de creacion segun Shopify. Se lee de aqui y no
+      del catalogo para no tener que agregar un campo a `CAMPOS_PRODUCTO`: eso
+      cambiaria la lectura que usa la carga entera para ganar un dato que solo
+      necesita esta pantalla.
+
+    Se piden los campos MINIMOS. El costo de esta consulta se paga por
+    producto, y con las variantes y los media dentro se rozan los 1.000 puntos
+    del maximo de una consulta (es lo que ya obligo a leer el catalogo con una
+    bulk operation).
+    """
+    collection_id = clean(collection_id)
+    if not collection_id:
+        return []
+    sort_key = clean(sort_key).upper() or "MANUAL"
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query CollectionProducts($id: ID!, $first: Int!, $after: String, $sortKey: ProductCollectionSortKeys!, $reverse: Boolean!) {
+      collection(id: $id) {
+        id
+        handle
+        products(first: $first, after: $after, sortKey: $sortKey, reverse: $reverse) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            id
+            handle
+            title
+            status
+            productType
+            vendor
+            totalInventory
+            createdAt
+            codigoModeloColor: metafield(namespace: "custom", key: "codigo_modelo_color") {
+              value
+            }
+            marca: metafield(namespace: "custom", key: "marca") {
+              value
+            }
+            genero: metafield(namespace: "custom", key: "genero") {
+              value
+            }
+          }
+        }
+      }
+    }
+    """
+    registros = []
+    after = None
+    while len(registros) < max_items:
+        data = graphql_request(
+            shop_domain, token, query,
+            {"id": collection_id, "first": min(250, max_items - len(registros)),
+             "after": after, "sortKey": sort_key, "reverse": bool(reverse)},
+            api_version=api_version, timeout=60,
+        )
+        coleccion = data.get("collection") or {}
+        if not coleccion:
+            break
+        bloque = coleccion.get("products") or {}
+        nodos = bloque.get("nodes") or []
+        for node in nodos:
+            registros.append({
+                "Product ID": clean(node.get("id")),
+                "Handle": clean(node.get("handle")),
+                "Title": clean(node.get("title")),
+                "Status": clean(node.get("status")),
+                "Type": clean(node.get("productType")),
+                "Vendor": clean(node.get("vendor")),
+                "Total Inventory": node.get("totalInventory"),
+                "Created At": clean(node.get("createdAt")),
+                "Mod-Col": clean((node.get("codigoModeloColor") or {}).get("value")).upper(),
+                "Marca": clean((node.get("marca") or {}).get("value")),
+                "Genero": clean((node.get("genero") or {}).get("value")),
+            })
+        _avisar(progreso, "Leyendo la colección (%s): %d productos..." % (sort_key, len(registros)))
+        page_info = bloque.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    return registros
+
+
+def fetch_collection_by_handle(config, handle):
+    """La coleccion con ese handle, o `{}`.
+
+    Que no exista NO es un error: es la respuesta a "¿ya la crearon?", y es lo
+    que decide entre crear y actualizar. Levantar aqui obligaria a envolver
+    cada llamada en un try para preguntar algo normal.
+    """
+    handle = clean(handle)
+    if not handle:
+        return {}
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query CollectionPorHandle($handle: String!) {
+      collectionByHandle(handle: $handle) {
+__CAMPOS__
+      }
+    }
+    """.replace("__CAMPOS__", CAMPOS_COLECCION)
+    try:
+        data = graphql_request(shop_domain, token, query, {"handle": handle},
+                               api_version=api_version, timeout=30)
+    except ShopifyApiError as exc:
+        # `collectionByHandle` esta deprecado en las versiones nuevas en favor
+        # de `collection(handle:)`. Se intenta el nuevo antes de rendirse.
+        if not _es_error_de_argumento(exc) and "collectionByHandle" not in str(exc):
+            raise
+        consulta = """
+    query CollectionPorHandle($handle: String!) {
+      collection(handle: $handle) {
+__CAMPOS__
+      }
+    }
+        """.replace("__CAMPOS__", CAMPOS_COLECCION)
+        data = graphql_request(shop_domain, token, consulta, {"handle": handle},
+                               api_version=api_version, timeout=30)
+        return data.get("collection") or {}
+    return data.get("collectionByHandle") or {}
+
+
+def fetch_collection_condition_definitions(config, max_items=250):
+    """`{(namespace, key): gid}` de los metacampos que la tienda admite como
+    condicion de coleccion.
+
+    **Este dato decide si una coleccion inteligente por marca o por genero se
+    puede crear siquiera.** La marca y el genero no son campos de Shopify: son
+    metacampos `custom.*`. Shopify sabe filtrar por ellos, pero solo si la
+    definicion tiene activada la condicion de coleccion en el admin; sin eso
+    acepta la regla y **la coleccion sale vacia**, que es el fallo silencioso
+    que hay que evitar.
+
+    Nunca levanta: una tienda que no responda a esto tiene que poder seguir
+    usando las reglas por tag y por tipo, que no necesitan definicion.
+    """
+    shop_domain, api_version, token = _client(config)
+    query = """
+    query DefinicionesParaColecciones($first: Int!, $after: String) {
+      metafieldDefinitions(first: $first, after: $after, ownerType: PRODUCT) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          namespace
+          key
+          name
+          capabilities {
+            smartCollectionCondition {
+              enabled
+            }
+          }
+        }
+      }
+    }
+    """
+    salida = {}
+    after = None
+    while len(salida) < max_items:
+        try:
+            data = graphql_request(shop_domain, token, query,
+                                   {"first": min(250, max_items), "after": after},
+                                   api_version=api_version, timeout=45)
+        except ShopifyApiError:
+            break
+        bloque = data.get("metafieldDefinitions") or {}
+        for node in bloque.get("nodes") or []:
+            capacidad = ((node.get("capabilities") or {}).get("smartCollectionCondition") or {})
+            if not capacidad.get("enabled"):
+                continue
+            salida[(clean(node.get("namespace")), clean(node.get("key")))] = clean(node.get("id"))
+        page_info = bloque.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        after = page_info.get("endCursor")
+        if not after:
+            break
+    return salida
+
+
+def collection_publish(config, collection_id, publication_id=None):
+    """Publica la coleccion en el canal Online Store.
+
+    Una coleccion creada por API queda SIN publicar: existe, se puede llenar y
+    **no la ve nadie**. Es el mismo "cargado no es lo mismo que visible" que ya
+    cuenta el Status de carga con los productos.
+    """
+    collection_id = clean(collection_id)
+    publication_id = clean(publication_id) or online_store_publication_id(config)
+    if not collection_id:
+        raise ShopifyApiError("Falta el id de la coleccion.")
+    if not publication_id:
+        raise ShopifyApiError("No encontre publication_id para publicar la coleccion.")
+    shop_domain, api_version, token = _client(config)
+    mutation = """
+    mutation PublicarColeccion($id: ID!, $input: [PublicationInput!]!) {
+      publishablePublish(id: $id, input: $input) {
+        publishable {
+          ... on Collection {
+            id
+            handle
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+    data = graphql_request(shop_domain, token, mutation,
+                           {"id": collection_id, "input": [{"publicationId": publication_id}]},
+                           api_version=api_version, timeout=45)
+    payload = data.get("publishablePublish") or {}
+    errores = payload.get("userErrors") or []
+    if errores:
+        raise ShopifyApiError(json.dumps(errores, ensure_ascii=False))
+    return payload.get("publishable") or {}

@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import tempfile
+import re
 import unittest
 from pathlib import Path
 
@@ -442,7 +443,12 @@ class TestLaPantalla(unittest.TestCase):
     def test_el_boton_del_menu_esta_en_las_cinco_listas_de_selectores(self):
         """Un boton nuevo hay que registrarlo en CINCO listas y darle su icono.
         Nada en el codigo lo obliga: "Status de carga" salio sin icono."""
-        self.assertEqual(self.fuente.count("div.st-key-operation_nav_colecciones"), 6)
+        # Se cuenta con un limite por la DERECHA, no por substring: una clave
+        # nueva que empiece igual (`operation_nav_colecciones_x`) sumaria en la
+        # cuenta de esta y la prueba se pondria roja sin que este boton tuviera
+        # nada mal. Ya paso.
+        exacto = len(re.findall(r"div\.st-key-operation_nav_colecciones(?![\w-])", self.fuente))
+        self.assertEqual(exacto, 6)
 
     def test_la_pantalla_no_escribe_en_shopify(self):
         cuerpo = ast.dump(self._funcion("render_diccionario_colecciones"))

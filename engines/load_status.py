@@ -168,17 +168,47 @@ def clase_de_producto(producto, clase_de_tipo=None):
     return SIN_CLASE
 
 
+PUBLICADO_SI = ("SI", "YES", "TRUE", "1", "PUBLISHED")
+
+
+def publicado_en_la_web(producto):
+    """Si el producto esta en el canal Online Store, y de que dato sale.
+
+    Devuelve `(publicado, fuente)`.
+
+    `Published Online Store` sale de `publishedOnPublication` y **solo llega si
+    la tienda expone el canal**. Cuando llega vacio manda `Online Store URL`
+    (`onlineStoreUrl`), y eso no es asumir: Shopify devuelve null justamente
+    cuando el producto NO esta publicado en Online Store, asi que una URL es
+    prueba de lo contrario.
+
+    Por que esta aqui y no en cada pantalla
+    ---------------------------------------
+    Hasta septiembre de 2026 habia DOS reglas para el mismo dato: este motor
+    contestaba "no publicado" en cuanto el campo venia vacio, y
+    `flatten_shopify_for_kpis` -- el de KPIs de catalogo -- miraba la URL. O
+    sea que el MISMO producto se contaba visible en una pantalla y no visible
+    en la otra, y en una tienda que no exponga el canal eso no es un producto:
+    es el catalogo entero. Es la trampa de las dos `normalize_size`. La regla
+    se escribe una sola vez y las dos la llaman.
+    """
+    producto = producto or {}
+    declarado = _texto(producto.get("Published Online Store")).upper()
+    if declarado:
+        return declarado in PUBLICADO_SI, "publishedOnPublication"
+    return bool(_texto(producto.get("Online Store URL"))), "onlineStoreUrl"
+
+
 def estado_web(producto):
     """En que estado esta el producto para el comprador.
 
-    Publicado se lee de `Published Online Store`, que la consulta trae del
-    canal Online Store. Cuando la tienda no expone el canal ese campo llega
-    vacio: en ese caso no se puede afirmar que este publicado, y un ACTIVE sin
-    confirmacion se reporta como "Activo sin publicar" en vez de inventar un SI.
+    ACTIVE por si solo no basta: un producto activo que no esta publicado en el
+    canal Online Store no lo ve nadie. Quien responde por lo publicado es
+    `publicado_en_la_web`, que es la misma regla que usan los KPIs de catalogo.
     """
     producto = producto or {}
     estado = _texto(producto.get("Status")).upper()
-    publicado = _texto(producto.get("Published Online Store")).upper() == "SI"
+    publicado, _fuente = publicado_en_la_web(producto)
     if estado == "ARCHIVED":
         return ARCHIVADO
     if estado == "DRAFT":
@@ -485,6 +515,45 @@ def solicitudes_por_estado(solicitudes, estado_visible=None, orden=()):
     ]
 
 
+def cruce_de_solicitudes(filas, solicitudes):
+    """De lo que PIDIERON las marcas, que esta cargado y que esta visible.
+
+    Es la resta que el modulo promete desde el principio y que los KPI no
+    hacian: comparaban solicitudes contra solicitudes (cuantas llegaron a un
+    estado final) y catalogo contra catalogo, pero nunca lo uno contra lo otro.
+    Consecuencia: una solicitud marcada "Finalizada" cuyos productos no estan
+    en ninguna tienda salia contada como terminada, y nada lo decia.
+
+    **Solo entran las solicitudes que traen su lista `model_colors`.** Las
+    viejas guardaron solo el CONTEO (`summary.products`), y cruzar un numero
+    contra un conjunto de codigos daria un porcentaje inventado. Cuantas se
+    quedaron fuera se reporta, para que el total no parezca completo cuando no
+    lo es.
+    """
+    cargados = {_texto(fila.get("Mod-Col")).upper() for fila in filas or [] if _texto(fila.get("Mod-Col"))}
+    visibles = {
+        _texto(fila.get("Mod-Col")).upper()
+        for fila in filas or []
+        if fila.get("Visible") and _texto(fila.get("Mod-Col"))
+    }
+    pedidos = set()
+    sin_detalle = 0
+    for solicitud in solicitudes or []:
+        modelos = {_texto(m).upper() for m in (solicitud.get("model_colors") or []) if _texto(m)}
+        if not modelos:
+            sin_detalle += 1
+            continue
+        pedidos |= modelos
+    return {
+        "Codigos pedidos": len(pedidos),
+        "Codigos pedidos cargados": len(pedidos & cargados),
+        "Codigos pedidos visibles": len(pedidos & visibles),
+        "Codigos pedidos sin cargar": len(pedidos - cargados),
+        "Solicitudes sin detalle": sin_detalle,
+        "% pedidos cargados": round(len(pedidos & cargados) * 100.0 / len(pedidos), 1) if pedidos else 0.0,
+    }
+
+
 # --- el titular -----------------------------------------------------------
 def kpis(filas, solicitudes, estado_visible=None, estados_finales=()):
     """Los numeros de arriba del panel, en una sola pasada.
@@ -499,7 +568,19 @@ def kpis(filas, solicitudes, estado_visible=None, estados_finales=()):
     # si y con la tabla de visibilidad.
     cargados = len({(fila["Sitio"], _identidad(fila)) for fila in filas})
     modelos = len({fila["Mod-Col"] for fila in filas if fila["Mod-Col"]})
+    # Lo mismo que cuentan "SKUs por clase" y "Marcas por sitio": el producto
+    # una sola vez aunque este en tres webs. Sin este numero, el titular decia
+    # 20.000 y la pestana de abajo 14.000 para el mismo catalogo, y la pantalla
+    # no explicaba en ningun sitio que son dos bases distintas.
+    unicos = len({_identidad(fila) for fila in filas if _identidad(fila)})
     visibles = len({(fila["Sitio"], _identidad(fila)) for fila in filas if fila["Visible"]})
+    # "No visibles" mezclaba tres situaciones que no son la misma: un borrador
+    # y un activo sin publicar son trabajo pendiente -- estan a un paso de
+    # verse --, y un ARCHIVADO esta apagado a proposito. Sumados, el numero que
+    # se lee como "lo que me falta prender" venia inflado con productos que
+    # nadie piensa publicar.
+    por_publicar = sum(1 for fila in filas if fila["Estado web"] in (ACTIVO_SIN_PUBLICAR, BORRADOR))
+    archivados = sum(1 for fila in filas if fila["Estado web"] == ARCHIVADO)
     sin_codigo = sum(1 for fila in filas if not _texto(fila.get("Mod-Col")))
     sin_marca = sum(1 for fila in filas if _texto(fila.get("Marca")) in ("", SIN_MARCA))
 
@@ -522,10 +603,17 @@ def kpis(filas, solicitudes, estado_visible=None, estados_finales=()):
         "Marcas con catalogo": len({
             fila["Marca"] for fila in filas if _texto(fila["Marca"]) not in ("", SIN_MARCA)
         }),
+        # Una FICHA por sitio: el mismo Modelo-Color en tres webs son tres
+        # fichas, porque se prende o se apaga en cada una por separado.
         "Productos cargados": cargados,
+        # El mismo producto UNA vez en todas las webs. Es la base de las
+        # pestanas "SKUs por clase" y "Marcas por sitio".
+        "Productos unicos": unicos,
         "Modelo-Color unicos": modelos,
         "Prendidos y visibles": visibles,
         "No visibles": cargados - visibles,
+        "Pendientes de publicar": por_publicar,
+        "Archivados": archivados,
         "% visible": round(visibles * 100.0 / cargados, 1) if cargados else 0.0,
         "Solicitudes": len(solicitudes or []),
         "Solicitudes en curso": abiertas,

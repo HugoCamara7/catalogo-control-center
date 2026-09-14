@@ -20984,9 +20984,30 @@ def _render_reglas(estado):
 
 
 # --- asignar productos por Excel ------------------------------------------
+MODO_EXCEL_UNA = "A una colección que elijo aquí"
+MODO_EXCEL_VARIAS = "A varias, con una columna Colección en el Excel"
+
+
 def _render_asignar_por_excel(estado, site_key, shopify_config):
     st.markdown('<div class="section-card"><h2>Cargar productos desde un Excel</h2>',
                 unsafe_allow_html=True)
+    # Los dos modos comparten TODO el recorrido -- validar contra el catalogo,
+    # plan minimo, vista previa, escribir -- y solo se diferencian en de donde
+    # sale la coleccion de destino. Por eso es un radio y no una pantalla
+    # aparte: dos pantallas se separarian sin que nadie lo note.
+    modo = st.radio(
+        "¿A qué colección van los productos?",
+        [MODO_EXCEL_UNA, MODO_EXCEL_VARIAS],
+        key="coleccion_excel_modo", horizontal=True,
+        help=(
+            "Con la columna Colección, un solo Excel carga varias colecciones y CREA las que "
+            "todavía no existan en la tienda."
+        ),
+    )
+    if modo == MODO_EXCEL_VARIAS:
+        _render_asignar_varias_colecciones(estado, site_key, shopify_config)
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
     st.caption(
         "Arrastra un Excel con una columna **Código Modelo Color** y, si quieres, una columna "
         "**Orden**. Sin la columna de orden manda el orden de las filas del archivo. "
@@ -21056,6 +21077,312 @@ def _render_asignar_por_excel(estado, site_key, shopify_config):
         return
     _render_validacion_excel(guardado, site_key, shopify_config)
     st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_asignar_varias_colecciones(estado, site_key, shopify_config):
+    """Un Excel con su propia columna de coleccion: carga varias y CREA las que faltan.
+
+    Es lo que no habia: hasta ahora el Excel cargaba UNA coleccion, elegida en
+    pantalla y que tenia que existir ya. Para armar diez colecciones nuevas
+    habia que crearlas a mano una por una y despues subir diez archivos.
+
+    El recorrido es el mismo que el de una sola coleccion -- se valida contra
+    el catalogo, se calcula el plan minimo, se ve y se confirma -- porque reusa
+    `validar_asignacion`, `plan_de_coleccion` y `_ejecutar_plan`. Lo unico
+    nuevo es agrupar por coleccion y crear las que no existen.
+    """
+    st.caption(
+        "Arrastra un Excel con **Código Modelo Color** y **Colección**, y si quieres una columna "
+        "**Orden** (el orden es por colección: el 1 de una no pelea con el 1 de otra). "
+        "Las colecciones que no existan **se crean**, en orden MANUAL para que el orden del "
+        "Excel se vea. Nada se escribe hasta que revises y confirmes."
+    )
+    archivo = st.file_uploader(
+        "Excel de códigos y colecciones", type=["xlsx", "xls"],
+        key="coleccion_multi_archivo",
+        help="Columnas: Código Modelo Color y Colección (obligatorias) y Orden (opcional).",
+    )
+    columna_publicar, columna_quitar = st.columns(2, gap="large")
+    with columna_publicar:
+        publicar = st.checkbox(
+            "Publicar en Online Store las que se creen", key="coleccion_multi_publicar",
+            value=True,
+            help=(
+                "Una colección creada por API queda SIN publicar: existe, se llena y no la ve "
+                "nadie. Es el mismo «cargado no es lo mismo que visible» de los productos."
+            ),
+        )
+    with columna_quitar:
+        quitar_sobrantes = st.checkbox(
+            "Quitar de cada colección lo que NO esté en el Excel",
+            key="coleccion_multi_quitar",
+            help=(
+                "Sin marcar, el Excel AGREGA. Marcado, cada colección queda exactamente con lo "
+                "que el archivo le asigna, y eso no se deshace desde la app."
+            ),
+        )
+    if archivo is None:
+        st.info("Sube el Excel para ver la validación.")
+        return
+
+    df_excel = read_uploaded_excel_cached(archivo, "coleccion_multi")
+    if df_excel is None or df_excel.empty:
+        st.error("El Excel no tiene filas.")
+        return
+    grupos, descartes = colecciones_motor.filas_por_coleccion(
+        df_excel.to_dict(orient="records"))
+    if not grupos:
+        st.error("No se pudo leer ninguna colección del Excel.")
+        if descartes:
+            st.dataframe(pd.DataFrame(descartes), width="stretch", hide_index=True)
+        return
+
+    st.caption(
+        f"**{len(grupos):,} colecciones** en el archivo · "
+        f"{sum(len(g['items']) for g in grupos):,} filas con código."
+    )
+    # El hueco del aviso se crea SIEMPRE, nunca dentro de la rama que lee: un
+    # `st.empty()` condicional cambia la forma del arbol entre reruns y deja
+    # media pantalla duplicada en gris mientras dura el trabajo.
+    aviso = st.empty()
+    if st.button("Validar contra el catálogo", type="primary", key="coleccion_multi_validar"):
+        with st.spinner("Leyendo el catálogo del sitio y las colecciones que ya existen..."):
+            productos = leer_catalogo_del_sitio(site_key, shopify_config, aviso=aviso)
+            emparejadas = colecciones_motor.emparejar_colecciones(
+                [g["nombre"] for g in grupos], estado.get("colecciones") or [])
+            por_clave = {e["clave"]: e for e in emparejadas}
+            indice = colecciones_motor.indice_de_catalogo(productos)
+            resultados, gids = [], {}
+            for numero, grupo in enumerate(grupos, start=1):
+                destino = por_clave.get(grupo["clave"]) or {"estado": "nueva", "coleccion": None,
+                                                            "nombre": grupo["nombre"],
+                                                            "parecidas": []}
+                actuales, gid_actuales = [], {}
+                if destino["estado"] == "existe":
+                    aviso.caption(
+                        f"Leyendo «{destino['nombre']}» ({numero} de {len(grupos)})...")
+                    leidos = fetch_collection_products(
+                        shopify_config, (destino["coleccion"] or {}).get("id"),
+                        sort_key="MANUAL", max_items=BOOST_PRODUCTOS_MAXIMOS,
+                    )
+                    actuales = [_clave_de_registro(p) for p in leidos]
+                    gid_actuales = {_clave_de_registro(p): clean_value(p.get("Product ID"))
+                                    for p in leidos}
+                informe = colecciones_motor.validar_asignacion(
+                    grupo["items"], indice, actuales)
+                gids.update({c: g for c, g in gid_actuales.items() if g})
+                for fila in informe["listos"]:
+                    identificador = clean_value((fila.get("producto") or {}).get("Product ID"))
+                    if identificador:
+                        gids[fila["clave"]] = identificador
+                resultados.append({
+                    "nombre": destino["nombre"], "clave": grupo["clave"],
+                    "estado": destino["estado"],
+                    # De la coleccion solo se guarda lo que hace falta para
+                    # escribir: el resto es un registro entero por coleccion en
+                    # `session_state`, y el contenedor da 1 GB PARA TODA LA APP.
+                    "coleccion": {k: (destino["coleccion"] or {}).get(k)
+                                  for k in ("id", "titulo", "handle", "orden_shopify")}
+                                 if destino["coleccion"] else None,
+                    "parecidas": destino.get("parecidas") or [],
+                    "informe": {k: informe[k] for k in
+                                ("listos", "ya_estaban", "no_encontrados", "ambiguos",
+                                 "repetidos", "bloqueado")},
+                    "claves_actuales": actuales,
+                })
+        aviso.empty()
+        st.session_state["coleccion_multi_informe"] = {
+            "resultados": resultados, "descartes": descartes,
+            # Del catalogo NO se guarda el producto entero, solo su GID.
+            "gids": gids, "quitar": bool(quitar_sobrantes), "publicar": bool(publicar),
+        }
+
+    guardado = st.session_state.get("coleccion_multi_informe")
+    if not guardado:
+        return
+    _render_validacion_multiple(guardado, site_key, shopify_config)
+
+
+def _render_validacion_multiple(guardado, site_key, shopify_config):
+    resultados = guardado["resultados"]
+    descartes = guardado["descartes"]
+
+    nuevas = [r for r in resultados if r["estado"] == "nueva"]
+    ambiguas = [r for r in resultados if r["estado"] == "ambigua"]
+    bloqueadas = [r for r in resultados if r["informe"]["bloqueado"]]
+    total_listos = sum(len(r["informe"]["listos"]) for r in resultados)
+    total_dentro = sum(len(r["informe"]["ya_estaban"]) for r in resultados)
+    total_faltan = sum(len(r["informe"]["no_encontrados"]) + len(r["informe"]["ambiguos"])
+                       for r in resultados)
+
+    tarjetas = [
+        ("Colecciones del Excel", len(resultados), "blue", "&#9776;"),
+        ("Se van a crear", len(nuevas), "green", "+"),
+        ("Productos a agregar", total_listos, "green", "&#10003;"),
+        ("Ya estaban dentro", total_dentro, "blue", "="),
+        ("Códigos sin resolver", total_faltan, "red" if total_faltan else "blue", "&#10005;"),
+    ]
+    render_html(
+        '<div class="kpi-card-grid">'
+        + "".join(
+            f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+            f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+            for titulo, valor, tono, icono in tarjetas
+        )
+        + "</div>"
+    )
+
+    st.dataframe(
+        pd.DataFrame([{
+            "Colección": r["nombre"],
+            "En la tienda": {"existe": "Ya existe", "nueva": "Se crea",
+                             "ambigua": "Hay dos con ese nombre"}[r["estado"]],
+            "Se agregan": len(r["informe"]["listos"]),
+            "Ya estaban": len(r["informe"]["ya_estaban"]),
+            "Sin resolver": len(r["informe"]["no_encontrados"]) + len(r["informe"]["ambiguos"]),
+        } for r in resultados]),
+        width="stretch", hide_index=True,
+    )
+
+    for resultado in resultados:
+        if resultado["parecidas"]:
+            st.warning(
+                f"Se va a crear **«{resultado['nombre']}»** y la tienda ya tiene "
+                + ", ".join(f"«{t}»" for t in resultado["parecidas"])
+                + ". Si es la misma, corrige el nombre en el Excel: si no, quedarán dos "
+                "colecciones casi iguales y los productos repartidos entre ellas."
+            )
+    if ambiguas:
+        st.error(
+            "**"
+            + ", ".join(f"«{r['nombre']}»" for r in ambiguas)
+            + "**: la tienda tiene dos colecciones con ese título. No se elige una a dedo — "
+            "escribir en la equivocada no se nota hasta que alguien abre la PLP. Renómbralas "
+            "en Shopify o usa el modo de una sola colección, que te deja elegir cuál."
+        )
+    if descartes:
+        with st.expander(f"{len(descartes)} filas descartadas al leer el Excel"):
+            st.dataframe(pd.DataFrame(descartes), width="stretch", hide_index=True)
+
+    problemas = []
+    for resultado in resultados:
+        for clave, titulo in (("no_encontrados", "No está en la tienda"),
+                              ("ambiguos", "El código está en más de un producto"),
+                              ("repetidos", "Otra fila apunta al mismo producto")):
+            for fila in resultado["informe"][clave]:
+                problemas.append({"Colección": resultado["nombre"], "Fila": fila.get("fila"),
+                                  "Código": fila.get("codigo"), "Motivo": titulo})
+    if problemas:
+        with st.expander(f"{len(problemas)} códigos con problemas", expanded=bool(bloqueadas)):
+            st.dataframe(pd.DataFrame(problemas), width="stretch", hide_index=True)
+
+    if bloqueadas or ambiguas:
+        st.error(
+            "**No se puede ejecutar con colecciones sin resolver.** Cargar sólo las que sí se "
+            "pueden dejaría el trabajo a medias sin constancia de cuáles faltaron: "
+            + ", ".join(f"«{r['nombre']}»" for r in (bloqueadas + ambiguas))
+        )
+        return
+    if not total_listos and not nuevas and not guardado["quitar"]:
+        st.success("Todo lo del Excel ya estaba cargado. No hay nada que hacer.")
+        return
+
+    if nuevas:
+        st.info(
+            f"**Se van a crear {len(nuevas)} colecciones**: "
+            + ", ".join(f"«{r['nombre']}»" for r in nuevas)
+            + ". Se crean en orden MANUAL, que es el único que deja aplicar el orden del Excel"
+            + (" y publicadas en Online Store." if guardado["publicar"] else
+               ", y SIN publicar: existirán pero no las verá nadie hasta publicarlas.")
+        )
+    confirmado = st.checkbox(
+        f"Confirmo crear {len(nuevas)} colecciones y modificar {len(resultados)} en Shopify",
+        key="coleccion_multi_confirmar",
+    )
+    if not st.button("Aplicar a Shopify", type="primary", key="coleccion_multi_aplicar",
+                     disabled=not confirmado):
+        return
+    _ejecutar_varias_colecciones(guardado, site_key, shopify_config)
+
+
+def _ejecutar_varias_colecciones(guardado, site_key, shopify_config):
+    """Crea las que faltan y carga cada una. En ese orden, y colección a colección.
+
+    **Una colección que falla no detiene a las demás**: se reporta y se sigue,
+    que es la misma regla que la limpieza de auditoría. Cortar en seco dejaría
+    sin saber qué alcanzó a aplicarse.
+    """
+    resultados = guardado["resultados"]
+    gids = dict(guardado.get("gids") or {})
+    creadas, fallidas = [], []
+    barra = st.progress(0.0)
+    aviso = st.empty()
+
+    for numero, resultado in enumerate(resultados, start=1):
+        nombre = resultado["nombre"]
+        aviso.caption(f"«{nombre}» ({numero} de {len(resultados)})...")
+        coleccion = resultado["coleccion"]
+        try:
+            if resultado["estado"] == "nueva":
+                creada = collection_create(
+                    shopify_config, nombre,
+                    # MANUAL no es un detalle: con cualquier otro orden Shopify
+                    # reordena por su cuenta y el orden del Excel no se ve.
+                    sort_order=colecciones_motor.ORDEN_MANUAL,
+                )
+                coleccion = {"id": creada.get("id"), "titulo": nombre,
+                             "handle": creada.get("handle"), "orden_shopify":
+                                 colecciones_motor.ORDEN_MANUAL}
+                if guardado["publicar"] and collection_publish is not None:
+                    try:
+                        collection_publish(shopify_config, creada.get("id"))
+                    except Exception as exc:  # noqa: BLE001
+                        # Que no se pueda publicar NO deshace la creacion: la
+                        # coleccion existe y se publica a mano. Callarlo la
+                        # dejaria invisible sin que nadie supiera por que.
+                        st.warning(f"«{nombre}» se creó pero no se pudo publicar: {exc}")
+                creadas.append(nombre)
+                _anotar_historial("Crear", nombre, "manual, desde el Excel de colecciones",
+                                  site_key=site_key)
+        except Exception as exc:  # noqa: BLE001
+            fallidas.append({"Colección": nombre, "Paso": "Crear", "Detalle": str(exc)[:200]})
+            _anotar_historial("Crear", nombre, str(exc), resultado="error", site_key=site_key)
+            barra.progress(numero / max(1, len(resultados)))
+            continue
+
+        informe = resultado["informe"]
+        pedidos = sorted(
+            informe["listos"] + informe["ya_estaban"],
+            key=lambda f: (0, f["orden"]) if f.get("orden") is not None else (1, f["fila"]),
+        )
+        plan = colecciones_motor.plan_de_coleccion(
+            coleccion, resultado["claves_actuales"], [f["clave"] for f in pedidos],
+            quitar_sobrantes=guardado["quitar"],
+        )
+        if plan["sin_cambios"]:
+            barra.progress(numero / max(1, len(resultados)))
+            continue
+        st.markdown(f"**{nombre}**")
+        # `refrescar=False`: releer la tienda entera despues de cada coleccion
+        # serian N lecturas del mismo dato. Se refresca una vez al final.
+        _ejecutar_plan(plan, gids, site_key, shopify_config,
+                       origen="Excel de colecciones", refrescar=False)
+        barra.progress(numero / max(1, len(resultados)))
+
+    barra.progress(1.0)
+    aviso.empty()
+    if creadas:
+        st.success(f"Colecciones creadas: {', '.join(creadas)}")
+    if fallidas:
+        st.error(f"{len(fallidas)} colecciones no se pudieron crear:")
+        st.dataframe(pd.DataFrame(fallidas), width="stretch", hide_index=True)
+    # La lectura cacheada quedo vieja para TODAS: se refresca una sola vez.
+    leer_colecciones_del_sitio(site_key, shopify_config, force_refresh=True)
+    st.session_state.pop("coleccion_multi_informe", None)
+    st.caption(
+        "El orden se aplicó con la columna **Orden** del Excel (o el orden de las filas). "
+        "Para reordenar por ventas, stock o novedad, usa **Boost PLP**."
+    )
 
 
 def _render_validacion_excel(guardado, site_key, shopify_config):
@@ -21180,7 +21507,7 @@ def _render_ejecutar_asignacion(guardado, site_key, shopify_config):
     _ejecutar_plan(plan, gids, site_key, shopify_config, origen="Excel")
 
 
-def _ejecutar_plan(plan, gid_por_clave, site_key, shopify_config, origen=""):
+def _ejecutar_plan(plan, gid_por_clave, site_key, shopify_config, origen="", refrescar=True):
     """Aplica el plan: quitar, agregar, pasar a MANUAL y reordenar. EN ESE ORDEN.
 
     El orden importa y no es cosmetico:
@@ -21261,7 +21588,13 @@ def _ejecutar_plan(plan, gid_por_clave, site_key, shopify_config, origen=""):
         # La lectura cacheada quedo vieja: la coleccion tiene otros productos y
         # otro `sortOrder`. Servir la vieja haria que el siguiente plan se
         # calculara sobre un estado que ya no existe.
-        leer_colecciones_del_sitio(site_key, shopify_config, force_refresh=True)
+        #
+        # `refrescar=False` lo usa el Excel de VARIAS colecciones, que llama a
+        # esto en bucle: releer la tienda entera despues de cada una serian
+        # veinte lecturas para el mismo dato. Ese camino refresca una sola vez
+        # al terminar.
+        if refrescar:
+            leer_colecciones_del_sitio(site_key, shopify_config, force_refresh=True)
     except Exception as exc:  # noqa: BLE001
         barra.empty()
         aviso.empty()

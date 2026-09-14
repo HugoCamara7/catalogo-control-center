@@ -655,6 +655,183 @@ class TestDePuntaAPunta(ConShopifyFalso):
 
 
 # =========================================================================
+# 6 bis. UN EXCEL, VARIAS COLECCIONES -- y las que no existan se crean.
+# =========================================================================
+class TestExcelDeVariasColecciones(unittest.TestCase):
+    def test_agrupa_por_la_columna_coleccion(self):
+        grupos, descartes = motor.filas_por_coleccion([
+            {"Código Modelo Color": "A-1", "Colección": "Hiking"},
+            {"Código Modelo Color": "B-2", "Colección": "Novedades"},
+            {"Código Modelo Color": "C-3", "Colección": "Hiking"},
+        ])
+        self.assertEqual(descartes, [])
+        self.assertEqual([g["nombre"] for g in grupos], ["Hiking", "Novedades"],
+                         "el orden de los grupos es el de aparicion en el archivo")
+        self.assertEqual([i["codigo"] for i in grupos[0]["items"]], ["A-1", "C-3"])
+
+    def test_el_MISMO_codigo_puede_ir_a_dos_colecciones(self):
+        """Un producto esta en Hiking y en Novedades a la vez: eso no es un
+        duplicado, y descartarlo dejaria una coleccion sin ese producto."""
+        grupos, descartes = motor.filas_por_coleccion([
+            {"Código Modelo Color": "A-1", "Colección": "Hiking"},
+            {"Código Modelo Color": "A-1", "Colección": "Novedades"},
+        ])
+        self.assertEqual(descartes, [])
+        self.assertEqual(len(grupos), 2)
+        self.assertEqual([i["codigo"] for i in grupos[1]["items"]], ["A-1"])
+
+    def test_el_mismo_codigo_repetido_EN_LA_MISMA_coleccion_si_se_descarta(self):
+        grupos, descartes = motor.filas_por_coleccion([
+            {"Código Modelo Color": "A-1", "Colección": "Hiking"},
+            {"Código Modelo Color": "A-1", "Colección": "hiking"},
+        ])
+        self.assertEqual(len(grupos), 1)
+        self.assertEqual(len(grupos[0]["items"]), 1)
+        self.assertEqual(len(descartes), 1)
+        self.assertIn("Duplicado", descartes[0]["Motivo"])
+
+    def test_el_nombre_se_agrupa_sin_distinguir_mayusculas_ni_espacios(self):
+        grupos, _ = motor.filas_por_coleccion([
+            {"Código Modelo Color": "A-1", "Colección": "Hiking Mujer"},
+            {"Código Modelo Color": "B-2", "Colección": "  hiking   mujer "},
+        ])
+        self.assertEqual(len(grupos), 1)
+        self.assertEqual(grupos[0]["nombre"], "Hiking Mujer",
+                         "se conserva como se escribio la PRIMERA vez: con eso se crea")
+
+    def test_el_orden_es_POR_coleccion(self):
+        """El 1 de una coleccion no contradice al 1 de otra."""
+        grupos, descartes = motor.filas_por_coleccion([
+            {"Código Modelo Color": "A-1", "Colección": "Hiking", "Orden": 1},
+            {"Código Modelo Color": "B-2", "Colección": "Novedades", "Orden": 1},
+        ])
+        self.assertEqual(descartes, [])
+        self.assertEqual(len(grupos), 2)
+
+    def test_el_orden_repetido_dentro_de_UNA_coleccion_se_descarta(self):
+        grupos, descartes = motor.filas_por_coleccion([
+            {"Código Modelo Color": "A-1", "Colección": "Hiking", "Orden": 1},
+            {"Código Modelo Color": "B-2", "Colección": "Hiking", "Orden": 1},
+        ])
+        self.assertEqual(len(grupos[0]["items"]), 1)
+        self.assertIn("ya lo pidió", descartes[0]["Motivo"])
+
+    def test_una_fila_sin_coleccion_se_descarta_diciendo_por_que(self):
+        """Meterla «en la primera» seria inventarse el destino de un producto."""
+        grupos, descartes = motor.filas_por_coleccion([
+            {"Código Modelo Color": "A-1", "Colección": "Hiking"},
+            {"Código Modelo Color": "B-2", "Colección": ""},
+        ])
+        self.assertEqual(len(grupos), 1)
+        self.assertEqual(len(descartes), 1)
+        self.assertIn("no dice a qué colección", descartes[0]["Motivo"])
+
+    def test_sin_columna_de_coleccion_lo_dice(self):
+        grupos, descartes = motor.filas_por_coleccion([{"Código Modelo Color": "A-1"}])
+        self.assertEqual(grupos, [])
+        self.assertIn("Colección", descartes[0]["Motivo"])
+
+    def test_la_cabecera_no_distingue_tildes_ni_mayusculas(self):
+        for cabecera in ("Colección", "COLECCION", "Collection", "Nombre de la coleccion"):
+            with self.subTest(cabecera=cabecera):
+                grupos, _ = motor.filas_por_coleccion(
+                    [{"Codigo Modelo Color": "A-1", cabecera: "Hiking"}])
+                self.assertEqual(len(grupos), 1, f"no reconocio {cabecera!r}")
+
+
+class TestEmparejarConLaTienda(unittest.TestCase):
+    TIENDA = [{"titulo": "Hiking", "id": "gid://shopify/Collection/1"},
+              {"titulo": "Niño", "id": "gid://shopify/Collection/2"}]
+
+    def test_la_que_existe_se_reutiliza_y_la_que_no_se_crea(self):
+        salida = motor.emparejar_colecciones(["hiking", "Novedades"], self.TIENDA)
+        self.assertEqual(salida[0]["estado"], "existe")
+        self.assertEqual(salida[0]["coleccion"]["id"], "gid://shopify/Collection/1")
+        self.assertEqual(salida[1]["estado"], "nueva")
+        self.assertIsNone(salida[1]["coleccion"])
+
+    def test_dos_colecciones_con_el_MISMO_titulo_son_ambiguas(self):
+        """No se elige una a dedo: escribir en la equivocada no se nota hasta
+        que alguien abre la PLP y la encuentra revuelta."""
+        tienda = self.TIENDA + [{"titulo": "Hiking", "id": "gid://shopify/Collection/9"}]
+        salida = motor.emparejar_colecciones(["Hiking"], tienda)
+        self.assertEqual(salida[0]["estado"], "ambigua")
+        self.assertIsNone(salida[0]["coleccion"])
+
+    def test_un_acento_NO_empareja_pero_se_AVISA(self):
+        """«Niño» y «Nino» son dos titulos distintos y tratarlos como uno
+        escribiria en la coleccion equivocada. Pero crear la segunda sin avisar
+        deja dos colecciones casi iguales que nadie queria."""
+        salida = motor.emparejar_colecciones(["Nino"], self.TIENDA)
+        self.assertEqual(salida[0]["estado"], "nueva")
+        self.assertEqual(salida[0]["parecidas"], ["Niño"])
+
+    def test_el_mismo_nombre_dos_veces_sale_una_sola_vez(self):
+        salida = motor.emparejar_colecciones(["Hiking", "hiking"], self.TIENDA)
+        self.assertEqual(len(salida), 1)
+
+
+class TestVariasDePuntaAPunta(ConShopifyFalso):
+    def test_crea_la_que_falta_carga_las_dos_y_respeta_el_orden(self):
+        """El recorrido entero, EJECUTANDOLO: leer el Excel, emparejar con la
+        tienda, crear lo que falta, agregar y ordenar."""
+        catalogo = [producto("A-1", titulo="Casaca", product_id="gid://shopify/Product/1"),
+                    producto("B-2", titulo="Polo", product_id="gid://shopify/Product/2"),
+                    producto("C-3", titulo="Short", product_id="gid://shopify/Product/3")]
+        indice = motor.indice_de_catalogo(catalogo)
+        grupos, descartes = motor.filas_por_coleccion([
+            {"Código Modelo Color": "B-2", "Colección": "Hiking", "Orden": 2},
+            {"Código Modelo Color": "A-1", "Colección": "Hiking", "Orden": 1},
+            {"Código Modelo Color": "C-3", "Colección": "Novedades"},
+        ])
+        self.assertEqual(descartes, [])
+        emparejadas = motor.emparejar_colecciones(
+            [g["nombre"] for g in grupos],
+            [{"titulo": "Hiking", "id": "gid://shopify/Collection/1",
+              "orden_shopify": "MANUAL"}])
+        self.assertEqual([e["estado"] for e in emparejadas], ["existe", "nueva"])
+
+        gid = {p["Mod-Col"]: p["Product ID"] for p in catalogo}
+        for grupo, destino in zip(grupos, emparejadas):
+            identificador = (destino["coleccion"] or {}).get("id")
+            if destino["estado"] == "nueva":
+                creada = shopify_api.collection_create(
+                    CONFIG, destino["nombre"], sort_order=motor.ORDEN_MANUAL)
+                identificador = creada["id"]
+            informe = motor.validar_asignacion(grupo["items"], indice)
+            self.assertFalse(informe["bloqueado"])
+            pedidos = sorted(informe["listos"],
+                             key=lambda f: (0, f["orden"]) if f.get("orden") is not None
+                             else (1, f["fila"]))
+            plan = motor.plan_de_coleccion({}, [], [f["clave"] for f in pedidos])
+            shopify_api.collection_add_products(
+                CONFIG, identificador, [gid[c] for c in plan["agregar"]])
+
+        # La coleccion nueva se creo con el nombre del Excel y en MANUAL.
+        creadas = [c for c in self.tienda.colecciones.values()]
+        self.assertEqual([c["title"] for c in creadas], ["Novedades"])
+        self.assertEqual(creadas[0].get("sortOrder"), "MANUAL",
+                         "con otro orden Shopify reordena y el orden del Excel no se ve")
+        # Hiking recibe A-1 antes que B-2 porque el Excel lo numero asi, aunque
+        # en el archivo B-2 iba primero.
+        self.assertEqual(self.tienda.agregados,
+                         [["gid://shopify/Product/1", "gid://shopify/Product/2"],
+                          ["gid://shopify/Product/3"]])
+
+    def test_un_codigo_que_no_esta_en_la_tienda_BLOQUEA_esa_coleccion(self):
+        catalogo = [producto("A-1", product_id="gid://shopify/Product/1")]
+        grupos, _ = motor.filas_por_coleccion([
+            {"Código Modelo Color": "A-1", "Colección": "Hiking"},
+            {"Código Modelo Color": "NO-EXISTE", "Colección": "Hiking"},
+        ])
+        informe = motor.validar_asignacion(grupos[0]["items"],
+                                           motor.indice_de_catalogo(catalogo))
+        self.assertTrue(informe["bloqueado"])
+        self.assertEqual(len(informe["no_encontrados"]), 1)
+        self.assertEqual(self.tienda.llamadas, [], "validar no puede escribir nada")
+
+
+# =========================================================================
 # 7. LA PANTALLA. Un motor perfecto al que no se le puede entregar el archivo
 #    no sirve para nada (seccion 5 octotrigies).
 # =========================================================================
@@ -727,6 +904,46 @@ class TestLaPantalla(unittest.TestCase):
                 self.assertGreaterEqual(fuente.count(f"st-key-{clave} button"), 5)
                 self.assertIn(f"st-key-{clave} button::before {{{{", fuente,
                               "le falta su dibujo de icono")
+
+    def test_el_modo_de_VARIAS_colecciones_dibuja_donde_subir_el_archivo(self):
+        """Un motor perfecto al que no se le puede entregar el archivo no sirve
+        para nada.
+
+        Es la leccion de la seccion 5 octotrigies: «Nombre corto y Descripcion
+        corta» tenia el motor completo y 63 pruebas verdes, y nadie habia
+        escrito su `st.file_uploader`. La pantalla pedia un archivo y no
+        dibujaba por donde darselo.
+        """
+        import app_matrixify as app
+
+        tienda = ShopifyFalso()
+        real = shopify_api.graphql_request
+        shopify_api.graphql_request = tienda
+        try:
+            at = AppTest.from_file(APP, default_timeout=TIEMPO)
+            at.secrets["shopify_sites"] = {
+                "columbia": {"shop_domain": "columbiape.myshopify.com",
+                             "admin_access_token": "shpat_falso",
+                             "api_version": "2026-04"}}
+            at.session_state["authenticated"] = True
+            at.session_state["auth_user"] = "hugo"
+            at.session_state["operation_area_choice"] = app.COLECCIONES_LABEL
+            at.run()
+            self.assertEqual(problemas(at), [], "la pantalla no se dibuja con Shopify configurado")
+
+            modos = [r for r in at.radio if r.key == "coleccion_excel_modo"]
+            self.assertTrue(modos, "no hay dónde elegir el modo del Excel")
+            self.assertIn(app.MODO_EXCEL_VARIAS, list(modos[0].options))
+
+            modos[0].set_value(app.MODO_EXCEL_VARIAS).run()
+            self.assertEqual(problemas(at), [])
+            claves = {getattr(w, "key", "") for w in at.get("file_uploader")}
+            self.assertIn(
+                "coleccion_multi_archivo", claves,
+                "el modo de varias colecciones no dibuja el subidor: no hay cómo darle el Excel",
+            )
+        finally:
+            shopify_api.graphql_request = real
 
     def test_sin_shopify_lo_DICE_en_vez_de_dibujar_una_pantalla_inutil(self):
         import app_matrixify as app

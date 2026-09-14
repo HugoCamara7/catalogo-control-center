@@ -86,6 +86,30 @@ COLUMNAS_CODIGO = (
     "codigomodelocolour", "modelocolor", "sku",
 )
 COLUMNAS_ORDEN = ("orden", "order", "posicion", "position", "boost", "prioridad", "rank")
+# La columna que dice A QUE coleccion va cada fila. Con ella, un solo Excel
+# carga varias colecciones y crea las que no existan; sin ella, el Excel es
+# para la coleccion que se elige en pantalla, que es como funcionaba antes.
+COLUMNAS_COLECCION = (
+    "coleccion", "collection", "coleccionsugerida", "nombredelacoleccion",
+    "nombrecoleccion", "coleccionshopify", "coleccionnueva",
+)
+
+# Los acentos NO se ignoran al emparejar un nombre con las colecciones de la
+# tienda: "Niño" y "Nino" son dos titulos distintos y tratarlos como uno
+# escribiria en la coleccion equivocada. Lo que si se ignora son las
+# mayusculas y los espacios de mas, que es como la gente escribe el mismo
+# nombre dos veces. El parecido sin acentos se usa solo para AVISAR.
+_ACENTOS = str.maketrans("áéíóúüñÁÉÍÓÚÜÑ", "aeiouunAEIOUUN")
+
+
+def _nombre_clave(valor):
+    """Con que se decide si dos nombres son la MISMA coleccion."""
+    return re.sub(r"\s+", " ", _texto(valor)).casefold()
+
+
+def _nombre_parecido(valor):
+    """Solo para avisar de un nombre que se parece a otro que ya existe."""
+    return _nombre_clave(valor).translate(_ACENTOS)
 
 
 def _cabecera(nombre):
@@ -163,6 +187,147 @@ def filas_de_asignacion(filas):
         descartes.append({"Fila": "", "Código Modelo Color": "",
                           "Motivo": "Ninguna fila traía un código."})
     return items, descartes
+
+
+def filas_por_coleccion(filas):
+    """`(grupos, descartes)` para el Excel que trae su propia columna de coleccion.
+
+    Cada grupo es `{"nombre", "clave", "items"}` y los items tienen la misma
+    forma que los de `filas_de_asignacion`, para que el resto del recorrido
+    -- validar, planificar, escribir -- sea EXACTAMENTE el mismo. Un segundo
+    camino de carga se separaria del primero sin que nadie lo note, que es la
+    trampa de las dos `normalize_size`.
+
+    Dos reglas que cambian respecto de un Excel de una sola coleccion, y las
+    dos salen de lo que significa la columna nueva:
+
+    - **El mismo codigo puede ir a varias colecciones.** Un producto esta en
+      "Hiking" y en "Novedades" a la vez; eso no es un duplicado. La
+      deduplicacion es POR coleccion.
+    - **El orden tambien es por coleccion.** El numero 1 de "Hiking" no
+      contradice al numero 1 de "Novedades".
+
+    El nombre se conserva **tal cual se escribio la primera vez** -- con eso se
+    crea la coleccion en la tienda --, y se agrupa por `_nombre_clave`, asi que
+    "Hiking" y "hiking " son una sola.
+    """
+    filas = list(filas or [])
+    if not filas:
+        return [], [{"Fila": "", "Código Modelo Color": "", "Colección": "",
+                     "Motivo": "El Excel no tiene filas."}]
+
+    columna_codigo = _columna(filas, COLUMNAS_CODIGO)
+    if columna_codigo is None:
+        return [], [{"Fila": "", "Código Modelo Color": "", "Colección": "",
+                     "Motivo": "El Excel no tiene una columna 'Código Modelo Color'."}]
+    columna_coleccion = _columna(filas, COLUMNAS_COLECCION)
+    if columna_coleccion is None:
+        return [], [{"Fila": "", "Código Modelo Color": "", "Colección": "",
+                     "Motivo": "El Excel no tiene una columna 'Colección'."}]
+    columna_orden = _columna(filas, COLUMNAS_ORDEN)
+
+    grupos, descartes = {}, []
+    for posicion, fila in enumerate(filas, start=2):
+        codigo = _codigo(fila.get(columna_codigo))
+        nombre = _texto(fila.get(columna_coleccion))
+        if not codigo and not nombre:
+            continue
+        if not codigo:
+            descartes.append({"Fila": posicion, "Código Modelo Color": "", "Colección": nombre,
+                              "Motivo": "La fila no trae código Modelo-Color."})
+            continue
+        if not nombre:
+            # Sin nombre no se sabe donde va, y meterla "en la primera" seria
+            # inventarse el destino de un producto.
+            descartes.append({"Fila": posicion, "Código Modelo Color": codigo, "Colección": "",
+                              "Motivo": "La fila no dice a qué colección va."})
+            continue
+        clave = _nombre_clave(nombre)
+        grupo = grupos.setdefault(clave, {"nombre": nombre, "clave": clave, "items": [],
+                                          "_vistos": {}, "_ordenes": {}})
+        if codigo in grupo["_vistos"]:
+            descartes.append({"Fila": posicion, "Código Modelo Color": codigo,
+                              "Colección": grupo["nombre"],
+                              "Motivo": "Duplicado en esta colección (manda la fila %s)"
+                                        % grupo["_vistos"][codigo]})
+            continue
+        orden = None
+        if columna_orden is not None:
+            crudo = _texto(fila.get(columna_orden))
+            if crudo:
+                orden = _entero(crudo)
+                if orden is None:
+                    descartes.append({"Fila": posicion, "Código Modelo Color": codigo,
+                                      "Colección": grupo["nombre"],
+                                      "Motivo": "La columna de orden no es un número: %r" % crudo})
+                    continue
+                if orden in grupo["_ordenes"]:
+                    descartes.append({"Fila": posicion, "Código Modelo Color": codigo,
+                                      "Colección": grupo["nombre"],
+                                      "Motivo": "El orden %s ya lo pidió la fila %s en esta colección"
+                                                % (orden, grupo["_ordenes"][orden])})
+                    continue
+                grupo["_ordenes"][orden] = posicion
+        grupo["_vistos"][codigo] = posicion
+        grupo["items"].append({"fila": posicion, "codigo": codigo, "orden": orden})
+
+    salida = []
+    for grupo in grupos.values():  # el dict conserva el orden de aparicion
+        grupo.pop("_vistos", None)
+        grupo.pop("_ordenes", None)
+        if grupo["items"]:
+            salida.append(grupo)
+    if not salida and not descartes:
+        descartes.append({"Fila": "", "Código Modelo Color": "", "Colección": "",
+                          "Motivo": "Ninguna fila traía un código y una colección."})
+    return salida, descartes
+
+
+def emparejar_colecciones(nombres, colecciones):
+    """Que nombres del Excel YA existen en la tienda y cuales habria que crear.
+
+    Devuelve una lista `{"nombre", "clave", "estado", "coleccion", "parecidas"}`
+    con el mismo orden que entro. `estado` es uno de:
+
+    - `"existe"`   ya hay una coleccion con ese titulo: se le cargan productos.
+    - `"nueva"`    no existe: hay que crearla.
+    - `"ambigua"`  la tienda tiene DOS con ese mismo titulo. No se elige una a
+                   dedo: escribir en la equivocada no se ve hasta que alguien
+                   abre la PLP y la encuentra revuelta.
+
+    `parecidas` son los titulos que solo se diferencian en los acentos. No
+    bloquean -- puede que sean colecciones distintas de verdad -- pero crear
+    "Nino" teniendo "Niño" deja dos colecciones que nadie queria, y eso hay que
+    poder verlo ANTES.
+    """
+    por_clave, por_parecido = {}, {}
+    for coleccion in colecciones or []:
+        titulo = _texto(coleccion.get("titulo") or coleccion.get("title"))
+        if not titulo:
+            continue
+        por_clave.setdefault(_nombre_clave(titulo), []).append(coleccion)
+        por_parecido.setdefault(_nombre_parecido(titulo), []).append(titulo)
+
+    salida, vistos = [], set()
+    for nombre in nombres or []:
+        clave = _nombre_clave(nombre)
+        if not clave or clave in vistos:
+            continue
+        vistos.add(clave)
+        candidatas = por_clave.get(clave) or []
+        if len(candidatas) > 1:
+            estado, coleccion = "ambigua", None
+        elif candidatas:
+            estado, coleccion = "existe", candidatas[0]
+        else:
+            estado, coleccion = "nueva", None
+        parecidas = []
+        if estado == "nueva":
+            parecidas = [t for t in por_parecido.get(_nombre_parecido(nombre), [])
+                         if _nombre_clave(t) != clave]
+        salida.append({"nombre": _texto(nombre), "clave": clave, "estado": estado,
+                       "coleccion": coleccion, "parecidas": parecidas})
+    return salida
 
 
 # --- 2. el catalogo --------------------------------------------------------

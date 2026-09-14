@@ -15,7 +15,10 @@ Las pruebas EJECUTAN: entran a la app y pulsan. Es la leccion de `start_suelto`
 
 Ejecutar:  python scripts/test_navegacion.py
 """
+import ast
+import inspect
 import sys
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -162,24 +165,99 @@ class TestLaAppSeDIBUJA(unittest.TestCase):
             app.leer_catalogo_del_sitio = original
         self.assertEqual(llamadas, [], "Inicio salio a leer el catalogo")
 
-    def test_cada_grupo_se_puede_abrir_sin_cambiar_de_pantalla(self):
-        """Explorar el menu no puede perder lo que estabas haciendo."""
-        for grupo in app.nav_grupos(True):
-            if grupo["clave"] == "inicio":
-                continue
-            with self.subTest(grupo=grupo["clave"]):
-                at = abrir(operation_area_choice=app.NAV_INICIO_LABEL,
-                           nav_grupo_abierto=grupo["clave"])
-                self.assertEqual(at.session_state["operation_area_choice"],
-                                 app.NAV_INICIO_LABEL)
+    def test_el_grupo_de_la_pantalla_ACTUAL_se_dibuja_abierto(self):
+        """Entrar a una pantalla tiene que dejar su grupo a la vista.
+
+        `expanded` solo manda la primera vez que se dibuja cada grupo, que es
+        la primera ejecucion de la sesion -- justo la que importa aqui.
+        """
+        for area, esperado in ((app.BOOST_LABEL, "merchandising"),
+                               ("Solicitudes", "comercial"),
+                               (app.STATUS_CARGA_LABEL, "catalogo")):
+            with self.subTest(area=area):
+                grupo, _ = app.nav_item_activo(area, "")
+                self.assertEqual(grupo["clave"], esperado)
+                at = abrir(operation_area_choice=area)
+                # El item del grupo activo esta DIBUJADO, no solo declarado.
+                etiquetas = [str(b.label) for b in at.button]
+                self.assertIn(area, etiquetas, f"{area!r} no se dibuja en el menu")
                 self.assertEqual(problemas(at), [])
 
-    def test_el_grupo_abierto_SIGUE_a_la_pantalla(self):
-        """Llegar por un atajo tiene que dejar el menu marcado donde estas, no
-        donde lo dejaste."""
-        at = abrir(operation_area_choice=app.BOOST_LABEL)
-        # `at.session_state` no tiene `.get()`: se accede por clave.
-        self.assertEqual(at.session_state["nav_grupo_abierto"], "merchandising")
+    def test_explorar_el_menu_no_cambia_de_pantalla(self):
+        """Los grupos se pliegan en el NAVEGADOR: abrir uno no reejecuta el
+        script, asi que no puede cambiar nada del estado."""
+        at = abrir(operation_area_choice=app.NAV_INICIO_LABEL)
+        self.assertEqual(at.session_state["operation_area_choice"],
+                         app.NAV_INICIO_LABEL)
+        self.assertEqual(problemas(at), [])
+
+
+class TestElMenuNoCuestaUnRerunDeMAS(unittest.TestCase):
+    """El rediseno hizo la app MAS LENTA y el usuario lo reporto.
+
+    Medido en Chromium con un contador de ejecuciones del script:
+
+        abrir o cerrar un `st.expander`   0 ejecuciones
+        un boton con `on_click`          1 ejecucion
+        un boton con `st.rerun()`        2 ejecuciones
+
+    La primera version plegaba con botones que llamaban a `st.rerun()`, asi que
+    **mirar el menu costaba dos ejecuciones** de una app que redibuja la
+    pantalla entera en cada una. Estas pruebas fijan la forma que da el numero
+    bajo; el numero en si se midio en el navegador, que es donde se nota.
+    """
+
+    @staticmethod
+    def _codigo(funcion):
+        """El CODIGO de la funcion, sin su docstring.
+
+        Mirando el texto entero, un docstring que explica por que NO se usa
+        `st.rerun()` hace fallar a la prueba que comprueba que no se usa.
+        """
+        arbol = ast.parse(textwrap.dedent(inspect.getsource(funcion)))
+        cuerpo = list(arbol.body[0].body)
+        if (cuerpo and isinstance(cuerpo[0], ast.Expr)
+                and isinstance(cuerpo[0].value, ast.Constant)
+                and isinstance(cuerpo[0].value.value, str)):
+            cuerpo = cuerpo[1:]
+        return "\n".join(ast.unparse(nodo) for nodo in cuerpo)
+
+    def test_un_boton_del_menu_NO_llama_a_st_rerun(self):
+        """Cuando `st.button` devuelve True ya hubo un rerun: el `st.rerun()`
+        de dentro forzaba un SEGUNDO, o sea el doble de espera por clic."""
+        codigo = self._codigo(app.sidebar_nav_button)
+        self.assertNotIn("st.rerun()", codigo)
+        self.assertIn("on_click=", codigo)
+
+    def test_los_grupos_se_pliegan_con_expander_y_no_con_un_boton(self):
+        """Un boton para plegar cuesta un viaje al servidor; un expander se
+        pliega en el navegador y ademas conserva su estado."""
+        codigo = self._codigo(app.render_sidebar_nav)
+        self.assertIn("st.expander(", codigo)
+        self.assertNotIn("st.rerun()", codigo)
+        self.assertNotIn("nav_grupo_abierto", codigo,
+                         "guardar el plegado en la sesion es lo que obligaba al rerun")
+
+    def test_pulsar_un_boton_del_menu_SI_navega(self):
+        """Que no haya `st.rerun()` no puede costar la navegacion: con
+        `on_click` el estado se escribe antes del cuerpo del script."""
+        at = abrir(operation_area_choice=app.NAV_INICIO_LABEL)
+        boton = [b for b in at.button if str(b.label) == "KPIs de catálogo"]
+        self.assertTrue(boton, "el boton de KPIs no esta en el menu")
+        despues = boton[0].click().run()
+        self.assertEqual(despues.session_state["operation_area_choice"],
+                         "KPIs de catálogo")
+        self.assertEqual(problemas(despues), [])
+
+    def test_los_dos_modos_de_carga_tambien_navegan(self):
+        """Estos escriben DOS claves (area y modo) desde el mismo `on_click`."""
+        at = abrir(operation_area_choice=app.NAV_INICIO_LABEL)
+        boton = [b for b in at.button if str(b.label) == "Carga parcial"]
+        self.assertTrue(boton)
+        despues = boton[0].click().run()
+        self.assertEqual(despues.session_state["operation_area_choice"],
+                         "Carga de catálogo")
+        self.assertEqual(despues.session_state["operation_mode_choice"], "Carga parcial")
 
     def test_todas_las_areas_se_dibujan(self):
         for area in app.nav_areas(puede_auditar=True):

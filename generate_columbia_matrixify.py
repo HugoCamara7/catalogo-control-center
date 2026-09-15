@@ -3462,18 +3462,117 @@ def filas_como_registros(matrixify_df, columnas):
     return matrixify_df[presentes].to_dict("records")
 
 
-def siblings_ya_publicados(matrixify_df):
-    """Handles que ya viven en Shopify, agrupados por codigo de modelo.
+# Las marcas cuyos siblings se agrupan por el TITULO del producto y no por el
+# codigo de modelo.
+#
+# Por que existe
+# --------------
+# El agrupamiento de siempre es el codigo de modelo: lo que hay ANTES del guion
+# donde empieza el codigo de color, o sea los colores de un mismo modelo. Eso
+# vale para todas las marcas menos Vans, donde **el codigo cambia entero de un
+# color a otro**: `VN-018BGIC-BIV` y `VN-018BGIE-GB8` son el mismo producto en
+# dos colores y no comparten ni el modelo.
+#
+# Medido sobre `data/arti.zip` (653.431 filas, los modelo-color reales):
+#
+#     marca           mod-col   modelos   modelos con UN SOLO color
+#     VANS              1.616     1.255     1.132  (90,2 %)
+#     COLUMBIA         19.055     5.395     1.497  (27,7 %)
+#     HUSH PUPPIES     14.728     7.889     3.613  (45,8 %)
+#     ROCKFORD         13.745     6.348     2.124  (33,5 %)
+#
+# O sea que en Vans **nueve de cada diez productos se quedaban sin un solo
+# hermano**: la ficha no ofrecia los otros colores. Por eso ahi manda el
+# titulo, que es lo que de verdad comparten.
+#
+# **Va por MARCA, nunca por sitio.** Vans se carga en Vans.pe y tambien en
+# Supermall.pe, que lleva ademas Columbia, Hush Puppies y el resto: con una
+# bandera de sitio, una carga de Supermall agruparia por titulo TODAS sus
+# marcas. Y eso no es teorico -- medido en el catalogo real de Columbia.pe
+# (2.401 productos), **72 titulos abarcan mas de un modelo**: "PANTALON
+# CONVERTIBLE HOMBRE SILVER RIDGE" son tres modelos distintos, y agruparlos
+# haria hermanos a productos que no lo son.
+MARCAS_SIBLINGS_POR_TITULO = ("VANS",)
+
+# El prefijo existe para que una clave de titulo NO pueda chocar con un codigo
+# de modelo. Es la misma razon por la que `clave_de_producto` escribe
+# `handle:<handle>`: sin prefijo, un titulo que se parezca a un codigo mete dos
+# productos distintos en el mismo grupo.
+PREFIJO_SIBLINGS_POR_TITULO = "TITULO:"
+
+
+def siblings_se_agrupan_por_titulo(marca):
+    """`True` si a esa marca los siblings le salen por el titulo."""
+    return normalize_brand_name(marca) in MARCAS_SIBLINGS_POR_TITULO
+
+
+def marca_para_siblings(marca_de_la_fila, brand_config=None):
+    """La marca con la que se decide el agrupamiento.
+
+    Primero la del producto y, si no la trae, la UNICA marca del sitio -- que
+    es lo mismo que hace `load_status.marca_de_producto` en su ultimo escalon.
+    Sin ese respaldo, un producto de Vans.pe sin el metacampo `custom.marca` se
+    agruparia por modelo mientras sus hermanos se agrupan por titulo, y la
+    relacion se partiria en dos. Un sitio multimarca no responde: ahi no hay
+    UNA respuesta y adivinar es peor que no saber.
+    """
+    marca = clean(marca_de_la_fila)
+    if marca:
+        return marca
+    permitidas = [clean(m) for m in ((brand_config or {}).get("allowed_arti_brands") or []) if clean(m)]
+    return permitidas[0] if len(permitidas) == 1 else ""
+
+
+def _clave_de_titulo(titulo):
+    """El titulo como clave de agrupamiento.
+
+    Los simbolos de marca se quitan ANTES de plegar los acentos, porque
+    `fold_accents` convierte "™" en las letras "tm": sin esto, "Old Skool™" y
+    "Old Skool" serian dos grupos distintos, y basta con que la tienda escriba
+    el simbolo y el input no para que los hermanos se partan en dos.
+
+    `normalize_text` no se toca: de ahi salen los HANDLES, y cambiarla le
+    cambiaria la URL a los productos.
+    """
+    texto = clean(titulo)
+    for simbolo in ("™", "®", "©"):
+        texto = texto.replace(simbolo, " ")
+    return normalize_text(texto)
+
+
+def clave_de_siblings(mod_col, titulo="", marca=""):
+    """El grupo al que pertenece un producto para los siblings.
+
+    Es UNA sola regla y la llaman los cinco sitios que agrupan hermanos -- la
+    carga completa, la carga por codigos, el mantenedor de Siblings por Shopify
+    API, el de Respaldo Excel y el que arrastra los siblings ya publicados.
+    Escrita en cada uno, el mismo producto caeria en un grupo distinto segun
+    por donde pasara: es la trampa de las dos `normalize_size`.
+
+    Sin titulo se cae al codigo de modelo aunque la marca sea de las de titulo.
+    Devolver vacio meteria a todos los productos sin nombre en el mismo grupo,
+    que es el fallo de la cadena vacia que ya se pago en `clave_de_producto`.
+    """
+    if siblings_se_agrupan_por_titulo(marca):
+        clave = _clave_de_titulo(titulo)
+        if clave:
+            return PREFIJO_SIBLINGS_POR_TITULO + clave
+    return model_code(mod_col)
+
+
+def siblings_ya_publicados(matrixify_df, brand_config=None):
+    """Handles que ya viven en Shopify, agrupados por su clave de siblings.
 
     El input de una carga trae **solo los colores de ese dia**. Si los siblings
     se calcularan unicamente con eso, un modelo con tres colores publicados que
     hoy recibe uno nuevo terminaria con la relacion reducida al color nuevo: se
     borrarian relaciones validas que ya existian.
 
-    Se agrupa por el codigo de modelo del metafield codigo_modelo_color y,
-    ademas, se recoge lo que cada producto ya tenga en su propia lista de
-    siblings. Eso segundo cubre a los productos cuyo codigo_modelo_color esta
-    vacio en Shopify, que de otro modo quedarian sueltos.
+    Se agrupa con `clave_de_siblings` -- el codigo de modelo del metafield
+    codigo_modelo_color, o el titulo en las marcas que lo piden -- y, ademas,
+    se recoge lo que cada producto ya tenga en su propia lista de siblings. Eso
+    segundo cubre a los productos cuyo codigo_modelo_color esta vacio en
+    Shopify, que de otro modo quedarian sueltos.
     """
     por_modelo = {}
     if matrixify_df is None or matrixify_df.empty or "Handle" not in matrixify_df.columns:
@@ -3484,17 +3583,26 @@ def siblings_ya_publicados(matrixify_df):
         for columna in (SIBLINGS_COLUMN, CUSTOM_SIBLINGS_COLUMN)
         if columna in matrixify_df.columns
     ]
-    tiene_clave = PRODUCT_KEY_COLUMN in matrixify_df.columns
+    # El titulo y la marca se leen para poder agrupar por titulo donde toca. Si
+    # no estan en el export, `clave_de_siblings` se queda con el codigo de
+    # modelo, que es exactamente lo que hacia antes.
+    columna_marca = detect_brand_column(matrixify_df)
+    columnas_extra = [c for c in ("Title", columna_marca) if c]
     modelo_por_handle = {}
     siblings_por_handle = {}
 
     for fila in filas_como_registros(
-            matrixify_df, ["Handle", PRODUCT_KEY_COLUMN] + columnas_siblings):
+            matrixify_df, ["Handle", PRODUCT_KEY_COLUMN] + columnas_extra + columnas_siblings):
         handle = clean(fila.get("Handle"))
         if not handle:
             continue
-        if tiene_clave and handle not in modelo_por_handle:
-            modelo = model_code(clean(fila.get(PRODUCT_KEY_COLUMN)).upper())
+        if handle not in modelo_por_handle:
+            modelo = clave_de_siblings(
+                clean(fila.get(PRODUCT_KEY_COLUMN)).upper(),
+                fila.get("Title"),
+                marca_para_siblings(
+                    fila.get(columna_marca) if columna_marca else "", brand_config),
+            )
             if modelo:
                 modelo_por_handle[handle] = modelo
         for columna in columnas_siblings:
@@ -4294,7 +4402,19 @@ def build_matrixify_updates(
         if products.empty:
             return pd.DataFrame(), pd.DataFrame([{"Problema": "Catalogo Matrixify sin productos validos"}])
         products["__KEY"] = products[PRODUCT_KEY_COLUMN].map(lambda value: clean(value).upper()) if PRODUCT_KEY_COLUMN in products.columns else ""
-        products["__MODEL"] = products["__KEY"].map(model_code)
+        # La MISMA `clave_de_siblings` que la carga completa y que el mantenedor
+        # por Shopify API. Si esta rama agrupara distinto, el mismo producto
+        # saldria con unos hermanos u otros segun la fuente elegida arriba.
+        _columna_marca = detect_brand_column(products)
+        products["__MODEL"] = [
+            clave_de_siblings(
+                clean(producto.get("__KEY")).upper(),
+                producto.get("Title"),
+                marca_para_siblings(
+                    producto.get(_columna_marca) if _columna_marca else "", brand_config),
+            )
+            for producto in products.to_dict("records")
+        ]
         siblings_by_model = (
             products[products["__MODEL"] != ""]
             .groupby("__MODEL")["Handle"]
@@ -4678,7 +4798,6 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
 
     input_df = ensure_mod_col_column(input_df.dropna(how="all").copy())
     input_df["__KEY"] = input_df["Mod-Col"].map(lambda value: clean(value).upper())
-    input_df["__MODEL"] = input_df["Mod-Col"].map(model_code)
 
     # El nombre del producto es obligatorio: sin el no se arma ni el Title ni el
     # handle. Si la columna no existe se corta con un error claro en vez de caer
@@ -4693,6 +4812,24 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         )
     handle_color_column = first_existing(input_df, HANDLE_COLOR_COLUMNS)
     input_df["__TITLE"] = input_df[title_column].map(clean)
+    # La clave de los siblings se calcula DESPUES del titulo, porque en las
+    # marcas que agrupan por nombre sale de ahi. Es la misma `clave_de_siblings`
+    # que usan el catalogo ya publicado y la carga por codigos: escrita dos
+    # veces, el mismo producto caeria en un grupo distinto segun por donde
+    # pasara.
+    _columna_marca = detect_brand_column(input_df)
+    input_df["__MODEL"] = [
+        clave_de_siblings(
+            mod_col,
+            titulo,
+            marca_para_siblings(marca, brand_config),
+        )
+        for mod_col, titulo, marca in zip(
+            input_df["Mod-Col"],
+            input_df["__TITLE"],
+            input_df[_columna_marca] if _columna_marca else [""] * len(input_df),
+        )
+    ]
     input_df["__HANDLE_COLOR"] = input_df[handle_color_column].map(clean) if handle_color_column else ""
     # El handle se arma siempre con la estructura nombre-codigo-color, para
     # todas las marcas y sitios. El Handle que traiga el input solo se usa como
@@ -4737,7 +4874,8 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
         .apply(lambda values: [clean(value) for value in values if clean(value)])
         .to_dict()
     )
-    siblings_by_model = unir_siblings(siblings_del_input, siblings_ya_publicados(matrixify_df))
+    siblings_by_model = unir_siblings(
+        siblings_del_input, siblings_ya_publicados(matrixify_df, brand_config))
     brand_column = detect_brand_column(input_df)
     image_lookup = build_image_lookup_by_brand(input_df, brand_column, brand_config)
     wanted_keys = set(input_df["__KEY"])
@@ -4777,6 +4915,31 @@ def build_columbia_matrixify(input_df, arti, matrixify_source, brand_config=None
     rows = []
     sial_rows = []
     issues = []
+    # Los grupos de hermanos que salieron del NOMBRE se reportan. Agrupar por
+    # nombre es mas laxo que agrupar por codigo: dos productos distintos que
+    # compartan titulo acaban de hermanos, y en la ficha eso se ve normal -- es
+    # el peor error silencioso, el mismo criterio que el video en la posicion 2.
+    # Una fila, no una por grupo: un aviso que salta cientos de veces enseña a
+    # ignorar la hoja.
+    grupos_por_titulo = {
+        str(clave)[len(PREFIJO_SIBLINGS_POR_TITULO):]: len([
+            h for h in (x.strip() for x in str(handles).split(",")) if h])
+        for clave, handles in siblings_by_model.items()
+        if str(clave).startswith(PREFIJO_SIBLINGS_POR_TITULO)
+    }
+    if grupos_por_titulo:
+        mayores = sorted(grupos_por_titulo.items(), key=lambda par: (-par[1], par[0]))
+        issues.append({
+            "Mod-Col": "Siblings por nombre",
+            "Problema": (
+                f"{len(grupos_por_titulo):,} grupos de hermanos salieron del NOMBRE del "
+                "producto, no del codigo de modelo (es como se agrupa en "
+                f"{', '.join(MARCAS_SIBLINGS_POR_TITULO)}). "
+                "Si dos productos distintos comparten nombre, quedan hermanos: revisa los "
+                "mas grandes -- "
+                + "; ".join(f"{nombre} ({cuantos})" for nombre, cuantos in mayores[:6])
+            ),
+        })
     # Las tallas de calzado que NO se pudieron convertir. Se reportan y la
     # carga sigue: parar la carga entera porque a un producto le falta el
     # genero seria peor que publicarlo con la talla de origen, que es lo que

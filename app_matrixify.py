@@ -26203,6 +26203,47 @@ def lanzar_carga_remota_suelta(brand_config, *, matrixify_bytes=None,
     )
 
 
+def _solicitud_puede_ejecutar_carga(codigo):
+    """¿La barra de acciones de esa solicitud ofrece hoy "Ejecutar carga"?
+
+    Decide si el boton al runner sobra o si es la UNICA salida. Una solicitud
+    que ya paso a "En ejecucion" -- que es lo que hace el primer "Ejecutar
+    carga" -- deja de ofrecerla (`acciones_disponibles` da finalizar, cancelar
+    y la carga SIAL), asi que si aqui se corta igualmente **no queda ninguna
+    forma de mandar la carga al runner**: la pantalla solo ofrece el panel
+    local, que se detiene al cerrar la pestana. Eso es justo lo que pasa
+    cuando el primer disparo fallo, o cuando se vuelve a analizar el input y
+    la carga nueva trae mas productos que la que ya se lanzo.
+
+    Ante la duda se devuelve False, que es el lado seguro: se dibuja el boton.
+    Un boton de mas se ve y se ignora; el que falta se lee como "no funciona".
+    """
+    codigo = clean_value(codigo)
+    if not codigo:
+        return False
+    try:
+        actor = current_ticket_actor()
+        servicio, _ = get_ticket_service()
+        # Para dibujar, no para escribir: ver `ticket_para_pantalla`.
+        ticket = ticket_para_pantalla(servicio, actor, codigo)
+    except Exception:
+        return False
+    if not ticket:
+        return False
+    try:
+        # Las MISMAS claves que usa `render_barra_acciones`, o esto contestaria
+        # que si cuando la barra de al lado no dibuja el boton.
+        acciones = flujo_acciones(
+            clean_value(ticket.get("status")),
+            clean_value(actor.get("role")).casefold(),
+            ticket.get("assignee"),
+            actor.get("user"),
+        )
+    except Exception:
+        return False
+    return any(clean_value(accion.get("clave")) == "ejecutar" for accion in acciones)
+
+
 def render_boton_carga_remota(brand_config):
     """El boton que manda la carga al runner. Con o SIN solicitud.
 
@@ -26214,10 +26255,17 @@ def render_boton_carga_remota(brand_config):
     guardado = st.session_state.get(CLAVE_MATRIXIFY_SESION)
     if not isinstance(guardado, dict):
         return
-    if clean_value(guardado.get("codigo")):
-        # Esta carga SI sale de una solicitud: se ejecuta desde la barra de
-        # acciones de la solicitud, que ademas mueve su estado. Dos botones
-        # para lo mismo es peor que uno.
+    codigo = clean_value(guardado.get("codigo"))
+    if codigo and _solicitud_puede_ejecutar_carga(codigo):
+        # La solicitud SI puede lanzarla: se ejecuta desde su barra de
+        # acciones, que ademas mueve su estado. Dos botones para lo mismo es
+        # peor que uno -- pero callarse no: sin esta linea la pantalla solo
+        # ofrece el panel LOCAL y el runner parece no existir.
+        st.info(
+            f"Esta carga sale de la solicitud **{escape(codigo)}**: se lanza al runner con "
+            "**Ejecutar carga**, en la barra de acciones de la solicitud (más abajo en esta "
+            "misma pantalla). Así la solicitud también cambia de estado."
+        )
         return
     estado = estado_carga_remota()
     st.markdown("#### Ejecutar la carga fuera de la sesión")
@@ -26228,6 +26276,15 @@ def render_boton_carga_remota(brand_config):
         )
         render_aviso_carga_remota()
         return
+    if codigo:
+        # Llegar aqui CON solicitud significa que su estado ya no ofrece
+        # "Ejecutar carga" -- normalmente porque ya esta "En ejecucion". Se
+        # dice, porque el estado de la solicitud no lo va a mover este boton.
+        st.caption(
+            f"La solicitud **{escape(codigo)}** ya no ofrece «Ejecutar carga» en su estado "
+            "actual, así que esta es la vía para mandar la carga al runner. La solicitud no "
+            "cambia de estado: eso se hace desde su barra de acciones."
+        )
     st.caption(
         f"Se envía a un runner de GitHub Actions: **{len(guardado.get('product_keys') or []):,} "
         "productos**. Puedes cerrar la pestaña y volver a mirar cuando quieras; el avance se "

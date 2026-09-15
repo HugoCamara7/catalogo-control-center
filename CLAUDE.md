@@ -6156,6 +6156,81 @@ que exigen que nada cambie. Las pruebas EJECUTAN el motor con el maestro REAL.
 
 ---
 
+## 5 quinquadragies ter. "No puedo ejecutar un GitHub Actions" (septiembre 2026)
+
+Reportado con una captura de Carga completa: **178 productos detectados** -- el
+arreglo de la seccion anterior ya en produccion -- y abajo solo el panel LOCAL
+de sincronizacion por bloques. *"El problema es que no puedo ejecutar un git hub
+actions"*.
+
+**Ni el workflow ni los Secrets estaban mal.** Comprobado antes de tocar nada:
+17 ejecuciones de `carga-shopify.yml`, la ultima ese mismo dia con exito, y el
+aviso verde *"La carga sigue aunque cierres la sesion"* solo sale si
+`estado_carga_remota()["sobrevive"]`, o sea con `[carga_remota]` configurado.
+
+Lo que faltaba era **por donde lanzarlo**.
+
+### El `return` mudo
+
+`render_boton_carga_remota` cortaba en silencio en cuanto la carga salia de una
+solicitud:
+
+```python
+if clean_value(guardado.get("codigo")):
+    # ese camino es la barra de acciones de la solicitud
+    return
+```
+
+El argumento es correcto **mientras la solicitud OFREZCA esa accion**, y deja
+de serlo en cuanto no:
+
+| Estado | `acciones_disponibles` |
+|---|---|
+| `load_approved` · `ready_execute` · `dry_run` | `ejecutar`, ... |
+| **`loading`** · `validating_results` | `finalizar`, `sial_ok` |
+| `sial_loaded` | `solicitar_precios` |
+
+O sea que una solicitud que ya paso a **"En ejecucion"** -- que es justo lo que
+hace el propio "Ejecutar carga" -- se queda **sin ninguna forma de mandar la
+carga al runner**. La pantalla solo ofrece el panel local, que se detiene al
+cerrar la pestana, que es exactamente lo que el runner existe para evitar.
+
+Y no es un caso raro: pasa cuando **el primer disparo fallo**, y pasa cuando se
+vuelve a analizar el input y la carga nueva trae mas productos que la ya
+lanzada -- que es este caso, **78 antes del arreglo de las medias y 178
+despues**. La solicitud se habia quedado en `loading` con los 78.
+
+### La regla
+
+- La solicitud **puede** ejecutar → el boton no se dibuja (dos botones para lo
+  mismo sigue siendo peor que uno), pero **se dice donde esta el que sirve**,
+  con el codigo de la solicitud.
+- La solicitud **ya no puede** → se dibuja el boton, diciendo por que aparece y
+  que **no mueve el estado** de la solicitud: eso sigue siendo de su barra.
+- **Ante cualquier duda se dibuja** -- la solicitud no se pudo leer, no esta en
+  la bandeja, o su estado no se reconoce. Un boton de mas se ve y se ignora; el
+  que falta se lee como "no funciona".
+
+`_solicitud_puede_ejecutar_carga` pregunta con **las mismas claves** que
+`render_barra_acciones` (`ticket["assignee"]`, `actor["user"]`, el rol en
+minuscula). Con otras contestaria que si cuando la barra de al lado no dibuja
+el boton, y volveriamos al mismo callejon. Y sale de `ticket_para_pantalla`, o
+sea de la bandeja ya cacheada: **cero viajes de mas por rerun** (seccion 5
+duoquadragies).
+
+### Lo que sigue pendiente
+
+El **Pendiente 9** no se cierra aqui: con la carga remota configurada, la misma
+pantalla sigue mostrando ademas el panel local de bloques, y quien no lo sabe
+carga a mano lo que ya se esta cargando solo.
+
+`scripts/test_boton_carga_remota_con_solicitud.py` (13 pruebas); **12 fallan
+con el codigo anterior**. EJECUTAN la funcion con un Streamlit y un servicio de
+solicitudes falsos y miran QUE dibuja en cada estado -- leer el codigo no es
+ejecutarlo.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -6398,7 +6473,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **80 archivos y ~2.525 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **81 archivos y ~2.538 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

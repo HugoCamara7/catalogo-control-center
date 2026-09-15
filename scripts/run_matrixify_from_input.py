@@ -161,7 +161,8 @@ def main():
     sial_df = coalesce_duplicate_columns(sial_df)
 
     if shopify_products:
-        matrixify_df = apply_shopify_siblings_to_matrixify(matrixify_df, shopify_products)
+        matrixify_df = apply_shopify_siblings_to_matrixify(
+            matrixify_df, shopify_products, brand_config)
 
     centry_df, centry_issues_df = build_centry_from_matrixify(
         matrixify_df,

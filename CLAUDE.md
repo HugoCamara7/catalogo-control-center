@@ -5518,6 +5518,119 @@ mover el trabajo al worker, que es el **Pendiente 7**.
 
 ---
 
+## 5 sexquadragies. En Vans los siblings salen del NOMBRE, no del codigo (septiembre 2026)
+
+Reportado asi: *"los siblings estan jalando mal, en el caso de vans los codigos
+son todos diferentes entonces tenemos que buscar segun el nombre del producto,
+todos los que tengan el mismo title es el que se tiene que hacer siblings"*. Y a
+continuacion, la otra mitad de la regla: *"en las otras marcas es solo si son
+iguales los codigos modelo, o sea el valor antes del guion donde comienza el
+codigo color"*.
+
+### Lo medido, antes de tocar nada
+
+El agrupamiento de siempre es el **codigo de modelo** -- lo que hay antes del
+guion donde empieza el codigo de color --, y en Vans eso no agrupa nada, porque
+**el codigo cambia entero de un color a otro**:
+
+```
+VN-018BGIC-BIV   Zapatilla Old Skool     modelo VN-018BGIC
+VN-018BGIE-GB8   Zapatilla Old Skool     modelo VN-018BGIE   <- otro modelo
+```
+
+Sobre `data/arti.zip` (653.431 filas, los modelo-color reales):
+
+| Marca | mod-col | modelos | modelos con UN SOLO color |
+|---|---:|---:|---:|
+| **VANS** | 1.616 | 1.255 | **1.132 (90,2 %)** |
+| COLUMBIA | 19.055 | 5.395 | 1.497 (27,7 %) |
+| HUSH PUPPIES | 14.728 | 7.889 | 3.613 (45,8 %) |
+| ROCKFORD | 13.745 | 6.348 | 2.124 (33,5 %) |
+
+O sea que **nueve de cada diez productos de Vans se quedaban sin un solo
+hermano** y la ficha no ofrecia los otros colores.
+
+### Por que NO se aplica a todas las marcas
+
+Medido en el catalogo real de Columbia.pe (2.401 productos): **72 titulos
+abarcan mas de un modelo**. "PANTALON CONVERTIBLE HOMBRE SILVER RIDGE" son
+**tres modelos distintos**, y agruparlos por nombre los haria hermanos sin
+serlo. Por eso las demas marcas siguen exactamente como estaban.
+
+### Va por MARCA, nunca por sitio
+
+`MARCAS_SIBLINGS_POR_TITULO` es una lista de MARCAS. Vans se carga en Vans.pe y
+tambien en **Supermall.pe**, que lleva ademas Columbia, Hush Puppies y el resto:
+con una bandera de sitio, una carga de Supermall agruparia por nombre **todas**
+sus marcas. Hay pruebas que cargan las dos marcas en Supermall y exigen que cada
+una use su regla.
+
+La marca sale del producto y, si no la trae, de la **unica marca del sitio**
+(`marca_para_siblings`) -- el mismo ultimo escalon que `load_status.marca_de_producto`.
+Sin ese respaldo, un producto de Vans.pe sin `custom.marca` se agruparia por
+modelo mientras sus hermanos lo hacen por nombre, y la relacion se partiria en
+dos. Un sitio multimarca no responde: ahi no hay UNA respuesta y adivinar es
+peor que no saber.
+
+### Una sola regla, y cinco superficies que la llaman
+
+`clave_de_siblings(mod_col, titulo, marca)` vive en
+`generate_columbia_matrixify` y la usan:
+
+| Superficie | Donde |
+|---|---|
+| Carga completa | `build_columbia_matrixify` |
+| Carga por codigos (Centry · Carga Sial · Supermall) | `build_centry_matrixify_from_master` |
+| Lo YA publicado, que no se pisa | `siblings_ya_publicados` |
+| Mantenedor de Siblings (Shopify API) | `build_shopify_update_preview` · `siblings_by_model_from_shopify` |
+| Mantenedor de Siblings (Respaldo Excel) | `build_matrixify_updates` |
+
+Antes cada una partia el codigo por su cuenta -- tres de ellas con un
+`rsplit("-", 1)[0]` escrito a mano --, o sea **cinco reglas**: es la trampa de
+las dos `normalize_size`. Hay una prueba AST que falla si alguna vuelve a partir
+el codigo a mano, y otra que compara las dos rutas del mantenedor y exige que
+agrupen igual: si una agrupara distinto, el mismo archivo se aplicaria distinto
+segun la fuente elegida arriba.
+
+### Tres detalles que no son obvios
+
+- **La clave por titulo lleva prefijo** (`TITULO:`). Sin el, un titulo que se
+  parezca a un codigo de modelo meteria dos productos distintos en el mismo
+  grupo. Es la misma razon por la que `clave_de_producto` escribe
+  `handle:<handle>`.
+- **Sin titulo se cae al codigo de modelo**, aunque la marca sea de las de
+  nombre. Devolver vacio meteria a TODOS los productos sin nombre en el mismo
+  grupo, que es el fallo de la cadena vacia que ya se pago en el Status de
+  carga.
+- **Los simbolos de marca se quitan ANTES de plegar los acentos.**
+  `fold_accents` convierte `™` en las letras `tm`, asi que "Old Skool™" y "Old
+  Skool" habrian sido dos grupos distintos -- y basta con que la tienda escriba
+  el simbolo y el input no. `normalize_text` **no se toca**: de ahi salen los
+  HANDLES, y cambiarla le cambiaria la URL a los productos.
+
+### Y se REPORTA
+
+Agrupar por nombre es mas laxo que agrupar por codigo, asi que la hoja de
+Revision dice **cuantos grupos salieron del nombre y cuales son los mas
+grandes**. Dos productos distintos que compartan nombre acaban de hermanos, y en
+la ficha eso se ve normal: es el peor error silencioso, el mismo criterio que el
+video en la posicion 2. Va **una fila**, no una por grupo -- un aviso que salta
+cientos de veces enseña a ignorar la hoja --, y una carga que no agrupa por
+nombre no dice nada.
+
+### Lo que NO cambia
+
+En todo lo que no es Vans, `clave_de_siblings` devuelve **exactamente**
+`model_code`, con una prueba que los compara sobre codigos reales de varias
+formas. Lo publicado sigue sin pisarse (`unir_siblings`): un producto con tres
+colores en la tienda que hoy recibe uno nuevo acaba con cuatro hermanos.
+
+`scripts/test_siblings_por_titulo.py` (29 pruebas) fija todo esto; **23 fallan
+con el codigo anterior**. Las pruebas EJECUTAN las cinco superficies -- con
+codigos reales del maestro -- en vez de leer su codigo.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -5760,7 +5873,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **76 archivos y ~2.358 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **77 archivos y ~2.387 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

@@ -177,6 +177,8 @@ from generate_columbia_matrixify import (
     avisos_de_talla_a_issues,
     siblings_ya_publicados,
     unir_siblings,
+    clave_de_siblings,
+    marca_para_siblings,
     model_code as codigo_de_modelo,
     fold_accents,
     get_brand_config,
@@ -7397,6 +7399,12 @@ def _lookup_por_clave(df, columna="__CENTRY_KEY"):
     return lookup
 
 
+# La columna de marca del export de Matrixify. Se escribe una vez: es la que
+# decide, producto a producto, si sus siblings se agrupan por modelo o por
+# titulo.
+MARCA_METAFIELD = "Metafield: custom.marca [single_line_text_field]"
+
+
 def preparar_contexto_de_codigos(shopify_matrixify_df, arti_df, brand_config,
                                  destino_matrixify_df=None, codigos=None):
     """Todo lo que NO depende de la lista de codigos, calculado una sola vez.
@@ -7512,7 +7520,7 @@ def preparar_contexto_de_codigos(shopify_matrixify_df, arti_df, brand_config,
         "product_lookup": product_lookup,
         "destino_lookup": destino_lookup,
         "destino_es_el_origen": destino_df is shopify_df,
-        "siblings_publicados": siblings_ya_publicados(destino_df),
+        "siblings_publicados": siblings_ya_publicados(destino_df, brand_config),
         "arti": arti,
         "diagnosticos": diagnosticos,
     }
@@ -7788,7 +7796,12 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         # El MISMO handle que va en la fila: si aqui saliera otro, el producto
         # se listaria a si mismo como hermano con un nombre que no existe.
         handle_propio = handle_producto
-        modelo_del_producto = codigo_de_modelo(key)
+        # La MISMA `clave_de_siblings` que la carga completa: en Vans el codigo
+        # cambia entero de un color a otro, asi que ahi el grupo lo da el
+        # titulo. `raw_brand` es la marca del maestro, no el vendor de la
+        # tienda -- ese es el mismo para todas las marcas del sitio.
+        modelo_del_producto = clave_de_siblings(
+            key, title, marca_para_siblings(raw_brand, brand_config))
         if modelo_del_producto:
             handles_de_la_carga.setdefault(modelo_del_producto, []).append(handle_producto)
         # Se rellena despues del bucle, cuando ya se conocen los handles de
@@ -7928,10 +7941,19 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
         for fila in rows
     }
     for code in codes:
-        modelo = codigo_de_modelo(code)
+        fila_destino = destino_lookup.get(code)
+        # Estos codigos no dejaron fila, asi que lo unico que se sabe de ellos
+        # es lo que la tienda destino ya tenga. Sin ficha, `clave_de_siblings`
+        # se queda con el codigo de modelo, que es lo que hacia siempre.
+        modelo = clave_de_siblings(
+            code,
+            clean_value(fila_destino.get("Title")) if fila_destino is not None else "",
+            marca_para_siblings(
+                clean_value(fila_destino.get(MARCA_METAFIELD)) if fila_destino is not None else "",
+                brand_config),
+        )
         if not modelo or code in con_filas:
             continue
-        fila_destino = destino_lookup.get(code)
         handles_de_la_carga.setdefault(modelo, []).append(
             (clean_value(fila_destino.get("Handle")) if fila_destino is not None else "")
             or code.lower()
@@ -7939,8 +7961,12 @@ def build_centry_matrixify_from_master(codes, shopify_matrixify_df, arti_df, bra
     siblings_por_modelo = unir_siblings(handles_de_la_carga, siblings_publicados)
     for fila in rows:
         hermanos = siblings_por_modelo.get(
-            codigo_de_modelo(clean_value(fila.get(
-                "Metafield: custom.codigo_modelo_color [id]")).upper()),
+            clave_de_siblings(
+                clean_value(fila.get(
+                    "Metafield: custom.codigo_modelo_color [id]")).upper(),
+                clean_value(fila.get("Title")),
+                marca_para_siblings(clean_value(fila.get(MARCA_METAFIELD)), brand_config),
+            ),
             "",
         ) or clean_value(fila.get("Handle"))
         for columna in ("Metafield: theme.siblings [single_line_text_field]",
@@ -9140,7 +9166,12 @@ def build_shopify_update_preview(
         products_df = pd.DataFrame(shopify_products)
         if products_df.empty:
             return pd.DataFrame(), pd.DataFrame([{"Problema": "Shopify no devolvio productos"}]), pd.DataFrame()
-        products_df["__MODEL"] = products_df["Mod-Col"].map(lambda value: clean_value(value).upper().rsplit("-", 1)[0])
+        # La MISMA regla que la carga completa: en Vans el codigo cambia entero
+        # de un color a otro, asi que ahi el grupo lo da el titulo.
+        products_df["__MODEL"] = [
+            _clave_de_siblings_de_producto(producto, brand_config)
+            for producto in products_df.to_dict("records")
+        ]
         siblings_by_model = (
             products_df[products_df["__MODEL"] != ""]
             .groupby("__MODEL")["Handle"]
@@ -11886,11 +11917,31 @@ def render_dashboard_refresh_error(exc, cached_result=None):
         )
 
 
-def siblings_by_model_from_shopify(shopify_products):
+def _clave_de_siblings_de_producto(producto, brand_config=None):
+    """La clave de siblings de un producto leido de Shopify.
+
+    Es `clave_de_siblings` con los nombres que trae el producto aplanado. La
+    marca es la del propio producto y, si no la trae, la unica del sitio: sin
+    ese respaldo un producto de Vans.pe sin `custom.marca` se agruparia por
+    modelo mientras sus hermanos lo hacen por titulo.
+    """
+    return clave_de_siblings(
+        clean_value(producto.get("Mod-Col")).upper(),
+        clean_value(producto.get("Title")),
+        marca_para_siblings(
+            first_non_empty(producto.get("Marca"), producto.get(MARCA_METAFIELD)),
+            brand_config),
+    )
+
+
+def siblings_by_model_from_shopify(shopify_products, brand_config=None):
     products_df = pd.DataFrame(shopify_products)
     if products_df.empty or "Mod-Col" not in products_df.columns or "Handle" not in products_df.columns:
         return {}
-    products_df["__MODEL"] = products_df["Mod-Col"].map(lambda value: clean_value(value).upper().rsplit("-", 1)[0])
+    products_df["__MODEL"] = [
+        _clave_de_siblings_de_producto(producto, brand_config)
+        for producto in products_df.to_dict("records")
+    ]
     return (
         products_df[products_df["__MODEL"] != ""]
         .groupby("__MODEL")["Handle"]
@@ -11899,8 +11950,8 @@ def siblings_by_model_from_shopify(shopify_products):
     )
 
 
-def apply_shopify_siblings_to_matrixify(matrixify_df, shopify_products):
-    siblings_map = siblings_by_model_from_shopify(shopify_products)
+def apply_shopify_siblings_to_matrixify(matrixify_df, shopify_products, brand_config=None):
+    siblings_map = siblings_by_model_from_shopify(shopify_products, brand_config)
     if matrixify_df is None or matrixify_df.empty or not siblings_map:
         return matrixify_df
     df = matrixify_df.copy()
@@ -11915,9 +11966,11 @@ def apply_shopify_siblings_to_matrixify(matrixify_df, shopify_products):
 
     def sibling_value(row):
         key = clean_value(row.get(key_column)).upper()
-        if not key:
+        model = clave_de_siblings(
+            key, clean_value(row.get("Title")),
+            marca_para_siblings(clean_value(row.get(MARCA_METAFIELD)), brand_config))
+        if not model:
             return row.get(siblings_column)
-        model = key.rsplit("-", 1)[0]
         return siblings_map.get(model, row.get(siblings_column) or row.get(custom_siblings_column))
 
     top_rows = df["Handle"].map(clean_value) != ""
@@ -32026,6 +32079,7 @@ api_version = "{DEFAULT_API_VERSION}"
                     matrixify_df = apply_shopify_siblings_to_matrixify(
                         matrixify_df,
                         st.session_state.get("complete_shopify_products", []),
+                        brand_config,
                     )
                 _paso_del_analisis(aviso_analisis, 3, "armando la hoja Centry")
                 centry_df, centry_issues_df = build_centry_from_matrixify(matrixify_df, brand_config, arti_df=arti_df)

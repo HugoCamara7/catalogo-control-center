@@ -5895,6 +5895,76 @@ productos), los campos obligatorios vacios, un ID que no esta en el export, una
 marca o una categoria que no son de VTEX, y una especificacion de lista sin su
 ID de valor -- esa VTEX la rechaza.
 
+### El export sale en el IDIOMA del admin, y eso lo rompia todo
+
+Reportado con una captura al subir el catalogo entero (24 MB): **"No reconocida
+· 0 filas"** y "No se puede continuar sin la planilla de Products and SKUs".
+
+El pack de muestra traia esa planilla en **INGLES** (`Product ID`, `Product
+Name`, `Yes`) y el export real de la tienda sale en **ESPANOL** (`ID del
+producto`, `Nombre del producto`, `Sí`). Son las **mismas 50 columnas en el
+mismo orden**: lo unico que cambia es como se llaman. Las otras tres planillas
+ya venian en espanol en la muestra, asi que solo esta tiene dos idiomas en
+juego.
+
+O sea que **el nombre de una columna no es su identidad**. El motor trabaja con
+un nombre CANONICO (`SINONIMOS_DE_COLUMNA`), al leer se traduce y al escribir se
+vuelve a los nombres del archivo **que subio el usuario** -- que es la plantilla
+que su VTEX espera de vuelta. Hay una prueba que lee la misma planilla en los
+dos idiomas y exige el mismo indice, y otra que exige que la salida salga en el
+idioma de la entrada.
+
+**La traduccion es POR ARCHIVO, no global.** `ID de SKU` es sinonimo de `SKU ID`
+en la planilla de productos, pero en la de especificaciones de SKU es su propia
+columna: con una tabla global se le cambiaba el nombre y el indice de campos se
+quedaba vacio. Lo destapo una prueba que se puso roja.
+
+**Y el `Sí`/`No` tambien.** Se toman del propio export -- se escribe exactamente
+la forma que la tienda ya usa -- en vez de un `Yes` a pelo, que en una planilla
+en espanol deja el producto **sin activar**. La tabla de aqui solo dice cual de
+las dos es cual.
+
+### openpyxl recorria el XML entero solo para abrir el archivo
+
+El mismo archivo tardaba **35 s en explorarse** y reportaba **0 filas**. Las dos
+cosas salen del mismo sitio: el export real **no declara su dimension**, asi que
+`ReadOnlyWorksheet` llama a `parse_dimensions`, que **recorre el XML completo**
+-- 269 MB descomprimidos -- en cada `load_workbook`, y aun asi `max_row` sale
+`None`. La pantalla lo abria tres veces.
+
+Ahora el xlsx se lee sin openpyxl:
+
+| | openpyxl | ahora |
+|---|---:|---:|
+| abrir (calcular la dimension) | 24 s | **0 s** |
+| recorrer las 97.740 filas | 42,9 s | **13,9 s** |
+| contar las filas | imposible (`None`) | **0,6 s** |
+
+- Los nombres de hoja salen de `xl/workbook.xml` y sus rels: dos ficheros de
+  menos de 1 KB.
+- Las filas, de `iterparse` sobre el XML de la hoja, con la tabla de cadenas
+  compartidas cuando el archivo la trae (el export real guarda el texto dentro
+  de cada celda). **Las filas vacias se emiten igual que hace openpyxl**,
+  contando por el atributo `r`: sin eso una hoja con la primera fila en blanco
+  -- que es justo como exporta VTEX -- sale desplazada una posicion.
+- El conteo, contando las etiquetas `<row ` por trozos. Decir "0 filas" de un
+  archivo lleno es peor que no decir nada.
+
+**Comprobado celda a celda contra openpyxl**: las cuatro planillas de muestra y
+el export real del usuario -- **4.940.000 celdas, cero distintas**. Hay una
+prueba que lo repite.
+
+**Y destapo un fallo que ya estaba:** un xlsx **no escribe las celdas vacias del
+final**, asi que `zip(columnas, fila)` cortaba el registro por la fila mas
+corta. De la primera fila sale la CABECERA con la que se escribe el archivo de
+salida: medido con la muestra, **49 columnas de 50**, y una plantilla de VTEX
+con una columna de menos la rechaza el importador.
+
+### Lo medido con el catalogo real de Supermall
+
+El archivo de 24 MB: **97.738 filas · 22.686 productos · 97.389 SKU · 13 marcas
+· 92 categorias**, explorado en **0,5 s** e indexado en 38 s con **+156 MB**.
+
 ### La memoria: el export son 177 MB y el contenedor da 1 GB
 
 Medido con un export sintetico de **122 MB** -- 20.000 productos, 160.000 SKU y
@@ -5955,10 +6025,13 @@ Pendiente 7 -- mover el trabajo pesado al worker.
 
 ### Las pruebas EJECUTAN contra el export real
 
-`scripts/test_vtex_generator.py` (64 pruebas) corre contra
+`scripts/test_vtex_generator.py` (73 pruebas) corre contra
 `data/vtex_muestra_supermallpe/`, que son las cuatro planillas reales con 500
 filas por hoja y la estructura exacta del export: fila en blanco, cabecera en la
-segunda y las especificaciones de productos en dos hojas. Incluye la cadena
+segunda y las especificaciones de productos en dos hojas. Y
+`products-and-skus-es.xlsx`, que son las primeras filas del export REAL del
+usuario -- el mismo archivo en el otro idioma, que es lo que rompio la pantalla
+la primera vez. Incluye la cadena
 entera -- Shopify y ARTI falsos, `supermall_generar`, las cuatro planillas, la
 validacion y el ZIP -- y una prueba de ida y vuelta: **el ZIP que sale se vuelve
 a leer como maestro de VTEX**. Leer el codigo no es ejecutarlo.
@@ -6219,7 +6292,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **79 archivos y ~2.487 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **79 archivos y ~2.496 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

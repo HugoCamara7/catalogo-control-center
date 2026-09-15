@@ -53,8 +53,21 @@ def _leer_muestra():
             self.name = os.path.basename(ruta)
 
     archivos = [Subido(os.path.join(MUESTRA, n)) for n in sorted(os.listdir(MUESTRA))
-                if n.endswith(".xlsx")]
+                if n.endswith(".xlsx") and not n.endswith("-es.xlsx")]
     return app.vtex_leer_planillas(archivos)
+
+
+def _subido(nombre):
+    """Un archivo de la muestra, como lo entrega el `file_uploader`."""
+    import io as _io
+
+    class Subido(_io.BytesIO):
+        def __init__(self, ruta):
+            with open(ruta, "rb") as fh:
+                super().__init__(fh.read())
+            self.name = os.path.basename(ruta)
+
+    return Subido(os.path.join(MUESTRA, nombre))
 
 
 class LecturaDelExport(unittest.TestCase):
@@ -939,6 +952,128 @@ class Memoria(unittest.TestCase):
             primera = [f["ID de campo"] for _n, f in zip(range(3), tablas[archivo])]
             self.assertEqual(primera,
                              [f["ID de campo"] for _n, f in zip(range(3), tablas[archivo])])
+
+
+class ElIdiomaDelExport(unittest.TestCase):
+    """El export sale en el IDIOMA del admin de VTEX.
+
+    El pack de muestra vino con la planilla de productos en INGLES y el export
+    real de la tienda sale en ESPANOL: mismas 50 columnas, mismo orden, otros
+    nombres -- y `Sí` donde la muestra decia `Yes`. La pantalla contestaba
+    "No reconocida · 0 filas" con el archivo de 24 MB del catalogo entero.
+
+    `products-and-skus-es.xlsx` son las primeras filas de ESE archivo.
+    """
+
+    def setUp(self):
+        import app_matrixify as app
+        self.app = app
+        self.espanol, _informe = app.vtex_leer_planillas([_subido("products-and-skus-es.xlsx")])
+        self.ingles, _informe = app.vtex_leer_planillas([_subido("products-and-skus.xlsx")])
+
+    def test_la_planilla_en_espanol_se_reconoce(self):
+        self.assertTrue(self.espanol.get(vtex.PRODUCTOS),
+                        "el export real de VTEX sale en espanol y no se reconocia")
+
+    def test_las_dos_dan_el_mismo_indice(self):
+        """El idioma no puede cambiar lo que la app entiende del catalogo."""
+        for planillas, etiqueta in ((self.espanol, "espanol"), (self.ingles, "ingles")):
+            catalogo = vtex.leer_catalogo(planillas)
+            with self.subTest(idioma=etiqueta):
+                self.assertTrue(catalogo.productos, etiqueta)
+                self.assertIn("hush puppies", catalogo.marcas)
+                self.assertIn(("hombre", "zapatos"), catalogo.categorias)
+                producto = catalogo.producto_por_referencia("HP102011307-251")
+                self.assertTrue(producto, "el Mod-Col se lee igual en los dos idiomas")
+                self.assertEqual(producto[0].id, "2")
+                self.assertTrue(producto[0].skus)
+                self.assertEqual(producto[0].skus[0].talla, "39")
+
+    def test_el_si_y_el_no_salen_del_propio_export(self):
+        """Un `Yes` en una planilla en espanol deja el producto sin activar."""
+        self.assertEqual(vtex.leer_catalogo(self.espanol).si(), "Sí")
+        self.assertEqual(vtex.leer_catalogo(self.ingles).si(), "Yes")
+        self.assertEqual(vtex.leer_catalogo(self.espanol).no(), "No")
+
+    def test_la_salida_va_en_el_idioma_del_archivo_que_se_subio(self):
+        """Es la plantilla que ESE VTEX espera de vuelta."""
+        for planillas, primera, activo in ((self.espanol, "ID del producto", "Sí"),
+                                           (self.ingles, "Product ID", "Yes")):
+            catalogo = vtex.leer_catalogo(planillas)
+            emparejados = vtex.emparejar([_ficha("HP102011307-251")], catalogo,
+                                         nombres_de_tipo=garment_types.sinonimos_de)
+            tablas, _inc, _res = vtex.generar(emparejados, catalogo)
+            fila = tablas[vtex.PRODUCTOS][0]
+            with self.subTest(idioma=primera):
+                self.assertEqual(list(fila)[0], primera)
+                self.assertEqual(len(fila), len(vtex.COLUMNAS_PRODUCTOS))
+                self.assertEqual(fila[catalogo.columna(vtex.PRODUCTOS, "Active product")],
+                                 activo)
+                self.assertEqual(
+                    fila[catalogo.columna(vtex.PRODUCTOS, "Product reference code")],
+                    "HP102011307-251")
+
+    def test_la_traduccion_NO_toca_las_otras_planillas(self):
+        """`ID de SKU` es sinonimo de `SKU ID` en la planilla de productos, pero
+        en la de especificaciones de SKU es su propia columna."""
+        self.assertEqual(vtex.canonico("ID de SKU", vtex.PRODUCTOS), "SKU ID")
+        self.assertEqual(vtex.canonico("ID de SKU", vtex.ESPEC_SKU), "ID de SKU")
+        planillas, _informe = _leer_muestra()
+        catalogo = vtex.leer_catalogo(planillas)
+        self.assertIsNotNone(catalogo.campo_de_sku("41", "Talla"))
+
+    def test_una_columna_que_no_esta_en_la_tabla_se_conserva(self):
+        """Una columna nueva de VTEX tiene que llegar igual al archivo de
+        salida, no desaparecer."""
+        self.assertEqual(vtex.canonico("Columna nueva de VTEX"), "Columna nueva de VTEX")
+        fila = vtex.traducir_fila({"ID del producto": "1", "Columna nueva": "x"})
+        self.assertEqual(fila, {"Product ID": "1", "Columna nueva": "x"})
+
+    def test_cuenta_las_filas_aunque_el_archivo_no_declare_su_dimension(self):
+        """`max_row` de openpyxl sale `None` con el export real: el archivo de
+        24 MB del usuario reportaba 0 filas."""
+        _planillas, informe = self.app.vtex_leer_planillas(
+            [_subido("products-and-skus-es.xlsx")])
+        self.assertEqual(len(informe), 1)
+        self.assertGreater(informe[0]["Filas"], 100)
+
+    def test_una_fila_con_la_ultima_celda_vacia_no_pierde_columnas(self):
+        """De la primera fila sale la CABECERA del archivo de salida, y un xlsx
+        no escribe las celdas vacias del final: `zip` cortaba el registro por la
+        fila mas corta y la planilla salia con una columna de menos."""
+        hoja = self.espanol[vtex.PRODUCTOS][0]
+        for _numero, fila in zip(range(20), hoja):
+            self.assertEqual(len(fila), len(vtex.COLUMNAS_PRODUCTOS))
+
+    def test_el_lector_del_xlsx_da_lo_mismo_que_openpyxl(self):
+        """Se cambio openpyxl por un lector propio porque openpyxl recorre el
+        XML entero al abrir un archivo que no declara su dimension -- 24 s por
+        apertura con el export real. Lo que no puede cambiar es lo que lee."""
+        import io as _io
+        from openpyxl import load_workbook
+        for nombre in sorted(os.listdir(MUESTRA)):
+            if not nombre.endswith(".xlsx"):
+                continue
+            datos = _subido(nombre).getvalue()
+            hojas = self.app.vtex_hojas_del_libro(datos)
+            libro = load_workbook(_io.BytesIO(datos), read_only=True, data_only=True)
+            try:
+                self.assertEqual([h for h, _r in hojas], libro.sheetnames, nombre)
+                for hoja, ruta in hojas:
+                    propio = list(self.app.vtex_filas_del_xml(datos, ruta))
+                    suyo = [list(f) for f in libro[hoja].iter_rows(values_only=True)]
+                    self.assertEqual(len(propio), len(suyo), f"{nombre}/{hoja}: filas")
+                    for nuestra, suya in zip(propio, suyo):
+                        ancho = max(len(nuestra), len(suya))
+                        nuestra = [clean(v) for v in nuestra] + [""] * (ancho - len(nuestra))
+                        suya = [clean(v) for v in suya] + [""] * (ancho - len(suya))
+                        self.assertEqual(nuestra, suya, f"{nombre}/{hoja}")
+            finally:
+                libro.close()
+
+
+def clean(valor):
+    return "" if valor is None else str(valor)
 
 
 if __name__ == "__main__":

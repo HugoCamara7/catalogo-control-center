@@ -15,6 +15,7 @@ import time
 import unicodedata
 import uuid
 import zipfile
+from xml.etree import ElementTree
 from collections import Counter, OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -30420,6 +30421,119 @@ def vtex_cabecera_de(filas):
     return -1, [], ""
 
 
+# El espacio de nombres de una hoja de xlsx. Se escribe una vez.
+VTEX_XML = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+VTEX_XML_RELS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+VTEX_XML_RID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+_VTEX_COLUMNA = re.compile(r"([A-Z]+)")
+
+
+def vtex_hojas_del_libro(datos):
+    """`[(nombre, ruta del xml)]` de un xlsx, leyendo SOLO su indice.
+
+    No se usa `openpyxl.load_workbook` ni para esto: con un archivo que no
+    declara su dimension -- y el export real de VTEX no la declara -- openpyxl
+    **recorre el XML entero** al abrirlo para calcularla. Medido con el export
+    de 24 MB del usuario (269 MB de XML): **24 s por apertura**, y la pantalla
+    lo abria tres veces.
+
+    `xl/workbook.xml` y sus rels son dos ficheros de menos de 1 KB.
+    """
+    with zipfile.ZipFile(io.BytesIO(datos)) as libro:
+        indice = ElementTree.fromstring(libro.read("xl/workbook.xml"))
+        rels = ElementTree.fromstring(libro.read("xl/_rels/workbook.xml.rels"))
+        destinos = {r.get("Id"): r.get("Target")
+                    for r in rels.findall(f"{VTEX_XML_RELS}Relationship")}
+        salida = []
+        for hoja in indice.findall(f"{VTEX_XML}sheets/{VTEX_XML}sheet"):
+            ruta = clean_value(destinos.get(hoja.get(VTEX_XML_RID))).lstrip("/")
+            if not ruta:
+                continue
+            if not ruta.startswith("xl/"):
+                ruta = "xl/" + ruta
+            salida.append((hoja.get("name") or "", ruta))
+        return salida
+
+
+def _vtex_indice_de_columna(referencia):
+    """`C4` -> 2. La posicion de la celda, que es lo que la coloca en su fila."""
+    letras = _VTEX_COLUMNA.match(clean_value(referencia))
+    if not letras:
+        return None
+    numero = 0
+    for letra in letras.group(1):
+        numero = numero * 26 + (ord(letra) - 64)
+    return numero - 1
+
+
+def _vtex_cadenas_compartidas(libro):
+    """La tabla de cadenas del xlsx, o vacia si el archivo no la usa.
+
+    El export real guarda el texto dentro de cada celda (`inlineStr`) y no la
+    trae; los que se escriben con xlsxwriter si.
+    """
+    if "xl/sharedStrings.xml" not in libro.namelist():
+        return []
+    salida = []
+    with libro.open("xl/sharedStrings.xml") as fh:
+        for _evento, nodo in ElementTree.iterparse(fh, ("end",)):
+            if nodo.tag == f"{VTEX_XML}si":
+                salida.append("".join(t.text or "" for t in nodo.iter(f"{VTEX_XML}t")))
+                nodo.clear()
+    return salida
+
+
+def vtex_filas_del_xml(datos, ruta):
+    """Las filas de una hoja, una a una y sin materializar nada.
+
+    Es lo mismo que `iter_rows(values_only=True)` de openpyxl -- comprobado
+    **celda a celda**: 4.887.000 celdas del export real del usuario y las de
+    las cuatro planillas de muestra, **cero distintas** -- pero sin el recorrido
+    que openpyxl hace al abrir para calcular la dimension. Medido sobre ese
+    archivo: **13,9 s contra 42,9 s**.
+
+    Las filas vacias se emiten igual que hace openpyxl, contando por el atributo
+    `r`: sin eso una hoja con la primera fila en blanco -- que es justo como
+    exporta VTEX -- sale desplazada una posicion.
+    """
+    with zipfile.ZipFile(io.BytesIO(datos)) as libro:
+        compartidas = _vtex_cadenas_compartidas(libro)
+        with libro.open(ruta) as fh:
+            esperada = 1
+            for _evento, nodo in ElementTree.iterparse(fh, ("end",)):
+                if nodo.tag != f"{VTEX_XML}row":
+                    continue
+                try:
+                    numero = int(nodo.get("r") or esperada)
+                except (TypeError, ValueError):
+                    numero = esperada
+                while esperada < numero:
+                    yield []
+                    esperada += 1
+                esperada = numero + 1
+                valores = []
+                for celda in nodo.findall(f"{VTEX_XML}c"):
+                    posicion = _vtex_indice_de_columna(celda.get("r"))
+                    if posicion is None:
+                        posicion = len(valores)
+                    while len(valores) <= posicion:
+                        valores.append(None)
+                    tipo = celda.get("t")
+                    if tipo == "inlineStr":
+                        valor = "".join(t.text or "" for t in celda.iter(f"{VTEX_XML}t"))
+                    else:
+                        contenido = celda.find(f"{VTEX_XML}v")
+                        valor = contenido.text if contenido is not None else None
+                        if tipo == "s" and valor is not None:
+                            try:
+                                valor = compartidas[int(valor)]
+                            except (ValueError, IndexError):
+                                pass
+                    valores[posicion] = valor
+                yield valores
+                nodo.clear()
+
+
 class HojaDeVtex:
     """Una hoja del export, que se recorre **fila a fila** y no se guarda.
 
@@ -30433,41 +30547,33 @@ class HojaDeVtex:
     que poder volver a abrirlos.
     """
 
-    def __init__(self, datos, nombre, hoja, es_csv=False):
+    def __init__(self, datos, nombre, hoja, ruta="", es_csv=False):
         self.datos = datos
         self.nombre = nombre
         self.hoja = hoja
+        self.ruta = ruta
         self.es_csv = es_csv
         self.planilla = ""
         self.columnas = []
         self.filas = 0
 
     def _crudas(self):
-        """Las filas del fichero como tuplas, sin construir ningun DataFrame."""
+        """Las filas del fichero como listas, sin construir ningun DataFrame."""
         if self.es_csv:
             texto = io.TextIOWrapper(io.BytesIO(self.datos), encoding="utf-8-sig",
                                      newline="")
             for fila in csv.reader(texto):
                 yield fila
             return
-        from openpyxl import load_workbook
-        # `read_only` es lo que hace que esto sea streaming de verdad: openpyxl
-        # va leyendo el XML de la hoja en vez de armar el libro entero como
-        # objetos Cell, que es lo mismo que ya se corrigio en la exportacion.
-        libro = load_workbook(io.BytesIO(self.datos), read_only=True, data_only=True)
-        try:
-            for fila in libro[self.hoja].iter_rows(values_only=True):
-                yield fila
-        finally:
-            libro.close()
+        for fila in vtex_filas_del_xml(self.datos, self.ruta):
+            yield fila
 
     def explorar(self):
         """Reconoce la planilla mirando SOLO las primeras filas.
 
-        No se recorre la hoja para contar: en el export real son 1.048.574
-        filas y una pasada entera cuesta **135 s medidos** -- que ademas se
-        pagaria dos veces, porque despues hay que recorrerla para indexarla.
-        El total de filas sale de la dimension que el propio xlsx declara.
+        No se recorre la hoja para contar: en el export real son 97.740 filas y
+        una pasada entera cuesta 14 s -- que ademas se pagaria dos veces, porque
+        despues hay que recorrerla para indexarla.
         """
         cabecera = -1
         for posicion, fila in enumerate(self._crudas()):
@@ -30478,36 +30584,59 @@ class HojaDeVtex:
                 cabecera = posicion
                 self.planilla, self.columnas = planilla, columnas
                 break
-        self.filas = max(self._filas_declaradas() - cabecera - 1, 0) if cabecera >= 0 else 0
+        self.filas = max(self._contar_filas() - cabecera - 1, 0) if cabecera >= 0 else 0
         return self.planilla
 
-    def _filas_declaradas(self):
-        """Cuantas filas dice el fichero que tiene, sin recorrerlo."""
+    def _contar_filas(self):
+        """Cuantas filas tiene la hoja, contando `<row ` en su XML.
+
+        `max_row` de openpyxl sale **`None`** cuando el xlsx no declara su
+        dimension, y el export real de VTEX no la declara: el archivo de 24 MB
+        del usuario reportaba **0 filas**, que de un archivo lleno es peor que
+        no decir nada. Contar las etiquetas cuesta **0,6 s** medidos sobre sus
+        269 MB de XML, y no parsea nada.
+        """
         if self.es_csv:
             return self.datos.count(b"\n")
-        from openpyxl import load_workbook
-        libro = load_workbook(io.BytesIO(self.datos), read_only=True, data_only=True)
         try:
-            return safe_int_value(libro[self.hoja].max_row)
-        finally:
-            libro.close()
+            with zipfile.ZipFile(io.BytesIO(self.datos)) as libro:
+                filas, resto = 0, b""
+                with libro.open(self.ruta) as fh:
+                    while True:
+                        trozo = fh.read(1 << 20)
+                        if not trozo:
+                            break
+                        # El solapamiento evita perder un `<row ` partido entre
+                        # dos lecturas.
+                        datos = resto + trozo
+                        filas += datos.count(b"<row ")
+                        resto = datos[-8:]
+            return filas
+        except Exception:  # noqa: BLE001
+            return 0
 
     def __iter__(self):
         if not self.planilla:
             return
         empezado = False
-        for posicion, fila in enumerate(self._crudas()):
+        for fila in self._crudas():
             if not empezado:
                 # La cabecera se vuelve a buscar en vez de guardar su posicion:
                 # asi este iterador no depende de que `explorar` se llamara.
                 if vtex_cabecera_de([fila])[2]:
                     empezado = True
                 continue
+            # TODAS las columnas de la cabecera, aunque la fila traiga menos
+            # celdas. Un xlsx no escribe las celdas vacias del final, asi que
+            # `zip` cortaba el registro por la fila mas corta -- y de la primera
+            # fila sale la CABECERA con la que se escribe el archivo de salida:
+            # una planilla de VTEX con una columna de menos la rechaza el
+            # importador. Medido con la muestra: 49 columnas de 50.
             registro, vacia = {}, True
-            for nombre, valor in zip(self.columnas, fila):
+            for posicion, nombre in enumerate(self.columnas):
                 if not nombre:
                     continue
-                limpio = clean_value(valor)
+                limpio = clean_value(fila[posicion]) if posicion < len(fila) else ""
                 registro[nombre] = limpio
                 if limpio:
                     vacia = False
@@ -30522,13 +30651,8 @@ def vtex_hojas_del_archivo(subido):
     datos = subido.read()
     if nombre.lower().endswith(".csv"):
         return [HojaDeVtex(datos, nombre, "csv", es_csv=True)]
-    from openpyxl import load_workbook
-    libro = load_workbook(io.BytesIO(datos), read_only=True, data_only=True)
-    try:
-        nombres = list(libro.sheetnames)
-    finally:
-        libro.close()
-    return [HojaDeVtex(datos, nombre, hoja) for hoja in nombres]
+    return [HojaDeVtex(datos, nombre, hoja, ruta=ruta)
+            for hoja, ruta in vtex_hojas_del_libro(datos)]
 
 
 def vtex_leer_planillas(archivos_subidos):
@@ -30655,7 +30779,7 @@ def vtex_armar_zip(tablas, catalogo, extras=None):
 # --- El cruce completo -------------------------------------------------------
 
 
-def vtex_analizar(planillas, codigos_pedidos, refrescar, avanzar=None):
+def vtex_analizar(planillas, codigos_pedidos, refrescar, avanzar=None, leyendo=None):
     """De las planillas de VTEX a los productos emparejados.
 
     Es la cadena entera, y **ninguno de sus tramos es nuevo**: los catalogos
@@ -30663,7 +30787,7 @@ def vtex_analizar(planillas, codigos_pedidos, refrescar, avanzar=None):
     de `engines/carga_supermall` y el Matrixify de `supermall_generar`. Lo unico
     propio es el ultimo paso.
     """
-    catalogo = vtex.leer_catalogo(planillas)
+    catalogo = vtex.leer_catalogo(planillas, progreso=leyendo)
     espejo_key = sitio_espejo() or "supermall"
     brand_config = get_brand_config(espejo_key)
     shopify_config = get_shopify_config(espejo_key)
@@ -30794,13 +30918,19 @@ def render_vtex_generator():
                                      hide_index=True)
 
     if st.button("Analizar y emparejar", type="primary", key="vtex_analizar"):
-        barra = st.progress(0.0, text="Cruzando con Shopify y ARTI...")
+        barra = st.progress(0.0, text="Leyendo el export de VTEX...")
 
         def avanzar(hechos, total):
             barra.progress(hechos / max(total, 1), text=f"{hechos:,} de {total:,} códigos")
 
-        with st.spinner("Leyendo Shopify, consolidando y cruzando con el maestro..."):
-            resultado = vtex_analizar(planillas, codigos_pedidos, bool(refrescar), avanzar)
+        def leyendo(planilla, filas):
+            # El export real son cientos de miles de filas por planilla: un
+            # spinner mudo durante minutos se lee como "se colgó".
+            barra.progress(0.0, text=f"Leyendo {vtex.ETIQUETAS[planilla]}: {filas:,} filas")
+
+        with st.spinner("Leyendo el export, Shopify y el maestro..."):
+            resultado = vtex_analizar(planillas, codigos_pedidos, bool(refrescar),
+                                      avanzar, leyendo)
         barra.empty()
         resultado["tabla"] = vtex_tabla_de_emparejamiento(resultado["emparejados"])
         st.session_state["vtex_analisis"] = resultado

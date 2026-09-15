@@ -140,8 +140,9 @@ COLUMNAS = {
 }
 
 # La columna con la que se reconoce cada archivo cuando el usuario sube cuatro
-# ficheros sin decir cual es cual. Se mira la CABECERA, no el nombre: el nombre
-# lo pone VTEX con una marca de tiempo y el usuario lo renombra.
+# ficheros sin decir cual es cual. Se mira la CABECERA -- ya traducida a
+# canonico --, no el nombre del fichero: ese lo pone VTEX con una marca de
+# tiempo y el usuario lo renombra.
 FIRMAS = (
     # (archivo, columnas que solo tiene ese archivo)
     (PRODUCTOS, ("product id", "sku id", "product reference code")),
@@ -234,6 +235,126 @@ def _entero_texto(valor):
     if re.fullmatch(r"-?\d+\.0+", crudo):
         return crudo.split(".")[0]
     return crudo
+
+
+# --- El export sale en el IDIOMA del admin ------------------------------------
+#
+# El pack de muestra vino con la planilla de productos en INGLES (`Product ID`,
+# `Product Name`, `Yes`) y el export real de la tienda sale en ESPANOL (`ID del
+# producto`, `Nombre del producto`, `Si`). Son las MISMAS 50 columnas, en el
+# MISMO orden: lo unico que cambia es como se llaman.
+#
+# Asi que el nombre de una columna **no es su identidad**. El motor trabaja con
+# un nombre CANONICO y aqui estan sus sinonimos; al leer se traduce a canonico y
+# al escribir se vuelve a los nombres del archivo QUE SUBIO EL USUARIO -- que es
+# la plantilla que su VTEX espera de vuelta.
+#
+# Las otras tres planillas ya venian en espanol en la muestra, asi que ahi el
+# canonico ES el espanol. Si alguna sale en ingles, se agrega su fila aqui y no
+# hay que tocar nada mas.
+SINONIMOS_DE_COLUMNA = (
+    # (canonico, otros nombres...)
+    ("Product ID", "ID del producto"),
+    ("Product Name", "Nombre del producto"),
+    ("Active product", "Producto activo"),
+    ("Description", "Descripción"),
+    ("Additional description", "Descripción adicional"),
+    ("Brand ID", "ID de marca"),
+    ("Brand", "Marca"),
+    ("Department ID", "ID del departamento"),
+    ("Department", "Departamento"),
+    ("Category ID", "ID de categoría"),
+    ("Category", "Categoría"),
+    ("Sales channels", "Políticas comerciales"),
+    ("Global category ID", "ID de categoría global"),
+    ("Global category", "Categoría global"),
+    ("Product URL", "URL del producto"),
+    ("Page Title", "Título de la página"),
+    ("Meta description", "Metadescripción"),
+    ("Display on website", "Mostrar en el sitio web"),
+    ("Show when out of stock", "Mostrar cuando no tenga stock"),
+    ("Release date", "Fecha de release"),
+    ("Substitute words", "Palabras sustitutas"),
+    ("Product reference code", "Código de referencia del producto"),
+    ("Tax code", "Código fiscal"),
+    ("SKU ID", "ID de SKU"),
+    ("SKU name", "Nombre de SKU"),
+    ("Activate SKU if possible", "Activar SKU si es posible"),
+    ("Active SKU", "SKU activo"),
+    ("Bundle", "Kit"),
+    ("SKU reference code", "Código de referencia de SKU"),
+    ("EAN/UPC",),
+    ("Manufacturer code", "Código del fabricante"),
+    ("Package weight", "Peso del paquete"),
+    ("Package width", "Anchura del paquete"),
+    ("Package height", "Altura del paquete"),
+    ("Package length", "Longitud del paquete"),
+    ("Actual weight", "Peso real"),
+    ("Actual width", "Anchura real"),
+    ("Actual height", "Altura real"),
+    ("Actual length", "Longitud real"),
+    ("Cubic Weight", "Peso cúbico"),
+    ("Unit of measure", "Unidad de medida"),
+    ("Unit multiplier", "Multiplicador de unidad"),
+    ("Commercial condition", "Condición comercial"),
+    ("Loyalty amount", "Valor de fidelidad"),
+    ("Presale date", "Fecha de preventa"),
+    ("Attachments", "Anexos"),
+    ("Accessories", "Accesorios"),
+    ("Suggestions", "Sugerencias"),
+    ("Similar products", "Productos similares"),
+    ("Show together", "Mostrar juntos"),
+)
+
+# `clave(nombre traducido o no) -> nombre canonico`, **solo de la planilla de
+# productos**. La traduccion es POR ARCHIVO y no global: `ID de SKU` es un
+# sinonimo de `SKU ID` en la planilla de productos, pero en la de
+# especificaciones de SKU es su propia columna canonica. Con una tabla global,
+# traducirla ahi le cambiaba el nombre y el indice se quedaba vacio.
+_CANONICO_DE = {}
+for _fila_de_sinonimos in SINONIMOS_DE_COLUMNA:
+    for _nombre in _fila_de_sinonimos:
+        _CANONICO_DE[clave(_nombre)] = _fila_de_sinonimos[0]
+
+# Las otras tres planillas ya venian en espanol, asi que ahi el canonico ES el
+# nombre del archivo y no hay nada que traducir. Cuando alguna salga en otro
+# idioma, se le agrega su tabla aqui.
+SINONIMOS_POR_ARCHIVO = {PRODUCTOS: _CANONICO_DE}
+
+
+def canonico(nombre, archivo=PRODUCTOS):
+    """El nombre con el que el motor conoce esa columna de ESE archivo.
+
+    Una columna que no esta en la tabla se queda como esta: una columna nueva de
+    VTEX tiene que llegar igual al archivo de salida, no desaparecer.
+    """
+    tabla = SINONIMOS_POR_ARCHIVO.get(archivo)
+    if not tabla:
+        return texto(nombre)
+    return tabla.get(clave(nombre), texto(nombre))
+
+
+def traducir_fila(fila, archivo=PRODUCTOS):
+    """La fila con las columnas de ese archivo en nombre canonico."""
+    if archivo not in SINONIMOS_POR_ARCHIVO:
+        return dict(fila or {})
+    return {canonico(nombre, archivo): valor
+            for nombre, valor in (fila or {}).items()}
+
+
+# Los valores de si/no tambien salen en el idioma del admin (`Yes`/`Sí`). La
+# FORMA se toma del propio export -- se escribe exactamente lo que la tienda ya
+# usa -- y esta tabla solo dice cual de las dos es cual.
+VALORES_AFIRMATIVOS = frozenset({"yes", "si", "true", "1", "y", "s"})
+
+# Las columnas de si/no que la app escribe, y con que las rellena.
+COLUMNAS_AFIRMATIVAS = ("Active product", "Display on website",
+                        "Activate SKU if possible", "Active SKU")
+COLUMNAS_NEGATIVAS = ("Bundle",)
+
+
+def es_afirmativo(valor):
+    return clave(valor).replace("í", "i") in VALORES_AFIRMATIVOS
 
 
 # --- El catalogo maestro -----------------------------------------------------
@@ -405,7 +526,15 @@ class CatalogoVTEX:
         # De las imagenes solo hace falta saber que direcciones tiene ya cada
         # SKU, para no cargar la misma foto dos veces, y cuantas son.
         self.imagenes_de_sku = {}        # sku_id -> [{Ruta, URL de importacion}]
-        self.cabeceras = {}              # archivo -> tuple(columnas)
+        # La cabecera TAL CUAL la trae el archivo del usuario: es la plantilla
+        # que su VTEX espera de vuelta, y sale en el idioma de su admin.
+        self.cabeceras = {}              # archivo -> tuple(columnas del archivo)
+        # `canonico -> nombre en ESE archivo`. El motor trabaja en canonico y
+        # esto es lo que lo devuelve al idioma del export al escribir.
+        self.nombres_de_columna = {}     # archivo -> {canonico: nombre original}
+        # El "si" y el "no" tal y como los escribe la tienda (`Yes`/`Sí`).
+        self.afirmativo = ""
+        self.negativo = ""
         self.dimensiones = {}            # (clave(dept), clave(cat)) -> dict de medidas
         self.dimensiones_por_defecto = {}
         self.valores_por_defecto = {}    # columna -> valor mas repetido
@@ -438,6 +567,33 @@ class CatalogoVTEX:
         campos = list((por_categoria or globales).values())
         campos.sort(key=lambda campo: _orden_de_campo(campo.id))
         return campos
+
+    def columna(self, archivo, nombre_canonico):
+        """Como se llama esa columna en el archivo que subio el usuario."""
+        return (self.nombres_de_columna.get(archivo) or {}).get(
+            nombre_canonico, nombre_canonico)
+
+    def como_el_export(self, archivo, fila):
+        """La fila, con las columnas en el orden y el idioma del export.
+
+        El motor entero trabaja en nombre canonico; esta es la UNICA puerta por
+        la que la salida vuelve al idioma del archivo del usuario. Una plantilla
+        de VTEX con una columna que no reconoce la rechaza el importador.
+        """
+        nombres = self.nombres_de_columna.get(archivo) or {}
+        salida = {}
+        for columna in self.cabeceras.get(archivo) or COLUMNAS[archivo]:
+            salida[columna] = ""
+        for nombre_canonico, valor in fila.items():
+            salida[nombres.get(nombre_canonico, nombre_canonico)] = valor
+        return salida
+
+    def si(self):
+        """El "sí" de este export (`Yes`, `Sí`...), o el de la plantilla."""
+        return self.afirmativo or "Yes"
+
+    def no(self):
+        return self.negativo or "No"
 
     def medidas_de(self, departamento, categoria):
         """Las medidas de empaque que la tienda ya usa para esa categoria.
@@ -478,7 +634,12 @@ def _mas_repetido(valores):
 
 def reconocer_archivo(columnas):
     """Que planilla es, mirando su cabecera. `""` si no es ninguna de las cuatro."""
-    presentes = {clave(columna) for columna in columnas or ()}
+    columnas = list(columnas or ())
+    # Se prueba con los nombres TAL CUAL y tambien traducidos: el export de
+    # productos sale en el idioma del admin, y las otras tres planillas no se
+    # traducen (ahi el canonico es su propio nombre).
+    presentes = {clave(columna) for columna in columnas}
+    presentes |= {clave(canonico(columna)) for columna in columnas}
     for archivo, firma in FIRMAS:
         if all(columna in presentes for columna in firma):
             return archivo
@@ -512,38 +673,67 @@ def _fuentes_de(archivos, nombre):
     return list(fuentes)
 
 
-def _recorrer(catalogo, archivos, nombre, indexar):
+def _recorrer(catalogo, archivos, nombre, indexar, progreso=None):
     """Pasa cada fila por `indexar` sin quedarse con ninguna.
 
     La cabecera se toma de la primera fila y **se guarda**: es la que manda al
     escribir la salida, porque una planilla de VTEX con una columna de mas o de
     menos la rechaza el importador.
     """
+    leidas = 0
     for fuente in _fuentes_de(archivos, nombre):
         for fila in fuente:
+            leidas += 1
+            # El aviso cada 20.000 filas, no en cada una: con 1.000.000 de filas
+            # llamar a la pantalla por cada una cuesta mas que leerlas.
+            if progreso and leidas % 20000 == 0:
+                progreso(nombre, leidas)
             if nombre not in catalogo.cabeceras:
                 catalogo.cabeceras[nombre] = tuple(fila.keys())
-            indexar(catalogo, fila)
+                catalogo.nombres_de_columna[nombre] = {
+                    canonico(columna, nombre): columna for columna in fila.keys()}
+            indexar(catalogo, traducir_fila(fila, nombre))
+    if progreso and leidas:
+        progreso(nombre, leidas)
 
 
-def leer_catalogo(archivos):
+def leer_catalogo(archivos, progreso=None):
     """Indexa las cuatro planillas y **no se queda con el archivo**.
 
     Las hojas de un mismo archivo se recorren una detras de otra: VTEX parte el
     export de especificaciones por el limite de filas de Excel, no por
     contenido, y las hojas no comparten ni un producto.
+
+    `progreso(planilla, filas)` es opcional y **nunca puede tumbar la lectura**:
+    el catalogo real son cuatro archivos de cientos de miles de filas y un
+    spinner mudo durante minutos se lee como "se colgo".
     """
     catalogo = CatalogoVTEX()
     acumulado = _AcumuladorDeMedidas()
+    aviso = _aviso_seguro(progreso)
     _recorrer(catalogo, archivos, PRODUCTOS,
-              lambda c, fila: _indexar_producto(c, fila, acumulado))
+              lambda c, fila: _indexar_producto(c, fila, acumulado), aviso)
     acumulado.volcar(catalogo)
     _recorrer(catalogo, archivos, ESPEC_PRODUCTO,
-              lambda c, fila: _indexar_especificacion(c, fila, de_sku=False))
+              lambda c, fila: _indexar_especificacion(c, fila, de_sku=False), aviso)
     _recorrer(catalogo, archivos, ESPEC_SKU,
-              lambda c, fila: _indexar_especificacion(c, fila, de_sku=True))
-    _recorrer(catalogo, archivos, IMAGENES, _indexar_imagen)
+              lambda c, fila: _indexar_especificacion(c, fila, de_sku=True), aviso)
+    _recorrer(catalogo, archivos, IMAGENES, _indexar_imagen, aviso)
     return catalogo
+
+
+def _aviso_seguro(progreso):
+    """El aviso de avance, envuelto para que un fallo suyo no corte la lectura."""
+    if not progreso:
+        return None
+
+    def avisar(planilla, filas):
+        try:
+            progreso(planilla, filas)
+        except Exception:  # noqa: BLE001
+            pass
+
+    return avisar
 
 
 class _AcumuladorDeMedidas:
@@ -574,6 +764,26 @@ class _AcumuladorDeMedidas:
             valor = texto(fila.get(columna))
             if valor:
                 self.heredadas[columna][valor] = self.heredadas[columna].get(valor, 0) + 1
+
+    def aprender_si_y_no(self, catalogo, fila):
+        """El "sí" y el "no" con la forma EXACTA que usa este export.
+
+        Se toman del propio archivo en vez de escribir `Yes` a pelo: el export
+        real sale en el idioma del admin y un `Yes` en una planilla en espanol
+        deja el producto sin activar.
+        """
+        if not catalogo.afirmativo:
+            for columna in COLUMNAS_AFIRMATIVAS:
+                valor = texto(fila.get(columna))
+                if valor and es_afirmativo(valor):
+                    catalogo.afirmativo = valor
+                    break
+        if not catalogo.negativo:
+            for columna in COLUMNAS_NEGATIVAS + COLUMNAS_AFIRMATIVAS:
+                valor = texto(fila.get(columna))
+                if valor and not es_afirmativo(valor):
+                    catalogo.negativo = valor
+                    break
 
     def volcar(self, catalogo):
         for llave, acumulado in self.por_categoria.items():
@@ -623,6 +833,7 @@ def _indexar_producto(catalogo, fila, acumulado):
         _acumular(catalogo.sku_por_ean, sku.ean, sku)
         _acumular(catalogo.sku_por_fabricante, sku.codigo_fabricante, sku)
     acumulado.anotar(fila)
+    acumulado.aprender_si_y_no(catalogo, fila)
 
 
 # Los nombres de campo cuyo `IDs de especificacion` hace falta recordar. Es el
@@ -1180,8 +1391,13 @@ def preparar_contexto(ficha, producto, catalogo, nombres_de_tipo=None):
 
 
 def _fila_vacia(archivo, catalogo):
+    """Una fila con TODAS las columnas del archivo, en nombre CANONICO.
+
+    Se escribe en canonico y se traduce al idioma del export justo al salir
+    (`como_el_export`): asi el motor no tiene que saber en que idioma vino.
+    """
     columnas = catalogo.cabeceras.get(archivo) or COLUMNAS[archivo]
-    return {columna: "" for columna in columnas}
+    return {canonico(columna, archivo): "" for columna in columnas}
 
 
 def _similares(contexto):
@@ -1246,7 +1462,7 @@ def construir_productos(contextos, catalogo, referencia_sku="arti"):
         base.update({
             "Product ID": contexto.product_id,
             "Product Name": contexto.nombre,
-            "Active product": "Yes",
+            "Active product": catalogo.si(),
             "Description": texto(ficha.get("Body HTML")),
             "Additional description": texto(ficha.get("Body HTML")),
             "Brand ID": contexto.marca_id,
@@ -1259,8 +1475,8 @@ def construir_productos(contextos, catalogo, referencia_sku="arti"):
             "Product URL": contexto.url,
             "Page Title": contexto.nombre,
             "Meta description": _meta_descripcion(contexto),
-            "Display on website": "Yes",
-            "Show when out of stock": heredado.get("Show when out of stock", "No"),
+            "Display on website": catalogo.si(),
+            "Show when out of stock": heredado.get("Show when out of stock", catalogo.no()),
             "Substitute words": _substitute_words(contexto, ficha),
             "Product reference code": contexto.referencia,
             "Tax code": heredado.get("Tax code", ""),
@@ -1289,9 +1505,9 @@ def construir_productos(contextos, catalogo, referencia_sku="arti"):
             fila.update({
                 "SKU ID": sku.id if sku is not None else "",
                 "SKU name": sku.nombre if sku is not None else nombre_de_sku(variante["Talla"]),
-                "Activate SKU if possible": "Yes",
-                "Active SKU": "Yes",
-                "Bundle": "No",
+                "Activate SKU if possible": catalogo.si(),
+                "Active SKU": catalogo.si(),
+                "Bundle": catalogo.no(),
                 "SKU reference code": (
                     sku.fila.get("SKU reference code") if sku is not None
                     else _referencia_de_sku(variante["_variante"], contexto, referencia_sku)),
@@ -1304,7 +1520,7 @@ def construir_productos(contextos, catalogo, referencia_sku="arti"):
             })
             fila.update(medidas)
             fila["Cubic Weight"] = _peso_cubico(medidas)
-            filas.append(fila)
+            filas.append(catalogo.como_el_export(PRODUCTOS, fila))
     return filas
 
 
@@ -1378,7 +1594,7 @@ def construir_especificaciones_de_producto(contextos, catalogo, avisos=None):
                 "IDs de especificación": identificador,
                 "Valores de especificación": valor,
             })
-            yield fila
+            yield catalogo.como_el_export(ESPEC_PRODUCTO, fila)
 
 
 def construir_especificaciones_de_sku(contextos, catalogo, avisos=None):
@@ -1437,7 +1653,7 @@ def construir_especificaciones_de_sku(contextos, catalogo, avisos=None):
                     "IDs de especificación": identificador,
                     "Valores de especificación": texto(valor) or VACIO,
                 })
-                yield fila
+                yield catalogo.como_el_export(ESPEC_SKU, fila)
 
 
 def construir_imagenes(contextos, catalogo, imagenes_por_sku=0):
@@ -1490,7 +1706,7 @@ def construir_imagenes(contextos, catalogo, imagenes_por_sku=0):
                     "Ruta de la imagen": "",
                     "URL de importación de la imagen": url,
                 })
-                yield fila
+                yield catalogo.como_el_export(IMAGENES, fila)
 
 
 def generar(emparejados, catalogo, referencia_sku="arti",
@@ -1687,9 +1903,14 @@ OBLIGATORIAS_PRODUCTO = (
 
 
 def validar(tablas, catalogo):
-    """Todo lo que puede salir mal en una carga de VTEX, antes de subirla."""
+    """Todo lo que puede salir mal en una carga de VTEX, antes de subirla.
+
+    Las tablas llegan ya en el idioma del export -- son las que se van a
+    escribir --, asi que se traducen a canonico para leerlas. Validar sobre los
+    nombres del archivo obligaria a escribir cada comprobacion dos veces.
+    """
     hallazgos = _Hallazgos()
-    productos = tablas.get(PRODUCTOS) or []
+    productos = [traducir_fila(fila, PRODUCTOS) for fila in tablas.get(PRODUCTOS) or []]
 
     # 1. Duplicados. Es LA regla: el mismo Mod-Col en dos productos son dos
     # fichas separadas en la tienda, y dos veces el mismo SKU es una variante
@@ -1762,12 +1983,13 @@ def validar(tablas, catalogo):
     # 3. Que cada producto tenga sus especificaciones y que sus IDs cuadren.
     referencias_productos = {clave_codigo(f.get("Product reference code")) for f in productos}
     con_especificacion = {
-        clave_codigo(f.get("Código de referencia del producto"))
+        clave_codigo(traducir_fila(f, ESPEC_PRODUCTO).get("Código de referencia del producto"))
         for f in tablas.get(ESPEC_PRODUCTO) or []}
     for referencia in sorted(referencias_productos - con_especificacion):
         _anotar(hallazgos, AVISA, "Especificaciones",
                 "El producto no lleva ninguna fila de especificación", referencia)
     for fila in tablas.get(ESPEC_PRODUCTO) or []:
+        fila = traducir_fila(fila, ESPEC_PRODUCTO)
         valor = texto(fila.get("Valores de especificación"))
         campo_tipo = clave(fila.get("Tipo de campo"))
         if valor and valor != VACIO and campo_tipo in ("radio", "checkbox", "combo"):
@@ -1779,10 +2001,13 @@ def validar(tablas, catalogo):
 
     # 4. Las tallas: cada SKU del archivo de productos tiene que llevar su
     # especificacion de Talla, o la variante sale sin talla en la tienda.
-    tallas_declaradas = {
-        (clave(f.get("Nombre de SKU")), clave_codigo(f.get("Código de referencia de SKU")))
-        for f in tablas.get(ESPEC_SKU) or []
-        if clave(f.get("Nombre del campo")) == clave(CAMPO_TALLA)}
+    tallas_declaradas = set()
+    for fila in tablas.get(ESPEC_SKU) or []:
+        fila = traducir_fila(fila, ESPEC_SKU)
+        if clave(fila.get("Nombre del campo")) == clave(CAMPO_TALLA):
+            tallas_declaradas.add(
+                (clave(fila.get("Nombre de SKU")),
+                 clave_codigo(fila.get("Código de referencia de SKU"))))
     for fila in productos:
         llave = (clave(fila.get("SKU name")), clave_codigo(fila.get("SKU reference code")))
         if llave not in tallas_declaradas:
@@ -1792,6 +2017,7 @@ def validar(tablas, catalogo):
 
     # 5. Imagenes.
     for fila in tablas.get(IMAGENES) or []:
+        fila = traducir_fila(fila, IMAGENES)
         url = texto(fila.get("URL de importación de la imagen"))
         ruta = texto(fila.get("Ruta de la imagen"))
         if not url and not ruta:
@@ -1802,7 +2028,7 @@ def validar(tablas, catalogo):
             _anotar(hallazgos, BLOQUEA, "Imagen",
                     "La URL de importación no es una dirección web: %r" % url,
                     texto(fila.get("Nombre del producto")))
-    con_imagen = {clave_codigo(f.get("Código de referencia de SKU"))
+    con_imagen = {clave_codigo(traducir_fila(f, IMAGENES).get("Código de referencia de SKU"))
                   for f in tablas.get(IMAGENES) or []}
     sin_imagen = sorted({
         clave_codigo(f.get("Product reference code")) for f in productos

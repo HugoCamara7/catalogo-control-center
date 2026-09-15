@@ -48,6 +48,7 @@ from engines.tallas import clave_de_orden as orden_de_talla
 from engines import video_media as video_motor
 from engines import colecciones as dicc_colecciones
 from engines import colecciones_admin as colecciones_motor
+from engines import coleccion_de_carga
 
 try:
     from engines import enrich as enriquecimiento
@@ -15197,7 +15198,8 @@ def _load_sync_job_df(job_id):
         return pd.DataFrame()
 
 
-def _create_sync_job(site_key, mode, source_df, batch_size=20, activate_inventory_locations=True):
+def _create_sync_job(site_key, mode, source_df, batch_size=20, activate_inventory_locations=True,
+                     ticket="", marca=""):
     SYNC_JOB_DIR.mkdir(parents=True, exist_ok=True)
     product_keys = _sync_job_product_keys(source_df, mode=mode)
     job_id = (
@@ -15225,6 +15227,11 @@ def _create_sync_job(site_key, mode, source_df, batch_size=20, activate_inventor
         "result_rows": [],
         "events": [],
         "activate_inventory_locations": bool(activate_inventory_locations),
+        # La solicitud y la marca viajan en el REGISTRO, no en la pantalla: de
+        # ahi sale el nombre de la coleccion de revision, y quien la crea es el
+        # job -- que corre igual en la pantalla y en el runner de Actions.
+        "ticket": clean_value(ticket),
+        "marca": clean_value(marca),
         "created_at": _now_lima_text(),
         "updated_at": _now_lima_text(),
     }
@@ -15376,6 +15383,134 @@ def _append_sync_job_event(job, product_key, stage, detail=""):
         job["events"] = events[-250:]
 
 
+def marcas_del_matrixify(matrixify_df):
+    """Las marcas distintas que trae una carga.
+
+    Se lee del metacampo `custom.marca`, que es el que dice la marca de verdad:
+    el `Vendor` es el de la TIENDA (`rockfordpe`), el mismo para todas sus
+    marcas. Es la misma razon que ya documenta el Status de carga.
+    """
+    if matrixify_df is None or getattr(matrixify_df, "empty", True):
+        return []
+    if MARCA_METAFIELD not in matrixify_df.columns:
+        return []
+    return list(dict.fromkeys(
+        valor for valor in matrixify_df[MARCA_METAFIELD].map(clean_value) if valor))
+
+
+def crear_coleccion_de_carga(job, shopify_config):
+    """Deja en la tienda la coleccion de revision de ESTA carga.
+
+    El enganche esta en `process_sync_job_next_block`, no en la pantalla: asi
+    lo heredan las DOS formas de cargar -- el panel de bloques de la sesion y
+    el runner de GitHub Actions --, que es la misma razon por la que el
+    notificador de correo se enchufo en `TicketService` y no en cada pantalla.
+    Escrito en la pantalla, la carga que sobrevive al cierre de sesion -- que
+    es la normal -- se quedaria sin coleccion.
+
+    **Nunca levanta.** Un fallo al crear la coleccion no puede tumbar ni
+    deshacer una carga que ya escribio miles de productos en Shopify: es la
+    misma regla que los correos y que el disparo del runner. Lo que pasa queda
+    en el propio registro del job, que es donde se puede leer despues.
+
+    Sin `st.` en todo el cuerpo, a proposito: desde un hilo de runner no hay
+    Streamlit al que hablarle.
+    """
+    if not isinstance(job, dict):
+        return job
+    # Solo la carga COMPLETA. Una carga parcial toca un campo de productos que
+    # ya estaban cargados: no hay "lo que se cargo hoy" que revisar, y dejaria
+    # una coleccion por cada mantenimiento.
+    if clean_value(job.get("mode")).lower().startswith("partial"):
+        return job
+    ya = job.get("coleccion") or {}
+    gids, resumen = coleccion_de_carga.productos_de_la_carga(job.get("result_rows") or [])
+    # La coleccion ya esta y no hay productos nuevos: ni un viaje a Shopify.
+    # Que los haya SI es posible -- "Reintentar errores" vuelve a cargar los
+    # que fallaron, y esos tienen que acabar en la misma coleccion en vez de
+    # quedarse fuera de la revision.
+    if clean_value(ya.get("id")) and int(ya.get("productos") or 0) >= len(gids):
+        return job
+    if not gids:
+        job["coleccion"] = {
+            "estado": "sin productos",
+            "detalle": "La carga no dejo ningun producto cargado en la tienda.",
+        }
+        _save_sync_job(job)
+        return job
+
+    titulo = coleccion_de_carga.nombre_de_coleccion(
+        clean_value(job.get("created_at"))[:10],
+        job.get("marca"),
+        job.get("ticket"),
+    )
+    handle = coleccion_de_carga.handle_de_coleccion(titulo)
+    registro = {"titulo": titulo, "handle": handle, "productos": len(gids)}
+    if resumen["sin_id"]:
+        # Sin gid no se puede agregar, y callarlo dejaria la coleccion
+        # incompleta sin que nadie supiera cuales faltaron.
+        registro["sin_id"] = resumen["sin_id"][:20]
+    if resumen["con_error"]:
+        registro["con_error"] = len(resumen["con_error"])
+
+    try:
+        # Se busca antes de crear: el runner puede quedarse sin tiempo y
+        # encadenar otra tanda, y dos tandas de la MISMA carga tienen que
+        # acabar en la misma coleccion, no en dos.
+        identificador = clean_value(ya.get("id"))
+        if identificador:
+            registro["reusada"] = True
+        else:
+            existente = fetch_collection_by_handle(shopify_config, handle) or {}
+            identificador = clean_value(existente.get("id"))
+            if identificador:
+                registro["reusada"] = True
+        if not identificador:
+            creada = collection_create(
+                shopify_config, titulo, handle=handle,
+                # MANUAL, y por eso no hace falta ni un movimiento: los
+                # productos se agregan al FINAL, asi que el orden de la
+                # coleccion ES el orden de la carga. Con cualquier otro orden
+                # Shopify reordena por su cuenta.
+                sort_order=colecciones_motor.ORDEN_MANUAL,
+                body_html=(
+                    f"Productos cargados el {clean_value(job.get('created_at'))[:10]}"
+                    + (f" para la solicitud {clean_value(job.get('ticket'))}"
+                       if clean_value(job.get("ticket")) else "")
+                    + ". Coleccion creada por Catalog Control Center para revisar la carga."
+                ),
+            ) or {}
+            identificador = clean_value(creada.get("id"))
+        if not identificador:
+            raise ShopifyApiError("Shopify no devolvio el id de la coleccion.")
+        registro["id"] = identificador
+
+        collection_add_products(shopify_config, identificador, gids)
+
+        # Una coleccion creada por API queda SIN publicar: existe, se llena y
+        # no la ve nadie. Que falle la publicacion no deshace lo demas -- la
+        # coleccion ya esta y se publica a mano desde el admin.
+        try:
+            collection_publish(shopify_config, identificador)
+            registro["publicada"] = True
+        except Exception as exc:  # noqa: BLE001
+            registro["publicada"] = False
+            registro["aviso"] = f"No se pudo publicar: {clean_value(exc)}"
+
+        registro["estado"] = "ok"
+        registro["url"] = f"https://{clean_value(shopify_config.get('shop_domain'))}/collections/{handle}"
+        _append_sync_job_event(job, "", "Coleccion de revision",
+                               f"{titulo} ({len(gids):,} productos)")
+    except Exception as exc:  # noqa: BLE001
+        registro["estado"] = "error"
+        registro["detalle"] = f"{type(exc).__name__}: {clean_value(exc)}"
+        _append_sync_job_event(job, "", "Coleccion de revision", registro["detalle"])
+
+    job["coleccion"] = registro
+    _save_sync_job(job)
+    return job
+
+
 def process_sync_job_next_block(job_id, shopify_config, max_retries=2, progress_callback=None):
     job = _load_sync_job(job_id)
     if not job:
@@ -15387,7 +15522,7 @@ def process_sync_job_next_block(job_id, shopify_config, max_retries=2, progress_
     if not pending_keys:
         job["status"] = "completed" if not job.get("error_keys") else "completed_with_errors"
         _save_sync_job(job)
-        return job
+        return crear_coleccion_de_carga(job, shopify_config)
 
     # Una sola pasada por bloque, no una por producto.
     claves_del_snapshot = _sync_job_product_key_series(source_df, mode=job.get("mode") or "full")
@@ -15476,6 +15611,12 @@ def process_sync_job_next_block(job_id, shopify_config, max_retries=2, progress_
     job["status"] = "completed" if not job.get("pending_keys") and not job.get("error_keys") else ("completed_with_errors" if not job.get("pending_keys") else "pending")
     _append_sync_job_event(job, "", "Fin bloque", job["status"])
     _save_sync_job(job)
+    # La coleccion de revision se crea cuando ya no queda nada pendiente. Va
+    # AQUI y no en la pantalla porque el runner de Actions sale por este mismo
+    # punto: su bucle rompe cuando `pending_keys` se vacia y no vuelve a
+    # llamar, asi que un enganche en la salida temprana no lo alcanzaria.
+    if not job.get("pending_keys"):
+        job = crear_coleccion_de_carga(job, shopify_config)
     return job
 
 
@@ -15602,6 +15743,12 @@ def render_persistent_sync_job_panel(
                 source_df,
                 batch_size=batch_size,
                 activate_inventory_locations=activate_inventory_locations,
+                # De aqui sale el nombre de la coleccion de revision. La
+                # solicitud es la que la pantalla ya tiene elegida arriba.
+                ticket=clean_value(st.session_state.get("carga_desde_solicitud")),
+                marca=coleccion_de_carga.marca_de_la_carga(
+                    marcas_del_matrixify(source_df),
+                    clean_value(brand_config.get("label"))),
             )
             st.session_state[session_key] = job["id"]
             progress_callback = make_sync_progress_callback(label)
@@ -15712,6 +15859,9 @@ def render_persistent_sync_job_panel(
         st.session_state.pop(auto_key, None)
         st.rerun()
 
+    # La coleccion de revision, con el MISMO dibujo que el panel de la carga
+    # en el servidor: la crea el job, asi que se ve por los dos caminos.
+    render_coleccion_de_carga(job)
     result_df = _sync_job_result_df(job)
     if not result_df.empty:
         render_sync_result_summary(result_df, label)
@@ -26159,6 +26309,55 @@ def render_boton_carga_remota_parcial(brand_config, preview_df, operacion, etiqu
         prefijo=f"parcial_{operacion}_", titulo="Estado de la carga parcial en el servidor")
 
 
+def render_coleccion_de_carga(job):
+    """Dibuja la coleccion de revision que dejo la carga.
+
+    Lo dibujan los DOS paneles -- el de la carga en el servidor y el de bloques
+    de la sesion -- llamando aqui: escrito dos veces, uno de los dos acabaria
+    diciendo otra cosa. Una coleccion que se crea y no se ve desde la pantalla
+    es una coleccion que nadie va a abrir.
+    """
+    registro = (job or {}).get("coleccion") if isinstance(job, dict) else None
+    if not isinstance(registro, dict) or not registro:
+        return
+    titulo = clean_value(registro.get("titulo"))
+    estado = clean_value(registro.get("estado"))
+    if estado == "ok":
+        url = clean_value(registro.get("url"))
+        enlace = f"[{titulo}]({url})" if url else f"**{titulo}**"
+        st.success(
+            f"Colección de revisión: {enlace} · "
+            f"{format_kpi_number(registro.get('productos', 0))} productos"
+            + (" · reusada" if registro.get("reusada") else "")
+        )
+        if registro.get("publicada") is False:
+            # Existe pero no la ve nadie: hay que decirlo, no dejar que lo
+            # descubra quien abra la URL y reciba un 404.
+            st.warning(clean_value(registro.get("aviso"))
+                       or "La colección se creó pero no se pudo publicar.")
+        avisos = []
+        if registro.get("sin_id"):
+            avisos.append(
+                f"{len(registro['sin_id'])} productos sin id de Shopify no entraron: "
+                + ", ".join(clean_value(h) for h in registro["sin_id"][:5]))
+        if registro.get("con_error"):
+            avisos.append(
+                f"{format_kpi_number(registro['con_error'])} con error quedaron fuera "
+                "(no están cargados en la tienda).")
+        for aviso in avisos:
+            st.caption(aviso)
+    elif estado == "error":
+        # Que falle la coleccion no deshace la carga, y la pantalla tiene que
+        # decir exactamente eso en vez de dejar creer que la carga fallo.
+        st.warning(
+            "La carga terminó, pero no se pudo crear la colección de revisión: "
+            + clean_value(registro.get("detalle"))
+        )
+    elif estado:
+        st.caption(f"Colección de revisión: {estado}. "
+                   + clean_value(registro.get("detalle")))
+
+
 def render_estado_carga_remota(prefijo="", titulo="Estado de la carga en el servidor"):
     """Pendiente → Procesando → Completado / Error, leido del registro REAL.
 
@@ -26218,6 +26417,7 @@ def render_estado_carga_remota(prefijo="", titulo="Estado de la carga en el serv
         st.error(clean_value(resumen["error"]))
     if clean_value(resumen.get("mensaje")):
         st.caption(clean_value(resumen["mensaje"]))
+    render_coleccion_de_carga(job)
     columna_boton, columna_enlace = st.columns([1, 2], gap="medium")
     with columna_boton:
         st.button("Actualizar estado", key=f"{prefijo}job_refrescar")

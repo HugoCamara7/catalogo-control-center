@@ -445,7 +445,7 @@ class TestWorkerReanuda(unittest.TestCase):
             return list(df.claves)
 
         def _create_sync_job(site_key, mode, source_df, batch_size=20,
-                             activate_inventory_locations=True):
+                             activate_inventory_locations=True, ticket="", marca=""):
             job = {
                 "id": "local-1", "batch_size": batch_size,
                 "product_keys": list(source_df.claves),
@@ -481,6 +481,10 @@ class TestWorkerReanuda(unittest.TestCase):
         modulo._load_sync_job = _load_sync_job
         modulo.process_sync_job_next_block = process_sync_job_next_block
         modulo.dataframe_to_excel_bytes = lambda hojas: b"xlsx"
+        # La coleccion de revision que deja cada carga completa: el worker le
+        # pregunta al Matrixify que marcas trae, para el nombre.
+        modulo.marcas_del_matrixify = lambda df: []
+        modulo.get_brand_config = lambda site_key: {"label": site_key}
         return modulo
 
     def _job_y_almacen(self, batch_size=2, completados=()):
@@ -518,6 +522,56 @@ class TestWorkerReanuda(unittest.TestCase):
         # Tres bloques de dos: el avance se publico DENTRO del bucle, no solo
         # al final. Sin esto, un runner que muere no deja constancia de nada.
         self.assertGreaterEqual(almacen.guardados - guardados_antes, 3)
+
+    def test_la_coleccion_de_revision_llega_al_registro_del_repositorio(self):
+        """La crea `process_sync_job_next_block` y queda en el registro LOCAL
+        del runner, que muere con la maquina. Sin copiarla al registro del
+        repositorio de datos -- el unico que la pantalla lee --, se crearia una
+        coleccion que nadie podria encontrar."""
+        worker = _worker()
+        job, almacen = self._job_y_almacen(batch_size=5)
+        modulo = sys.modules["app_matrixify"]
+        real = modulo.process_sync_job_next_block
+
+        def con_coleccion(job_id, configuracion, **kwargs):
+            devuelto = real(job_id, configuracion, **kwargs)
+            if not devuelto.get("pending_keys"):
+                devuelto["coleccion"] = {
+                    "estado": "ok", "titulo": "Carga 2026-09-15 · Columbia · CAT-1",
+                    "productos": 5, "id": "gid://shopify/Collection/1",
+                }
+                modulo._save_sync_job(devuelto)
+            return devuelto
+
+        modulo.process_sync_job_next_block = con_coleccion
+        try:
+            worker._ejecutar(job, "sha", almacen, "columbia", 60)
+        finally:
+            modulo.process_sync_job_next_block = real
+        self.assertEqual(job["coleccion"]["titulo"], "Carga 2026-09-15 · Columbia · CAT-1")
+        self.assertEqual(job["coleccion"]["productos"], 5)
+
+    def test_el_job_local_del_runner_lleva_la_solicitud_y_la_marca(self):
+        """De ahi sale el nombre de la coleccion. El runner no tiene pantalla a
+        la que preguntarle: tiene que venir en el registro."""
+        worker = _worker()
+        job, almacen = self._job_y_almacen(batch_size=5)
+        job["ticket"] = "CAT-0042"
+        visto = {}
+        modulo = sys.modules["app_matrixify"]
+        real = modulo._create_sync_job
+
+        def espia(site_key, mode, source_df, **kwargs):
+            visto.update(kwargs)
+            return real(site_key, mode, source_df, **kwargs)
+
+        modulo._create_sync_job = espia
+        try:
+            worker._ejecutar(job, "sha", almacen, "columbia", 60)
+        finally:
+            modulo._create_sync_job = real
+        self.assertEqual(visto.get("ticket"), "CAT-0042")
+        self.assertEqual(visto.get("marca"), "columbia")
 
     def test_no_recarga_lo_que_un_intento_anterior_ya_cargo(self):
         """Es la razon de ser de todo esto: el runner murio, vuelve a arrancar

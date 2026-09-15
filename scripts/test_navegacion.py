@@ -77,19 +77,35 @@ class TestElContratoDeRouting(unittest.TestCase):
 
     def test_cada_area_del_menu_tiene_despacho_en_main(self):
         """Un destino sin despacho cae al final de `main` y dibuja la pantalla
-        de carga: el boton parece funcionar y lleva a otro sitio."""
+        de carga: el boton parece funcionar y lleva a otro sitio.
+
+        Las areas despachadas se leen del ARBOL de `main`, no de una lista
+        escrita a mano aqui: la que habia enumeraba las constantes
+        (`STATUS_CARGA_LABEL`, `SUPERMALL_LABEL`...) y una pantalla nueva
+        despachada por constante la rompia aunque su despacho estuviera bien.
+        Una prueba que hay que acordarse de actualizar no sirve para validar.
+        """
         fuente = (RAIZ / "app_matrixify.py").read_text(encoding="utf-8")
-        cuerpo = fuente[fuente.index("\ndef main("):]
+        arbol = ast.parse(fuente)
+        principal = next(n for n in arbol.body
+                         if isinstance(n, ast.FunctionDef) and n.name == "main")
+        despachadas = set()
+        for nodo in ast.walk(principal):
+            if not isinstance(nodo, ast.Compare) or len(nodo.comparators) != 1:
+                continue
+            if not (isinstance(nodo.left, ast.Name) and nodo.left.id == "operation_area"):
+                continue
+            comparado = nodo.comparators[0]
+            if isinstance(comparado, ast.Constant):
+                despachadas.add(comparado.value)
+            elif isinstance(comparado, ast.Name):
+                # Una constante del modulo: se resuelve por su valor.
+                despachadas.add(getattr(app, comparado.id, None))
         for area in app.nav_areas(puede_auditar=True):
             if area == "Carga de catálogo":
                 continue  # es el final de `main`, no lleva `if`
             with self.subTest(area=area):
-                literal = f'operation_area == "{area}"'
-                constante = area in (app.STATUS_CARGA_LABEL, app.SUPERMALL_LABEL,
-                                     app.DICCIONARIOS_LABEL, app.COLECCIONES_LABEL,
-                                     app.BOOST_LABEL, app.NAV_INICIO_LABEL)
-                self.assertTrue(literal in cuerpo or constante,
-                                f"{area!r} no tiene rama en main()")
+                self.assertIn(area, despachadas, f"{area!r} no tiene rama en main()")
 
     def test_auditoria_solo_para_quien_puede_verla(self):
         self.assertNotIn("Auditoria", app.nav_areas(puede_auditar=False))

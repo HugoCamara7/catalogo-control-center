@@ -5739,6 +5739,244 @@ punta a punta contra un Shopify falso y comprueban QUE se escribio en la tienda.
 
 ---
 
+## 5 duoquadragies bis. El Generador de carga VTEX (septiembre 2026)
+
+`engines/vtex_export.py` (sin Streamlit ni pandas) + `render_vtex_generator()`.
+Pantalla propia **Generador VTEX**, dentro del grupo **Cargas**, al lado de
+Carga Supermall.
+
+### Esto no revierte la seccion 5 sexies bis
+
+Aquella retiro `engines/vtex_catalog.py` porque **Supermall paso a Shopify**, y
+eso sigue siendo cierto: la carga normal de Supermall es la de Shopify. Lo que
+no desaparecio fue la tienda VTEX, que sigue recibiendo cargas manuales, y esas
+planillas se estaban llenando **a mano**: abrir el export de VTEX, buscar el
+producto para no duplicarlo, copiar su Product ID y sus SKU ID, y rellenar
+cuatro archivos columna a columna.
+
+Lo que faltaba no era la plantilla -- el export de VTEX ya la trae -- era el
+**cruce**. Y la informacion existe: esta en Shopify y en el maestro ARTI, que es
+justo lo que la app ya sabe consolidar para la Carga Supermall.
+
+```
+Archivo VTEX  ->  Match  ->  Shopify + ARTI  ->  Enriquecimiento  ->  4 archivos + ZIP
+```
+
+**No hay un segundo motor de catalogo.** El Matrixify sale del MISMO
+`supermall_generar`, que sale del mismo `matrixify_desde_codigos_modelo_color`
+que usan Centry y la Carga Sial. Lo unico propio es traducir ese Matrixify a
+las cuatro planillas, y eso vive en `engines/`, sin Streamlit. Hay una prueba
+que falla si aparece un `build_columbia_matrixify` o un
+`build_centry_matrixify_from_master` dentro de `vtex_analizar`.
+
+`supermall_generar` acepta ahora `situaciones` y `con_sial`: aqui el destino es
+la tienda VTEX, no el Supermall de Shopify, asi que quien dice que un producto
+ya existe es el archivo que subio el usuario, y la hoja Sial no hace falta --
+armarla serian 191 MB medidos y decenas de segundos para tirarla.
+
+### Las cuatro planillas, tal como las exporta VTEX
+
+| Archivo | Una fila por | La columna que lo decide todo |
+|---|---|---|
+| Products and SKUs (50 col) | SKU | `Product reference code` = **codigo Modelo-Color** |
+| Especificaciones de productos (16 col) | producto x campo | `IDs/Valores de campo` = el **dominio** |
+| Especificaciones de SKUs (16 col) | SKU x campo | hoy solo `Talla` (28) y `Color` (29) |
+| Imagenes (12 col) | imagen de SKU | `URL de importación de la imagen` |
+
+**`Product reference code` es el Modelo-Color**, o sea exactamente la identidad
+que usa toda la app (`clave_de_producto`). Por eso el cruce funciona sin
+diccionarios nuevos. **`SKU name` es `TALLA 39`**, y **`SKU reference code` es
+igual al `SKU ID`** en los 496 SKU de la muestra: ese numero lo asigna VTEX, asi
+que para un SKU NUEVO es imposible saberlo de antemano -- de ahi el selector de
+la pantalla, con el SKU del maestro ARTI por defecto, que ademas hace que la
+siguiente carga empareje por el primer escalon.
+
+Dos datos que no son obvios y que hacen que esto funcione:
+
+- **El dominio de cada campo viaja en el export.** `IDs de valores de campo` /
+  `Valores de campo` traen la lista completa con su ID (`632=Zapatos`,
+  `60=Mujer`, `141=39`, `78=Rojo`), asi que un texto se traduce a su ID sin
+  llamar a la API de VTEX. **Lo que el dominio no tiene, no se inventa**: sale
+  avisado y hay que darlo de alta en VTEX.
+- **`IDs de especificacion` significa DOS cosas.** En un campo `Radio`/`CheckBox`
+  es el ID del VALOR del dominio y vale para cualquier producto; en un campo
+  `Texto` es el ID de ESA instancia, unico por producto. Reusar el segundo en
+  otro producto le escribiria encima, asi que solo se reusa el del mismo
+  producto y en uno nuevo va vacio.
+
+Y tres detalles de formato que rompen la carga si se olvidan: **la primera fila
+del export va EN BLANCO** y la cabecera en la segunda (con `header=0` las
+columnas salen `Unnamed: 0` y no se reconoce ni el archivo); el archivo de
+especificaciones de productos viene partido en **dos hojas** porque VTEX corta
+por el limite de filas de Excel, no por contenido (las dos hojas no comparten
+ni un producto, asi que se concatenan); y la tienda tiene **TRES campos que se
+llaman `Tecnologia `** (26, 94 y 117), asi que el indice de campos va por ID y
+no por nombre -- con un indice por nombre se escribirian dos filas de menos.
+
+### La escalera del match, y por que para en seco
+
+```
+SKU/RefId  ->  EAN  ->  codigo ARTI  ->  Product/SKU ID del archivo  ->  Modelo+Color
+```
+
+Un escalon que no encuentra nada pasa al siguiente. **Un escalon que encuentra
+DOS productos distintos corta y manda el registro a REVISAR**: ahi "el primero
+que caiga" escribiria encima de otro producto, y un ID equivocado en VTEX no se
+deshace desde una planilla. El SKU se busca **solo dentro de su producto**: un
+RefId que apunte a otro producto no es este SKU, y usarlo moveria la talla de
+sitio.
+
+**Nada se inventa.** Ni Product ID, ni SKU ID, ni Brand ID, ni la categoria, ni
+un ID de valor de especificacion. Una marca que no existe en VTEX no se crea; un
+tipo de prenda que no esta entre las categorias de su departamento no se
+adivina; un genero que no cae en Hombre / Mujer / Ninos / Accesorios -- Unisex
+-- tampoco. Todo eso sale en **REVISAR** y queda **FUERA** del archivo.
+
+El arbol de VTEX es Departamento (el GENERO) -> Categoria (el TIPO de prenda), y
+la categoria se busca por nombre entre las que ese departamento ya tiene, con
+los sinonimos de `engines/garment_types` **inyectados** -- el mismo diccionario
+que decide el `Type` de Shopify. Dos diccionarios de tipos se separan sin que
+nadie lo note; ya paso una vez en este repositorio.
+
+### Lo que se hereda del propio export, en vez de decidirlo
+
+Las medidas de empaque salen de **las mas repetidas de esa categoria en el
+propio maestro** (Zapatos 800 g y 34x49.5x14), no de una tabla escrita aqui; sin
+dato para la categoria se cae a las de la tienda entera y **se avisa**, porque
+un peso de empaque equivocado es un costo de envio equivocado. El peso cubico se
+calcula con la formula de la tienda -- ancho x alto x largo / **4800**,
+comprobado contra el export --, no se copia: las medidas pueden venir de otra
+categoria. `Sales channels`, `Unit of measure`, `Commercial condition` y
+`Loyalty amount` se heredan tal cual: son decisiones de la tienda.
+
+Un producto que **ya existe** conserva lo suyo: su Product ID, sus SKU ID, su
+`Product URL` -- que es el enlace publico, y cambiarla haria que VTEX lo tratara
+como otro producto --, su marca, su categoria, su `Release date` y su
+`Global category`.
+
+### Las imagenes cuelgan del SKU, no del producto
+
+Por eso la misma foto se repite en todas las tallas, que es lo que hace el
+export de la tienda. **La URL de Shopify va en `URL de importación de la
+imagen`**: esa columna existe para eso, VTEX se la descarga. `Ruta de la imagen`
+es la que ya tiene la tienda y solo se conserva -- escribir ahi una URL de
+Shopify no importaria nada. Una imagen que el SKU ya tiene con la misma
+direccion **no se repite**: VTEX la cargaria dos veces y la ficha saldria con la
+foto duplicada. Y hay un tope de fotos por SKU: un producto de 12 tallas con 10
+fotos son 120 filas, y con miles de productos el archivo de imagenes es el que
+se dispara.
+
+### La pantalla: cuatro pasos, y lo correcto no se revisa
+
+```
+Cargar VTEX  ->  Analizar/Match  ->  Revisar excepciones  ->  Generar  ->  ZIP
+```
+
+Los archivos se reconocen por su **cabecera**, no por el nombre -- VTEX lo
+nombra con una marca de tiempo y el usuario lo renombra --, y las hojas de un
+mismo libro se juntan solas. De una carga de miles de productos la pantalla
+enseña las **decenas** que no se pudieron resolver solas; el resto queda en una
+tabla que hay que abrir a proposito. Revisar registros que ya estan bien es como
+se acaba sin revisar los que no.
+
+**Cada planilla sale en su PROPIO libro** dentro del ZIP, porque VTEX las
+importa por separado: un solo Excel de cuatro hojas obligaria a partirlo a mano,
+que es justo el trabajo que esta pantalla quita. Y con la primera fila en
+blanco, como el export.
+
+**Esta pantalla no escribe en ninguna tienda** -- ni en VTEX ni en Shopify --:
+entrega un ZIP. Hay una prueba que falla si aparece una mutacion en la rama.
+
+La validacion es una **foto de los archivos que se van a subir**: solo lee lo
+que ya esta escrito en ellos. Si fuera una segunda fuente de verdad, el panel y
+el archivo podrian decir cosas distintas. Bloquean los duplicados (el mismo
+codigo con dos Product ID, la misma talla dos veces, un SKU ID en dos
+productos), los campos obligatorios vacios, un ID que no esta en el export, una
+marca o una categoria que no son de VTEX, y una especificacion de lista sin su
+ID de valor -- esa VTEX la rechaza.
+
+### La memoria: el export son 177 MB y el contenedor da 1 GB
+
+Medido con un export sintetico de **122 MB** -- 20.000 productos, 160.000 SKU y
+**1.048.574 filas** de especificacion -- y una carga de 9.000 productos:
+
+| Paso | primera version | ahora |
+|---|---:|---:|
+| leer el export | **1.728 MB** | +178 MB · 40 s |
+| indexarlo | +443 MB · 146 s | +192 MB · 141 s |
+| emparejar 9.000 | 2,3 s | 2,3 s |
+| generar las 4 planillas | +847 MB | +112 MB · 3,3 s |
+| armar el ZIP | +837 MB · 132 s | **+16 MB** · 67 s |
+| **PICO** | **>2,5 GB** | **672 MB** |
+
+Cuatro cosas, y ninguna cambia una sola celda de la salida:
+
+1. **El export no se materializa.** `HojaDeVtex` recorre el xlsx con
+   `openpyxl` en modo `read_only` y entrega una fila cada vez; el indice se
+   arma sobre la marcha y las filas se sueltan. Tenerlas como diccionarios eran
+   **1.728 MB** solo en eso.
+2. **Del indice solo se guarda lo que se lee.** De cada producto y cada SKU, un
+   punado de columnas; de las especificaciones, **solo el `IDs de
+   especificacion` de los 18 campos que la app sabe rellenar** -- guardarlos
+   todos son 1.060.000 entradas; de cada imagen, su direccion y nada mas. Y el
+   objeto `Campo` se construye una vez por campo y categoria, no una por fila:
+   rehacer su diccionario de 330 valores de dominio en cada una eran **140 de
+   los 146 segundos**.
+3. **Las tres planillas grandes son generadores** (`Filas`), no listas. Se
+   recorren dos veces -- una para validar y otra para escribir -- y no se
+   guarda ninguna fila. Cuesta 3,7 s de rehacerlas y ahorra **847 MB**.
+4. **El ZIP se escribe fila a fila con `constant_memory`.** Esto es lo unico
+   que contradice en apariencia la seccion 5 tervicies, y la contradiccion es
+   solo aparente: alli se descarto porque **se perdian datos**, y el motivo es
+   que `constant_memory` suelta cada fila al pasar a la siguiente, o sea que
+   **exige escribir en orden de fila** -- y el escritor de pandas vuelca
+   **columna a columna**. Aqui se escribe estrictamente fila a fila, que es su
+   contrato. Medido: **+1.423 MB** de pico sin el, **+0 MB** con el, el mismo
+   tiempo; y comprobado **celda a celda** contra el modo normal con 50.002
+   filas x 20 columnas -- incluidas URLs, un `"=1+1"`, ceros iniciales y
+   tildes --: **cero celdas distintas**. Hay una prueba que comprueba por AST
+   que el bucle de fuera sigue siendo el de las filas: si deja de serlo, esto
+   pierde datos **en silencio**.
+
+Ademas, el Matrixify se suelta en cuanto se convierte en fichas -- que son dos
+ordenes de magnitud mas chicas -- y las tablas en cuanto el ZIP esta armado.
+
+**Los avisos y los hallazgos se acotan.** Una talla que la tienda no tiene dada
+de alta produce un aviso por cada SKU que la usa: medido, **144.000 filas** en
+una carga de 9.000 productos, para decir una sola cosa. Se agrupan por causa,
+con el conteo y unos cuantos codigos de ejemplo; los hallazgos de la validacion
+se listan hasta 200 por tipo y el resto se resume. Un informe de 144.000 filas
+no se lee, y ademas cuesta memoria justo al final.
+
+**Lo que sigue sin resolverse:** 672 MB de pico es mucho, y **141 s de los que
+se va el indice**. Con un export bastante mayor que el de hoy, esta pantalla no
+cabria con otra persona cargando a la vez. El camino de fondo es el mismo
+Pendiente 7 -- mover el trabajo pesado al worker.
+
+### Las pruebas EJECUTAN contra el export real
+
+`scripts/test_vtex_generator.py` (64 pruebas) corre contra
+`data/vtex_muestra_supermallpe/`, que son las cuatro planillas reales con 500
+filas por hoja y la estructura exacta del export: fila en blanco, cabecera en la
+segunda y las especificaciones de productos en dos hojas. Incluye la cadena
+entera -- Shopify y ARTI falsos, `supermall_generar`, las cuatro planillas, la
+validacion y el ZIP -- y una prueba de ida y vuelta: **el ZIP que sale se vuelve
+a leer como maestro de VTEX**. Leer el codigo no es ejecutarlo.
+
+Y una prueba de MEMORIA, en un subproceso -- el pico de RSS es del proceso
+entero, y medir varias cosas en el mismo interprete las mezclaria --: lee e
+indexa un export sintetico y falla si se pasa del presupuesto. Lleva la misma
+guarda que `scripts/test_memoria.py`: comprueba que **materializar las mismas
+filas siga siendo caro**, porque si dejara de serlo el tope ya no estaria
+midiendo nada.
+
+Y `test_navegacion` dejo de mantener a mano la lista de constantes con las que
+`main` despacha: ahora las lee del **arbol** de `main`. La lista de antes rompia
+con cualquier pantalla nueva despachada por constante aunque su despacho
+estuviera bien, que es la misma leccion de la seccion 12.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -5981,7 +6219,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **78 archivos y ~2.423 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **79 archivos y ~2.487 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

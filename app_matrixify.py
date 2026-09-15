@@ -1,5 +1,6 @@
 import io
 import base64
+import csv
 import hmac
 import json
 import math
@@ -49,6 +50,8 @@ from engines import video_media as video_motor
 from engines import colecciones as dicc_colecciones
 from engines import colecciones_admin as colecciones_motor
 from engines import coleccion_de_carga
+from engines import vtex_export as vtex
+from engines import garment_types
 
 try:
     from engines import enrich as enriquecimiento
@@ -17104,6 +17107,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button,
         div.st-key-operation_nav_status button,
         div.st-key-operation_nav_supermall button,
+        div.st-key-operation_nav_vtex button,
         div.st-key-operation_nav_colecciones button,
         div.st-key-operation_nav_boost button,
         div.st-key-operation_nav_mantenedor button,
@@ -17143,6 +17147,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_status button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_supermall button [data-testid="stMarkdownContainer"],
+        div.st-key-operation_nav_vtex button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_colecciones button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_boost button [data-testid="stMarkdownContainer"],
         div.st-key-operation_nav_mantenedor button [data-testid="stMarkdownContainer"],
@@ -17163,6 +17168,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button p,
         div.st-key-operation_nav_status button p,
         div.st-key-operation_nav_supermall button p,
+        div.st-key-operation_nav_vtex button p,
         div.st-key-operation_nav_colecciones button p,
         div.st-key-operation_nav_boost button p,
         div.st-key-operation_nav_mantenedor button p,
@@ -17188,6 +17194,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button::before,
         div.st-key-operation_nav_status button::before,
         div.st-key-operation_nav_supermall button::before,
+        div.st-key-operation_nav_vtex button::before,
         div.st-key-operation_nav_colecciones button::before,
         div.st-key-operation_nav_boost button::before,
         div.st-key-operation_nav_mantenedor button::before,
@@ -17224,6 +17231,9 @@ def inject_custom_css(config):
         }}
         div.st-key-operation_nav_supermall button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 9l1.5-5h15L21 9'/%3E%3Cpath d='M4 9v11h16V9'/%3E%3Cpath d='M12 12v5'/%3E%3Cpath d='m9.5 14.5 2.5 2.5 2.5-2.5'/%3E%3C/svg%3E") !important;
+        }}
+        div.st-key-operation_nav_vtex button::before {{
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='11' height='14' rx='1.6'/%3E%3Cpath d='M17 7v11a2 2 0 0 1-2 2H6'/%3E%3Cpath d='M6.5 7h5'/%3E%3Cpath d='M6.5 10.5h5'/%3E%3Cpath d='M6.5 14h3'/%3E%3C/svg%3E") !important;
         }}
         div.st-key-operation_nav_colecciones button::before {{
             background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%232563EB' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0l-7.2-7.2A2 2 0 0 1 3 12V4a1 1 0 0 1 1-1h8a2 2 0 0 1 1.4.6l7.2 7.2a2 2 0 0 1 0 2.6z'/%3E%3Cpath d='M7.5 7.5h.01'/%3E%3C/svg%3E") !important;
@@ -17264,6 +17274,7 @@ def inject_custom_css(config):
         div.st-key-operation_nav_kpis button:hover,
         div.st-key-operation_nav_status button:hover,
         div.st-key-operation_nav_supermall button:hover,
+        div.st-key-operation_nav_vtex button:hover,
         div.st-key-operation_nav_colecciones button:hover,
         div.st-key-operation_nav_boost button:hover,
         div.st-key-operation_nav_mantenedor button:hover,
@@ -28990,7 +29001,8 @@ def supermall_consolidar_origen(catalogos, codigos=()):
     )
 
 
-def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=None):
+def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=None,
+                      situaciones=(carga_supermall.FALTA_CARGAR,), con_sial=True):
     """El Matrixify y la Carga Sial de Supermall, por bloques.
 
     El origen es el catalogo CONSOLIDADO -- de ahi salen titulo, descripcion,
@@ -29006,7 +29018,12 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
     # estados -- asi que si la generacion tomara todo lo cargable reescribiria
     # la ficha de miles de productos que ya estan en Supermall sin que nadie lo
     # haya pedido. Es la misma regla que ya sigue el espejo.
-    situaciones = (carga_supermall.FALTA_CARGAR,)
+    #
+    # `situaciones` es un parametro y no una constante por el Generador VTEX:
+    # alli el destino es la tienda VTEX, no el Supermall de Shopify, asi que
+    # "ya esta cargado" lo decide el archivo de VTEX y no esta situacion. Lo
+    # que NO cambia es el motor: escribir un segundo constructor de Matrixify
+    # es como se acaba teniendo dos que se separan sin que nadie lo note.
     productos_origen = carga_supermall.productos_para_matrixify(fichas, situaciones)
     # Unicos ANTES de partir en bloques. Dentro de un bloque el `groupby` por
     # Modelo-Color colapsa el repetido, pero entre bloques distintos no hay
@@ -29093,7 +29110,10 @@ def supermall_generar(fichas, catalogos, brand_config, shopify_config, avanzar=N
     revisiones.clear()
     del contexto
     gc.collect()
-    sial_df = build_sial_de_sitio_from_matrixify(matrixify_df, brand_config)
+    # El Generador VTEX no pide la hoja Sial: esa es de la carga de Shopify.
+    # Armarla igual serian 191 MB medidos y decenas de segundos para tirarla.
+    sial_df = (build_sial_de_sitio_from_matrixify(matrixify_df, brand_config)
+               if con_sial else pd.DataFrame())
     return matrixify_df, sial_df, revision_df, arti_source
 
 
@@ -30240,6 +30260,775 @@ NAV_INICIO_LABEL = "Inicio"
 CARGA_CATALOGO_LABEL = "Carga de catálogo"
 
 
+
+# =============================================================================
+# GENERADOR DE CARGA VTEX -- SUPERMALL
+# =============================================================================
+#
+# Supermall.pe paso a Shopify y la pantalla que armaba las planillas de VTEX se
+# retiro entera (seccion 5 sexies bis de CLAUDE.md). Pero la tienda VTEX sigue
+# recibiendo cargas manuales, y esas planillas se estaban llenando **a mano**:
+# abrir el export de VTEX, buscar el producto para no duplicarlo, copiar su
+# Product ID y sus SKU ID, y rellenar cuatro archivos columna a columna.
+#
+# Lo que falta no es la plantilla -- el export de VTEX ya la trae -- sino el
+# CRUCE. Y la informacion existe: esta en Shopify (Columbia.pe, Vans.pe,
+# Rockford.pe...) y en el maestro ARTI, que es exactamente lo que esta app ya
+# sabe consolidar para la Carga Supermall.
+#
+#   Archivo VTEX -> Match -> Shopify + ARTI -> Enriquecimiento -> 4 archivos
+#
+# **No se escribe un segundo motor de catalogo.** El Matrixify sale del MISMO
+# `supermall_generar` que usa la Carga Supermall, que a su vez sale del mismo
+# `matrixify_desde_codigos_modelo_color` que usan Centry y la Carga Sial. Lo
+# unico propio de aqui es la traduccion del Matrixify a las cuatro planillas de
+# VTEX, y eso vive en `engines/vtex_export`, sin Streamlit.
+#
+# Esta pantalla **no escribe nada en ninguna tienda**: entrega un ZIP. Hay una
+# prueba que falla si aparece una mutacion de Shopify o de VTEX en la rama.
+
+VTEX_LABEL = "Generador VTEX"
+# Cuantos codigos por bloque. El mismo tamano que la Carga Supermall, y por lo
+# mismo: cada bloque cruza el maestro y arma su tramo de Matrixify.
+VTEX_CODIGOS_POR_BLOQUE = SUPERMALL_CODIGOS_POR_BLOQUE
+VTEX_FILAS_VISTA = 200
+# Cuantas fotos entran por SKU. VTEX repite la imagen en cada talla, asi que un
+# producto de 12 tallas con 10 fotos son 120 filas: con miles de productos, el
+# archivo de imagenes es el que se dispara.
+VTEX_FOTOS_POR_SKU = 6
+
+# De donde sale cada dato de la ficha VTEX dentro del Matrixify. Las columnas
+# de acarreo (`Temporada`, `Ocasion`...) son las que el constructor de Centry
+# ya rellena del maestro ARTI: no son columnas Matrixify y viajan justo para
+# esto.
+VTEX_CAMPOS_DEL_MATRIXIFY = {
+    "Title": ("Title",),
+    "Body HTML": ("Body HTML",),
+    "Tipo": ("Type",),
+    "Marca": ("Metafield: custom.marca [single_line_text_field]",),
+    "Genero": ("Metafield: custom.genero [single_line_text_field]", "Genero"),
+    "Color": ("Metafield: custom.color [single_line_text_field]", "Option2 Value"),
+    "Clase": ("Metafield: custom.categoria [single_line_text_field]",),
+    "Nombre corto": ("Metafield: custom.nombre_corto [single_line_text_field]",),
+    "Descripcion corta": ("Metafield: custom.descripcion_corta [single_line_text_field]",),
+    "Tecnologia": ("Metafield: custom.tecnologia [list.single_line_text_field]",),
+    "Material": ("Metafield: custom.materialidad [single_line_text_field]",),
+    "Temporada": ("Temporada",),
+    "Coleccion": ("Coleccion",),
+    "Ocasion": ("Ocasion",),
+    "Deporte": ("Deporte",),
+    "Composicion": ("Composición",),
+    "Cuidados": ("Cuidados",),
+    "Caracteristicas": ("Listado de características",),
+}
+
+
+def vtex_primer_valor(fila, columnas):
+    """El primer valor con contenido de esas columnas de la fila del Matrixify."""
+    for columna in columnas:
+        valor = clean_value(fila.get(columna))
+        if valor:
+            return valor
+    return ""
+
+
+def vtex_fichas_desde_matrixify(matrixify_df):
+    """El Matrixify enriquecido, convertido en fichas para `engines/vtex_export`.
+
+    Una ficha por codigo Modelo-Color, con sus tallas. El Matrixify trae los
+    campos del PRODUCTO solo en la primera fila de cada uno -- asi es como lo
+    lee Shopify --, asi que se toma el primer valor no vacio del grupo en vez de
+    el de la primera fila: una fila de variante los trae vacios.
+
+    Se recorre en DICCIONARIOS, no con `iterrows()`. Con `iterrows` cada `.get()`
+    pasa por el indice de pandas, y en una carga de 8.000 productos son millones
+    de accesos -- es lo que ya se midio en el analisis y en el Centry.
+    """
+    if matrixify_df is None or getattr(matrixify_df, "empty", True):
+        return []
+    columna_codigo = "Metafield: custom.codigo_modelo_color [id]"
+    columnas = set(matrixify_df.columns)
+    fichas, por_codigo = [], {}
+    for fila in matrixify_df.to_dict("records"):
+        codigo = vtex.clave_codigo(fila.get(columna_codigo)) if columna_codigo in columnas else ""
+        if not codigo:
+            codigo = vtex.clave_codigo(fila.get("Metafield: custom.estilo [single_line_text_field]"))
+        if not codigo:
+            continue
+        ficha = por_codigo.get(codigo)
+        if ficha is None:
+            ficha = {"Mod-Col": codigo, "Modelo": codigo.split("-")[0],
+                     "Color codigo": codigo.split("-", 1)[1] if "-" in codigo else "",
+                     "Variantes": [], "Imagenes": []}
+            por_codigo[codigo] = ficha
+            fichas.append(ficha)
+        for destino, origenes in VTEX_CAMPOS_DEL_MATRIXIFY.items():
+            if not ficha.get(destino):
+                valor = vtex_primer_valor(fila, origenes)
+                if valor:
+                    ficha[destino] = valor
+        if not ficha["Imagenes"]:
+            ficha["Imagenes"] = [url for url in centry_split_images(fila.get("Image Src")) if url]
+        talla = clean_value(fila.get("Option1 Value"))
+        if not talla:
+            continue
+        ficha["Variantes"].append({
+            "Talla": talla,
+            "SKU": clean_value(fila.get("Variant SKU")),
+            "EAN": clean_value(fila.get("Variant Barcode")),
+        })
+    # Una talla repetida dentro del mismo codigo seria una variante duplicada en
+    # VTEX, que ademas se lleva el stock. El Matrixify no deberia traerlas -- hay
+    # una validacion que lo comprueba -- pero la carga va por BLOQUES y esto se
+    # arma sobre la concatenacion.
+    for ficha in fichas:
+        vistas, unicas = set(), []
+        for variante in ficha["Variantes"]:
+            llave = vtex.clave(variante["Talla"])
+            if llave in vistas:
+                continue
+            vistas.add(llave)
+            unicas.append(variante)
+        ficha["Variantes"] = unicas
+    return fichas
+
+
+# --- Leer las planillas que sube el usuario ----------------------------------
+
+
+# Cuantas filas se miran buscando la cabecera. VTEX exporta con la primera fila
+# en blanco y la cabecera en la segunda; se buscan unas pocas mas por si algun
+# export trae una linea de cortesia.
+VTEX_FILAS_PARA_LA_CABECERA = 5
+
+
+def vtex_cabecera_de(filas):
+    """`(posicion, columnas, planilla)` de la primera fila que sea una cabecera.
+
+    Se busca en vez de dar por hecho que es la segunda: un export con una linea
+    mas de cortesia dejaria la planilla entera sin leer, y un `header=0` deja las
+    columnas como `Unnamed: 0` -- ahi no se reconoce ni el archivo.
+    """
+    for posicion, fila in enumerate(filas):
+        valores = [clean_value(v) for v in fila]
+        con_texto = [v for v in valores if v]
+        if len(con_texto) < 3 or len(set(con_texto)) != len(con_texto):
+            continue
+        planilla = vtex.reconocer_archivo(con_texto)
+        if planilla:
+            return posicion, valores, planilla
+    return -1, [], ""
+
+
+class HojaDeVtex:
+    """Una hoja del export, que se recorre **fila a fila** y no se guarda.
+
+    Es un iterable reutilizable: cada recorrido vuelve a abrir el libro. Por eso
+    no se queda con las filas -- el export real son 177 MB y materializarlo como
+    diccionarios son **1,7 GB medidos**, con un contenedor que da 1 GB PARA TODA
+    LA APP. Es la regla de la seccion 5 nonies: ningun archivo del usuario se
+    materializa entero.
+
+    Los bytes del fichero SI se conservan: son los que subio el usuario y hay
+    que poder volver a abrirlos.
+    """
+
+    def __init__(self, datos, nombre, hoja, es_csv=False):
+        self.datos = datos
+        self.nombre = nombre
+        self.hoja = hoja
+        self.es_csv = es_csv
+        self.planilla = ""
+        self.columnas = []
+        self.filas = 0
+
+    def _crudas(self):
+        """Las filas del fichero como tuplas, sin construir ningun DataFrame."""
+        if self.es_csv:
+            texto = io.TextIOWrapper(io.BytesIO(self.datos), encoding="utf-8-sig",
+                                     newline="")
+            for fila in csv.reader(texto):
+                yield fila
+            return
+        from openpyxl import load_workbook
+        # `read_only` es lo que hace que esto sea streaming de verdad: openpyxl
+        # va leyendo el XML de la hoja en vez de armar el libro entero como
+        # objetos Cell, que es lo mismo que ya se corrigio en la exportacion.
+        libro = load_workbook(io.BytesIO(self.datos), read_only=True, data_only=True)
+        try:
+            for fila in libro[self.hoja].iter_rows(values_only=True):
+                yield fila
+        finally:
+            libro.close()
+
+    def explorar(self):
+        """Reconoce la planilla mirando SOLO las primeras filas.
+
+        No se recorre la hoja para contar: en el export real son 1.048.574
+        filas y una pasada entera cuesta **135 s medidos** -- que ademas se
+        pagaria dos veces, porque despues hay que recorrerla para indexarla.
+        El total de filas sale de la dimension que el propio xlsx declara.
+        """
+        cabecera = -1
+        for posicion, fila in enumerate(self._crudas()):
+            if posicion >= VTEX_FILAS_PARA_LA_CABECERA:
+                break
+            encontrada, columnas, planilla = vtex_cabecera_de([fila])
+            if encontrada == 0:
+                cabecera = posicion
+                self.planilla, self.columnas = planilla, columnas
+                break
+        self.filas = max(self._filas_declaradas() - cabecera - 1, 0) if cabecera >= 0 else 0
+        return self.planilla
+
+    def _filas_declaradas(self):
+        """Cuantas filas dice el fichero que tiene, sin recorrerlo."""
+        if self.es_csv:
+            return self.datos.count(b"\n")
+        from openpyxl import load_workbook
+        libro = load_workbook(io.BytesIO(self.datos), read_only=True, data_only=True)
+        try:
+            return safe_int_value(libro[self.hoja].max_row)
+        finally:
+            libro.close()
+
+    def __iter__(self):
+        if not self.planilla:
+            return
+        empezado = False
+        for posicion, fila in enumerate(self._crudas()):
+            if not empezado:
+                # La cabecera se vuelve a buscar en vez de guardar su posicion:
+                # asi este iterador no depende de que `explorar` se llamara.
+                if vtex_cabecera_de([fila])[2]:
+                    empezado = True
+                continue
+            registro, vacia = {}, True
+            for nombre, valor in zip(self.columnas, fila):
+                if not nombre:
+                    continue
+                limpio = clean_value(valor)
+                registro[nombre] = limpio
+                if limpio:
+                    vacia = False
+            if not vacia:
+                yield registro
+
+
+def vtex_hojas_del_archivo(subido):
+    """Las hojas de un libro subido, o la unica de un CSV, sin leerlas."""
+    nombre = clean_value(getattr(subido, "name", "archivo"))
+    subido.seek(0)
+    datos = subido.read()
+    if nombre.lower().endswith(".csv"):
+        return [HojaDeVtex(datos, nombre, "csv", es_csv=True)]
+    from openpyxl import load_workbook
+    libro = load_workbook(io.BytesIO(datos), read_only=True, data_only=True)
+    try:
+        nombres = list(libro.sheetnames)
+    finally:
+        libro.close()
+    return [HojaDeVtex(datos, nombre, hoja) for hoja in nombres]
+
+
+def vtex_leer_planillas(archivos_subidos):
+    """`({planilla: [hojas]}, informe)` a partir de lo que suba el usuario.
+
+    Se reconoce cada planilla por su CABECERA, no por el nombre del fichero:
+    VTEX lo nombra con una marca de tiempo y el usuario lo renombra. Y las
+    HOJAS de un mismo libro entran las dos -- el export de especificaciones de
+    productos viene partido en dos porque VTEX corta por el limite de filas de
+    Excel, no por contenido, y las dos hojas no comparten ni un producto.
+
+    Lo que se devuelve son las HOJAS, no sus filas: quien las recorra las lee
+    una a una.
+    """
+    planillas, informe = {}, []
+    for subido in archivos_subidos or []:
+        nombre = clean_value(getattr(subido, "name", "archivo"))
+        try:
+            hojas = vtex_hojas_del_archivo(subido)
+        except Exception as exc:  # noqa: BLE001
+            informe.append({"Archivo": nombre, "Hoja": "", "Planilla": "No se pudo leer",
+                            "Filas": 0, "Detalle": f"{type(exc).__name__}: {exc}"})
+            continue
+        for hoja in hojas:
+            try:
+                planilla = hoja.explorar()
+            except Exception as exc:  # noqa: BLE001
+                informe.append({"Archivo": nombre, "Hoja": hoja.hoja,
+                                "Planilla": "No se pudo leer", "Filas": 0,
+                                "Detalle": f"{type(exc).__name__}: {exc}"})
+                continue
+            if not planilla:
+                informe.append({"Archivo": nombre, "Hoja": hoja.hoja,
+                                "Planilla": "No reconocida", "Filas": 0,
+                                "Detalle": "Ninguna fila parece la cabecera de un "
+                                           "export de VTEX"})
+                continue
+            planillas.setdefault(planilla, []).append(hoja)
+            informe.append({"Archivo": nombre, "Hoja": hoja.hoja,
+                            "Planilla": vtex.ETIQUETAS[planilla], "Filas": hoja.filas,
+                            "Detalle": ""})
+    return planillas, informe
+
+
+# --- El ZIP ------------------------------------------------------------------
+
+
+def vtex_excel_de_planilla(columnas, filas):
+    """Un libro de una sola hoja con la **primera fila en blanco**.
+
+    La fila en blanco no es un adorno: es como VTEX exporta y como espera la
+    plantilla de vuelta. Con la cabecera en la fila 1 el importador lee los
+    nombres de columna como si fueran datos.
+
+    Se escribe **fila a fila con xlsxwriter**, sin DataFrame por el medio: la
+    planilla de especificaciones de una carga de 9.000 productos son 477.000
+    filas x 16 columnas, y armarla como DataFrame para despues volcarla costaba
+    **837 MB medidos** de los 1.024 que da el contenedor PARA TODA LA APP.
+
+    `strings_to_formulas` y `strings_to_urls` van en `False` por lo mismo que en
+    `dataframe_to_excel_bytes`: un texto que empieza por `=` saldria como
+    FORMULA, y Excel admite 65.530 hipervinculos por hoja -- la planilla de
+    imagenes es una columna entera de URLs, asi que pasado ese numero
+    xlsxwriter avisa y **descarta el resto**.
+
+    Y `constant_memory`, que `dataframe_to_excel_bytes` NO puede usar
+    ---------------------------------------------------------------------
+    Alli se descarto porque **se perdian datos**: solo sobrevivia la primera
+    columna. El motivo es que `constant_memory` va soltando cada fila en cuanto
+    se pasa a la siguiente, asi que **exige escribir en orden de fila**, y el
+    escritor de pandas no lo hace: vuelca columna a columna.
+
+    Aqui se escribe estrictamente fila a fila, que es justo su contrato.
+    Medido con 477.000 filas x 16 columnas: **+1.423 MB** de pico sin el, y
+    **+0 MB** con el, en el mismo tiempo. Y comprobado CELDA A CELDA contra el
+    modo normal con 50.002 filas x 20 columnas -- incluidas URLs, un `"=1+1"`,
+    ceros iniciales y tildes --: **cero celdas distintas**.
+
+    Si algun dia esta funcion deja de escribir en orden de fila, hay que
+    quitarlo: no avisa, pierde datos en silencio. Hay una prueba que lo fija.
+    """
+    import xlsxwriter
+
+    buffer = io.BytesIO()
+    libro = xlsxwriter.Workbook(buffer, dict(OPCIONES_XLSXWRITER, constant_memory=True))
+    hoja = libro.add_worksheet("Sheet1")
+    columnas = list(columnas)
+    for posicion, nombre in enumerate(columnas):
+        hoja.write_string(1, posicion, nombre)
+    for numero, fila in enumerate(filas or [], start=2):
+        for posicion, nombre in enumerate(columnas):
+            valor = fila.get(nombre)
+            if valor not in (None, ""):
+                hoja.write_string(numero, posicion, str(valor))
+    libro.close()
+    return buffer.getvalue()
+
+
+def vtex_armar_zip(tablas, catalogo, extras=None):
+    """Los cuatro archivos listos para subir a VTEX, en un ZIP.
+
+    Cada planilla va en su PROPIO libro porque VTEX las importa por separado:
+    un solo Excel de cuatro hojas obligaria a partirlo a mano, que es justo el
+    trabajo que esta pantalla quita.
+
+    Cada tabla se **suelta** en cuanto esta escrita: las cuatro juntas mas su
+    Excel no caben a la vez.
+    """
+    sello = datetime.now().strftime("%Y%m%d_%H%M")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_final:
+        for archivo in vtex.ARCHIVOS:
+            columnas = catalogo.cabeceras.get(archivo) or vtex.COLUMNAS[archivo]
+            zip_final.writestr(
+                f"{sello}_{vtex.NOMBRES_DE_ARCHIVO[archivo]}_supermallpe.xlsx",
+                vtex_excel_de_planilla(columnas, tablas.get(archivo) or []))
+            gc.collect()
+        if extras:
+            zip_final.writestr(f"{sello}_revision.xlsx",
+                               dataframe_to_excel_bytes(extras).getvalue())
+    return buffer.getvalue()
+
+
+# --- El cruce completo -------------------------------------------------------
+
+
+def vtex_analizar(planillas, codigos_pedidos, refrescar, avanzar=None):
+    """De las planillas de VTEX a los productos emparejados.
+
+    Es la cadena entera, y **ninguno de sus tramos es nuevo**: los catalogos
+    salen del mismo lector en paralelo que usa Status de carga, la consolidacion
+    de `engines/carga_supermall` y el Matrixify de `supermall_generar`. Lo unico
+    propio es el ultimo paso.
+    """
+    catalogo = vtex.leer_catalogo(planillas)
+    espejo_key = sitio_espejo() or "supermall"
+    brand_config = get_brand_config(espejo_key)
+    shopify_config = get_shopify_config(espejo_key)
+    catalogos, estado_sitios = cargar_catalogos_de_todos_los_sitios(force_refresh=refrescar)
+    consolidado = supermall_consolidar_origen(catalogos, codigos_pedidos)
+    fichas_consolidadas = consolidado["fichas"]
+    # TODO lo que se pueda cargar, no solo lo que le falta al Supermall de
+    # Shopify: aqui el destino es VTEX y quien dice que ya existe es el archivo
+    # que subio el usuario.
+    matrixify_df, _sial, revision_df, arti_source = supermall_generar(
+        fichas_consolidadas, catalogos, brand_config, shopify_config,
+        avanzar=avanzar, situaciones=None, con_sial=False,
+    )
+    fichas = vtex_fichas_desde_matrixify(matrixify_df)
+    # El Matrixify ya no lo lee nadie: lo que sigue trabaja sobre las fichas,
+    # que son dos ordenes de magnitud mas chicas. Con 8.000 productos son
+    # cientos de MB de los 1.024 que da el contenedor PARA TODA LA APP.
+    filas_matrixify = len(matrixify_df)
+    del matrixify_df
+    gc.collect()
+    emparejados = vtex.emparejar(fichas, catalogo, nombres_de_tipo=garment_types.sinonimos_de)
+    return {
+        "catalogo": catalogo,
+        "emparejados": emparejados,
+        "resumen": vtex.resumen_del_emparejamiento(emparejados),
+        "excepciones": vtex.filas_de_excepciones(emparejados),
+        "estado_sitios": estado_sitios,
+        "revision": revision_df,
+        "filas_matrixify": filas_matrixify,
+        "fuente": arti_source,
+    }
+
+
+def vtex_tabla_de_emparejamiento(emparejados):
+    """Una fila por producto, para mirar el cruce entero cuando haga falta."""
+    return pd.DataFrame([
+        {"Mod-Col": e["Mod-Col"], "Nombre": e["Nombre"], "Marca": e["Marca"],
+         "Estado": e["Estado"], "Emparejado por": e["Criterio"],
+         "Product ID": e["Product ID"], "Departamento": e["Departamento"],
+         "Categoria": e["Categoria"], "Tallas": e["Tallas"],
+         "Tallas nuevas": e["Tallas nuevas"], "Qué revisar": e["Motivos"]}
+        for e in emparejados or []
+    ])
+
+
+def render_vtex_generator():
+    """Generador de carga VTEX para Supermall, en cuatro pasos.
+
+    Cargar VTEX -> Analizar/Match -> Revisar excepciones -> Generar y descargar.
+
+    **Lo correcto no se revisa.** De una carga de miles de productos la pantalla
+    enseña las decenas que no se pudieron resolver solas; el resto queda en una
+    tabla que hay que abrir a proposito. Revisar registros que ya estan bien es
+    como se acaba sin revisar los que no.
+    """
+    log_acceso_modulo(VTEX_LABEL)
+    render_html(
+        """
+        <div class="kpi-hero">
+            <div class="kpi-title">
+                <h2>Generador de carga VTEX</h2>
+                <p>Sube el último export de VTEX y la app arma las cuatro planillas con lo que
+                ya está en Shopify y en el maestro ARTI, reusando los IDs que VTEX ya tiene.</p>
+            </div>
+        </div>
+        """
+    )
+
+    # --- 1. Cargar el export de VTEX --------------------------------------
+    st.markdown('<div class="section-card"><h2>1. Cargar el export de VTEX</h2>',
+                unsafe_allow_html=True)
+    st.caption(
+        "Los cuatro archivos del export: **Products and SKUs**, **Especificaciones de "
+        "productos**, **Especificaciones de SKUs** e **Imágenes**. Se reconocen por su "
+        "cabecera, así que da igual el nombre y el orden en que los subas, y las hojas de "
+        "un mismo libro se juntan solas."
+    )
+    subidos = st.file_uploader(
+        "Export de VTEX (.xlsx o .csv)", type=["xlsx", "xls", "csv"],
+        accept_multiple_files=True, key="vtex_archivos",
+    )
+    planillas, informe = ({}, [])
+    if subidos:
+        with st.spinner("Leyendo el export de VTEX..."):
+            planillas, informe = vtex_leer_planillas(subidos)
+        st.dataframe(pd.DataFrame(informe), width="stretch", hide_index=True)
+    faltan = [vtex.ETIQUETAS[a] for a in vtex.ARCHIVOS if not planillas.get(a)]
+    if subidos and faltan:
+        # Cada archivo que falta se dice POR SU NOMBRE. "Faltan archivos" con
+        # cuatro planillas obliga a adivinar cual.
+        st.warning(
+            "**Faltan planillas del export**: " + " · ".join(faltan) +
+            ". Sin *Products and SKUs* no hay IDs que reusar y **todo saldría como nuevo**, "
+            "lo que duplicaría en VTEX lo que ya existe. Sin las de especificaciones no se "
+            "sabe qué campos tiene cada categoría ni qué valores admite."
+        )
+    if not planillas.get(vtex.PRODUCTOS):
+        st.markdown("</div>", unsafe_allow_html=True)
+        if subidos:
+            st.error(
+                "**No se puede continuar sin la planilla de Products and SKUs.** Es la que "
+                "trae los Product ID y los SKU ID que hay que reusar."
+            )
+        return
+
+    columna_modo, columna_lista = st.columns([1, 1], gap="large")
+    with columna_modo:
+        modo = st.radio(
+            "Qué productos",
+            ["Todo lo que hay en las demás webs", "Una lista mía"],
+            key="vtex_modo",
+            help=("Con la primera se consolida el catálogo entero de Columbia.pe, Vans.pe, "
+                  "Rockford.pe y las demás, y el cruce contra VTEX dice cuáles ya existen."),
+        )
+        refrescar = st.checkbox("Volver a leer los catálogos de Shopify", key="vtex_refrescar")
+    codigos_pedidos = []
+    with columna_lista:
+        if modo == "Una lista mía":
+            excel = st.file_uploader("Excel de códigos Modelo-Color",
+                                     type=["xlsx", "xls"], key="vtex_codigos")
+            if excel is not None:
+                df_codigos = read_uploaded_excel_cached(excel, "vtex_codigos_df")
+                codigos_pedidos, descartados = png_codigos_desde_excel(df_codigos)
+                st.caption(f"{len(codigos_pedidos):,} códigos leídos.")
+                if descartados:
+                    with st.expander(f"{len(descartados):,} filas descartadas"):
+                        st.dataframe(pd.DataFrame(descartados), width="stretch",
+                                     hide_index=True)
+
+    if st.button("Analizar y emparejar", type="primary", key="vtex_analizar"):
+        barra = st.progress(0.0, text="Cruzando con Shopify y ARTI...")
+
+        def avanzar(hechos, total):
+            barra.progress(hechos / max(total, 1), text=f"{hechos:,} de {total:,} códigos")
+
+        with st.spinner("Leyendo Shopify, consolidando y cruzando con el maestro..."):
+            resultado = vtex_analizar(planillas, codigos_pedidos, bool(refrescar), avanzar)
+        barra.empty()
+        resultado["tabla"] = vtex_tabla_de_emparejamiento(resultado["emparejados"])
+        st.session_state["vtex_analisis"] = resultado
+        st.session_state.pop("vtex_resultado", None)
+        log_user_activity(
+            VTEX_LABEL,
+            f"{len(resultado['emparejados']):,} productos cruzados contra el export de VTEX.",
+            module=VTEX_LABEL,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    analisis = st.session_state.get("vtex_analisis")
+    if not analisis:
+        return
+    catalogo = analisis["catalogo"]
+    emparejados = analisis["emparejados"]
+    estado_sitios = analisis.get("estado_sitios") or []
+    caidos = [e for e in estado_sitios if e.get("Estado") != "Leido"]
+    if not emparejados:
+        # Sin NINGUN sitio leido el motivo no es que los codigos no existan: es
+        # que no hay de donde sacar la informacion. Mandar a revisar los codigos
+        # es mandar a buscar un problema que no esta ahi.
+        if estado_sitios and len(caidos) == len(estado_sitios):
+            st.error(
+                "**No se pudo leer el catálogo de ningún sitio de Shopify**, así que no hay "
+                "de dónde sacar la información de los productos. Revisa las secciones "
+                "`[shopify_sites.*]` de Secrets (dominio y `admin_api_access_token`). El "
+                "detalle de cada sitio está abajo."
+            )
+        else:
+            st.info(
+                "El cruce no devolvió ningún producto. Con una lista propia, revisa que los "
+                "códigos existan en alguna de las otras webs."
+            )
+        if estado_sitios:
+            st.dataframe(pd.DataFrame(estado_sitios), width="stretch", hide_index=True)
+        return
+
+    if caidos:
+        st.warning(
+            "**No se pudieron leer todos los sitios de Shopify**, así que la información va "
+            "más pobre de lo que hay: "
+            + ", ".join(f"{e['Sitio']} ({e['Estado']})" for e in caidos)
+            + ". Los productos que solo existan ahí no aparecen."
+        )
+    if estado_sitios:
+        with st.expander(f"Catálogos de Shopify leídos: "
+                         f"{len(estado_sitios) - len(caidos)} de {len(estado_sitios)}",
+                         expanded=bool(caidos)):
+            st.dataframe(pd.DataFrame(estado_sitios), width="stretch", hide_index=True)
+
+    # --- 2. El cruce ------------------------------------------------------
+    st.markdown('<div class="section-card"><h2>2. Qué dice el cruce</h2>',
+                unsafe_allow_html=True)
+    resumen = analisis["resumen"]
+    tarjetas = [
+        ("Productos cruzados", resumen["Productos"], "blue", "&#9633;"),
+        ("Ya están en VTEX", resumen[vtex.EXISTE], "green", "&#10003;"),
+        ("Nuevos en VTEX", resumen[vtex.NUEVO], "purple", "+"),
+        ("Para revisar", resumen[vtex.REVISAR], "orange", "!"),
+        ("SKU nuevos", resumen["SKU nuevos"], "blue", "&#9679;"),
+    ]
+    render_html(
+        '<div class="kpi-card-grid">'
+        + "".join(
+            f'<div class="kpi-card {tono}"><div class="kpi-icon">{icono}</div>'
+            f"<div><span>{titulo}</span><strong>{format_kpi_number(valor)}</strong></div></div>"
+            for titulo, valor, tono, icono in tarjetas
+        )
+        + "</div>"
+    )
+    st.caption(
+        f"El export trae **{len(catalogo.productos):,} productos** y "
+        f"**{len(catalogo.skus):,} SKU** de VTEX, con "
+        f"**{len(catalogo.marcas):,} marcas** y **{len(catalogo.categorias):,} categorías**. "
+        f"Base maestra usada: {analisis['fuente']}."
+    )
+    if resumen["Por criterio"]:
+        st.caption(
+            "**Emparejados por:** "
+            + " · ".join(f"{criterio}: {veces:,}"
+                         for criterio, veces in resumen["Por criterio"].items())
+            + ". El orden es SKU/RefId → EAN → código ARTI → Product/SKU ID → "
+              "Modelo+Color+Talla, y en cuanto un dato apunta a más de un producto el "
+              "registro se manda a revisar en vez de elegir uno."
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- 3. Las excepciones ------------------------------------------------
+    st.markdown('<div class="section-card"><h2>3. Lo que hay que revisar</h2>',
+                unsafe_allow_html=True)
+    excepciones = analisis["excepciones"]
+    if not excepciones:
+        st.success(
+            "**Nada que revisar.** Todos los productos se emparejaron solos o son nuevos con "
+            "su marca y su categoría resueltas."
+        )
+    else:
+        st.error(
+            f"**{len(excepciones):,} productos de {len(emparejados):,} no se pudieron "
+            "resolver solos.** Quedan FUERA del archivo: cargarlos con la categoría o la "
+            "marca equivocada no se deshace desde una planilla."
+        )
+        st.dataframe(pd.DataFrame(excepciones).head(VTEX_FILAS_VISTA),
+                     width="stretch", height=320, hide_index=True)
+        if len(excepciones) > VTEX_FILAS_VISTA:
+            st.caption(f"Se muestran {VTEX_FILAS_VISTA:,} de {len(excepciones):,}. "
+                       "El ZIP lleva la lista completa en la hoja de revisión.")
+    tabla = analisis["tabla"]
+    with st.expander(f"Ver los {len(tabla):,} productos del cruce, no solo las excepciones"):
+        st.dataframe(tabla.head(VTEX_FILAS_VISTA * 5), width="stretch", height=400,
+                     hide_index=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- 4. Generar --------------------------------------------------------
+    st.markdown('<div class="section-card"><h2>4. Generar los 4 archivos</h2>',
+                unsafe_allow_html=True)
+    columna_ref, columna_fotos = st.columns([2, 1], gap="large")
+    with columna_ref:
+        modo_referencia = st.selectbox(
+            "Código de referencia de los SKU nuevos",
+            ["SKU del maestro ARTI", "Modelo-Color + talla", "Dejarlo vacío"],
+            key="vtex_referencia",
+            help=("En este catálogo los SKU que ya existen tienen RefId igual a su SKU ID, y "
+                  "ese número lo asigna VTEX: para uno nuevo no se puede saber de antemano. "
+                  "Con el SKU del maestro, la siguiente carga empareja por el primer escalón "
+                  "sin adivinar nada."),
+        )
+    with columna_fotos:
+        fotos = st.number_input(
+            "Fotos por SKU", min_value=1, max_value=20, value=VTEX_FOTOS_POR_SKU,
+            key="vtex_fotos",
+            help=("VTEX repite la imagen en cada talla, así que un producto de 12 tallas con "
+                  "10 fotos son 120 filas."),
+        )
+    referencia_sku = {"SKU del maestro ARTI": "arti",
+                      "Modelo-Color + talla": "codigo",
+                      "Dejarlo vacío": "vacio"}[modo_referencia]
+
+    if st.button("Generar los archivos de VTEX", type="primary", key="vtex_generar"):
+        with st.spinner("Armando las cuatro planillas..."):
+            tablas, incidencias, resumen_salida = vtex.generar(
+                emparejados, catalogo,
+                referencia_sku=referencia_sku, imagenes_por_sku=int(fotos),
+            )
+        with st.spinner("Validando antes de armar el ZIP..."):
+            hallazgos = vtex.validar(tablas, catalogo)
+        bloqueos, avisos = vtex.resumen_de_validacion(hallazgos)
+        extras = {
+            "Cruce": analisis["tabla"],
+            "Fuera del archivo": pd.DataFrame(incidencias["fuera"]),
+            "Avisos": pd.DataFrame(incidencias["avisos"]),
+            "Validacion": pd.DataFrame(hallazgos),
+            "Revision del maestro": analisis.get("revision"),
+        }
+        with st.spinner("Empaquetando el ZIP..."):
+            paquete = vtex_armar_zip(tablas, catalogo, extras)
+        st.session_state["vtex_resultado"] = {
+            "zip": paquete,
+            "resumen": resumen_salida,
+            "validacion": pd.DataFrame(hallazgos),
+            "bloqueos": bloqueos,
+            "avisos": avisos,
+            "incidencias": {clave: len(valor) for clave, valor in incidencias.items()},
+        }
+        # Las cuatro tablas ya estan dentro del ZIP: dejarlas vivas durante el
+        # resto del dibujado son cientos de MB que nadie mira.
+        del tablas
+        gc.collect()
+        log_user_activity(
+            VTEX_LABEL,
+            f"Carga VTEX generada: {resumen_salida['Filas de SKU']:,} filas de SKU.",
+            module=VTEX_LABEL,
+        )
+
+    resultado = st.session_state.get("vtex_resultado")
+    if not resultado:
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+    salida = resultado["resumen"]
+    st.success(
+        f"**{salida['Productos en el archivo']:,} productos** y "
+        f"**{salida['Filas de SKU']:,} filas de SKU**: "
+        f"{salida['Productos que se crean']:,} se crean y "
+        f"{salida['Productos que se actualizan']:,} se actualizan reusando su Product ID."
+    )
+    st.caption(
+        f"{salida['Filas de especificación de producto']:,} filas de especificación de "
+        f"producto · {salida['Filas de especificación de SKU']:,} de SKU · "
+        f"{salida['Filas de imagen']:,} de imagen · "
+        f"{salida['Productos fuera']:,} productos quedaron fuera."
+    )
+    if resultado["bloqueos"]:
+        st.error(
+            f"**{resultado['bloqueos']:,} problemas que bloquean la carga** y "
+            f"{resultado['avisos']:,} avisos. Están en la hoja **Validacion** del archivo de "
+            "revisión, dentro del ZIP. No subas las planillas hasta resolverlos."
+        )
+    elif resultado["avisos"]:
+        st.warning(
+            f"Sin bloqueos, con **{resultado['avisos']:,} avisos** en la hoja **Validacion**."
+        )
+    else:
+        st.success(
+            "Sin duplicados de Product ID ni de SKU, sin campos obligatorios vacíos, todas "
+            "las marcas y categorías existen en VTEX y todas las especificaciones llevan su ID."
+        )
+    validacion = resultado.get("validacion")
+    if validacion is not None and not validacion.empty:
+        with st.expander(f"Ver las {len(validacion):,} observaciones"):
+            st.dataframe(validacion.head(VTEX_FILAS_VISTA * 2), width="stretch",
+                         hide_index=True)
+    st.info(
+        "**No se ha escrito nada en VTEX ni en Shopify.** El ZIP lleva las cuatro planillas "
+        "listas para subir desde el admin de VTEX, cada una en su propio archivo, más una "
+        "hoja de revisión con el cruce completo."
+    )
+    st.download_button(
+        "Descargar el ZIP de VTEX",
+        data=resultado["zip"],
+        file_name=f"carga_vtex_supermall_{datetime.now().strftime('%d%m%Y')}.zip",
+        mime="application/zip",
+        key="vtex_descargar",
+        on_click=log_descarga, args=(VTEX_LABEL, "render_vtex_generator"),
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def nav_grupos(puede_auditar=False):
     """El menu entero como datos: `[{clave, etiqueta, items}]`.
 
@@ -30288,6 +31077,8 @@ def nav_grupos(puede_auditar=False):
                  "area": CARGA_CATALOGO_LABEL, "modo": "Carga parcial"},
                 {"etiqueta": SUPERMALL_LABEL, "boton": "operation_nav_supermall",
                  "area": SUPERMALL_LABEL, "modo": ""},
+                {"etiqueta": VTEX_LABEL, "boton": "operation_nav_vtex",
+                 "area": VTEX_LABEL, "modo": ""},
             ],
         },
         {
@@ -30829,6 +31620,9 @@ api_version = "{DEFAULT_API_VERSION}"
         return
     if operation_area == SUPERMALL_LABEL:
         render_carga_supermall()
+        return
+    if operation_area == VTEX_LABEL:
+        render_vtex_generator()
         return
     if operation_area == DICCIONARIOS_LABEL:
         log_acceso_modulo(DICCIONARIOS_LABEL)

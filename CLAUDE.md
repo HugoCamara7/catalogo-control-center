@@ -6050,6 +6050,112 @@ estuviera bien, que es la misma leccion de la seccion 12.
 
 ---
 
+## 5 quinquadragies bis. Los accesorios llegaban a la Carga Sial y no a Shopify (septiembre 2026)
+
+Reportado con una carga real de Rockford: *"tengo una carga que no esta
+haciendo el match completo para subirlo a shopify pero si me arma bien la carga
+sial [...] solo estan subiendo 78 productos pero son mas, y no solo pasa en
+rockford esta pasando en varias marcas"*. Y a continuacion: *"esto esta pasando
+mas en accesorios y en calcetines o medias"*.
+
+Reproducido con SU archivo (181 accesorios) y el maestro completado con el
+perfil real de `data/arti.zip`:
+
+| | antes | ahora |
+|---|---:|---:|
+| Productos en el Matrixify | **81** | **181** |
+| Productos en la Carga Sial | 181 | 181 |
+| Tallas duplicadas (Shopify rechaza el producto) | 27 | **0** |
+
+**El match no fallaba.** Los 181 cruzaban bien con el maestro -- por eso la hoja
+Carga Sial salia completa. Lo que fallaba era lo que pasaba DESPUES, y eran dos
+cosas distintas, las dos invisibles en la Sial.
+
+### 1. La misma pregunta se respondia de dos formas contrarias
+
+`_talla_unica_bloqueada` responde "a este tipo de prenda no le corresponde una
+talla unica" con la CLASE del diccionario maestro. `category_blocks_zero_size`
+respondia lo mismo buscando **SUBCADENAS** ("media", "ropa", "polar"...) en la
+categoria, el tipo y los **TAGS** concatenados.
+
+El docstring de la primera lo dice desde que se escribio -- *"la respuesta tiene
+que ser la misma: si aqui se dijera que si y alli que no, el producto se
+renombraria a Talla Única y despues el filtro lo borraria"* -- y **nadie lo
+comprobaba**. Eso es exactamente lo que pasaba:
+
+```
+maestro: la media trae una sola talla, `0`
+  -> _talla_unica_bloqueada("Medias") = False   (el diccionario dice Accesorios)
+  -> la talla se renombra a "Talla Única"
+  -> category_blocks_zero_size = True           (el texto contiene "media")
+  -> final_variant_filter BORRA el producto ENTERO
+  -> la hoja Carga Sial, que no pasa por ese filtro, lo sigue trayendo
+```
+
+Las **Medias son Accesorios en el diccionario maestro**, que es el dato
+confirmado, y el maestro ARTI las entrega con talla unica: las 100 de esa carga
+desaparecian. Y por ser subcadena, podia caer cualquier producto por una
+palabra que lo contuviera -- **"ropa" dentro de "Europa"**, "media" dentro de
+"intermedia".
+
+Ahora **manda la CLASE**: la declarada en el input o la del diccionario, y
+bloquea si CUALQUIERA de las dos dice calzado o vestuario -- asi una polera
+declarada como "Accesorios" sigue sin merecer una talla unica. Solo cuando no
+hay ninguna de las dos se cae al respaldo por texto, que va **por PALABRA** y
+ya no lleva `media` ni `calcetin`. Las dos funciones leen la misma
+`CLASES_SIN_TALLA_UNICA` y hay una prueba que recorre los 60 tipos del
+diccionario exigiendo que coincidan.
+
+**Lo que NO cambia:** una zapatilla de una sola talla sigue sin crear talla
+unica. Ahi el dato esta incompleto y publicar "Talla Única" es peor que no
+publicar -- es la regla de la seccion 5 novodecies.
+
+### 2. Dos SKU con la misma talla, y Shopify rechaza el producto entero
+
+El maestro trae la reposicion de un modelo con un `CODINT` nuevo y la **misma
+talla**: medido, **47.532 de los 117.161 modelo-color** de `data/arti.zip`
+tienen alguna talla repetida, y los 950 accesorios de Rockford que solo traen
+talla `0` la traen DOS veces.
+
+Salian como dos variantes con el mismo `Option1 Value`. Shopify no rechaza la
+variante repetida: **rechaza el producto entero**, asi que no se crea ninguna de
+las dos. En la hoja Carga Sial, que es **por SKU**, las dos filas son legitimas
+y el almacen las necesita -- por eso la Sial salia bien y la carga no.
+
+`final_variant_filter` deja ahora **una sola variante por talla**, y conserva la
+que trae **codigo de barras** -- que es el dato que usan el almacen y el ERP --;
+a igualdad, la primera, para que dos ejecuciones den el mismo archivo. Se
+reporta en la hoja de observaciones con el producto y la talla: un descarte
+silencioso es como se pierde un dato sin que nadie se entere.
+
+### Las dos rutas se arreglan a la vez
+
+La carga por codigos -- Centry, Carga Sial parcial y **Carga Supermall** --
+llama al **mismo** `final_variant_filter`, asi que perdia los mismos productos y
+emitia las mismas variantes duplicadas. Comprobado ejecutando las dos rutas.
+
+### Y la validacion no podia verlo
+
+`validar_matrixify` agrupaba por el codigo Modelo-Color, que en Matrixify va
+**solo en la primera fila de cada producto**: las filas de variante quedaban
+fuera del `groupby` y la comprobacion de SKU duplicado **no veia ni un
+duplicado**. Ahora agrupa por el handle arrastrado hacia abajo -- la identidad
+del bloque -- y reporta con el codigo. Con eso entra la comprobacion que
+faltaba: **dos variantes que comparten el valor de la opcion**, que es
+justamente lo que Shopify rechaza y lo que no estaba.
+
+### La salida de lo que ya funcionaba es IDENTICA
+
+Comparadas las seis hojas de una carga de 150 productos de calzado y vestuario
+del maestro real, antes y despues: **cero celdas distintas** en el Matrixify
+(763 filas), en la Carga Sial (826) y en las observaciones.
+
+`scripts/test_talla_unica_y_duplicadas.py` (29 pruebas) fija todo esto; **20
+fallan con el codigo anterior** y las 9 que pasan en las dos versiones son las
+que exigen que nada cambie. Las pruebas EJECUTAN el motor con el maestro REAL.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -6292,7 +6398,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **79 archivos y ~2.496 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **80 archivos y ~2.525 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

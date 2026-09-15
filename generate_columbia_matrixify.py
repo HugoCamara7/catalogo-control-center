@@ -1316,44 +1316,105 @@ def sial_dimension_value(product, key, fallback):
     return first_non_empty(*(product.get(column) for column in aliases.get(key, ())), fallback)
 
 
+CLASES_SIN_TALLA_UNICA = ("calzado", "vestuario")
+
+# Solo se usan cuando el diccionario de tipos NO conoce la prenda y el input no
+# declara su clase. Van por PALABRA, nunca por subcadena: buscando "ropa" dentro
+# del texto, un tag "Europa" bloqueaba el producto; buscando "media", cualquier
+# "media estacion" o "intermedia". Y NO estan aqui ni "media" ni "calcetin": el
+# diccionario maestro los clasifica como Accesorios -- que es el dato confirmado
+# -- y el maestro ARTI los entrega con talla unica, asi que bloquearlos borraba
+# el producto entero. Ver `category_blocks_zero_size`.
+TERMINOS_SIN_TALLA_UNICA = (
+    "vestuario",
+    "calzado",
+    "ropa",
+    "zapatilla",
+    "zapato",
+    "bota",
+    "botin",
+    "sandalia",
+    "camisa",
+    "camiseta",
+    "polera",
+    "pantalon",
+    "short",
+    "casaca",
+    "chaqueta",
+    "parka",
+    "polar",
+    "poleron",
+    "vestido",
+    "falda",
+)
+
+
+def _texto_menciona_clase_sin_talla_unica(text):
+    """`term` como PALABRA del texto normalizado, aceptando el plural."""
+    palabras = set(re.findall(r"[a-z0-9]+", text))
+    for term in TERMINOS_SIN_TALLA_UNICA:
+        if term in palabras or f"{term}s" in palabras or f"{term}es" in palabras:
+            return True
+    return False
+
+
+def clase_bloquea_talla_unica(clase):
+    """True si a esa CLASE no le corresponde una talla unica."""
+    return clean(clase).casefold() in CLASES_SIN_TALLA_UNICA
+
+
 def category_blocks_zero_size(product):
-    values = [
-        product_category(product),
+    """True si a este producto NO le corresponde crear una talla unica.
+
+    **Manda la CLASE, no el texto.** Antes esto era una busqueda de subcadenas
+    sobre la categoria, el tipo y los TAGS concatenados, y contradecia a
+    `_talla_unica_bloqueada`, que responde la misma pregunta con el diccionario
+    de tipos. Cuando las dos discrepan el dano no se ve: la talla se renombra a
+    "Talla Única" y despues `final_variant_filter` **borra el producto entero**,
+    que sigue saliendo en la hoja Carga Sial. Asi es como una carga de 181
+    accesorios de Rockford llegaba a Shopify con 78.
+
+    Medido en septiembre de 2026: las **Medias** son Accesorios en el
+    diccionario maestro, el maestro ARTI las entrega con talla unica (`0` u
+    `O/S`) y el texto las bloqueaba, asi que desaparecian las 100 de esa carga.
+    Lo mismo cualquier prenda cuyo tipo o tag CONTUVIERA uno de los terminos:
+    "Europa" dentro de "ropa", "intermedia" dentro de "media".
+
+    El orden es: la clase declarada o la del diccionario de tipos; y solo
+    cuando no hay ninguna de las dos, el respaldo por texto.
+    """
+    declarada = first_non_empty(
+        product.get("Metafield: custom.categoria [single_line_text_field]"),
         product.get("Categoria "),
         product.get("Categoria"),
-        product.get("Type"),
-        product.get("Metafield: custom.tipo [single_line_text_field]"),
-        product.get("Metafield: custom.categoria [single_line_text_field]"),
-        product.get("Tags"),
-    ]
-    text = normalize_text(" ".join(clean(value) for value in values if clean(value)))
-    blocked_terms = (
-        "vestuario",
-        "calzado",
-        "ropa",
-        "zapatilla",
-        "zapato",
-        "bota",
-        "botin",
-        "sandalia",
-        "camisa",
-        "camiseta",
-        "polera",
-        "pantalon",
-        "short",
-        "casaca",
-        "chaqueta",
-        "parka",
-        "polar",
-        "poleron",
-        "vestido",
-        "falda",
-        "media",
-        "medias",
-        "calcetin",
-        "calcetines",
+        product.get("Categoría"),
+        product.get("Category"),
+        product.get("Clase"),
     )
-    return any(term in text for term in blocked_terms)
+    tipo, _ = resolve_product_type(product, None)
+    del_diccionario = clase_de_tipo(tipo)
+    # Bloquea si CUALQUIERA de las dos lo dice: una polera declarada como
+    # "Accesorios" sigue sin merecer una talla unica, y una media cuyo
+    # diccionario dice Accesorios ya no la pierde por una palabra suelta.
+    if clase_bloquea_talla_unica(declarada) or clase_bloquea_talla_unica(del_diccionario):
+        return True
+    if clean(declarada) or clean(del_diccionario):
+        # Hay clase y no es de las que bloquean. La respuesta es NO, y el texto
+        # no puede contradecirla: para eso existe el diccionario.
+        return False
+    text = normalize_text(
+        " ".join(
+            clean(value)
+            for value in (
+                product.get("Type"),
+                product.get("Metafield: custom.tipo [single_line_text_field]"),
+                product.get("Tipo de prenda"),
+                product.get("Tags"),
+            )
+            if clean(value)
+        )
+    )
+    return _texto_menciona_clase_sin_talla_unica(text)
 
 
 def is_zero_size(value):
@@ -1413,10 +1474,11 @@ def _talla_unica_bloqueada(product_type):
     Es la misma pregunta que responde `_row_blocks_zero_size` en el filtro
     final, y la respuesta tiene que ser la misma: si aqui se dijera que si y
     alli que no, el producto se renombraria a "Talla Única" y despues el filtro
-    lo borraria.
+    lo borraria -- y eso es exactamente lo que pasaba con las Medias hasta
+    septiembre de 2026. Por eso las dos leen la MISMA lista de clases
+    (`CLASES_SIN_TALLA_UNICA`) y hay una prueba que las recorre juntas.
     """
-    clase = clase_de_tipo(product_type).casefold()
-    return clase in ("calzado", "vestuario")
+    return clase_bloquea_talla_unica(clase_de_tipo(product_type))
 
 
 def curva_de_tallas_reales(curva):
@@ -1863,6 +1925,62 @@ def final_variant_filter(output_df, sial_df, issues_df):
                     }
                 )
                 output_df = output_df[~drop_accessory_zero].copy()
+
+        # Dos variantes del mismo producto NO pueden compartir el valor de la
+        # opcion: Shopify rechaza el producto ENTERO, asi que no se crea
+        # ninguna de las dos. Y el maestro ARTI lo trae a diario -- una
+        # reposicion del mismo modelo entra con un CODINT nuevo y la misma
+        # talla: medido en septiembre de 2026, 47.532 de los 117.161
+        # modelo-color del maestro tienen alguna talla repetida.
+        #
+        # Esto NO se veia en la hoja Carga Sial, que es por SKU y ahi las dos
+        # filas son legitimas: por eso la Sial salia completa y la carga a
+        # Shopify no. Se conserva la fila con codigo de barras -- que es el
+        # dato que usan el almacen y el ERP -- y, a igualdad, la primera, para
+        # que dos ejecuciones den el mismo archivo.
+        if {"Handle", "Option1 Value"}.issubset(output_df.columns):
+            handle_key = output_df["Handle"].map(clean).replace("", pd.NA).ffill().fillna("").str.upper()
+            size_key = output_df["Option1 Value"].map(clean).str.upper()
+            con_barcode = (
+                output_df["Variant Barcode"].map(clean).ne("")
+                if "Variant Barcode" in output_df.columns
+                else pd.Series(False, index=output_df.index)
+            )
+            claves = pd.DataFrame(
+                {"Handle": handle_key, "Talla": size_key, "__orden": range(len(output_df))}
+            )
+            # `sort_values` estable: primero las que traen codigo de barras, y
+            # dentro de cada grupo el orden original.
+            orden = claves.assign(__con=~con_barcode.to_numpy()).sort_values(
+                ["__con", "__orden"], kind="stable"
+            )
+            conservar = orden[size_key.to_numpy() != ""].drop_duplicates(
+                subset=["Handle", "Talla"], keep="first"
+            ).index
+            drop_same_size = size_key.ne("") & ~output_df.index.isin(conservar)
+            if drop_same_size.any():
+                repetidas = sorted(
+                    {
+                        f"{handle}: {talla}"
+                        for handle, talla in zip(
+                            handle_key[drop_same_size], size_key[drop_same_size]
+                        )
+                    }
+                )
+                issues.append(
+                    {
+                        "Mod-Col": "Salida final",
+                        "Problema": (
+                            "Se dejo una sola variante por talla: el maestro trae mas de un "
+                            "SKU con la misma talla y Shopify rechaza el producto entero. "
+                            + ", ".join(repetidas[:8])
+                            + (" ..." if len(repetidas) > 8 else "")
+                        ),
+                        "Fila input": "",
+                        "Cantidad": safe_int(drop_same_size.sum()),
+                    }
+                )
+                output_df = output_df[~drop_same_size].copy()
 
         if {"Handle", "Variant SKU"}.issubset(output_df.columns):
             sku_key = output_df["Variant SKU"].map(clean).str.upper()

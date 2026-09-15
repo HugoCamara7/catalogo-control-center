@@ -5631,6 +5631,114 @@ codigos reales del maestro -- en vez de leer su codigo.
 
 ---
 
+## 5 septquadragies. Cada carga completa deja su coleccion de revision (septiembre 2026)
+
+`engines/coleccion_de_carga.py` (sin Streamlit ni pandas) + `crear_coleccion_de_carga`
++ `render_coleccion_de_carga`.
+
+Pedido literal: *"necesito que cada vez que termine de cargar un catalogo
+completo se cree con todo ello una coleccion dentro de la web para poder verlo,
+eso es super necesario para la revision de esos productos [...] el nombre de la
+coleccion deberia de tener la fecha que se cargo, la marca y el numero del
+ticket"*.
+
+### El agujero que cierra
+
+Al terminar una carga no habia forma de VER lo que se acababa de cargar. El
+catalogo de la tienda tiene miles de productos y los de hoy quedan mezclados con
+los de siempre: para revisarlos habia que buscarlos de a uno por codigo, o
+filtrar por fecha en el admin -- que no distingue una carga de otra cuando se
+cargan dos el mismo dia.
+
+```
+Carga 2026-09-15 · Vans · CAT-0042
+```
+
+Tres datos, y cada uno responde una pregunta: **cuando**, **que marca** y **que
+solicitud**.
+
+### El enganche esta en el JOB, no en la pantalla
+
+`process_sync_job_next_block` es por donde salen **las dos formas de cargar**:
+el panel de bloques de la sesion y el runner de GitHub Actions. Puesto en la
+pantalla, la carga que sobrevive al cierre de sesion -- que es la normal desde
+la seccion 5 nonies -- se quedaria sin coleccion. Es la misma historia que el
+motor de correo enchufado en `TicketService` y no en cada pantalla.
+
+Y va al final del bloque, **no en la salida temprana**: el bucle del runner
+rompe en cuanto `pending_keys` se vacia y no vuelve a llamar, asi que un
+enganche alli no lo alcanzaria.
+
+- **Solo la carga COMPLETA.** Una parcial toca un campo de productos que ya
+  estaban cargados: no hay "lo que se cargo hoy" que revisar, y dejaria una
+  coleccion por cada mantenimiento.
+- **Solo cuando NO queda nada pendiente.** Creada en el primer bloque, la
+  coleccion de una carga de 8.000 productos tendria 20.
+- **Nunca levanta.** Un fallo al crear la coleccion no puede tumbar ni deshacer
+  una carga que ya escribio miles de productos: misma regla que los correos y
+  que el disparo del runner. Lo que pasa queda en el registro del job.
+- **Sin `st.` en todo el cuerpo**, comprobado por AST: desde un runner no hay
+  Streamlit al que hablarle.
+
+### La solicitud y la marca viajan en el REGISTRO
+
+`_create_sync_job` recibe `ticket` y `marca` y los guarda. **El runner no tiene
+pantalla a la que preguntarle**, asi que un dato que viva en `session_state` no
+le llega. La pantalla pasa la solicitud que ya tiene elegida; el worker, la del
+registro del job remoto.
+
+**La marca solo sale si la carga trae UNA.** Rockford.pe vende cuatro marcas y
+Supermall diez: poner la primera seria mentir, asi que va la etiqueta del SITIO,
+que es cierta. Es el mismo criterio que `marca_para_siblings`. Y se lee del
+metacampo `custom.marca`, nunca del `Vendor`, que es el de la TIENDA
+(`rockfordpe`) y es el mismo para todas sus marcas.
+
+### Lo que hay que saber para no romperlo
+
+- **La fecha va en ISO** (`2026-09-15`). El admin lista las colecciones por
+  orden alfabetico: en ISO eso es orden cronologico.
+- **Nace MANUAL**, y por eso **no hace falta ni un movimiento de
+  reordenamiento**: `collectionAddProductsV2` agrega al FINAL, asi que el orden
+  de la coleccion ES el orden de la carga. Con cualquier otro `sortOrder`
+  Shopify reordena por su cuenta (seccion 5 quadragies).
+- **Y nace PUBLICADA.** Una coleccion creada por API queda sin publicar:
+  existe, se llena y **no la ve nadie**. Publicarla hace que su URL
+  (`/collections/<handle>`) funcione; no la mete en el menu de la tienda, que
+  eso lo decide una persona. Si la publicacion falla, la coleccion **sigue
+  creada** y la pantalla lo dice, en vez de dejar que lo descubra quien abra la
+  URL y reciba un 404.
+- **Solo entran los productos que de verdad quedaron en la tienda.** Un ERROR no
+  esta cargado: meterlo en la coleccion de revision seria decir que si. Los
+  PARCIAL si entran -- estan en la tienda, con avisos --, que es justo lo que
+  hay que ir a mirar. Un producto con varias filas entra si ALGUNA dice que se
+  cargo: puede tener una fila OK del producto y otra de una foto que fallo.
+- **El gid sale del `ID` que devolvio la propia carga**, asi que no cuesta ni
+  una lectura mas a Shopify.
+- **Un producto sin id no se puede agregar y se DICE.** Callarlo dejaria la
+  coleccion incompleta sin que nadie supiera cuales faltaron.
+- **Se reusa por handle.** El runner puede quedarse sin tiempo y encadenar otra
+  tanda: dos tandas de la MISMA carga tienen que acabar en la misma coleccion,
+  no en dos. Y **"Reintentar errores"** mete en ella los que faltaban; sin
+  productos nuevos no gasta ni un viaje.
+
+### La coleccion tiene que llegar a la pantalla
+
+La crea el job, y en el runner ese registro vive en la **maquina del runner**,
+que muere al terminar. Se copia al registro del repositorio de datos -- el unico
+que la pantalla lee --: una coleccion que se crea y no se puede encontrar no
+sirve de nada.
+
+`render_coleccion_de_carga` es **UN solo dibujante** y lo llaman los dos paneles
+(el de la carga en el servidor y el de bloques de la sesion). Escrito dos veces,
+uno de los dos acabaria diciendo otra cosa.
+
+`scripts/test_coleccion_de_carga.py` (34 pruebas) y dos mas en
+`test_carga_remota.py` fijan todo esto; **20 de las 34 fallan con el codigo
+anterior**. Las pruebas EJECUTAN: llaman a `process_sync_job_next_block` de
+punta a punta contra un Shopify falso y comprueban QUE se escribio en la tienda.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -5873,7 +5981,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **77 archivos y ~2.387 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **78 archivos y ~2.423 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

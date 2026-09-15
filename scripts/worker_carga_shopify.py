@@ -40,6 +40,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
+from engines import coleccion_de_carga  # noqa: E402
 from engines.carga_remota import (  # noqa: E402
     JOB_CORRIENDO,
     MINUTOS_MAXIMOS_RUNNER,
@@ -359,6 +360,13 @@ def _ejecutar(job, sha, almacen, site_key, minutos_maximos):
         matrixify_df,
         batch_size=tamano_bloque,
         activate_inventory_locations=bool(job.get("activate_inventory_locations", not parcial)),
+        # De aqui sale el nombre de la coleccion de revision que queda al
+        # terminar la carga. La crea `process_sync_job_next_block`, o sea el
+        # mismo sitio que la pantalla: no hay un segundo camino.
+        ticket=job.get("ticket") or "",
+        marca=coleccion_de_carga.marca_de_la_carga(
+            app.marcas_del_matrixify(matrixify_df),
+            (app.get_brand_config(site_key) or {}).get("label", "")),
     )
     # Se reanuda marcando como hechos los que ya se cargaron en intentos
     # anteriores. Sin esto, un runner que murio a la mitad volveria a escribir
@@ -463,6 +471,20 @@ def _ejecutar(job, sha, almacen, site_key, minutos_maximos):
             # convierte en fallida una carga que si se ejecuto.
             agregar_evento(job, "Aviso", f"No pude guardar el Excel de resultado: {texto_publico(exc)}")
             _decir("Aviso: no pude guardar el Excel de resultado.")
+
+    # La coleccion de revision la crea `process_sync_job_next_block` y queda en
+    # el registro LOCAL del runner, que muere con la maquina. Se copia al
+    # registro del repositorio de datos, que es el unico que la pantalla lee:
+    # una coleccion que se crea y no se puede encontrar no sirve de nada.
+    ultimo = app._load_sync_job(job_local["id"]) or {}
+    if ultimo.get("coleccion"):
+        job["coleccion"] = ultimo["coleccion"]
+        titulo = str(job["coleccion"].get("titulo") or "")
+        if job["coleccion"].get("estado") == "ok":
+            _decir(f"Coleccion de revision: {titulo} "
+                   f"({job['coleccion'].get('productos', 0):,} productos)")
+        else:
+            _decir(f"Coleccion de revision: {job['coleccion'].get('estado')}")
 
     cerrar_job(job)
     almacen.guardar(job, sha, mensaje=f"catalog: job {job['id']} {job.get('status')}")

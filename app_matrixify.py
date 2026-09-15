@@ -2479,12 +2479,22 @@ def validar_matrixify(matrixify_df):
                    "Shopify los fundiria en un solo producto")
 
     skus = texto("Variant SKU")
-    pares = pd.DataFrame({"clave": claves, "sku": skus})
-    pares = pares[(pares["clave"] != "") & (pares["sku"] != "")]
+    # El codigo Modelo-Color va SOLO en la primera fila de cada producto, asi
+    # que agrupar por el dejaba fuera todas las filas de variante y esta
+    # comprobacion no veia ni un duplicado. Se agrupa por el handle arrastrado
+    # hacia abajo, que es la identidad del bloque en Matrixify, y se reporta
+    # con el codigo del producto, que es lo que se busca en el Excel.
+    handle_producto = handles.replace("", pd.NA).ffill().fillna("")
+    clave_producto = claves.replace("", pd.NA).ffill().fillna("")
+    codigo_de_handle = {
+        h: c for h, c in zip(handle_producto, clave_producto) if c
+    }
+    pares = pd.DataFrame({"handle": handle_producto, "sku": skus})
+    pares = pares[(pares["handle"] != "") & (pares["sku"] != "")]
     if not pares.empty:
-        repetidos = pares.groupby(["clave", "sku"]).size()
-        for (clave, sku), veces in repetidos[repetidos > 1].items():
-            anotar(VALIDACION_BLOQUEA, "Variante", clave,
+        repetidos = pares.groupby(["handle", "sku"]).size()
+        for (handle, sku), veces in repetidos[repetidos > 1].items():
+            anotar(VALIDACION_BLOQUEA, "Variante", codigo_de_handle.get(handle, handle),
                    f"El SKU {sku} sale {safe_int_value(veces)} veces en el mismo "
                    "Modelo-Color: es una variante duplicada")
 
@@ -2500,6 +2510,23 @@ def validar_matrixify(matrixify_df):
     sin_talla = sorted({c for c, v, sku in zip(claves, tallas, skus) if sku and not v})
     for clave in sin_talla:
         anotar(VALIDACION_BLOQUEA, "Option1", clave, "Hay variantes sin talla")
+
+    # Dos variantes del mismo producto con la MISMA talla: Shopify rechaza el
+    # producto entero, asi que no se crea ninguna de las dos. Es distinto del
+    # SKU duplicado de arriba -- aqui los SKU son distintos y el valor de la
+    # opcion es el mismo --, y es el caso que de verdad llega del maestro: una
+    # reposicion entra con un CODINT nuevo y la misma talla. `final_variant_filter`
+    # ya deja una sola, asi que esto es la red por si el archivo llega por otra
+    # via; sin ella el producto se cae en Shopify sin que nadie sepa por que.
+    pares_talla = pd.DataFrame({"handle": handle_producto, "talla": tallas})
+    pares_talla = pares_talla[(pares_talla["handle"] != "") & (pares_talla["talla"] != "")]
+    if not pares_talla.empty:
+        repetidas = pares_talla.groupby(["handle", "talla"]).size()
+        for (handle, talla), veces in repetidas[repetidas > 1].items():
+            anotar(VALIDACION_BLOQUEA, "Option1", codigo_de_handle.get(handle, handle),
+                   f"La talla {talla} sale {safe_int_value(veces)} veces en el mismo "
+                   "Modelo-Color: Shopify rechaza un producto con dos variantes "
+                   "que comparten el valor de la opcion")
 
     # Dos NOTACIONES de talla dentro del mismo producto. Una curva `S, M, 40`
     # no es una curva: es un producto con dos escalas pegadas. Y `30` junto a

@@ -22,6 +22,7 @@ el motivo, para que la carga avise en vez de publicar algo inventado.
 
 import re
 import unicodedata
+from functools import lru_cache
 from pathlib import Path
 
 RUTA_PLANTILLA = Path(__file__).resolve().parents[1] / "data" / "plantilla_centry_productos.xlsx"
@@ -58,8 +59,26 @@ def normalizar(valor):
 
     Es la clave con la que se comparan tipos, generos y valores de diccionario.
     "MOCASÍN", "Mocasin" y "mocasines" tienen que caer en la misma entrada.
+
+    El trabajo va en `_normalizar_texto`, que esta CACHEADO. Esta funcion se
+    llama una vez por campo, por fila y por entrada de diccionario: medido en
+    una carga de 1.008 productos contra un catalogo de 4.000, **3,8 millones de
+    llamadas** -- y por dentro recorre la cadena caracter a caracter
+    (`unicodedata.combining` salia 51 millones de veces) mas dos expresiones
+    regulares. Los valores distintos son unos cientos: tipos de prenda,
+    generos y los valores de los diccionarios de la plantilla.
+
+    La cache va sobre el TEXTO ya limpio, nunca sobre el valor original: con el
+    valor como clave, `1`, `1.0` y `True` comparten hash y entrada de cache
+    (`hash(1) == hash(1.0) == hash(True)`), asi que un booleano se llevaria la
+    respuesta de un numero. Es un error que no revienta.
     """
-    texto = _texto(valor).casefold()
+    return _normalizar_texto(_texto(valor))
+
+
+@lru_cache(maxsize=16384)
+def _normalizar_texto(texto):
+    texto = texto.casefold()
     texto = unicodedata.normalize("NFKD", texto)
     texto = "".join(c for c in texto if not unicodedata.combining(c))
     texto = re.sub(r"[^\w\s/-]", " ", texto)
@@ -277,6 +296,31 @@ def valores_permitidos(columna, ruta=None):
     return list(cargar_plantilla(ruta)["diccionarios"].get(_texto(columna), []))
 
 
+def _indice_normalizado(columna, ruta=None):
+    """{valor normalizado: valor tal como lo escribe la plantilla}.
+
+    Se arma UNA vez por columna y vive DENTRO de la plantilla memoizada, asi
+    que recargarla (`cargar_plantilla(recargar=True)`) lo tira solo -- un
+    indice que sobreviviera a la recarga contestaria con el diccionario viejo.
+
+    Por que: `valor_valido` recorria la lista entera normalizando **cada valor
+    permitido en cada llamada**. Con 94 columnas restringidas por producto y
+    diccionarios de decenas de valores, eso es la mayor parte de los 3,8
+    millones de `normalizar` de una carga. El emparejamiento no cambia: gana el
+    PRIMER valor de la lista que normalice igual, como antes.
+    """
+    plantilla = cargar_plantilla(ruta)
+    indices = plantilla.setdefault("__indices__", {})
+    nombre = _texto(columna)
+    indice = indices.get(nombre)
+    if indice is None:
+        indice = {}
+        for permitido in plantilla["diccionarios"].get(nombre, []):
+            indice.setdefault(normalizar(permitido), permitido)
+        indices[nombre] = indice
+    return indice
+
+
 def valor_valido(columna, valor, ruta=None):
     """(valor_normalizado, ok). Empareja sin tildes ni mayusculas.
 
@@ -284,14 +328,14 @@ def valor_valido(columna, valor, ruta=None):
     salga con la ortografia que Centry espera.
     """
     texto = _texto(valor)
-    permitidos = valores_permitidos(columna, ruta)
     if not texto:
         return "", True
-    if not permitidos:
+    indice = _indice_normalizado(columna, ruta)
+    if not indice:
         return texto, True
-    for permitido in permitidos:
-        if normalizar(permitido) == normalizar(texto):
-            return permitido, True
+    permitido = indice.get(normalizar(texto))
+    if permitido is not None:
+        return permitido, True
     return texto, False
 
 

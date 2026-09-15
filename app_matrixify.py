@@ -15494,8 +15494,20 @@ def crear_coleccion_de_carga(job, shopify_config):
         else:
             existente = fetch_collection_by_handle(shopify_config, handle) or {}
             identificador = clean_value(existente.get("id"))
+            if not identificador and clean_value(job.get("ticket")) and fetch_collections is not None:
+                # Y si no esta con ESTE handle, se busca la de la solicitud
+                # sea cual sea su fecha: la pantalla de la solicitud puede
+                # haberla creado ya -- posiblemente otro dia --, y dos
+                # colecciones de la misma solicitud con la mitad de los
+                # productos cada una es peor que ninguna.
+                existente = coleccion_de_carga.coleccion_de_la_solicitud(
+                    fetch_collections(shopify_config), job.get("ticket")) or {}
+                identificador = clean_value(existente.get("id"))
             if identificador:
                 registro["reusada"] = True
+                registro["handle"] = clean_value(existente.get("handle")) or handle
+                registro["titulo"] = clean_value(existente.get("title")) or titulo
+                handle = registro["handle"]
         if not identificador:
             creada = collection_create(
                 shopify_config, titulo, handle=handle,
@@ -15540,6 +15552,160 @@ def crear_coleccion_de_carga(job, shopify_config):
     job["coleccion"] = registro
     _save_sync_job(job)
     return job
+
+
+def crear_coleccion_de_solicitud(ticket, site_keys, aviso=None, progreso=None):
+    """Deja la coleccion de revision de UNA solicitud en cada sitio que pidio.
+
+    La carga ya deja la suya en el sitio donde corrio, y eso resuelve el caso
+    normal. Pero una solicitud de Columbia pide publicar en Columbia.pe **y**
+    en Rockford.pe, y revisar lo que se cargo hay que poder hacerlo en los dos.
+
+    Cuatro cosas que no son negociables:
+
+    - **Es LA MISMA coleccion que dejo la carga**, nunca una segunda. Se busca
+      por el CODIGO de la solicitud (`coleccion_de_la_solicitud`), no por el
+      handle completo: la fecha del nombre es la del dia en que se cargo y
+      quien revisa entra al dia siguiente, asi que emparejar por el handle
+      dejaria la solicitud con dos colecciones a medias.
+    - **Un codigo que no esta en ese sitio NO bloquea.** En el Excel del
+      mantenedor si bloquea, porque ahi la persona pidio exactamente esos
+      codigos en esa tienda. Aqui es lo normal -- la solicitud pidio tres
+      sitios y puede que solo se haya cargado en dos --, asi que se agrega lo
+      que hay y **se dice** lo que falta.
+    - **Los codigos se buscan con el mismo indice que el mantenedor**
+      (`indice_de_catalogo`), que sabe encontrar un producto por su metacampo,
+      por el handle, por el SKU, por un tag o por el codigo dentro del nombre.
+      Un segundo criterio de busqueda se separaria del primero sin que nadie lo
+      note, que es la trampa de las dos `normalize_size`.
+    - **Un sitio que falla no detiene a los demas.** Es la misma regla que la
+      limpieza de auditoria: cortar en seco deja sin saber que alcanzo a
+      hacerse.
+
+    Devuelve el parte de cada sitio. **Nunca levanta.**
+    """
+    ticket = ticket or {}
+    codigo_ticket = clean_value(ticket.get("code"))
+    codigos = []
+    for valor in ticket.get("model_colors") or []:
+        valor = clean_value(valor).upper()
+        if valor and valor not in codigos:
+            codigos.append(valor)
+    items = [{"fila": numero, "codigo": codigo, "orden": numero}
+             for numero, codigo in enumerate(codigos, start=1)]
+    fecha = clean_value(ticket.get("created_at"))[:10]
+    marca = clean_value(ticket.get("brand"))
+
+    partes = []
+    for site_key in site_keys or []:
+        # `site_label` es el SITIO (`Columbia.pe`) y `label` es la MARCA
+        # (`Columbia`). Son dos cosas distintas y aqui hablamos de tiendas.
+        etiqueta = clean_value((SITE_CONFIGS.get(site_key) or {}).get("site_label")) or site_key
+        parte = {"sitio": site_key, "etiqueta": etiqueta, "estado": "error", "detalle": "",
+                 "pedidos": len(items), "agregados": 0, "ya_estaban": 0,
+                 "no_encontrados": 0, "ambiguos": 0}
+        if progreso:
+            progreso(etiqueta)
+        try:
+            shopify_config = get_shopify_config(site_key)
+            if not is_shopify_configured(shopify_config):
+                parte.update(estado="sin configurar",
+                             detalle="El sitio no tiene Shopify en Secrets, asi que no hay "
+                                     "tienda donde crear la coleccion.")
+                partes.append(parte)
+                continue
+
+            productos = leer_catalogo_del_sitio(site_key, shopify_config, aviso=aviso)
+            indice = colecciones_motor.indice_de_catalogo(productos)
+
+            titulo = coleccion_de_carga.nombre_de_coleccion(fecha, marca, codigo_ticket)
+            handle = coleccion_de_carga.handle_de_coleccion(titulo)
+            existente = coleccion_de_carga.coleccion_de_la_solicitud(
+                fetch_collections(shopify_config), codigo_ticket)
+            if not existente:
+                existente = fetch_collection_by_handle(shopify_config, handle) or {}
+            identificador = clean_value(existente.get("id"))
+            if identificador:
+                titulo = clean_value(existente.get("title")) or titulo
+                handle = clean_value(existente.get("handle")) or handle
+
+            # Lo que la coleccion ya tiene no se vuelve a agregar: en una
+            # solicitud de 500 productos eso son dos viajes que no escriben
+            # nada, y ademas el parte diria que se agregaron cosas que ya
+            # estaban.
+            claves_actuales = []
+            if identificador:
+                claves_actuales = [
+                    _clave_de_registro(registro) for registro in fetch_collection_products(
+                        shopify_config, identificador, sort_key="MANUAL",
+                        max_items=BOOST_PRODUCTOS_MAXIMOS) or []
+                ]
+
+            informe = colecciones_motor.validar_asignacion(items, indice, claves_actuales)
+            gids = []
+            for fila in informe["listos"]:
+                gid = clean_value((fila.get("producto") or {}).get("Product ID"))
+                if gid and gid not in gids:
+                    gids.append(gid)
+            parte.update(
+                titulo=titulo, handle=handle,
+                ya_estaban=len(informe["ya_estaban"]),
+                no_encontrados=len(informe["no_encontrados"]),
+                ambiguos=len(informe["ambiguos"]),
+                faltan=[fila["codigo"] for fila in informe["no_encontrados"]][:20],
+            )
+
+            if not identificador and not gids:
+                # Crear una coleccion vacia no ayuda a revisar nada y deja
+                # basura en la tienda que despues hay que borrar a mano.
+                parte.update(estado="sin productos",
+                             detalle="Ninguno de los %d codigos de la solicitud esta cargado "
+                                     "en este sitio." % len(items))
+                partes.append(parte)
+                continue
+
+            if not identificador:
+                creada = collection_create(
+                    shopify_config, titulo, handle=handle,
+                    # MANUAL, y por eso no hace falta ni un movimiento: los
+                    # productos se agregan al FINAL, asi que el orden de la
+                    # coleccion es el de la solicitud.
+                    sort_order=colecciones_motor.ORDEN_MANUAL,
+                    body_html=(
+                        f"Productos de la solicitud {codigo_ticket}"
+                        + (f" ({marca})" if marca else "")
+                        + ". Coleccion creada por Catalog Control Center para revisar la carga."
+                    ),
+                ) or {}
+                identificador = clean_value(creada.get("id"))
+                parte["creada"] = True
+            else:
+                parte["reusada"] = True
+            if not identificador:
+                raise ShopifyApiError("Shopify no devolvio el id de la coleccion.")
+            parte["id"] = identificador
+
+            if gids:
+                collection_add_products(shopify_config, identificador, gids)
+                parte["agregados"] = len(gids)
+
+            # Una coleccion creada por API queda SIN publicar: existe, se llena
+            # y no la ve nadie. Que falle publicar no deshace lo demas.
+            try:
+                collection_publish(shopify_config, identificador)
+                parte["publicada"] = True
+            except Exception as exc:  # noqa: BLE001
+                parte["publicada"] = False
+                parte["aviso"] = f"No se pudo publicar: {clean_value(exc)}"
+
+            parte["estado"] = "ok"
+            parte["url"] = (
+                f"https://{clean_value(shopify_config.get('shop_domain'))}/collections/{handle}")
+        except Exception as exc:  # noqa: BLE001
+            parte["estado"] = "error"
+            parte["detalle"] = f"{type(exc).__name__}: {clean_value(exc)}"
+        partes.append(parte)
+    return partes
 
 
 def process_sync_job_next_block(job_id, shopify_config, max_retries=2, progress_callback=None):
@@ -22143,6 +22309,22 @@ def _render_validacion_excel(guardado, site_key, shopify_config):
         with st.expander(f"{len(descartes)} filas descartadas al leer el Excel"):
             st.dataframe(pd.DataFrame(descartes), width="stretch", hide_index=True)
 
+    # Emparejar por el metacampo es seguro; hacerlo por un tag o por el texto
+    # del handle es una DEDUCCION, y quien revisa tiene que poder distinguirlas
+    # sin abrir el Excel. Los productos que creo esta app caen todos en la
+    # primera fuente, asi que el aviso solo sale cuando hay algo que mirar.
+    deducidos = {fuente: cuantos
+                 for fuente, cuantos in (informe.get("por_fuente") or {}).items()
+                 if fuente and fuente != "codigo"}
+    if deducidos:
+        st.caption(
+            "Emparejados sin el metacampo `custom.codigo_modelo_color`: "
+            + " · ".join(
+                f"{cuantos} por {colecciones_motor.ETIQUETA_DE_FUENTE.get(fuente, fuente)}"
+                for fuente, cuantos in deducidos.items())
+            + ". Son productos que están en la tienda pero que no cargó esta app."
+        )
+
     if informe["listos"] or informe["ya_estaban"]:
         with st.expander(
                 f"Vista previa: {len(informe['listos'])} productos a agregar", expanded=True):
@@ -22151,6 +22333,7 @@ def _render_validacion_excel(guardado, site_key, shopify_config):
                     "Orden": f.get("orden") if f.get("orden") is not None else numero,
                     "Código": f.get("codigo"), "Producto": f.get("titulo"),
                     "Handle": f.get("handle"),
+                    "Emparejado por": f.get("emparejado_por", ""),
                 } for numero, f in enumerate(informe["listos"], start=1)]),
                 width="stretch", hide_index=True,
             )
@@ -27544,6 +27727,127 @@ def render_acciones_con_comentario(service, actor, ticket, con_comentario, prefi
                 st.warning(mensaje)
 
 
+def _render_coleccion_de_solicitud(ticket, actor):
+    """El panel que deja la coleccion de revision de la solicitud en sus sitios.
+
+    Va en la pestana de Productos porque es justo donde estan listados los
+    codigos que van a entrar en ella.
+
+    **Los sitios salen de la propia solicitud** (`ticket["sites"]`), que es lo
+    que la marca pidio publicar, no del sitio elegido en la barra lateral: una
+    solicitud de Columbia va a Columbia.pe y a Rockford.pe, y revisarla en uno
+    solo deja la mitad sin mirar. Se pueden agregar otros a mano -- Supermall.pe
+    no recibe input comercial y por eso nunca esta en la lista, pero ahi tambien
+    se acaba cargando.
+    """
+    codigo = clean_value(ticket.get("code"))
+    st.markdown("---")
+    st.markdown("**Colección de revisión**")
+    st.caption(
+        "Deja en cada tienda una colección con los productos de esta solicitud, para "
+        "poder revisarlos sin ir buscándolos de a uno. Es la MISMA colección que crea "
+        "la carga al terminar: si ya existe se completa, nunca se duplica."
+    )
+
+    if clean_value(actor.get("role")) not in {ROLE_ADMIN, ROLE_OPERATOR}:
+        st.caption("Solo Operaciones puede crear colecciones en la tienda.")
+        return
+
+    lista, faltan = colecciones_api_lista()
+    if not lista:
+        st.info("Falta actualizar `shopify_api.py`: no tiene " + ", ".join(faltan) + ".")
+        return
+
+    codigos = [clean_value(valor) for valor in ticket.get("model_colors") or [] if clean_value(valor)]
+    if not codigos:
+        # Las solicitudes viejas guardaron solo el CONTEO de modelos-color, no
+        # la lista. Sin los codigos no hay nada que meter en la coleccion, y
+        # decirlo es mejor que dibujar un boton que no puede funcionar.
+        st.info(
+            "Esta solicitud no guarda la lista de códigos modelo-color, así que no se "
+            "puede armar su colección. La deja igualmente la carga al terminar."
+        )
+        return
+
+    # La solicitud guarda sus sitios por `site_label` (`Columbia.pe`), que es lo
+    # que escribio el input comercial. `label` es la MARCA (`Columbia`) y con
+    # ella no emparejaria ninguno.
+    sitios_del_ticket, sin_resolver = coleccion_de_carga.sitios_de_la_solicitud(
+        ticket, {clave: clean_value(config.get("site_label"))
+                 for clave, config in SITE_CONFIGS.items()})
+    if sin_resolver:
+        st.warning(
+            "La solicitud pidió %s, que no está entre los sitios configurados."
+            % ", ".join(sin_resolver)
+        )
+
+    elegidos = st.multiselect(
+        "Sitios donde crearla",
+        options=list(SITE_CONFIGS.keys()),
+        default=sitios_del_ticket,
+        format_func=lambda clave: clean_value(
+            (SITE_CONFIGS.get(clave) or {}).get("site_label")) or clave,
+        key=f"coleccion_solicitud_sitios_{codigo}",
+        help="Vienen marcados los que pidió la solicitud. Puedes agregar otros.",
+    )
+
+    # El hueco del aviso se crea SIEMPRE, nunca dentro de la rama del boton: un
+    # `st.empty()` condicional cambia la forma del arbol de elementos entre un
+    # rerun y el siguiente, y Streamlit AGREGA el bloque de abajo debajo del
+    # viejo en vez de reemplazarlo -- media pantalla duplicada en gris.
+    aviso = st.empty()
+    if st.button("Crear la colección en esos sitios", type="primary",
+                 key=f"coleccion_solicitud_crear_{codigo}", disabled=not elegidos):
+        with st.spinner("Leyendo el catálogo de cada sitio y armando la colección..."):
+            partes = crear_coleccion_de_solicitud(
+                ticket, elegidos, aviso=aviso,
+                progreso=lambda etiqueta: aviso.info(f"Trabajando en {etiqueta}..."),
+            )
+        aviso.empty()
+        st.session_state[f"coleccion_solicitud_partes_{codigo}"] = partes
+        hechas = [parte["etiqueta"] for parte in partes if parte.get("estado") == "ok"]
+        log_user_activity(
+            "Coleccion de revision de la solicitud",
+            "%s en %s." % (codigo, ", ".join(hechas) if hechas else "ningun sitio"),
+            module="Solicitudes",
+            ticket=codigo, marca=clean_value(ticket.get("brand")),
+            resultado="ok" if hechas else "error",
+        )
+
+    partes = st.session_state.get(f"coleccion_solicitud_partes_{codigo}") or []
+    if not partes:
+        return
+    st.dataframe(
+        pd.DataFrame([{
+            "Sitio": parte.get("etiqueta"),
+            "Estado": parte.get("estado"),
+            "Colección": parte.get("titulo", ""),
+            "Agregados": parte.get("agregados", 0),
+            "Ya estaban": parte.get("ya_estaban", 0),
+            "No están en ese sitio": parte.get("no_encontrados", 0),
+            "Ambiguos": parte.get("ambiguos", 0),
+            "Detalle": parte.get("detalle") or parte.get("aviso") or "",
+        } for parte in partes]),
+        width="stretch", hide_index=True,
+    )
+    for parte in partes:
+        if parte.get("estado") == "ok" and parte.get("url"):
+            st.markdown("- [%s · %s](%s)" % (parte.get("etiqueta"), parte.get("titulo"),
+                                             parte.get("url")))
+    # Un codigo que no esta en ese sitio NO es un fallo -- la solicitud pudo
+    # pedir tres sitios y haberse cargado en dos --, pero callarlo haria creer
+    # que la coleccion los lleva todos.
+    for parte in partes:
+        if parte.get("faltan"):
+            with st.expander("%s · %d códigos que no están en esa tienda"
+                             % (parte.get("etiqueta"), parte.get("no_encontrados", 0))):
+                st.caption(
+                    "No es un error de la colección: son productos de la solicitud que "
+                    "todavía no están cargados en ese sitio."
+                )
+                st.write(", ".join(parte["faltan"]))
+
+
 def render_ticket_detail(service, actor, code):
     try:
         # Para dibujar, no para escribir: ver `ticket_para_pantalla`.
@@ -27620,6 +27924,7 @@ def render_ticket_detail(service, actor, code):
             )
         else:
             st.caption("El detalle completo está disponible en el archivo de validación descargable.")
+        _render_coleccion_de_solicitud(ticket, actor)
     with tab_files:
         download_cols = st.columns(3)
         try:

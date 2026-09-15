@@ -169,3 +169,83 @@ def productos_de_la_carga(filas):
         "sin_id": sin_id,
         "con_error": con_error,
     }
+
+
+# --- la coleccion de una SOLICITUD ----------------------------------------
+#
+# La carga deja su coleccion en el sitio donde corrio. Pero una solicitud pide
+# publicar en VARIOS sitios -- una de Columbia va a Columbia.pe y a Rockford.pe
+# --, y revisar lo que se cargo hay que poder hacerlo en cada uno. Lo que sigue
+# es lo que permite que la misma solicitud tenga SU coleccion en cada tienda,
+# y -- esto es lo importante -- que sea LA MISMA que dejo la carga, no una
+# segunda con otro nombre.
+
+
+def sufijo_de_solicitud(ticket):
+    """El trozo final del handle que identifica a una solicitud: `-cat-0042`."""
+    codigo = handle_de_coleccion(ticket)
+    return f"-{codigo}" if codigo else ""
+
+
+def es_de_la_solicitud(handle, ticket):
+    """Si ese handle es la coleccion de ESA solicitud, sea cual sea su fecha.
+
+    La fecha del nombre es la del dia en que se cargo, y quien abre la
+    solicitud para revisarla puede hacerlo al dia siguiente. Emparejando por el
+    handle completo, ese segundo dia se crearia una coleccion nueva y la
+    solicitud acabaria con dos, cada una con la mitad de los productos.
+
+    Se exige ademas el prefijo `carga-`: una coleccion que alguien llamo
+    "Novedades CAT-0042" es suya, no nuestra, y llenarla seria escribir donde
+    nadie lo pidio.
+    """
+    sufijo = sufijo_de_solicitud(ticket)
+    handle = handle_de_coleccion(handle)
+    if not sufijo or not handle:
+        return False
+    return handle.startswith(handle_de_coleccion(PREFIJO) + "-") and handle.endswith(sufijo)
+
+
+def coleccion_de_la_solicitud(colecciones, ticket):
+    """La coleccion que ya existe para esa solicitud, o `{}`.
+
+    Que no exista NO es un error: es la respuesta a "¿ya la crearon?".
+    """
+    for coleccion in colecciones or []:
+        if es_de_la_solicitud((coleccion or {}).get("handle"), ticket):
+            return dict(coleccion)
+    return {}
+
+
+def _clave_de_sitio(valor):
+    return re.sub(r"[^a-z0-9]+", "", _sin_acentos(valor).lower())
+
+
+def sitios_de_la_solicitud(ticket, etiquetas_por_sitio):
+    """`(site_keys, sin_resolver)` de los sitios donde corresponde la coleccion.
+
+    Los sitios de una solicitud se guardan por ETIQUETA (`Columbia.pe`), que es
+    lo que eligio la marca en el input, y todo lo demas de la app trabaja con
+    la clave (`columbia`). `etiquetas_por_sitio` es `{clave: etiqueta}`.
+
+    Una etiqueta que no corresponde a ningun sitio configurado **se devuelve
+    aparte en vez de ignorarse**: una solicitud que pedia tres sitios y deja
+    colecciones en dos se lee igual de bien que una que dejo las tres si nadie
+    dice cual falto.
+    """
+    indice = {}
+    for clave, etiqueta in (etiquetas_por_sitio or {}).items():
+        for forma in (etiqueta, clave):
+            marca = _clave_de_sitio(forma)
+            if marca:
+                indice.setdefault(marca, clave)
+
+    claves, sin_resolver = [], []
+    for sitio in (ticket or {}).get("sites") or []:
+        clave = indice.get(_clave_de_sitio(sitio))
+        if not clave:
+            if _texto(sitio):
+                sin_resolver.append(_texto(sitio))
+        elif clave not in claves:
+            claves.append(clave)
+    return claves, sin_resolver

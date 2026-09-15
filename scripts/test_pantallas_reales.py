@@ -40,6 +40,7 @@ AREAS = [
     "KPIs de catálogo",
     "Status de carga",
     "Carga Supermall",
+    "Generador VTEX",
     "Diccionarios",
     "Colecciones",
     "Boost PLP",

@@ -8,7 +8,7 @@ carga real antes de tocar nada:
     Categoria           vacia en TODA la carga completa
     Tipo de Material    65 caracteres  (tope 30)
     Tecnologias         71 caracteres  (tope 50)
-    Caracteristicas    144 caracteres  (tope 130)
+    Caracteristicas    144 caracteres  (tope 100)
 
 Y las tallas que no son tallas llegaban a la hoja del almacen.
 """
@@ -157,11 +157,41 @@ class TestLosTopesDeLaHoja(unittest.TestCase):
         larga = "Una tecnologia con un nombre absolutamente larguisimo que no entra"
         self.assertEqual(sc.acortar(larga, 50, sc.O_VACIO), ("", sc.acortar(larga, 50, sc.O_VACIO)[1]))
 
-    def test_las_caracteristicas_se_recortan_a_130_en_palabra(self):
+    def test_el_tope_de_caracteristicas_es_100(self):
+        """Confirmado por el usuario en septiembre de 2026. Va aqui y no solo en
+        el bucle generico: el tope es un dato de negocio, y cambiarlo tiene que
+        ser una decision, no el efecto de tocar otra cosa."""
+        self.assertEqual(sc.LIMITES[sc.CARACTERISTICAS], (100, sc.RECORTAR))
+
+    def test_las_caracteristicas_se_recortan_en_palabra(self):
+        tope = sc.LIMITES[sc.CARACTERISTICAS][0]
         sial, _ = carga_completa()
         features = sial.iloc[0]["Caracteristicas"]
-        self.assertLessEqual(len(features), 130)
+        self.assertLessEqual(len(features), tope)
         self.assertTrue(LARGO_FEATURES.startswith(features))
+        # Se corta en el separador, nunca a mitad de palabra.
+        self.assertTrue(LARGO_FEATURES[len(features):].lstrip().startswith("|")
+                        or LARGO_FEATURES[len(features)] == " ")
+
+    def test_la_hoja_POR_CODIGOS_respeta_el_mismo_tope(self):
+        """No basta con que las dos llamen a `ajustar_fila`: se comprueba
+        EJECUTANDO. Leer el codigo no es ejecutarlo."""
+        tope = sc.LIMITES[sc.CARACTERISTICAS][0]
+        mx, _ = app.build_centry_matrixify_from_master(
+            ["RK1-WSA"], pd.DataFrame(), maestro(), ROCKFORD)
+        # En esta hoja las caracteristicas salen de los tags del producto.
+        mx["Tags"] = LARGO_FEATURES.replace(" | ", ", ")
+        sial = app.build_sial_de_sitio_from_matrixify(mx, ROCKFORD)
+        if isinstance(sial, tuple):
+            sial = sial[0]
+        valores = [str(v) for v in sial["Caracteristicas"]]
+        self.assertTrue(valores)
+        for valor in valores:
+            self.assertLessEqual(len(valor), tope)
+        # Y dice lo MISMO que la hoja de la carga completa: un solo tope, una
+        # sola politica, los dos caminos.
+        completa, _ = carga_completa()
+        self.assertEqual(valores[0], completa.iloc[0]["Caracteristicas"])
 
     def test_lo_que_ya_entra_no_se_toca(self):
         for columna, (limite, politica) in sc.LIMITES.items():

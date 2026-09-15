@@ -1878,14 +1878,21 @@ distintas porque los datos son distintos:
 | `Color Web` | 30 | antes de la coma |
 | `Tipo de Material` | 30 | antes de la coma |
 | `Tecnologias ` | 50 | primer valor, o **vacio** |
-| `Caracteristicas` | 130 | recortar en palabra |
+| `Caracteristicas` | **100** | recortar en palabra |
 
 `Color Web` y `Tipo de Material` son listas donde el primer elemento es el valor
 principal: "AZUL MARINO, BLANCO, ROJO" es fundamentalmente azul marino. Cortar
 la lista conserva el dato; recortar la cadena lo destruye. En `Tecnologias ` una
 tecnologia a medias es peor que ninguna -"Omni-Heat Reflec" no existe-, asi que
 si ni el primer valor entra, se deja vacia. `Caracteristicas` es prosa
-descriptiva: 130 caracteres siguen sirviendo.
+descriptiva: los caracteres que entren siguen sirviendo.
+
+**El tope de `Caracteristicas` bajo de 130 a 100 en septiembre de 2026**, por
+confirmacion del usuario. Es un dato de NEGOCIO, no una constante tecnica: vive
+en `LIMITES` de `engines/sial_campos` y hay una prueba que lo fija en 100, para
+que cambiarlo sea una decision y no el efecto de tocar otra cosa. Las dos hojas
+-la de la carga completa y la de la carga por codigos- lo heredan sin tocarlas,
+que es justo para lo que se extrajo la regla.
 
 **Todo ajuste se REPORTA** en la hoja de Revision. Un recorte silencioso es como
 se pierde un dato sin que nadie se entere.
@@ -5753,7 +5760,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **76 archivos y ~2.356 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **76 archivos y ~2.358 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

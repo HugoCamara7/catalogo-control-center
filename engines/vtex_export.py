@@ -93,6 +93,17 @@ ETIQUETAS = {
     IMAGENES: "Imágenes",
 }
 
+# Como se llama en el resumen el conteo de filas de cada planilla. Escrito una
+# sola vez: `generar` las pone y `planillas_sin_origen` las lee, y con dos
+# listas una acabaria preguntando por una clave que la otra ya no escribe --
+# un `.get()` con la clave mal escrita **no revienta**, devuelve `None`.
+FILAS_EN_EL_RESUMEN = {
+    PRODUCTOS: "Filas de SKU",
+    ESPEC_PRODUCTO: "Filas de especificación de producto",
+    ESPEC_SKU: "Filas de especificación de SKU",
+    IMAGENES: "Filas de imagen",
+}
+
 COLUMNAS_PRODUCTOS = (
     "Product ID", "Product Name", "Active product", "Description",
     "Additional description", "Brand ID", "Brand", "Department ID",
@@ -1754,7 +1765,7 @@ def generar(emparejados, catalogo, referencia_sku="arti",
     resumen = {
         "Productos en el archivo": len(contextos),
         "Productos fuera": len(fuera),
-        "Filas de SKU": len(productos),
+        FILAS_EN_EL_RESUMEN[PRODUCTOS]: len(productos),
         "Productos que se crean": sum(1 for c, _ in contextos if c.nuevo),
         "Productos que se actualizan": sum(1 for c, _ in contextos if not c.nuevo),
         "SKU que se crean": sum(
@@ -1763,13 +1774,61 @@ def generar(emparejados, catalogo, referencia_sku="arti",
         # recorrido mas pero ni una fila guardada. Se hace aqui y no en la
         # pantalla para que el numero que se enseña y el archivo no puedan
         # discrepar. De paso, este recorrido es el que llena los avisos.
-        "Filas de especificación de producto": len(tablas[ESPEC_PRODUCTO]),
-        "Filas de especificación de SKU": len(tablas[ESPEC_SKU]),
-        "Filas de imagen": len(tablas[IMAGENES]),
+        FILAS_EN_EL_RESUMEN[ESPEC_PRODUCTO]: len(tablas[ESPEC_PRODUCTO]),
+        FILAS_EN_EL_RESUMEN[ESPEC_SKU]: len(tablas[ESPEC_SKU]),
+        FILAS_EN_EL_RESUMEN[IMAGENES]: len(tablas[IMAGENES]),
     }
     incidencias = {"fuera": fuera, "avisos": agrupar_avisos(apuntados)}
     resumen["Avisos"] = len(incidencias["avisos"])
     return tablas, incidencias, resumen
+
+
+# Que planilla de SALIDA se queda vacia cuando NO se subio su export. Las dos
+# de especificaciones son las unicas asi: la lista de campos de cada categoria
+# y los IDs de los valores de su dominio (`141 = talla 39`, `78 = Rojo`) viven
+# SOLO dentro de esos dos exports. Sin ellos no se puede escribir ni una fila
+# sin inventarse un ID, y un ID inventado en VTEX escribe encima de otro campo.
+ORIGEN_DE_LA_PLANILLA = {
+    ESPEC_PRODUCTO: (
+        ESPEC_PRODUCTO,
+        "De ahi salen los campos de cada categoria (Genero, Marca, Material...) "
+        "y el ID de cada valor de su dominio. Sin ese export no se puede escribir "
+        "ni una fila sin inventar un ID.",
+    ),
+    ESPEC_SKU: (
+        ESPEC_SKU,
+        "De ahi salen los campos del SKU -- Talla y Color -- y el ID de cada "
+        "talla y cada color en la tienda.",
+    ),
+}
+
+
+def planillas_sin_origen(catalogo, resumen):
+    """Las planillas que salen VACIAS porque su export no se subio.
+
+    Es un DATO, no un texto de pantalla: la pantalla solo lo dibuja. Existe
+    porque una planilla con cero filas y sin explicacion se lee como "la app no
+    hizo nada", cuando lo que pasa es que el motor se niega a inventar IDs --
+    es la misma regla que "un boton que no se dibuja y no explica por que se lee
+    como no funciona".
+
+    La senal es `catalogo.cabeceras`: ahi hay una entrada por cada export que de
+    verdad se leyo, asi que su ausencia significa que ese archivo no se subio.
+    Una planilla vacia **con** su export subido es otra cosa -- categorias sin
+    campos dados de alta -- y no se reporta aqui, porque seria adivinar.
+    """
+    faltan = []
+    for archivo, (origen, motivo) in ORIGEN_DE_LA_PLANILLA.items():
+        if (resumen or {}).get(FILAS_EN_EL_RESUMEN[archivo]):
+            continue
+        if origen in (catalogo.cabeceras or {}):
+            continue
+        faltan.append({
+            "Planilla vacia": ETIQUETAS[archivo],
+            "Export que falta": ETIQUETAS[origen],
+            "Por que": motivo,
+        })
+    return faltan
 
 
 def _anotar_aviso(avisos, referencia, campo, motivo):

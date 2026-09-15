@@ -6023,9 +6023,40 @@ se va el indice**. Con un export bastante mayor que el de hoy, esta pantalla no
 cabria con otra persona cargando a la vez. El camino de fondo es el mismo
 Pendiente 7 -- mover el trabajo pesado al worker.
 
+### Subir SOLO Products and SKUs deja dos planillas en CERO, y eso se dice
+
+Reportado asi: *"Subi products and skus pero no me boto nada en los otros excel
+porque pasa eso?"*. Reproducido cargando solo esa planilla: las dos de
+especificaciones salen con **0 filas**.
+
+**No es un fallo.** La lista de campos de cada categoria -- Genero, Marca,
+Material, Talla, Color -- y **el ID de cada valor de su dominio**
+(`141 = talla 39`, `78 = Rojo`) viven SOLO dentro de esos dos exports.
+`campos_de_la_categoria()` devuelve `[]` y `campo_de_sku()` devuelve `None`, asi
+que no hay ni un ID que escribir, y el motor **se niega a inventarlo**: un ID de
+especificacion inventado en VTEX escribe encima de otro campo. Las imagenes si
+salen, porque esas vienen del catalogo de Shopify.
+
+Lo que estaba mal era **donde** se decia. El aviso de la subida ya lo advertia,
+pero ahi todavia no se ha generado nada; quien llega al panel de resultado ve
+tres archivos en cero y ninguna explicacion al lado. `planillas_sin_origen`
+devuelve, como DATO, que planilla sale vacia y **que export hay que subir**, y
+la pantalla lo dibuja junto al conteo. Es la misma regla que "un boton que no se
+dibuja y no explica por que se lee como no funciona".
+
+- **La senal es `catalogo.cabeceras`**: ahi hay una entrada por cada export que
+  de verdad se leyo, asi que su ausencia significa que ese archivo no se subio.
+- **Una planilla vacia CON su export subido NO se reporta.** Eso es otra cosa
+  -- categorias sin campos dados de alta en VTEX -- y decir "falta un archivo"
+  mandaria a buscar lo que no falta.
+- **Las claves del conteo se escriben una sola vez** (`FILAS_EN_EL_RESUMEN`):
+  `generar` las pone y `planillas_sin_origen` las lee. Escritas dos veces, un
+  `.get()` con la clave mal escrita **no revienta** -- devuelve `None` y el
+  aviso simplemente no sale nunca.
+
 ### Las pruebas EJECUTAN contra el export real
 
-`scripts/test_vtex_generator.py` (73 pruebas) corre contra
+`scripts/test_vtex_generator.py` (78 pruebas) corre contra
 `data/vtex_muestra_supermallpe/`, que son las cuatro planillas reales con 500
 filas por hoja y la estructura exacta del export: fila en blanco, cabecera en la
 segunda y las especificaciones de productos en dos hojas. Y
@@ -6473,7 +6504,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **81 archivos y ~2.538 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **81 archivos y ~2.543 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

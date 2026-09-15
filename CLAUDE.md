@@ -6262,6 +6262,121 @@ ejecutarlo.
 
 ---
 
+## 5 octoquadragies. "No puede mapear los codigos" y la coleccion por solicitud (septiembre 2026)
+
+Dos pedidos en la misma conversacion: *"en mi carga de colecciones me ayudes a
+poner los codigos igual, me sale que no puede mapearlos y es raro"* y
+*"necesito que cada ticket pueda crear su coleccion en los sitios donde
+corresponde"*. Son el mismo trabajo: los dos necesitan encontrar un producto a
+partir de su codigo.
+
+### El codigo ESTABA en la tienda y la app decia que no
+
+Reportado con dos capturas: la validacion decia **40 de 252 "No estan en el
+catalogo de esta tienda"**, y el admin de Shopify, buscando uno de ellos
+(`29206-GID`), devolvia el producto -- *Chullo Patagonia Brodeo Beanie*, Activo,
+proveedor Patagonia.
+
+`indice_de_catalogo` indexaba por **dos** cosas: el metacampo
+`custom.codigo_modelo_color` y el handle exacto. Y ese metacampo **solo lo
+tienen los productos que creo esta app**. En los de antes el codigo esta:
+
+| Donde | Cuantos |
+|---|---|
+| en un **TAG** | medido en Columbia.pe: **1.069 de los 1.175** tags distintos son el Modelo-Color del propio producto |
+| **dentro del handle**, que se arma `nombre-genero-modcol-color` | `...-20265-ike-negro` |
+| en el **SKU** de una variante | |
+
+Reproducido con los tres productos de la captura antes de tocar nada: de tres
+codigos que SI estan en la tienda, se encontraba **uno**.
+
+Ahora se busca por **cinco fuentes, en orden de fiabilidad**:
+
+```
+codigo (el metacampo)  ->  handle  ->  SKU  ->  tag  ->  el codigo dentro del handle o del titulo
+```
+
+Lo que no es obvio:
+
+- **Se resuelve POR NIVELES y se para en el primero que encuentra algo.** Todo
+  en el mismo saco, un producto con el codigo en el metacampo y otros tres que
+  lo mencionan en un tag darian "codigo ambiguo" y **bloquearian la carga**: un
+  acierto convertido en un fallo.
+- **La quinta fuente no se indexa.** Guardar cada trozo de cada handle son
+  cientos de miles de cadenas, y el contenedor da 1 GB PARA TODA LA APP. Se
+  resuelve con **UNA pasada** por el catalogo y solo para lo que quedo suelto:
+  una pasada por codigo serian, con 40 codigos y 10.000 productos, 400.000
+  recorridos del mismo handle. Hay una prueba que cuenta los accesos.
+- **Dentro del texto se pegan PIEZAS consecutivas del handle**, no se busca la
+  cadena suelta: `20265IKE` dentro de `...-20265-ike-...` es el codigo, pero
+  dentro de una palabra seria una coincidencia de letras. Y por debajo de 5
+  caracteres no se busca en el texto: `ABC` apareceria en media tienda.
+- **Con guion y sin guion son el mismo codigo.** Cada valor se indexa exacto y
+  "compacto" (solo letras y numeros), asi que empareja en los dos sentidos. Una
+  colision entre dos codigos distintos sale como **ambigua**, nunca como un
+  acierto: no se escribe en el producto equivocado.
+- **Un codigo puramente numerico llegaba con `.0`.** Basta un hueco en la
+  columna para que pandas la traiga en float, y `str(29206.0)` no empareja con
+  nada. `_texto` lo devuelve entero, como ya hacia `clean_value`.
+- **Cada fila dice POR DONDE se emparejo**, y la pantalla lo muestra. Por el
+  metacampo es seguro; por el texto del handle es una DEDUCCION, y quien revisa
+  tiene que poder distinguirlas. Lo que queda sin encontrar sigue **bloqueando**
+  la carga: es el Excel el que hay que corregir.
+
+Lo que **no** cambia: dos productos con el mismo codigo siguen siendo ambiguos,
+un codigo que de verdad no esta sigue saliendo como tal, lo que ya esta dentro
+sigue sin volver a agregarse y el informe conserva el orden del archivo.
+
+### Cada solicitud deja su coleccion en los sitios que pidio
+
+La carga ya dejaba la suya en el sitio donde corrio (seccion 5 septquadragies).
+Pero **una solicitud pide publicar en VARIOS sitios** -- una de Columbia va a
+Columbia.pe y a Rockford.pe --, y revisarla en uno solo deja la mitad sin mirar.
+
+El panel esta en la pestana **Productos** del detalle de la solicitud, que es
+justo donde estan listados los codigos que van a entrar.
+
+- **Los sitios salen de la propia solicitud** (`ticket["sites"]`), no del
+  elegido en la barra lateral. Vienen marcados y se pueden agregar otros:
+  Supermall.pe no recibe input comercial y por eso nunca esta en la lista, pero
+  ahi tambien se acaba cargando.
+- **Ojo con `label` y `site_label`.** `label` es la MARCA (`Columbia`) y
+  `site_label` el SITIO (`Columbia.pe`), y la solicitud guarda el segundo. Con
+  el primero no emparejaba ninguno -- lo destapo una prueba de pantalla que
+  dibujaba el selector VACIO.
+- **Es LA MISMA coleccion que deja la carga, nunca una segunda.** Se busca por
+  el CODIGO de la solicitud (`es_de_la_solicitud`), no por el handle completo:
+  la fecha del nombre es la del dia en que se cargo y quien revisa entra al dia
+  siguiente. Emparejando por el handle, la solicitud acabaria con dos
+  colecciones, cada una con la mitad de los productos. La carga tambien la busca
+  asi ahora, para que el orden en que se hagan las dos cosas no importe.
+- **Se exige el prefijo `carga-`**: una coleccion que alguien llamo "Novedades
+  CAT-0042" es suya, y llenarla seria escribir donde nadie lo pidio.
+- **Un codigo que no esta en ese sitio NO bloquea, pero se NOMBRA.** En el Excel
+  del mantenedor si bloquea, porque ahi la persona pidio exactamente esos
+  codigos en esa tienda; aqui es lo normal -- la solicitud pidio tres sitios y
+  puede haberse cargado en dos.
+- **No se crea una coleccion vacia.** Deja basura en la tienda que despues hay
+  que borrar a mano.
+- **Un sitio que falla no detiene a los demas**, y la funcion **nunca levanta**:
+  misma regla que la limpieza de auditoria y que los correos.
+- **Los codigos se buscan con el MISMO indice que el mantenedor.** Un segundo
+  criterio de busqueda se separaria del primero sin que nadie lo note.
+- Nace MANUAL y PUBLICADA, por lo mismo de siempre: en MANUAL el orden de la
+  coleccion es el de la solicitud, y sin publicar no la ve nadie.
+
+**Las solicitudes viejas guardaron solo el CONTEO de modelos-color**, no la
+lista. Ahi el panel lo dice y no dibuja el boton: uno que no puede funcionar es
+peor que no tenerlo.
+
+`scripts/test_coleccion_por_solicitud.py` (40 pruebas) fija todo esto; **35
+fallan con el codigo anterior** y las 5 que pasan en las dos versiones son las
+que exigen que nada cambie. Las pruebas EJECUTAN -- emparejan catalogos,
+escriben contra un Shopify falso y entran a la app con `AppTest` para comprobar
+que el panel dibuja por donde pedirla.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -6504,7 +6619,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **81 archivos y ~2.543 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **82 archivos y ~2.583 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

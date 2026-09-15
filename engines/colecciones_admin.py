@@ -61,8 +61,14 @@ ORDENES_DE_SHOPIFY = (
 def _texto(valor):
     if valor is None:
         return ""
-    if isinstance(valor, float) and valor != valor:
-        return ""
+    if isinstance(valor, float):
+        if valor != valor:  # NaN
+            return ""
+        # Un codigo puramente numerico (`29206`) llega de pandas como float en
+        # cuanto la columna tiene un hueco, y `str(29206.0)` es "29206.0": ese
+        # `.0` no empareja con nada y el codigo se reportaba como inexistente.
+        if valor.is_integer():
+            return str(int(valor))
     return str(valor).strip()
 
 
@@ -331,23 +337,156 @@ def emparejar_colecciones(nombres, colecciones):
 
 
 # --- 2. el catalogo --------------------------------------------------------
-def indice_de_catalogo(productos):
-    """`{codigo: [productos]}` para poder validar un Excel contra la tienda.
+# De donde puede salir el codigo de un producto, de lo MAS fiable a lo menos.
+# El orden no es decorativo: la busqueda se resuelve por niveles y se para en
+# el primero que encuentra algo, asi un empate del escalon debil no puede tapar
+# un acierto del fuerte ni inventar una ambiguedad que no existe.
+#
+# Con solo los dos primeros -que es lo que habia- un producto perfectamente
+# cargado se reportaba como inexistente. Medido contra Patagonia.pe: de 252
+# codigos, 40 "no estaban en la tienda" y el usuario los encontraba en el admin
+# buscandolos a mano. El motivo es que el metacampo
+# `custom.codigo_modelo_color` solo lo tienen los productos que creo esta app:
+# en los de antes el codigo esta en los TAGS -medido en Columbia.pe: 1.069 de
+# los 1.175 tags distintos son el Modelo-Color del propio producto- o dentro
+# del handle, que se arma `nombre-genero-modcol-color`.
+FUENTES = (
+    ("codigo", "el código Modelo-Color del producto"),
+    ("handle", "el handle del producto"),
+    ("sku", "el SKU de una variante"),
+    ("tag", "un tag del producto"),
+    ("texto", "el código dentro del handle o del título"),
+)
+ETIQUETA_DE_FUENTE = dict(FUENTES)
 
-    Es una LISTA y no un producto suelto a proposito: dos productos con el
-    mismo Modelo-Color son un error del catalogo, y hay que poder decirlo en
-    vez de quedarse callado con el primero que caiga.
+# Las cuatro primeras se indexan por valor exacto. La quinta no se puede
+# indexar -habria que guardar cada trozo de cada handle y son cientos de miles
+# de cadenas en un contenedor de 1 GB PARA TODA LA APP-, asi que se resuelve
+# con UNA pasada por el catalogo y solo para lo que quedo sin encontrar.
+FUENTES_INDEXADAS = ("codigo", "handle", "sku", "tag")
+FUENTE_TEXTO = "texto"
 
-    Se indexa por el Modelo-Color **y** por el handle, porque un Excel puede
-    traer cualquiera de los dos y rechazar el handle obligaria a traducirlo a
-    mano.
+# Cuantas piezas del handle se pegan para buscar el codigo dentro. `VN-018BGIC-BIV`
+# son tres, y es el maximo que tiene el catalogo.
+PIEZAS_POR_VENTANA = 3
+
+# Por debajo de esto no se busca dentro del texto: un codigo de tres letras
+# apareceria dentro de media tienda. Los codigos cortos se siguen encontrando
+# por las cuatro fuentes exactas, que no tienen este problema.
+LARGO_MINIMO_EN_TEXTO = 5
+
+
+def _compacto(valor):
+    """Solo letras y numeros, en mayuscula: `29206-GID` y `29206 gid` son uno."""
+    return re.sub(r"[^0-9A-Z]+", "", _codigo(valor))
+
+
+def _claves_de_busqueda(valor):
+    """La clave exacta y la compacta, sin repetir cuando son la misma.
+
+    Empareja en los dos sentidos: un Excel que escribe `29206GID` encuentra al
+    producto que lo tiene como `29206-GID`, y al reves.
     """
-    indice = {}
+    exacta = _codigo(valor)
+    if not exacta:
+        return ()
+    compacta = _compacto(exacta)
+    if not compacta or compacta == exacta:
+        return (exacta,)
+    return (exacta, compacta)
+
+
+def _ventanas_de_texto(valor):
+    """Los trozos del handle o del titulo que podrian ser un codigo.
+
+    El handle se arma `nombre-genero-modcol-color`, asi que el codigo esta
+    partido en dos o tres piezas (`...-29206-gid-negro`). Se pegan las piezas
+    consecutivas en vez de buscar la cadena suelta: `20265IKE` dentro de
+    `...-20265-ike-...` es el codigo, pero dentro de una palabra seria una
+    coincidencia de letras.
+    """
+    piezas = [p for p in re.split(r"[^0-9a-zA-Z]+", _texto(valor)) if p]
+    salida = set()
+    for inicio in range(len(piezas)):
+        for largo in range(1, PIEZAS_POR_VENTANA + 1):
+            if inicio + largo > len(piezas):
+                break
+            salida.add("".join(piezas[inicio:inicio + largo]).upper())
+    return salida
+
+
+def _valores_del_producto(producto):
+    """{fuente: [valores]} de un producto, tal y como lo devuelve `fetch_products`."""
+    producto = producto or {}
+    skus = [producto.get("Variant SKU")]
+    for variante in producto.get("Variants") or []:
+        skus.append((variante or {}).get("Variant SKU"))
+    return {
+        "codigo": [modelo_color(producto)],
+        "handle": [producto.get("Handle")],
+        "sku": skus,
+        "tag": re.split(r"[,;|]", _texto(producto.get("Tags"))),
+    }
+
+
+def indice_de_catalogo(productos):
+    """Con que se busca un codigo del Excel dentro del catalogo de la tienda.
+
+    Cada fuente se indexa por separado y **la lista de productos se guarda por
+    referencia**, para la pasada por el texto. No se copia nada: un catalogo
+    completo son cientos de MB y el contenedor da 1 GB para toda la app.
+
+    Cada clave apunta a una LISTA y no a un producto suelto a proposito: dos
+    productos con el mismo codigo son un error del catalogo, y hay que poder
+    decirlo en vez de quedarse callado con el primero que caiga.
+    """
+    productos = list(productos or [])
+    por_fuente = {fuente: {} for fuente in FUENTES_INDEXADAS}
+    for producto in productos:
+        valores = _valores_del_producto(producto)
+        for fuente in FUENTES_INDEXADAS:
+            tabla = por_fuente[fuente]
+            for valor in valores.get(fuente) or ():
+                for clave in _claves_de_busqueda(valor):
+                    lista = tabla.setdefault(clave, [])
+                    if not any(otro is producto for otro in lista):
+                        lista.append(producto)
+    return {"por_fuente": por_fuente, "productos": productos}
+
+
+def _buscar_indexado(indice, codigo):
+    """`(candidatos, fuente)` por las cuatro fuentes exactas."""
+    por_fuente = (indice or {}).get("por_fuente") or {}
+    claves = _claves_de_busqueda(codigo)
+    for fuente in FUENTES_INDEXADAS:
+        tabla = por_fuente.get(fuente) or {}
+        for clave in claves:
+            encontrados = tabla.get(clave)
+            if encontrados:
+                return list(encontrados), fuente
+    return [], ""
+
+
+def _buscar_en_el_texto(productos, codigos):
+    """UNA pasada por el catalogo para todos los codigos que quedaron sueltos.
+
+    Se recorre el catalogo una sola vez para TODA la lista, no una vez por
+    codigo: con 40 codigos sin resolver y 10.000 productos, lo segundo serian
+    400.000 recorridos del mismo handle.
+    """
+    pendientes = {c for c in codigos if len(c) >= LARGO_MINIMO_EN_TEXTO}
+    salida = {}
+    if not pendientes:
+        return salida
     for producto in productos or []:
-        for llave in {_codigo(modelo_color(producto)), _codigo(producto.get("Handle"))}:
-            if llave:
-                indice.setdefault(llave, []).append(producto)
-    return indice
+        for campo in ("Handle", "Title"):
+            for ventana in _ventanas_de_texto((producto or {}).get(campo)):
+                if ventana not in pendientes:
+                    continue
+                lista = salida.setdefault(ventana, [])
+                if not any(otro is producto for otro in lista):
+                    lista.append(producto)
+    return salida
 
 
 def validar_asignacion(items, indice, ya_en_coleccion=()):
@@ -360,20 +499,49 @@ def validar_asignacion(items, indice, ya_en_coleccion=()):
     `ya_en_coleccion` son las claves que la coleccion ya tiene. Un producto que
     ya esta dentro **no se vuelve a agregar**: la llamada seria un viaje de
     balde, y en una lista de 5.000 eso son 20 viajes que no escriben nada.
+
+    Cada fila resuelta dice POR DONDE se emparejo (`fuente`). No es un adorno:
+    emparejar por el codigo del metacampo es seguro y hacerlo por el texto del
+    handle es una deduccion, y quien revisa tiene que poder distinguirlas.
     """
     dentro = {_codigo(c) for c in ya_en_coleccion or () if _texto(c)}
     listos, no_encontrados, ambiguos, repetidos, ya_estaban = [], [], [], [], []
     claves_vistas = {}
+    por_fuente = {}
 
+    # 1. Lo que sale de las cuatro fuentes exactas.
+    encontrados = []
+    sueltos = []
     for item in items or []:
-        codigo = item["codigo"]
-        candidatos = indice.get(codigo) or []
+        candidatos, fuente = _buscar_indexado(indice, item["codigo"])
+        encontrados.append([item, candidatos, fuente])
         if not candidatos:
-            no_encontrados.append({**item, "motivo": "No está en el catálogo de esta tienda"})
+            sueltos.append(_compacto(item["codigo"]))
+
+    # 2. Y UNA sola pasada por el catalogo para lo que quedo suelto.
+    if sueltos:
+        por_texto = _buscar_en_el_texto((indice or {}).get("productos") or [], sueltos)
+        for fila in encontrados:
+            if fila[1]:
+                continue
+            candidatos = por_texto.get(_compacto(fila[0]["codigo"]))
+            if candidatos:
+                fila[1], fila[2] = list(candidatos), FUENTE_TEXTO
+
+    # 3. El informe, en el ORDEN del archivo: un informe que se reordena solo no
+    #    se puede comparar con el anterior.
+    for item, candidatos, fuente in encontrados:
+        if not candidatos:
+            no_encontrados.append({
+                **item,
+                "motivo": "No está en el catálogo de esta tienda (se buscó por código, "
+                          "handle, SKU, tag y dentro del nombre)",
+            })
             continue
         if len(candidatos) > 1:
-            ambiguos.append({**item, "motivo": "El código está en %d productos de la tienda"
-                                               % len(candidatos),
+            ambiguos.append({**item, "motivo": "El código está en %d productos de la tienda (por %s)"
+                                               % (len(candidatos), ETIQUETA_DE_FUENTE.get(fuente, fuente)),
+                             "fuente": fuente,
                              "handles": [_texto(p.get("Handle")) for p in candidatos]})
             continue
         producto = candidatos[0]
@@ -385,8 +553,11 @@ def validar_asignacion(items, indice, ya_en_coleccion=()):
                                                 % claves_vistas[clave]})
             continue
         claves_vistas[clave] = item["fila"]
+        por_fuente[fuente] = por_fuente.get(fuente, 0) + 1
         destino = ya_estaban if _codigo(clave) in dentro or clave in dentro else listos
         destino.append({**item, "clave": clave, "producto": producto,
+                        "fuente": fuente,
+                        "emparejado_por": ETIQUETA_DE_FUENTE.get(fuente, fuente),
                         "handle": _texto(producto.get("Handle")),
                         "titulo": _texto(producto.get("Title"))})
 
@@ -396,6 +567,7 @@ def validar_asignacion(items, indice, ya_en_coleccion=()):
         "no_encontrados": no_encontrados,
         "ambiguos": ambiguos,
         "repetidos": repetidos,
+        "por_fuente": por_fuente,
         "bloqueado": bool(no_encontrados or ambiguos),
     }
 

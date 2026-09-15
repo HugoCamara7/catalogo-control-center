@@ -2031,7 +2031,7 @@ def build_sial_row(product, variant, key, product_images, existing_product, tech
     }
     row.update(sial_tail_row(brand_config, existing_id, variant.get("CODINT_MA")))
     # Los topes de la hoja: Color Web y Tipo de Material 30, Tecnologias 50 y
-    # Caracteristicas 130. La regla vive en `engines/sial_campos` porque la hoja
+    # Caracteristicas 100. La regla vive en `engines/sial_campos` porque la hoja
     # se emite tambien desde la carga por codigos, y escrita dos veces el
     # arreglo siguiente se olvida en una de las dos.
     sial_campos.ajustar_fila(row, avisos=avisos_de_limite, clave=key)

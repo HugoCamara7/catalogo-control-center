@@ -8,7 +8,7 @@ Medido con una carga de Rockford de una sola fila:
 
     Tipo de Material    65 caracteres  (tope 30)
     Tecnologias         71 caracteres  (tope 50)
-    Caracteristicas    144 caracteres  (tope 130)
+    Caracteristicas    144 caracteres  (tope 100)
     Color Web           -- sin recorte
 
 La hoja se emite desde DOS sitios -la carga completa (`build_sial_row`) y la
@@ -31,7 +31,7 @@ los datos son distintos:
 - **O vacio** (`Tecnologias `). Una tecnologia a medias es peor que ninguna:
   "Omni-Heat Reflec" no existe. Se intenta con el primer elemento y, si tampoco
   entra, se deja vacio.
-- **Recortar** (`Caracteristicas`). Es prosa descriptiva, no una clave: 130
+- **Recortar** (`Caracteristicas`). Es prosa descriptiva, no una clave: 100
   caracteres de caracteristicas siguen sirviendo. Se corta en el ultimo
   separador o espacio, nunca a mitad de palabra.
 
@@ -58,7 +58,7 @@ LIMITES = {
     COLOR_WEB: (30, ANTES_DE_LA_COMA),
     MATERIAL: (30, ANTES_DE_LA_COMA),
     TECNOLOGIAS: (50, O_VACIO),
-    CARACTERISTICAS: (130, RECORTAR),
+    CARACTERISTICAS: (100, RECORTAR),
 }
 
 # Los separadores de lista que usa el input comercial y el catalogo: la coma, el

@@ -5385,6 +5385,132 @@ hilo corre cada una --: leer el codigo no es ejecutarlo.
 
 ---
 
+## 5 quinquadragies. "Mucho demora": el Centry era el 73 % del analisis (septiembre 2026)
+
+Reportado con dos palabras, despues de la seccion anterior. La medicion de
+aquella se hizo con un catalogo de juguete -- 504 productos en la tienda -- y
+ahi el reparto enganaba. **Medido a la escala real** (1.008 productos de Vans
+contra un catalogo de **4.000** ya cargados, 36.000 filas x 103 columnas):
+
+| | antes | ahora |
+|---|---:|---:|
+| `build_columbia_matrixify` | 10,6 s | 11,2 s |
+| siblings | 0,2 s | 0,2 s |
+| **`build_centry_from_matrixify`** | **69,4 s** | **25,7 s** |
+| `columbia_to_excel_bytes` | 14,8 s | 15,3 s |
+| **TOTAL** | **95,0 s** | **52,3 s** |
+
+Y de punta a punta con la validacion y los estados: **110,4 s -> 42,2 s**.
+
+**La senal de que algo iba mal:** el Centry crecia con el tamano del CATALOGO,
+no con el de la carga. Con 504 productos en la tienda costaba 6 s; con 4.000,
+69. Eso no es trabajo, es trabajo repetido.
+
+### El fallo que este trabajo destapo, y que casi meto yo
+
+Al pasar el bucle de `iterrows()` a dicts, la comparacion de la salida dio
+**una** celda distinta: el ORIGEN del EAN cambiaba de "Shopify (Variant
+Barcode)" a "Maestro SIAL/BigQuery (SKU)". El valor era el mismo **por
+casualidad** -- en la prueba el maestro traia el mismo codigo.
+
+`centry_ean_de_la_fila` hacia:
+
+```python
+indice = set(getattr(row, "index", []))
+```
+
+Con un dict eso devuelve un **conjunto VACIO sin fallar**: ninguna de las 19
+columnas de EAN se encontraba nunca, la funcion contestaba "no hay EAN en la
+fila" y el codigo se caia al maestro. En produccion eso es **un producto cuyo
+codigo de barras solo esta en el export de Shopify publicado SIN codigo de
+barras**, con la hoja de revision culpando al maestro.
+
+Es exactamente la trampa que ya documenta la seccion 5 terdecies, y la unica
+razon de que se viera es que se compara la salida celda a celda antes de dar
+nada por bueno. Ahora el indice sale de `_claves_de_fila`, que entiende las dos
+formas. **El trap era latente** -- el unico llamador usaba `iterrows()` --; lo
+que hacia falta era no activarlo.
+
+Y hay un segundo: cuatro funciones preguntaban `if columna in row.index`, que
+con un dict **revienta** (mejor que lo anterior: se ve). Van por
+`_fila_tiene_columna`, que responde igual para `Series` y para dict.
+
+### Las cinco causas, de mayor a menor
+
+1. **`centry_validar_salida` rebanaba el frame entero once veces por
+   producto.** `grupo[grupo[columna].map(clean_value) == ""]` corta las ~100
+   columnas del Centry para quedarse con una lista de SKU, y son once campos
+   obligatorios: **11.088 rebanadas** en una carga de 1.008 modelos. La mascara
+   se aplica ahora a la columna de SKU, y las once mascaras se calculan UNA vez
+   sobre el frame entero en vez de por grupo. La primera fila de cada producto
+   sale de un `groupby().head(1).to_dict("records")` en una pasada, en vez de
+   un `grupo.iloc[0]` por producto. **48,6 s -> 12,0 s.**
+
+   **El ORDEN de los hallazgos se conserva**: el recorrido por producto sigue
+   ahi. La hoja de revision se compara con la del analisis anterior; ordenarla
+   por campo en vez de por producto la vuelve inutil para comparar.
+
+2. **El bucle recorria `iterrows()`.** Un `Series` por fila con las 103
+   columnas del Matrixify, y entonces cada `.get()` y cada asignacion pasan por
+   el indice de pandas: solo `_poner` -- que lee y escribe la fila -- eran 8,3 s
+   en 81.648 llamadas. Ahora recorre dicts, como ya hacen el analisis
+   (seccion 5 terdecies) y la hoja de modelos no creados.
+
+3. **`normalizar` se llamaba 3,8 millones de veces** y por dentro recorre la
+   cadena caracter a caracter (`unicodedata.combining` salia 51 millones de
+   veces) mas dos expresiones regulares. Los valores distintos son unos
+   cientos. Va cacheado, y **la cache va sobre el TEXTO ya limpio, nunca sobre
+   el valor**: con el valor como clave, `1`, `1.0` y `True` comparten hash y
+   entrada de cache. Lo mismo para `centry_master_key`, `centry_master_gender`
+   y `centry_lookup_category`.
+
+   **`centry_lookup_category` devuelve una COPIA.** Cacheada y devolviendo el
+   dict de la cache, quien lo tocara contaminaria el resto de la carga.
+
+4. **`valor_valido` recorria la lista de permitidos normalizando cada uno en
+   cada llamada**, con 42 columnas restringidas por producto.
+   `_indice_normalizado` lo arma una vez por columna y **vive DENTRO de la
+   plantilla memoizada**, asi que `cargar_plantilla(recargar=True)` lo tira
+   sola -- un indice que sobreviviera a la recarga contestaria con el
+   diccionario viejo. El emparejamiento no cambia: gana el primer valor de la
+   lista que normalice igual.
+
+5. **`filter_centry_size_rows` tenia dos `apply(axis=1)`** que construian un
+   `Series` de 94 columnas por fila para leer cinco, y resolvia las pruebas de
+   talla una vez por FILA en vez de una por talla distinta.
+   `_mascara_por_valor` y `_clase_como_registros`. De paso se acelera la hoja
+   Carga Sial, que usa la misma funcion.
+
+**Comparadas las diez salidas del analisis** -- Matrixify, resumen,
+observaciones, tipos, omitidos, Sial, Centry, sus observaciones, la validacion
+y los estados por producto --: **cero celdas distintas** de 1,7 millones.
+
+### Lo que NO era el problema, medido
+
+- **`iterrows()` en si.** Recorrer el Matrixify entero con `iterrows` son
+  0,19 s; lo caro es lo que hace cada vuelta con el `Series`.
+- **El dtype de pyarrow.** `astype(object)` antes del bucle no cambia nada
+  aqui: el coste no estaba en construir la fila sino en los accesos de dentro.
+- **`centry_lookup_category` y `centry_lookup_dimensions`**, que parecian caras
+  por llamarse dos veces por fila: cachearlas dio menos de un segundo.
+- **La plantilla de Centry** cuesta **3,8 s reales** la primera vez que se lee
+  (el perfilador la inflaba a 13). Se paga una vez por proceso y ya estaba
+  memoizada.
+
+`scripts/test_centry_rendimiento.py` (31 pruebas) fija todo esto; 5 fallan con
+el codigo anterior y las otras 26 son las que exigen que **nada cambie**: el
+EAN por sus cuatro fuentes, el orden de los hallazgos, las tallas que se quitan
+y las que se conservan, y que un producto de una sola talla 0 no desaparezca.
+Las pruebas EJECUTAN el motor, no leen su codigo.
+
+### Lo que sigue sobre la mesa
+
+Los 52 s que quedan son **25,7 s de Centry, 15,3 s de Excel y 11,2 s de
+Matrixify**, y ya no hay un cuello: el perfil quedo plano. Bajar de ahi pide
+mover el trabajo al worker, que es el **Pendiente 7**.
+
+---
+
 ## 6. Ejecutar carga desde una solicitud
 
 `ArchivoDeSolicitud(io.BytesIO)` expone `.name`, `.size` y `.seek()`, que es
@@ -5627,7 +5753,7 @@ for f in scripts/test_*.py; do
 done
 ```
 
-Son **75 archivos y ~2.325 pruebas**. Aquí había una lista de 43 rutas mantenida
+Son **76 archivos y ~2.356 pruebas**. Aquí había una lista de 43 rutas mantenida
 a mano y **le faltaban 22 archivos** — entre ellos `test_tallas_calzado_pe.py`,
 que es justo el que fija la conversión de tallas. En septiembre de 2026 un
 cambio en el conversor lo rompió y no se vio hasta correr la suite completa,

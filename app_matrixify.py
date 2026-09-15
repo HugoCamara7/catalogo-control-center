@@ -1037,7 +1037,7 @@ def format_datetime_lima(value):
 
 
 def publication_date_from_row(row):
-    if "Publication Publish Date" in row.index:
+    if _fila_tiene_columna(row, "Publication Publish Date"):
         return parse_publication_date(row.get("Publication Publish Date"))
     return parse_publication_date(
         first_row_value(
@@ -4776,12 +4776,36 @@ def centry_category(row):
     return f"Vestuario / {branch} / {product_type or 'Prendas'}"
 
 
+@lru_cache(maxsize=65536)
+def _centry_master_key_de_textos(valores):
+    return normalize_header(" ".join(valores))
+
+
 def centry_master_key(*values):
-    return normalize_header(" ".join(clean_value(value) for value in values if clean_value(value)))
+    """La clave con la que se cruza contra los maestros de Centry.
+
+    Se llama varias veces por fila -- categoria, dimensiones, codex -- y su
+    dominio real son unas decenas de combinaciones (tipo de prenda x genero x
+    vendor). `normalize_header` es una expresion regular mas seis reemplazos.
+
+    La cache va sobre los textos YA limpios, nunca sobre los valores
+    originales: con el valor como clave, `1`, `1.0` y `True` comparten hash y
+    entrada de cache, asi que un booleano se llevaria la respuesta de un
+    numero. Es un error que no revienta.
+    """
+    return _centry_master_key_de_textos(
+        tuple(texto for texto in (clean_value(value) for value in values) if texto)
+    )
 
 
 def centry_master_gender(value):
-    text = centry_value(value).lower()
+    """El genero con el nombre que usan los maestros de Centry."""
+    return _centry_master_gender_de_texto(centry_value(value))
+
+
+@lru_cache(maxsize=4096)
+def _centry_master_gender_de_texto(value):
+    text = value.lower()
     if text == "unisex":
         return "Unisex"
     if text in ("masculino", "hombre", "men"):
@@ -4943,6 +4967,24 @@ def load_centry_dimension_lookup():
 
 
 def centry_lookup_category(product_type, gender, vendor, fallback_category):
+    """La categoria y clase de Centry para ese tipo, genero y vendor.
+
+    Se resuelve DOS veces por fila -- una antes y otra despues del
+    enriquecimiento, porque el maestro puede completar el tipo o el genero --,
+    o sea 18.144 veces en una carga de 9.072 variantes, y su dominio real son
+    unas pocas combinaciones. Va cacheada sobre los cuatro textos limpios.
+
+    **Devuelve una copia**: quien la llama recibe un dict propio y puede
+    tocarlo sin contaminar la cache para el resto de la carga.
+    """
+    return dict(_centry_lookup_category_cacheada(
+        clean_value(product_type), clean_value(gender),
+        clean_value(vendor), clean_value(fallback_category),
+    ))
+
+
+@lru_cache(maxsize=8192)
+def _centry_lookup_category_cacheada(product_type, gender, vendor, fallback_category):
     lookup = load_centry_category_lookup()
     gender_master = centry_master_gender(gender)
     type_gender_key = centry_master_key(product_type, gender_master)
@@ -5035,7 +5077,7 @@ def centry_output_is_accessory(row):
         " ".join(
             clean_value(row.get(column))
             for column in ("Clase", "Categoría", "Categoria ", "Type", "Sub Categoria")
-            if column in row.index
+            if _fila_tiene_columna(row, column)
         )
     )
     return "accesorio" in text or "accesorios" in text
@@ -5046,7 +5088,7 @@ def centry_output_blocks_zero_size(row):
         " ".join(
             clean_value(row.get(column))
             for column in ("Clase", "Categoría", "Categoria ", "Type", "Sub Categoria")
-            if column in row.index
+            if _fila_tiene_columna(row, column)
         )
     )
     return "calzado" in text or "vestuario" in text
@@ -5347,10 +5389,17 @@ def centry_enriquecer_fila(row, maestro):
 
 
 def centry_ean_de_la_fila(row):
-    """EAN escrito en la propia fila: input de la marca o export de Shopify."""
-    # `set(...)` directo: un Index de pandas no admite `or []`, lanza
-    # "The truth value of a Index is ambiguous".
-    indice = set(getattr(row, "index", []))
+    """EAN escrito en la propia fila: input de la marca o export de Shopify.
+
+    El indice sale de `_claves_de_fila`, que entiende `Series` y dict. Estaba
+    escrito `set(getattr(row, "index", []))`, y eso con un dict devuelve **un
+    conjunto VACIO sin fallar**: ninguna columna se encontraba nunca, la
+    funcion contestaba "no hay EAN en la fila" y el codigo se caia al maestro.
+    El sintoma no es una excepcion -- es un producto cuyo EAN solo estaba en el
+    export de Shopify publicado SIN codigo de barras, y la hoja de revision
+    culpando al maestro. Es el error que no revienta.
+    """
+    indice = set(_claves_de_fila(row))
     for columna in CENTRY_EAN_ROW_COLUMNS:
         if columna not in indice:
             continue
@@ -5450,7 +5499,7 @@ def centry_tag_value(row, *labels):
     text = " | ".join(
         centry_value(row.get(column))
         for column in ("Tags", "Listado de características", "Product Bullets")
-        if column in row.index
+        if _fila_tiene_columna(row, column)
     )
     if not text:
         return ""
@@ -5812,6 +5861,38 @@ def centry_apply_apparel_fields(centry_row, product_type, gender, material, comp
     centry_row["Tipo de cierre - Ropa y accesorios (Falabella GSC Perú)"] = ""
 
 
+# Las cinco columnas con las que se decide si un producto es accesorio o si
+# bloquea la talla 0. Escritas una vez: `centry_output_is_accessory` y
+# `centry_output_blocks_zero_size` miran exactamente estas.
+CENTRY_COLUMNAS_DE_CLASE = ("Clase", "Categoría", "Categoria ", "Type", "Sub Categoria")
+
+
+def _mascara_por_valor(serie, predicado):
+    """`serie.map(predicado)` resolviendo el predicado una vez por valor DISTINTO.
+
+    Las pruebas de talla (`is_zero_size`, `is_one_size`, `talla_sirve_para_sial`)
+    normalizan la cadena y consultan el diccionario, y una hoja de 9.000 filas
+    tiene unas decenas de tallas distintas. El resultado es el mismo.
+    """
+    if serie.empty:
+        return serie.map(predicado)
+    respuestas = {valor: bool(predicado(valor)) for valor in dict.fromkeys(serie.tolist())}
+    return serie.map(respuestas)
+
+
+def _clase_como_registros(frame):
+    """Las columnas de clase de cada fila, como dicts, en UNA pasada.
+
+    `frame.apply(funcion, axis=1)` construye un `Series` con las 94 columnas del
+    Centry por fila para leer cinco. Medido: los dos `apply` de esta funcion
+    eran la mayor parte de sus 7,6 s.
+    """
+    presentes = [columna for columna in CENTRY_COLUMNAS_DE_CLASE if columna in frame.columns]
+    if not presentes:
+        return [{} for _ in range(len(frame))]
+    return frame[presentes].to_dict("records")
+
+
 def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_label="Centry",
                             copiar=True):
     """Quita de la hoja las filas cuya talla no es una talla.
@@ -5832,7 +5913,7 @@ def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_la
     # tallas internas K y lo que el diccionario no reconoce como talla. Antes
     # aqui solo se miraban las K, asi que codigos internos como `R` o `REGRH`
     # llegaban a la hoja del almacen.
-    fuera_mask = ~result[size_column].map(talla_sirve_para_sial)
+    fuera_mask = ~_mascara_por_valor(result[size_column], talla_sirve_para_sial)
     if fuera_mask.any():
         descartadas = sorted({clean_value(v) for v in result.loc[fuera_mask, size_column] if clean_value(v)})
         issues.append({
@@ -5851,15 +5932,21 @@ def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_la
     # antes se borraba igual y el producto entero desaparecia del archivo sin
     # que nada lo dijera. Es la misma regla que ya aplica `final_variant_filter`
     # en la carga completa; aqui estaba escrita a medias.
-    zero_block_mask = result.apply(
-        lambda row: is_zero_size(row.get(size_column)) and centry_output_blocks_zero_size(row),
-        axis=1,
-    )
+    # Primero la prueba barata y vectorizada; `centry_output_blocks_zero_size`
+    # solo se pregunta por las filas que de verdad traen una talla 0, que son
+    # un punado. Antes se preguntaba por TODAS, armando un Series por fila.
+    es_cero = _mascara_por_valor(result[size_column], is_zero_size)
+    zero_block_mask = pd.Series(False, index=result.index)
+    if es_cero.any():
+        registros = _clase_como_registros(result.loc[es_cero])
+        zero_block_mask.loc[es_cero] = [
+            bool(centry_output_blocks_zero_size(registro)) for registro in registros
+        ]
     if zero_block_mask.any():
         tiene_talla_real = (
             result[size_column].map(clean_value).ne("")
-            & ~result[size_column].map(is_zero_size)
-            & ~result[size_column].map(is_internal_k_size)
+            & ~es_cero
+            & ~_mascara_por_valor(result[size_column], is_internal_k_size)
         )
         productos_con_talla_real = set(key_values[tiene_talla_real])
         zero_block_mask &= key_values.isin(productos_con_talla_real)
@@ -5872,25 +5959,31 @@ def filter_centry_size_rows(df, issues, size_column, key_column="Mod", output_la
         return result, issues
 
     drop_accessory_zero = pd.Series(False, index=result.index)
+    # Las dos respuestas que el bucle necesita se calculan UNA vez sobre el
+    # frame entero, no una por grupo: eran un `apply(axis=1)` por producto.
+    es_accesorio = pd.Series(
+        [bool(centry_output_is_accessory(registro)) for registro in _clase_como_registros(result)],
+        index=result.index,
+    )
+    es_cero_final = _mascara_por_valor(result[size_column], is_zero_size)
+    tiene_texto = result[size_column].map(clean_value).ne("")
     for key, group in result.groupby(key_values, sort=False):
         if not clean_value(key):
             continue
-        accessory_group = group.apply(centry_output_is_accessory, axis=1)
+        accessory_group = es_accesorio.loc[group.index]
         if not accessory_group.any():
             continue
-        accessory_rows = group.loc[accessory_group]
-        has_real_size = (
-            accessory_rows[size_column].map(clean_value).ne("")
-            & ~accessory_rows[size_column].map(is_zero_size)
-        ).any()
+        indices_accesorio = group.index[accessory_group]
+        has_real_size = bool(
+            (tiene_texto.loc[indices_accesorio] & ~es_cero_final.loc[indices_accesorio]).any()
+        )
         if has_real_size:
-            group_zero = accessory_rows[size_column].map(is_zero_size)
-            drop_accessory_zero.loc[accessory_rows.index[group_zero]] = True
+            drop_accessory_zero.loc[indices_accesorio[es_cero_final.loc[indices_accesorio]]] = True
     if drop_accessory_zero.any():
         issues.append({"Mod-Col": output_label, "Problema": f"Se eliminaron {safe_int_value(drop_accessory_zero.sum())} filas accesorio talla 0/000 porque existe una talla real"})
         result = result[~drop_accessory_zero].copy()
 
-    one_size_mask = result[size_column].map(is_one_size)
+    one_size_mask = _mascara_por_valor(result[size_column], is_one_size)
     if one_size_mask.any():
         result.loc[one_size_mask, size_column] = "O/S"
     return result, issues
@@ -6081,28 +6174,54 @@ def centry_validar_salida(centry_df, revisar_valores=True):
         })
 
     claves = centry_df.get("SKU del producto", pd.Series(dtype=object)).map(clean_value)
+    skus_col = centry_df.get("SKU de la variante", pd.Series(index=centry_df.index, dtype=object))
+
+    # Las mascaras se calculan UNA vez sobre el frame entero, no por grupo.
+    # Eran once campos obligatorios x 1.008 productos: **11.088 `.map()` sobre
+    # series diminutas**, donde casi todo el tiempo es el armado del objeto y
+    # no la comparacion. Vectorizado son once pasadas.
+    vacias_por_columna = {
+        columna: (centry_df[columna].map(clean_value) == "")
+        for columna, _mensaje in CENTRY_CAMPOS_OBLIGATORIOS
+        if columna in centry_df.columns
+    }
+    nombres_norm = centry_df.get(
+        "Nombre del Producto", pd.Series(index=centry_df.index, dtype=object)
+    ).map(lambda valor: clean_value(valor).upper())
+
+    # La primera fila de cada producto, como dict y en UNA pasada. `grupo.iloc[0]`
+    # construia un `Series` de las 94 columnas del Centry por producto, y despues
+    # se le pedian cuarenta y dos valores uno a uno por el indice de pandas.
+    primeras = {}
+    for fila in centry_df.groupby(claves, sort=False).head(1).to_dict("records"):
+        primeras.setdefault(clean_value(fila.get("SKU del producto")), fila)
+
+    # El recorrido por producto se conserva, y con el el ORDEN de los
+    # hallazgos: la hoja de revision se compara con la del analisis anterior.
     for mod_col, grupo in centry_df.groupby(claves, sort=False):
-        skus = list(grupo.get("SKU de la variante", pd.Series(dtype=object)))
+        skus_serie = skus_col.loc[grupo.index]
+        skus = list(skus_serie)
         for columna, mensaje in CENTRY_CAMPOS_OBLIGATORIOS:
-            if columna not in grupo.columns:
+            vacia = vacias_por_columna.get(columna)
+            if vacia is None:
                 continue
-            vacias = grupo[grupo[columna].map(clean_value) == ""]
+            vacias = skus_serie[vacia.loc[grupo.index]]
             if not vacias.empty:
-                _anotar(mod_col, columna, mensaje, "",
-                        list(vacias.get("SKU de la variante", pd.Series(dtype=object))), "Bloqueante")
+                _anotar(mod_col, columna, mensaje, "", list(vacias), "Bloqueante")
         # El nombre nunca puede ser el codigo modelo-color.
-        nombres = grupo.get("Nombre del Producto", pd.Series(dtype=object)).map(clean_value)
-        if not nombres.empty and (nombres.str.upper() == clean_value(mod_col).upper()).any():
+        nombres = nombres_norm.loc[grupo.index]
+        if not nombres.empty and (nombres == clean_value(mod_col).upper()).any():
             _anotar(mod_col, "Nombre del Producto",
                     "El nombre es el codigo modelo-color", mod_col, skus, "Bloqueante")
+        primera = primeras.get(clean_value(mod_col), {})
         # Atributos de ficha: viven en el listado de caracteristicas.
-        listado = clean_value(grupo.iloc[0].get("Listado de características"))
+        listado = clean_value(primera.get("Listado de características"))
         for etiqueta, nombre in CENTRY_ATRIBUTOS_FICHA:
             if not centry_listado_tiene(listado, etiqueta):
                 _anotar(mod_col, nombre, f"{nombre} sin dato en el listado de caracteristicas",
                         "", skus, "Advertencia")
         if revisar_valores:
-            for columna, valor, permitidos in centry_valores_no_permitidos(grupo.iloc[0], restringidas):
+            for columna, valor, permitidos in centry_valores_no_permitidos(primera, restringidas):
                 _anotar(mod_col, columna,
                         f"Valor fuera de la plantilla. Permitidos: {permitidos}",
                         valor, skus, "Bloqueante")
@@ -6200,7 +6319,15 @@ def build_centry_from_matrixify(matrixify_df, brand_config=None, only_codes=None
         issues.append({"Mod-Col": "BigQuery/ARTI", "Problema": "La fuente maestra no trajo CodBarras/EAN/barcode reconocible"})
     arti_lookup = build_centry_arti_lookup(normalized_arti_df)
     current_mod_col = ""
-    for _, row in df.iterrows():
+    # Se recorre en DICTS, no con `iterrows()`. `iterrows` crea un `Series` por
+    # fila -- con las 103 columnas del Matrixify -- y entonces cada `.get()` y
+    # cada asignacion pasan por el indice de pandas. Medido en una carga de
+    # 1.008 productos: solo `_poner`, que lee y escribe la fila, eran 8,3 s en
+    # 81.648 llamadas. Un dict no construye nada. Es la misma correccion que ya
+    # se hizo en el bucle del analisis (seccion 5 terdecies) y en la hoja de
+    # modelos no creados; todas las funciones que reciben la fila leen sus
+    # columnas con `claves_de_fila`, que entiende las dos formas.
+    for row in df.to_dict("records"):
         mod_col_previo = centry_mod_col_from_row(row) or current_mod_col
         variant_sku = centry_value(row.get("Variant SKU"))
         if not variant_sku:
@@ -10577,6 +10704,22 @@ def _lookup_de_columnas_normalizadas(columnas):
     # con dos columnas que normalizan al mismo nombre, cambiar el criterio
     # cambiaria en silencio de que columna sale el valor.
     return {normalize_header(columna): columna for columna in columnas}
+
+
+def _fila_tiene_columna(row, columna):
+    """`columna in row`, funcione la fila como `Series` o como dict.
+
+    Un `Series` responde por `.index` y un dict por sus claves. Pedirle
+    `.index` a un dict **revienta**, y escrito como `getattr(row, "index", [])`
+    seria peor: devolveria `[]` sin fallar y el campo saldria vacio en
+    silencio, que es el error que no se ve. Misma idea que `_claves_de_fila`,
+    pero sin construir la tupla de nombres: esto se pregunta una vez por
+    columna y por fila.
+    """
+    indice = getattr(row, "index", None)
+    if indice is not None:
+        return columna in indice
+    return columna in row
 
 
 def _claves_de_fila(row):

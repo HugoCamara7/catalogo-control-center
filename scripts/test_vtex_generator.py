@@ -425,6 +425,68 @@ class Generacion(unittest.TestCase):
         self.assertEqual(len(tablas[vtex.IMAGENES]), 3)
 
 
+class PlanillaVaciaPorqueFaltaSuExport(unittest.TestCase):
+    """Subir SOLO Products and SKUs deja las dos de especificaciones en cero.
+
+    Reportado asi: *"Subi products and skus pero no me boto nada en los otros
+    excel porque pasa eso?"*. No es un fallo: la lista de campos de cada
+    categoria y los IDs de los valores de su dominio viven SOLO dentro de esos
+    dos exports, y el motor se niega a inventar un ID. Lo que faltaba era
+    DECIRLO donde se ve el cero.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import app_matrixify as app
+
+        cls.app = app
+        solo, _informe = app.vtex_leer_planillas([_subido("products-and-skus.xlsx")])
+        cls.solo_productos = vtex.leer_catalogo(solo)
+        planillas, _informe = _leer_muestra()
+        cls.completo = vtex.leer_catalogo(planillas)
+
+    def _generar(self, catalogo):
+        emparejados = vtex.emparejar(
+            [_ficha("HP102011307-251", Imagenes=["https://x/a.jpg"])],
+            catalogo, nombres_de_tipo=garment_types.sinonimos_de)
+        return vtex.generar(emparejados, catalogo)
+
+    def test_sin_el_export_de_especificaciones_salen_cero_filas(self):
+        _tablas, _inc, resumen = self._generar(self.solo_productos)
+        self.assertEqual(resumen[vtex.FILAS_EN_EL_RESUMEN[vtex.ESPEC_PRODUCTO]], 0)
+        self.assertEqual(resumen[vtex.FILAS_EN_EL_RESUMEN[vtex.ESPEC_SKU]], 0)
+        # Y la de productos SI sale: lo que falta son los otros dos exports.
+        self.assertGreater(resumen[vtex.FILAS_EN_EL_RESUMEN[vtex.PRODUCTOS]], 0)
+
+    def test_se_nombra_el_export_que_falta_por_cada_planilla_vacia(self):
+        _tablas, _inc, resumen = self._generar(self.solo_productos)
+        faltan = vtex.planillas_sin_origen(self.solo_productos, resumen)
+        self.assertEqual(
+            sorted(f["Planilla vacia"] for f in faltan),
+            sorted([vtex.ETIQUETAS[vtex.ESPEC_PRODUCTO], vtex.ETIQUETAS[vtex.ESPEC_SKU]]))
+        for fila in faltan:
+            # El export se nombra POR SU NOMBRE y el motivo no puede ir vacio:
+            # un cero sin explicacion se lee como "la app no hizo nada".
+            self.assertIn(fila["Export que falta"], vtex.ETIQUETAS.values())
+            self.assertTrue(fila["Por que"].strip())
+
+    def test_con_las_cuatro_planillas_no_se_avisa_de_nada(self):
+        _tablas, _inc, resumen = self._generar(self.completo)
+        self.assertGreater(resumen[vtex.FILAS_EN_EL_RESUMEN[vtex.ESPEC_PRODUCTO]], 0)
+        self.assertEqual(vtex.planillas_sin_origen(self.completo, resumen), [])
+
+    def test_una_planilla_vacia_CON_su_export_subido_no_se_reporta(self):
+        """Eso es otra cosa -- categorias sin campos -- y adivinarla seria mentir."""
+        resumen = dict.fromkeys(vtex.FILAS_EN_EL_RESUMEN.values(), 0)
+        self.assertEqual(vtex.planillas_sin_origen(self.completo, resumen), [])
+
+    def test_las_claves_del_resumen_son_las_que_generar_escribe(self):
+        """Escritas dos veces, un `.get()` mal escrito devuelve None sin reventar."""
+        _tablas, _inc, resumen = self._generar(self.completo)
+        for clave in vtex.FILAS_EN_EL_RESUMEN.values():
+            self.assertIn(clave, resumen)
+
+
 class Validacion(unittest.TestCase):
     """La foto del archivo, antes de subirlo."""
 

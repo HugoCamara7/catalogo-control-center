@@ -31118,6 +31118,10 @@ def render_vtex_generator():
         st.session_state["vtex_resultado"] = {
             "zip": paquete,
             "resumen": resumen_salida,
+            # Que planilla sale vacia y POR QUE. El aviso de la subida ya lo
+            # decia, pero ahi todavia no se habia generado nada: quien llega
+            # aqui ve tres archivos en cero y ninguna explicacion al lado.
+            "sin_origen": vtex.planillas_sin_origen(catalogo, resumen_salida),
             "validacion": pd.DataFrame(hallazgos),
             "bloqueos": bloqueos,
             "avisos": avisos,
@@ -31150,6 +31154,12 @@ def render_vtex_generator():
         f"{salida['Filas de imagen']:,} de imagen · "
         f"{salida['Productos fuera']:,} productos quedaron fuera."
     )
+    for vacia in resultado.get("sin_origen") or []:
+        st.warning(
+            f"**{vacia['Planilla vacia']} sale con 0 filas**: no se subió el export "
+            f"**{vacia['Export que falta']}**. {vacia['Por que']} Sube ese archivo y "
+            "vuelve a analizar."
+        )
     if resultado["bloqueos"]:
         st.error(
             f"**{resultado['bloqueos']:,} problemas que bloquean la carga** y "
